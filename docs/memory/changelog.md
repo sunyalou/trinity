@@ -1,4 +1,92 @@
-### 2026-03-24 12:00:00
+### 2026-03-25
+
+✨ **Auto-assign subscription to new agents via round-robin (#74)**
+
+When creating a new agent, Trinity now automatically assigns a subscription using round-robin distribution (fewest agents first, alphabetical tie-break). Removes the manual step of assigning subscriptions after agent creation. Falls back to platform API key if no subscriptions exist or token decryption fails. System agents are unaffected (separate creation path).
+
+- `src/backend/db/subscriptions.py` — Added `get_least_used_subscription()` method (SQL: COUNT + ORDER BY agent_count ASC, name ASC)
+- `src/backend/database.py` — Added delegation method
+- `src/backend/services/agent_service/crud.py` — Auto-assign logic in `create_agent_internal()`: lookup before container creation, DB persist after `register_agent_owner()`
+- `tests/test_subscriptions.py` — Added `TestSubscriptionAutoAssign` class (4 tests: no-subs fallback, auto-assign, round-robin, alphabetical tie-break)
+
+📝 **docs: Update stale feature flow documentation for execution layer (#100)**
+
+Fixed contradictions between feature flow documents and actual code after the 2026-03-09 EXEC-024 consolidation:
+
+- **scheduling.md**: Fixed execution flow diagram — scheduler dispatches to `POST /api/internal/execute-task` (not direct agent calls). Updated architecture diagram and file references.
+- **execution-queue.md**: Added prominent status enum disambiguation table clarifying `QueueItemStatus` (Redis) vs `TaskExecutionStatus` (DB) vs `ExecutionStatus` (process engine).
+- **parallel-headless-execution.md**: Clarified that async mode on `/api/task` uses inline code, while async mode on `/api/internal/execute-task` (scheduler) uses `TaskExecutionService`.
+- **task-execution-service.md**: Replaced "all paths" claim with execution path coverage matrix showing which callers use the service and which bypass it (notably `/api/chat` and async `/api/task`).
+- **scheduler-service.md**: Fixed architecture diagram to show scheduler → backend → agent flow (not scheduler → agent directly).
+
+### 2026-03-25 02:00:55
+
+🔧 **fix: Startup recovery for regular task executions (#128)**
+
+On backend restart, `schedule_executions` stuck in `running` status are now checked against agent containers and process registries. Orphaned executions (container down or not found in agent's process registry) are immediately marked `failed` with capacity slots released — instead of waiting 2 hours for the cleanup service timeout.
+
+- `src/backend/db/schedules.py` — Added `get_running_executions()` query
+- `src/backend/database.py` — Exposed `get_running_executions()` on `DatabaseManager`
+- `src/backend/services/cleanup_service.py` — Added `recover_orphaned_executions()` with container + HTTP registry checks
+- `src/backend/main.py` — Call recovery in lifespan handler after cleanup service start
+- `tests/unit/test_orphaned_execution_recovery.py` — 6 unit tests covering all recovery scenarios
+
+### 2026-03-25
+
+**feat: MCP Execution Query Tools — agents can poll for async results (MCP-007) (#19)**
+
+Three new MCP tools enabling agents to query execution history and poll for async task results. This closes the async agent-to-agent collaboration loop: `chat_with_agent(async=true)` returns an `execution_id`, then `get_execution_result(id)` polls until complete.
+
+- `list_recent_executions` — List recent executions for an agent across all trigger types (schedule, manual, MCP, chat) with optional status filter
+- `get_execution_result` — Get full execution details including response text, cost, and optionally the full transcript/log
+- `get_agent_activity_summary` — High-level activity summary over a time window with counts by type and state
+
+**MCP Server:**
+- `src/mcp-server/src/tools/executions.ts` — NEW: 3 execution query tools with agent-scoped access control
+- `src/mcp-server/src/tools/index.ts` — Export new tools
+- `src/mcp-server/src/server.ts` — Register 3 new tools (total: 62 tools)
+- `src/mcp-server/src/client.ts` — Added `getExecution()`, `getExecutionLog()`, `getActivityTimeline()` client methods
+- `src/mcp-server/src/types.ts` — Added `ActivityTimelineResponse`, `ActivityEntry` types; extended `ScheduleExecution` with `model_used`, `claude_session_id`, etc.
+
+**No backend changes** — all tools wrap existing REST endpoints (`GET /api/agents/{name}/executions`, `GET /api/agents/{name}/executions/{id}`, `GET /api/activities/timeline`).
+
+---
+
+### 2026-03-23
+
+✨ **feat: Channel adapter abstraction + multi-agent Slack integration (SLACK-002)**
+
+Added pluggable channel adapter architecture for external messaging platforms (Slack, future Telegram/Discord). Single Slack App supports multiple agents, each with a dedicated channel. Messages flow: Transport → Adapter → Router → Agent → Response.
+
+**Channel Adapter Abstraction:**
+- `src/backend/adapters/base.py` — `ChannelAdapter` base class: `parse_message()`, `send_response()`, `get_agent_name()`, `indicate_processing()`, `indicate_done()`, `handle_verification()`, `on_response_sent()`
+- `src/backend/adapters/transports/base.py` — `ChannelTransport` base class: `start()`, `stop()`, `on_event()`
+- `src/backend/adapters/message_router.py` — Channel-agnostic dispatcher with TaskExecutionService integration, rate limiting, configurable allowed tools
+
+**Slack Implementation:**
+- `src/backend/adapters/slack_adapter.py` — DMs, @mentions, thread replies without @mention, agent identity via `chat:write.customize`
+- `src/backend/adapters/transports/slack_socket.py` — Socket Mode transport (no public URL needed)
+- `src/backend/adapters/transports/slack_webhook.py` — HTTP webhook transport (backward compatible fallback)
+- `src/backend/services/slack_service.py` — Channel creation (`conversations.create`), reaction emoji (⏳→✅), `chat:write.customize` params, new OAuth scopes
+- `src/backend/routers/slack.py` — Refactored: multi-agent "Connect Slack" (auto-creates channel per agent), webhook endpoint delegates to transport
+
+**Database & Security:**
+- `src/backend/db/slack_channels.py` — `SlackChannelOperations` with AES-256-GCM encrypted bot tokens
+- `src/backend/db/migrations.py` — New tables: `slack_workspaces`, `slack_channel_agents`, `slack_active_threads`
+- `src/backend/database.py` — Wired `SlackChannelOperations` delegation methods
+- Tool restrictions for public Slack users (`--allowedTools WebSearch,WebFetch`)
+- Rate limiting: 30 msg/min per Slack user (configurable via settings)
+
+**Settings & Config:**
+- `src/backend/services/settings_service.py` — `public_chat_url`, `slack_transport_mode`, `slack_app_token`, `channel_rate_limit_max`, `channel_timeout_seconds`, `channel_allowed_tools`
+- `src/backend/routers/public_links.py` — Uses `get_public_chat_url()` from settings (was env-only)
+- `src/backend/main.py` — Startup/shutdown hooks for Slack transport
+- `docker/backend/Dockerfile` — Added `slack_sdk[socket-mode]` dependency
+- `src/frontend/src/components/PublicLinksPanel.vue` — Handle new Connect Slack response format
+
+---
+
+### 2026-03-23
 
 **feat: Voice Chat — real-time voice conversations with agents via Gemini Live API (VOICE-001)**
 
@@ -146,40 +234,6 @@ Email-verified public chat sessions now maintain persistent per-user memory acro
 - `src/backend/services/platform_prompt_service.py` — Added `format_user_memory_block()` helper
 - `src/backend/routers/public.py` — Memory injection + background `_summarize_user_memory()` task (sync and async paths)
 - `tests/test_public_user_memory.py` — Unit tests for DB ops and prompt formatting
-
----
-
-### 2026-03-24 12:00:00
-
-✨ **feat: Channel adapter abstraction + multi-agent Slack integration (SLACK-002)**
-
-Added pluggable channel adapter architecture for external messaging platforms (Slack, future Telegram/Discord). Single Slack App supports multiple agents, each with a dedicated channel. Messages flow: Transport → Adapter → Router → Agent → Response.
-
-**Channel Adapter Abstraction:**
-- `src/backend/adapters/base.py` — `ChannelAdapter` base class: `parse_message()`, `send_response()`, `get_agent_name()`, `indicate_processing()`, `indicate_done()`, `handle_verification()`, `on_response_sent()`
-- `src/backend/adapters/transports/base.py` — `ChannelTransport` base class: `start()`, `stop()`, `on_event()`
-- `src/backend/adapters/message_router.py` — Channel-agnostic dispatcher with TaskExecutionService integration, rate limiting, configurable allowed tools
-
-**Slack Implementation:**
-- `src/backend/adapters/slack_adapter.py` — DMs, @mentions, thread replies without @mention, agent identity via `chat:write.customize`
-- `src/backend/adapters/transports/slack_socket.py` — Socket Mode transport (no public URL needed)
-- `src/backend/adapters/transports/slack_webhook.py` — HTTP webhook transport (backward compatible fallback)
-- `src/backend/services/slack_service.py` — Channel creation (`conversations.create`), reaction emoji (⏳→✅), `chat:write.customize` params, new OAuth scopes
-- `src/backend/routers/slack.py` — Refactored: multi-agent "Connect Slack" (auto-creates channel per agent), webhook endpoint delegates to transport
-
-**Database & Security:**
-- `src/backend/db/slack_channels.py` — `SlackChannelOperations` with AES-256-GCM encrypted bot tokens
-- `src/backend/db/migrations.py` — New tables: `slack_workspaces`, `slack_channel_agents`, `slack_active_threads`
-- `src/backend/database.py` — Wired `SlackChannelOperations` delegation methods
-- Tool restrictions for public Slack users (`--allowedTools WebSearch,WebFetch`)
-- Rate limiting: 30 msg/min per Slack user (configurable via settings)
-
-**Settings & Config:**
-- `src/backend/services/settings_service.py` — `public_chat_url`, `slack_transport_mode`, `slack_app_token`, `channel_rate_limit_max`, `channel_timeout_seconds`, `channel_allowed_tools`
-- `src/backend/routers/public_links.py` — Uses `get_public_chat_url()` from settings (was env-only)
-- `src/backend/main.py` — Startup/shutdown hooks for Slack transport
-- `docker/backend/Dockerfile` — Added `slack_sdk[socket-mode]` dependency
-- `src/frontend/src/components/PublicLinksPanel.vue` — Handle new Connect Slack response format
 
 ---
 

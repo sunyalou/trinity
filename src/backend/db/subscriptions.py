@@ -537,6 +537,32 @@ class SubscriptionOperations:
             conn.commit()
             return count
 
+    def get_least_used_subscription(self) -> Optional[SubscriptionCredential]:
+        """
+        Get subscription with fewest assigned agents (round-robin).
+
+        Tie-break: alphabetical by name.
+        Skips subscriptions that are currently rate-limited.
+        Used for auto-assignment on agent creation (#74).
+
+        Returns:
+            SubscriptionCredential with fewest agents, or None if no viable subscription
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT s.*, u.email as owner_email,
+                    (SELECT COUNT(*) FROM agent_ownership WHERE subscription_id = s.id) as agent_count
+                FROM subscription_credentials s
+                JOIN users u ON s.owner_id = u.id
+                ORDER BY agent_count ASC, s.name ASC
+            """)
+            for row in cursor.fetchall():
+                sub = self._row_to_subscription(row)
+                if not self.is_subscription_rate_limited(sub.id):
+                    return sub
+            return None
+
     def select_best_alternative_subscription(
         self,
         current_subscription_id: str

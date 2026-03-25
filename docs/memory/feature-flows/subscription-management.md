@@ -70,6 +70,34 @@ Admin's Machine                  Trinity Backend                    Agent Contai
 +----------------+              +-------------------+               +------------------+
 ```
 
+### Auto-Assign on Agent Creation (#74)
+
+New agents are automatically assigned the subscription with fewest agents (round-robin). Rate-limited subscriptions are skipped. Falls back to platform API key if no viable subscription exists.
+
+```
+create_agent_internal()
+  ├── db.get_least_used_subscription()       ← SQL: COUNT + ORDER BY agent_count ASC, name ASC
+  │     └── skip rate-limited (is_subscription_rate_limited)
+  ├── db.get_subscription_token(id)          ← AES-256 decrypt
+  ├── env_vars['CLAUDE_CODE_OAUTH_TOKEN'] = token
+  ├── env_vars.pop('ANTHROPIC_API_KEY')
+  ├── ... container creation ...
+  ├── db.register_agent_owner()
+  └── db.assign_subscription_to_agent()      ← persist assignment
+```
+
+**Files:**
+- `src/backend/db/subscriptions.py:540` — `get_least_used_subscription()` (iterates candidates, skips rate-limited)
+- `src/backend/services/agent_service/crud.py:294` — lookup + env var injection before container creation
+- `src/backend/services/agent_service/crud.py:500` — DB persist after `register_agent_owner()`
+
+**Edge cases:**
+- No subscriptions → skip, use `ANTHROPIC_API_KEY`
+- Token decrypt fails → warn, keep `ANTHROPIC_API_KEY`
+- Exception → warn, keep `ANTHROPIC_API_KEY`
+- System agents → separate `_create_system_agent()` path, unaffected
+- Equal agent count → alphabetical tie-break (`s.name ASC`)
+
 ---
 
 ## Entry Points

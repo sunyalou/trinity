@@ -128,7 +128,15 @@ class QueueItemStatus(str, Enum):
     TIMEOUT = "timeout"
 ```
 
-> **Note**: Renamed from `ExecutionStatus` to `QueueItemStatus` (#92) to avoid confusion with `TaskExecutionStatus` (DB-persisted execution status: `running/success/failed/cancelled/skipped`) and the process engine's own `ExecutionStatus`.
+> **⚠️ Status Enum Disambiguation**: There are three separate status systems in Trinity:
+>
+> | Enum | Scope | Values | Storage |
+> |------|-------|--------|---------|
+> | `QueueItemStatus` | Execution queue (this feature) | `queued`, `running`, `completed`, `failed`, `timeout` | Redis/in-memory |
+> | `TaskExecutionStatus` | Task/schedule executions | `running`, `success`, `failed`, `cancelled`, `skipped` | SQLite (`schedule_executions`, `task_executions`) |
+> | `ExecutionStatus` (process engine) | Process step executions | `pending`, `running`, `completed`, `failed`, `cancelled` | SQLite (`process_executions`) |
+>
+> Note: `QueueItemStatus.COMPLETED` ≠ `TaskExecutionStatus` — the queue uses `completed` while the DB uses `success`. Renamed from `ExecutionStatus` to `QueueItemStatus` (#92) to reduce confusion.
 
 ### Execution (Model)
 ```python

@@ -692,6 +692,10 @@ class DatabaseManager:
     # Cleanup Operations (for CleanupService)
     # =========================================================================
 
+    def get_running_executions(self):
+        """Get all schedule executions currently in 'running' status."""
+        return self._schedule_ops.get_running_executions()
+
     def mark_stale_executions_failed(self, timeout_minutes: int = 30):
         """Mark executions stuck in 'running' past threshold as failed."""
         return self._schedule_ops.mark_stale_executions_failed(timeout_minutes)
@@ -1070,6 +1074,9 @@ class DatabaseManager:
 
     def get_agent_subscription_id(self, agent_name: str):
         return self._subscription_ops.get_agent_subscription_id(agent_name)
+
+    def get_least_used_subscription(self):
+        return self._subscription_ops.get_least_used_subscription()
 
     # --- SUB-003: Rate-Limit Tracking ---
 

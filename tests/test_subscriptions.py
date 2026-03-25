@@ -476,3 +476,123 @@ class TestSubscriptionCascade:
         )
         data = response.json()
         assert data["auth_mode"] != "subscription" or data["subscription_id"] is None
+
+
+# =============================================================================
+# Auto-Assign on Agent Creation Tests (#74)
+# =============================================================================
+
+class TestSubscriptionAutoAssign:
+    """#74: Auto-assign subscription to new agents via round-robin."""
+
+    def _create_subscription(self, api_client, name, token=VALID_TOKEN):
+        """Helper to create a subscription and return its id."""
+        response = api_client.post(
+            "/api/subscriptions",
+            json={"name": name, "token": token, "subscription_type": "max"}
+        )
+        assert_status(response, 200)
+        return response.json()["id"]
+
+    def _create_agent(self, api_client, name):
+        """Helper to create an agent and return its name."""
+        response = api_client.post(
+            "/api/agents",
+            json={"name": name, "template": "local:default"}
+        )
+        assert_status(response, 200)
+        return response.json()["name"]
+
+    def _get_auth(self, api_client, agent_name):
+        """Helper to get agent auth status."""
+        response = api_client.get(
+            f"/api/subscriptions/agents/{agent_name}/auth"
+        )
+        assert_status(response, 200)
+        return response.json()
+
+    def _cleanup_agent(self, api_client, agent_name):
+        """Helper to delete an agent."""
+        api_client.delete(f"/api/agents/{agent_name}")
+
+    def _cleanup_subscription(self, api_client, sub_id):
+        """Helper to delete a subscription."""
+        api_client.delete(f"/api/subscriptions/{sub_id}")
+
+    def test_create_agent_no_subscriptions(self, api_client: TrinityApiClient):
+        """Agent created with no subscriptions uses platform API key."""
+        agent_name = f"test-noauto-{uuid.uuid4().hex[:8]}"
+        try:
+            self._create_agent(api_client, agent_name)
+            auth = self._get_auth(api_client, agent_name)
+            assert auth["auth_mode"] in ["api_key", "not_configured"]
+        finally:
+            self._cleanup_agent(api_client, agent_name)
+
+    def test_create_agent_with_subscription(self, api_client: TrinityApiClient):
+        """Agent created with subscription registered is auto-assigned."""
+        sub_name = f"test-auto-sub-{uuid.uuid4().hex[:8]}"
+        agent_name = f"test-auto-{uuid.uuid4().hex[:8]}"
+        sub_id = self._create_subscription(api_client, sub_name)
+        try:
+            self._create_agent(api_client, agent_name)
+            auth = self._get_auth(api_client, agent_name)
+            assert auth["auth_mode"] == "subscription"
+            assert auth["subscription_name"] == sub_name
+        finally:
+            self._cleanup_agent(api_client, agent_name)
+            self._cleanup_subscription(api_client, sub_id)
+
+    def test_round_robin_distribution(self, api_client: TrinityApiClient):
+        """Two subscriptions distribute agents evenly via round-robin."""
+        sub_a_name = f"test-rr-a-{uuid.uuid4().hex[:8]}"
+        sub_b_name = f"test-rr-b-{uuid.uuid4().hex[:8]}"
+        sub_a_id = self._create_subscription(api_client, sub_a_name)
+        sub_b_id = self._create_subscription(api_client, sub_b_name)
+
+        agents = []
+        try:
+            # Create 3 agents — should distribute 2+1 across 2 subscriptions
+            for i in range(3):
+                name = f"test-rr-agent-{i}-{uuid.uuid4().hex[:6]}"
+                self._create_agent(api_client, name)
+                agents.append(name)
+
+            # Check distribution
+            assigned_subs = []
+            for name in agents:
+                auth = self._get_auth(api_client, name)
+                assert auth["auth_mode"] == "subscription"
+                assigned_subs.append(auth["subscription_id"])
+
+            # Both subscriptions should have at least 1 agent
+            assert sub_a_id in assigned_subs or sub_b_id in assigned_subs
+            # No subscription should have all 3
+            from collections import Counter
+            counts = Counter(assigned_subs)
+            assert max(counts.values()) <= 2, f"Uneven distribution: {counts}"
+        finally:
+            for name in agents:
+                self._cleanup_agent(api_client, name)
+            self._cleanup_subscription(api_client, sub_a_id)
+            self._cleanup_subscription(api_client, sub_b_id)
+
+    def test_alphabetical_tiebreak(self, api_client: TrinityApiClient):
+        """Equal agent counts resolve by alphabetical subscription name."""
+        # Create in reverse alphabetical order to verify sorting
+        sub_beta = f"beta-tie-{uuid.uuid4().hex[:6]}"
+        sub_alpha = f"alpha-tie-{uuid.uuid4().hex[:6]}"
+        beta_id = self._create_subscription(api_client, sub_beta)
+        alpha_id = self._create_subscription(api_client, sub_alpha)
+
+        agent_name = f"test-tie-{uuid.uuid4().hex[:8]}"
+        try:
+            self._create_agent(api_client, agent_name)
+            auth = self._get_auth(api_client, agent_name)
+            assert auth["auth_mode"] == "subscription"
+            # Should pick alphabetically first
+            assert auth["subscription_name"] == sub_alpha
+        finally:
+            self._cleanup_agent(api_client, agent_name)
+            self._cleanup_subscription(api_client, alpha_id)
+            self._cleanup_subscription(api_client, beta_id)

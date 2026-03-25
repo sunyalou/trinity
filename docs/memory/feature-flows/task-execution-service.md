@@ -1,10 +1,23 @@
 # Feature: Task Execution Service (EXEC-024)
 
 ## Overview
-Unified service that encapsulates the full task-execution lifecycle (execution record, slot management, activity tracking, agent HTTP call with retry, credential sanitization, response persistence) so all callers share one code path.
+Service that encapsulates the task-execution lifecycle (execution record, slot management, activity tracking, agent HTTP call with retry, credential sanitization, response persistence). Used by most — but not all — execution paths.
 
 ## User Story
-As the platform, I want all task execution paths (authenticated tasks, public link chat, scheduled executions) to use a single orchestration service so that every execution gets consistent tracking, slot enforcement, credential sanitization, and dashboard visibility.
+As the platform, I want task execution paths (authenticated sync tasks, public link chat, scheduled executions) to use a shared orchestration service so that these executions get consistent tracking, slot enforcement, credential sanitization, and dashboard visibility.
+
+## Coverage
+
+> **Important**: Not all execution paths use TaskExecutionService. The table below shows which do and which don't.
+
+| Path | Entry Point | Uses TaskExecutionService? | Notes |
+|------|------------|---------------------------|-------|
+| Sync parallel task | `POST /api/agents/{name}/task` (sync) | **Yes** | EXEC-024 delegation |
+| Async parallel task | `POST /api/agents/{name}/task` (async) | **No** | Inline `_execute_task_background()` in `chat.py` |
+| Public link chat | `POST /api/public/chat/{token}` | **Yes** | Full lifecycle |
+| Scheduled execution | `POST /api/internal/execute-task` | **Yes** | Background coroutine wraps service call |
+| Interactive chat | `POST /api/agents/{name}/chat` | **No** | Direct agent HTTP call with inline retry in `chat.py` |
+| Process engine | Internal | **No** | Separate `ExecutionEngine` with own status enum |
 
 ## Entry Points
 

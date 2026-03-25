@@ -202,12 +202,20 @@ Trinity implements infrastructure for "System 2" AI — Deep Agents that plan, r
 ### 7.1 Trinity MCP Server
 - **Status**: ✅ Implemented
 - **Description**: Agent orchestration via Model Context Protocol
-- **Key Features**: FastMCP with Streamable HTTP, 55 tools, API key authentication
+- **Key Features**: FastMCP with Streamable HTTP, 62 tools, API key authentication
 - **Flow**: `docs/memory/feature-flows/mcp-orchestration.md`
 
 ### 7.2 Per-User API Keys
 - **Status**: ✅ Implemented
 - **Description**: Generate, revoke, and track usage per key
+
+### 7.3 MCP Execution Query Tools (MCP-007)
+- **Status**: ✅ Implemented (2026-03-25)
+- **Requirement ID**: MCP-007
+- **GitHub Issue**: #19
+- **Description**: MCP tools for querying execution history, polling async results, and monitoring agent activity
+- **Key Features**: `list_recent_executions`, `get_execution_result`, `get_agent_activity_summary`; enables async polling pattern for agent-to-agent collaboration beyond 60s MCP timeout
+- **Spec**: `docs/requirements/MCP_EXECUTION_QUERY_TOOLS.md`
 
 ---
 
@@ -967,6 +975,17 @@ The Process Engine supports six step types:
   - `src/backend/routers/subscriptions.py` - REST API
   - `src/backend/services/subscription_service.py` - Auth mode detection
   - `src/mcp-server/src/tools/subscriptions.ts` - MCP tools
+
+### 20.3a Subscription Auto-Assign on Agent Creation (#74)
+- **Status**: ✅ Implemented (2026-03-25)
+- **GitHub Issue**: #74
+- **Extends**: SUB-002
+- **Description**: When a new agent is created, automatically assign the subscription with fewest assigned agents (round-robin). Tie-break: alphabetical by name. Falls back to platform API key if no subscriptions exist or token decryption fails. System agents (`trinity-system`) are unaffected (separate creation path).
+- **Key Features**:
+  - `get_least_used_subscription()` DB method (SQL: COUNT + ORDER BY)
+  - Auto-assign logic in `create_agent_internal()` — token injected before container creation, DB assignment after `register_agent_owner()`
+  - Graceful fallback: no subs → API key, decrypt fail → API key, exception → API key
+- **Files**: `db/subscriptions.py`, `database.py`, `services/agent_service/crud.py`
 
 ### 20.4 Subscription Auto-Switch on Rate Limit (SUB-003)
 - **Status**: ✅ Implemented (2026-03-21)

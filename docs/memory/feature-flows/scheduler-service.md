@@ -35,19 +35,19 @@ As a **platform administrator**, I want **scheduled tasks to execute exactly onc
 |                                                                    |
 |  +------------------+    +------------------+    +--------------+  |
 |  |     Backend      |    |    Scheduler     |    |    Agent     |  |
-|  |   (API only)     |    |   (singleton)    |    |  Containers  |  |
-|  |   N workers      |    |   1 replica      |    |              |  |
+|  |  (API + Task     |    |   (singleton)    |    |  Containers  |  |
+|  |   Execution)     |    |   1 replica      |    |              |  |
 |  +--------+---------+    +--------+---------+    +------+-------+  |
 |           |                       |                     ^          |
-|           |   CRUD operations     |                     |          |
+|           |   CRUD operations     | POST /api/internal/ |          |
+|           |                       | execute-task        |          |
 |           v                       v                     |          |
 |  +------------------+    +------------------+           |          |
-|  |     SQLite       |    |      Redis       |           |          |
-|  |  - Schedules     |<---|  - Locks         |           |          |
-|  |  - Executions    |    |  - Events        |           |          |
-|  +------------------+    |  - Heartbeats    |-----------+          |
-|                          +------------------+    HTTP POST         |
-|                                                  /api/task         |
+|  |     SQLite       |    |      Redis       |    Backend calls     |
+|  |  - Schedules     |<---|  - Locks         |    agent /api/task   |
+|  |  - Executions    |    |  - Events        |    via TaskExec-     |
+|  +------------------+    |  - Heartbeats    |    utionService      |
+|                          +------------------+                      |
 +------------------------------------------------------------------+
 ```
 

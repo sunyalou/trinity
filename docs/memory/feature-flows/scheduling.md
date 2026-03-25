@@ -78,18 +78,22 @@ The Agent Scheduling feature enables users to automate agent tasks by configurin
 │  │  src/scheduler/service.py (APScheduler)                          │    │
 │  │  ├── Load schedules from database on startup                     │    │
 │  │  ├── Sync schedules from database every 60 seconds               │    │
-│  │  ├── Execute: Send message to agent via HTTP                     │    │
-│  │  ├── Track activity via internal API                             │    │
+│  │  ├── Execute: POST /api/internal/execute-task (backend)           │    │
+│  │  ├── Backend handles: slot, activity, agent call, sanitize       │    │
 │  │  └── Broadcast: WebSocket events for execution status            │    │
 │  └─────────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
-                                    ▼ HTTP POST /api/task
+                                    ▼ HTTP POST /api/internal/execute-task
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                          Agent Container                                 │
+│                    Backend (TaskExecutionService)                         │
 │  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │  agent-server.py                                                 │    │
-│  │  └── Receives scheduled message, processes with Claude           │    │
+│  │  routers/internal.py → services/task_execution_service.py        │    │
+│  │  ├── Acquire capacity slot                                       │    │
+│  │  ├── Track activity (CHAT_START)                                 │    │
+│  │  ├── POST to agent /api/task with retry                          │    │
+│  │  ├── Sanitize credentials from response                          │    │
+│  │  └── Release slot, complete activity                             │    │
 │  └─────────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -176,8 +180,8 @@ emit('create-schedule', msg)     - Switch to 'schedules' tab       - Pre-fill fo
 > **Note (2026-02-11)**: Execution now handled entirely by the dedicated scheduler service (`src/scheduler/`), not the backend. Activity tracking is done via internal API endpoints.
 
 ```
-Dedicated Scheduler               Backend Internal API              Agent
--------------------               --------------------              -----
+Dedicated Scheduler               Backend                              Agent
+-------------------               -------                              -----
 APScheduler fires
 service.py:_execute_schedule()
   |
@@ -191,32 +195,31 @@ db.create_execution(
   model_used=schedule.model)
   |
   v
-Track activity start ----------> POST /api/internal/activities/track
-                                  activity_service.track_activity()
-  |                               broadcast(started)
-  v
-Get agent client
-client.task(message,
-  model=schedule.model) ----------------------------------------> POST /api/task
-  |                                                               {model: "opus"}
-  |                                                               Claude Code exec
-  v
-Parse response
-task_response.metrics
+POST /api/internal/execute-task -> routers/internal.py
+  {async_mode: true,               |
+   execution_id: "...",             v
+   timeout_seconds: ...}          Spawn background task
+  |                               (asyncio.create_task)
+  v                                |
+Receive {"status": "accepted"}     v
+  |                               TaskExecutionService.execute_task()
+  v                                 ├── Acquire capacity slot
+Poll DB every 10s                   ├── Track activity (CHAT_START)
+(SCHED-ASYNC-001)                   ├── POST to agent /api/task -------> POST /api/task
+  |                                 │                                    {model: "opus"}
+  v                                 │                                    Claude Code exec
+Status != "running"?                ├── Sanitize response
+  |                                 ├── Update execution record
+  v                                 ├── Complete activity
+Update scheduler's                  └── Release slot (finally)
+  execution record
   |
   v
-Update execution status
-db.update_execution_status()
-  |
-  v
-Track activity complete -------> POST /api/internal/activities/{id}/complete
-                                  activity_service.complete_activity()
-  |                               broadcast(completed)
-  v
+Publish WebSocket event
 Release lock
 ```
 
-**Note**: Changed from `client.chat()` to `client.task()` on 2025-01-02. The `/api/task` endpoint returns raw Claude Code `stream-json` format which is required for the [Execution Log Viewer](execution-log-viewer.md) to properly render execution transcripts.
+> **Architecture change (2026-03-09, EXEC-024)**: Scheduler no longer calls agent containers directly or tracks activities via separate internal API endpoints. Instead, it dispatches to `POST /api/internal/execute-task` with `async_mode=True`. The backend's `TaskExecutionService` handles the full lifecycle (slot management, activity tracking, agent HTTP call with retry, credential sanitization). The scheduler polls the DB for completion.
 
 **Authentication** (Updated 2026-02-15):
 Claude Code uses whatever authentication is available in the agent container:
@@ -225,17 +228,17 @@ Claude Code uses whatever authentication is available in the agent container:
 
 This enables scheduled tasks to use Claude Max subscription billing instead of API billing. The mandatory `ANTHROPIC_API_KEY` check was removed from `execute_headless_task()` in `docker/base-image/agent_server/services/claude_code.py` to support this flow.
 
-**Queue Full Handling**: If the agent's queue is full (3 pending requests), the scheduled execution fails with error "Agent queue full (N waiting), skipping scheduled execution".
+**Capacity Handling**: If the agent's slots are full (`max_parallel_tasks` reached), `TaskExecutionService` returns a failed result and the scheduler records the execution as failed.
 
 **Files:**
 - `src/scheduler/service.py:237-345` - _execute_schedule_with_lock() execution logic
-- `src/scheduler/agent_client.py:44-100` - AgentClient.task() in dedicated scheduler
+- `src/scheduler/service.py:760+` - _call_backend_execute_task() dispatches to backend
 - `src/scheduler/database.py:167-250` - create_execution(), update_execution_status()
-- `src/backend/routers/internal.py` - Internal API for activity tracking
-- `src/backend/services/activity_service.py` - Activity service
+- `src/backend/routers/internal.py:186-270` - POST /api/internal/execute-task endpoint
+- `src/backend/services/task_execution_service.py` - TaskExecutionService (slot, activity, agent call, sanitization)
 
-**Key Implementation Detail (2026-02-11):**
-The dedicated scheduler tracks activities via internal API endpoints (`POST /api/internal/activities/track` and `POST /api/internal/activities/{id}/complete`). This ensures cron-triggered executions appear on the Timeline dashboard alongside manually-triggered ones.
+**Key Implementation Detail (SCHED-ASYNC-001):**
+The scheduler uses async fire-and-forget dispatch: the HTTP call to the backend returns immediately with `{"status": "accepted"}`, and the scheduler polls the SQLite DB every `POLL_INTERVAL` seconds (default 10s) until the execution status changes from `"running"` to `"success"` or `"failed"`. This prevents TCP connection drops on long-running tasks.
 
 ### 3. Manual Trigger Flow
 

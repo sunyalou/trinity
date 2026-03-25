@@ -501,7 +501,7 @@ When `async_mode=true` is specified:
 8. **Completes activities** asynchronously
 9. **Releases slot** in `finally` block
 
-Note: Async mode does **not** use `TaskExecutionService`. It uses the inline `_execute_task_background()` function because it needs to manage its own activity IDs, collaboration tracking, and slot release timing.
+Note: Async mode on the `/api/agents/{name}/task` endpoint does **not** use `TaskExecutionService`. It uses the inline `_execute_task_background()` function because it needs to manage its own activity IDs, collaboration tracking, and slot release timing. However, async mode on `/api/internal/execute-task` (used by the scheduler) **does** use `TaskExecutionService` inside its background coroutine — see [scheduler-service.md](scheduler-service.md).
 
 ### Architecture Diagram
 
