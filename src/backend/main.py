@@ -276,6 +276,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Error starting cleanup service: {e}")
 
+    # Recover orphaned regular task executions (Issue #128)
+    try:
+        from services.cleanup_service import recover_orphaned_executions
+        task_recovery = await recover_orphaned_executions()
+        if task_recovery["recovered"] > 0:
+            print(
+                f"Task execution recovery: "
+                f"recovered={task_recovery['recovered']}, "
+                f"still_running={task_recovery['still_running']}"
+            )
+        else:
+            print("Task execution recovery: no orphaned executions found")
+    except Exception as e:
+        print(f"Error recovering task executions: {e}")
+        # Don't fail startup - recovery is important but not critical
+
     # Run process execution recovery (IT5 P0 reliability feature)
     try:
         recovery_report = await run_execution_recovery()

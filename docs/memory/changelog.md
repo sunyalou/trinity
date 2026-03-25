@@ -10,6 +10,39 @@ Fixed contradictions between feature flow documents and actual code after the 20
 - **task-execution-service.md**: Replaced "all paths" claim with execution path coverage matrix showing which callers use the service and which bypass it (notably `/api/chat` and async `/api/task`).
 - **scheduler-service.md**: Fixed architecture diagram to show scheduler → backend → agent flow (not scheduler → agent directly).
 
+### 2026-03-25 02:00:55
+
+🔧 **fix: Startup recovery for regular task executions (#128)**
+
+On backend restart, `schedule_executions` stuck in `running` status are now checked against agent containers and process registries. Orphaned executions (container down or not found in agent's process registry) are immediately marked `failed` with capacity slots released — instead of waiting 2 hours for the cleanup service timeout.
+
+- `src/backend/db/schedules.py` — Added `get_running_executions()` query
+- `src/backend/database.py` — Exposed `get_running_executions()` on `DatabaseManager`
+- `src/backend/services/cleanup_service.py` — Added `recover_orphaned_executions()` with container + HTTP registry checks
+- `src/backend/main.py` — Call recovery in lifespan handler after cleanup service start
+- `tests/unit/test_orphaned_execution_recovery.py` — 6 unit tests covering all recovery scenarios
+
+### 2026-03-25
+
+**feat: MCP Execution Query Tools — agents can poll for async results (MCP-007) (#19)**
+
+Three new MCP tools enabling agents to query execution history and poll for async task results. This closes the async agent-to-agent collaboration loop: `chat_with_agent(async=true)` returns an `execution_id`, then `get_execution_result(id)` polls until complete.
+
+- `list_recent_executions` — List recent executions for an agent across all trigger types (schedule, manual, MCP, chat) with optional status filter
+- `get_execution_result` — Get full execution details including response text, cost, and optionally the full transcript/log
+- `get_agent_activity_summary` — High-level activity summary over a time window with counts by type and state
+
+**MCP Server:**
+- `src/mcp-server/src/tools/executions.ts` — NEW: 3 execution query tools with agent-scoped access control
+- `src/mcp-server/src/tools/index.ts` — Export new tools
+- `src/mcp-server/src/server.ts` — Register 3 new tools (total: 62 tools)
+- `src/mcp-server/src/client.ts` — Added `getExecution()`, `getExecutionLog()`, `getActivityTimeline()` client methods
+- `src/mcp-server/src/types.ts` — Added `ActivityTimelineResponse`, `ActivityEntry` types; extended `ScheduleExecution` with `model_used`, `claude_session_id`, etc.
+
+**No backend changes** — all tools wrap existing REST endpoints (`GET /api/agents/{name}/executions`, `GET /api/agents/{name}/executions/{id}`, `GET /api/activities/timeline`).
+
+---
+
 ### 2026-03-23
 
 **feat: Voice Chat — real-time voice conversations with agents via Gemini Live API (VOICE-001)**

@@ -989,6 +989,23 @@ class ScheduleOperations:
             conn.commit()
             return cursor.rowcount > 0
 
+    def get_running_executions(self) -> list:
+        """Get all schedule executions currently in 'running' status.
+
+        Used by startup recovery to detect orphaned executions after a crash.
+
+        Returns:
+            List of dicts with id, agent_name, started_at, schedule_id.
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, agent_name, started_at, schedule_id
+                FROM schedule_executions
+                WHERE status = ?
+            """, (TaskExecutionStatus.RUNNING,))
+            return [dict(row) for row in cursor.fetchall()]
+
     def mark_stale_executions_failed(self, timeout_minutes: int = 30) -> int:
         """Mark running executions older than timeout as failed.
 

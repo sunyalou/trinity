@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict
 
 from database import db
+from models import TaskExecutionStatus
 from services.slot_service import get_slot_service
 
 logger = logging.getLogger(__name__)
@@ -163,3 +164,86 @@ class CleanupService:
 
 # Global service instance
 cleanup_service = CleanupService()
+
+
+async def recover_orphaned_executions() -> Dict:
+    """Recover orphaned task executions on backend startup.
+
+    Checks each 'running' schedule execution against the agent's container
+    and process registry. Executions not found on the agent are marked failed
+    and their capacity slots released.
+
+    Returns:
+        Dict with recovered, still_running, and errors counts.
+    """
+    from services.agent_client import AgentClientError, get_agent_client
+    from services.docker_service import get_agent_container
+
+    running = db.get_running_executions()
+    if not running:
+        return {"recovered": 0, "still_running": 0, "errors": 0}
+
+    slot_service = get_slot_service()
+
+    # Group by agent to minimize container/HTTP checks
+    by_agent: Dict[str, list] = {}
+    for execution in running:
+        by_agent.setdefault(execution["agent_name"], []).append(execution)
+
+    recovered = 0
+    still_running = 0
+    errors = 0
+
+    for agent_name, executions in by_agent.items():
+        # Check if container is running
+        container = get_agent_container(agent_name)
+        if not container or container.status != "running":
+            # Container down — all executions for this agent are orphaned
+            for execution in executions:
+                if await _recover_execution(execution, agent_name, slot_service):
+                    recovered += 1
+                else:
+                    errors += 1
+            continue
+
+        # Container is up — check agent's process registry
+        registry_ids: set[str] = set()
+        try:
+            client = get_agent_client(agent_name)
+            resp = await client.get("/api/executions/running", timeout=5.0)
+            if resp.status_code == 200:
+                registry_ids = {
+                    e["execution_id"] for e in resp.json().get("executions", [])
+                }
+        except AgentClientError as e:
+            logger.warning(f"[Recovery] Could not reach agent {agent_name} registry: {e}")
+
+        for execution in executions:
+            if execution["id"] in registry_ids:
+                still_running += 1
+            else:
+                if await _recover_execution(execution, agent_name, slot_service):
+                    recovered += 1
+                else:
+                    errors += 1
+
+    logger.info(
+        f"[Recovery] Task execution recovery complete: "
+        f"recovered={recovered}, still_running={still_running}, errors={errors}"
+    )
+    return {"recovered": recovered, "still_running": still_running, "errors": errors}
+
+
+async def _recover_execution(execution: Dict, agent_name: str, slot_service) -> bool:
+    """Mark a single execution as orphaned and release its slot. Returns True on success."""
+    try:
+        db.update_execution_status(
+            execution_id=execution["id"],
+            status=TaskExecutionStatus.FAILED,
+            error="Execution orphaned — recovered on backend restart",
+        )
+        await slot_service.release_slot(agent_name, execution["id"])
+        return True
+    except Exception as e:
+        logger.error(f"[Recovery] Error recovering execution {execution['id']}: {e}")
+        return False
