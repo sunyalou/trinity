@@ -163,6 +163,7 @@ Pentest finding 3.4.2: All HTTP responses were missing standard security headers
 
 ### 2026-03-26
 
+<<<<<<< HEAD
 🔒 **fix(security): Broken access control — user-level horizontal privilege escalation (#174)**
 
 Hardened 39 endpoints across 11 routers to enforce proper access control. Previously, any authenticated user could access admin-only operational data, modify other users' agents, and view cross-tenant resources. CVSS 8.5 (High).
@@ -342,6 +343,19 @@ Added pluggable channel adapter architecture for external messaging platforms (S
 - `src/backend/main.py` — Startup/shutdown hooks for Slack transport
 - `docker/backend/Dockerfile` — Added `slack_sdk[socket-mode]` dependency
 - `src/frontend/src/components/PublicLinksPanel.vue` — Handle new Connect Slack response format
+
+**fix: Git Pull never detects upstream changes on working branches (#195)**
+
+Fixed three bugs that prevented template-based agents from detecting or pulling upstream changes from `main`:
+
+1. **Status endpoint used `git fetch --dry-run`** which never updated remote refs — replaced with `git fetch origin`
+2. **All pull/status operations compared against `origin/{working_branch}`** (e.g., `origin/trinity/my-agent/abc123`) instead of `origin/main` — added `_get_pull_branch()` helper that detects `trinity/*` working branches and redirects to `main`
+3. **Manual git init destroyed remote history** via `git push --force origin main` — now uses `git fetch + git reset origin/main` to preserve common ancestry, with fallback to force push for empty repos
+
+**Files changed:**
+- `docker/base-image/agent_server/routers/git.py` — Added `_get_pull_branch()`, fixed fetch, fixed branch targeting in status/pull/sync endpoints
+- `src/backend/services/git_service.py` — Preserve remote history in `initialize_git_in_container()`
+- `tests/unit/test_git_pull_branch.py` — 9 unit tests covering branch detection and end-to-end pull behavior
 
 ---
 

@@ -1,10 +1,12 @@
 """
-Minimal conftest for unit tests that don't need backend fixtures.
-"""
+Unit test conftest — overrides the parent conftest's autouse fixtures.
 
+These tests run without a backend connection (no Docker, no API).
+"""
 import pytest
 
 
-def pytest_configure(config):
-    """Configure custom markers."""
-    config.addinivalue_line("markers", "unit: unit tests that don't need backend")
+@pytest.fixture(autouse=True)
+def cleanup_after_test():
+    """Override parent's cleanup_after_test that requires api_client."""
+    yield

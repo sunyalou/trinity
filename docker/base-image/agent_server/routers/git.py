@@ -14,6 +14,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _get_pull_branch(current_branch: str, home_dir: Path) -> str:
+    """Determine the upstream branch to pull from.
+
+    For trinity/* working branches, pull from main instead of the working
+    branch (which nobody pushes to externally). Falls back to current_branch
+    if origin/main doesn't exist.
+    """
+    if not current_branch.startswith("trinity/"):
+        return current_branch
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "origin/main"],
+        capture_output=True, text=True, cwd=str(home_dir), timeout=10
+    )
+    return "main" if result.returncode == 0 else current_branch
+
+
 @router.get("/api/git/status")
 async def get_git_status():
     """
@@ -79,17 +95,20 @@ async def get_git_status():
                     "date": parts[4]
                 }
 
-        # Check if we're ahead/behind remote
+        # Fetch to update remote refs (required for accurate ahead/behind)
         fetch_result = subprocess.run(
-            ["git", "fetch", "--dry-run"],
+            ["git", "fetch", "origin"],
             capture_output=True,
             text=True,
             cwd=str(home_dir),
             timeout=30
         )
 
+        # For trinity/* working branches, compare against origin/main
+        pull_branch = _get_pull_branch(current_branch, home_dir)
+
         ahead_behind_result = subprocess.run(
-            ["git", "rev-list", "--left-right", "--count", f"origin/{current_branch}...HEAD"],
+            ["git", "rev-list", "--left-right", "--count", f"origin/{pull_branch}...HEAD"],
             capture_output=True,
             text=True,
             cwd=str(home_dir),
@@ -185,9 +204,12 @@ async def sync_to_github(request: GitSyncRequest):
                 timeout=60
             )
 
+            # For trinity/* working branches, pull from main
+            pull_branch = _get_pull_branch(current_branch, home_dir)
+
             # Check if we're behind
             behind_result = subprocess.run(
-                ["git", "rev-list", "--count", f"HEAD..origin/{current_branch}"],
+                ["git", "rev-list", "--count", f"HEAD..origin/{pull_branch}"],
                 capture_output=True,
                 text=True,
                 cwd=str(home_dir),
@@ -218,9 +240,9 @@ async def sync_to_github(request: GitSyncRequest):
                 else:
                     stash_created = False
 
-                # Pull with rebase
+                # Pull with rebase (from upstream branch, not working branch)
                 pull_result = subprocess.run(
-                    ["git", "pull", "--rebase", "origin", current_branch],
+                    ["git", "pull", "--rebase", "origin", pull_branch],
                     capture_output=True,
                     text=True,
                     cwd=str(home_dir),
@@ -480,6 +502,9 @@ async def pull_from_github(request: GitPullRequest = GitPullRequest()):
         )
         current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "main"
 
+        # For trinity/* working branches, pull from main instead
+        pull_branch = _get_pull_branch(current_branch, home_dir)
+
         # Check for local uncommitted changes
         status_result = subprocess.run(
             ["git", "status", "--porcelain"],
@@ -494,7 +519,7 @@ async def pull_from_github(request: GitPullRequest = GitPullRequest()):
         if strategy == "force_reset":
             # Discard all local changes and reset to remote
             reset_result = subprocess.run(
-                ["git", "reset", "--hard", f"origin/{current_branch}"],
+                ["git", "reset", "--hard", f"origin/{pull_branch}"],
                 capture_output=True,
                 text=True,
                 cwd=str(home_dir),
@@ -514,7 +539,7 @@ async def pull_from_github(request: GitPullRequest = GitPullRequest()):
 
             return {
                 "success": True,
-                "message": f"Force reset to origin/{current_branch}",
+                "message": f"Force reset to origin/{pull_branch}",
                 "strategy": "force_reset",
                 "local_changes_discarded": has_local_changes
             }
@@ -540,9 +565,9 @@ async def pull_from_github(request: GitPullRequest = GitPullRequest()):
                     )
                 stash_created = "No local changes" not in stash_result.stdout
 
-            # Pull with rebase
+            # Pull with rebase (from upstream branch, not working branch)
             pull_result = subprocess.run(
-                ["git", "pull", "--rebase", "origin", current_branch],
+                ["git", "pull", "--rebase", "origin", pull_branch],
                 capture_output=True,
                 text=True,
                 cwd=str(home_dir),
@@ -578,16 +603,16 @@ async def pull_from_github(request: GitPullRequest = GitPullRequest()):
 
             return {
                 "success": True,
-                "message": f"Pulled latest changes from origin/{current_branch}{stash_message}",
+                "message": f"Pulled latest changes from origin/{pull_branch}{stash_message}",
                 "strategy": "stash_reapply",
                 "stash_created": stash_created,
                 "output": pull_result.stdout
             }
 
         else:  # "clean" strategy (default)
-            # Check if we're behind remote
+            # Check if we're behind remote (using upstream branch)
             behind_result = subprocess.run(
-                ["git", "rev-list", "--count", f"HEAD..origin/{current_branch}"],
+                ["git", "rev-list", "--count", f"HEAD..origin/{pull_branch}"],
                 capture_output=True,
                 text=True,
                 cwd=str(home_dir),
@@ -603,9 +628,9 @@ async def pull_from_github(request: GitPullRequest = GitPullRequest()):
                     "commits_behind": 0
                 }
 
-            # Try simple pull with rebase
+            # Try simple pull with rebase (from upstream branch)
             pull_result = subprocess.run(
-                ["git", "pull", "--rebase", "origin", current_branch],
+                ["git", "pull", "--rebase", "origin", pull_branch],
                 capture_output=True,
                 text=True,
                 cwd=str(home_dir),
@@ -628,7 +653,7 @@ async def pull_from_github(request: GitPullRequest = GitPullRequest()):
 
             return {
                 "success": True,
-                "message": f"Pulled {commits_behind} commit(s) from origin/{current_branch}",
+                "message": f"Pulled {commits_behind} commit(s) from origin/{pull_branch}",
                 "strategy": "clean",
                 "commits_behind": commits_behind,
                 "output": pull_result.stdout
