@@ -146,12 +146,12 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - `public.py` - Public chat endpoints
 - `paid.py` - x402 payment-gated chat (NVM-001)
 - `nevermined.py` - Nevermined payment config management
-- `slack.py` - Slack integration (OAuth, events, multi-agent channel routing) (SLACK-001/002)
+- `slack.py` - Slack integration (OAuth, events, multi-agent channel routing, per-agent channel binding) (SLACK-001/002)
 
 *Subscriptions & Skills:*
 - `subscriptions.py` - Subscription management (SUB-002)
 - `skills.py` - Skill CRUD and assignment
-- `settings.py` - Platform admin settings
+- `settings.py` - Platform admin settings (includes Slack transport management: connect/disconnect/install)
 
 *Process Engine:*
 - `processes.py` - Process definition CRUD, execution control

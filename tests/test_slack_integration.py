@@ -615,5 +615,199 @@ class TestSlackEventTypes:
         assert response.status_code == 200
 
 
+class TestSlackTransportManagement:
+    """Test Slack transport management endpoints (SLACK-002)."""
+
+    def test_transport_status_requires_auth(self):
+        """GET /api/settings/slack/status requires authentication."""
+        response = httpx.get(f"{BASE_URL}/api/settings/slack/status")
+        assert response.status_code == 401
+
+    def test_transport_connect_requires_auth(self):
+        """POST /api/settings/slack/connect requires authentication."""
+        response = httpx.post(
+            f"{BASE_URL}/api/settings/slack/connect",
+            json={"transport_mode": "socket"}
+        )
+        assert response.status_code == 401
+
+    def test_transport_disconnect_requires_auth(self):
+        """POST /api/settings/slack/disconnect requires authentication."""
+        response = httpx.post(f"{BASE_URL}/api/settings/slack/disconnect")
+        assert response.status_code == 401
+
+    def test_get_transport_status(self, auth_headers):
+        """Test getting transport status returns expected fields."""
+        response = httpx.get(
+            f"{BASE_URL}/api/settings/slack/status",
+            headers=auth_headers
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "connected" in data
+        assert "transport_mode" in data
+        assert "app_token_configured" in data
+        assert "workspaces" in data
+        assert isinstance(data["workspaces"], list)
+        assert isinstance(data["connected"], bool)
+
+    def test_transport_disconnect_and_reconnect(self, auth_headers):
+        """Test disconnect then reconnect cycle."""
+        # Get initial status
+        status = httpx.get(
+            f"{BASE_URL}/api/settings/slack/status",
+            headers=auth_headers
+        ).json()
+
+        was_connected = status["connected"]
+
+        # Disconnect
+        response = httpx.post(
+            f"{BASE_URL}/api/settings/slack/disconnect",
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["disconnected"] == True
+
+        # Verify disconnected
+        status = httpx.get(
+            f"{BASE_URL}/api/settings/slack/status",
+            headers=auth_headers
+        ).json()
+        assert status["connected"] == False
+
+        # Reconnect (only if app_token is configured)
+        if status["app_token_configured"]:
+            response = httpx.post(
+                f"{BASE_URL}/api/settings/slack/connect",
+                headers=auth_headers,
+                json={"transport_mode": "socket"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["connected"] == True
+
+            # Verify connected
+            status = httpx.get(
+                f"{BASE_URL}/api/settings/slack/status",
+                headers=auth_headers
+            ).json()
+            assert status["connected"] == True
+
+    def test_transport_connect_invalid_mode(self, auth_headers):
+        """Test connecting with invalid transport mode."""
+        response = httpx.post(
+            f"{BASE_URL}/api/settings/slack/connect",
+            headers=auth_headers,
+            json={"transport_mode": "invalid_mode"}
+        )
+        assert response.status_code == 400
+        assert "socket" in response.json().get("detail", "").lower() or "webhook" in response.json().get("detail", "").lower()
+
+    def test_transport_status_workspaces_include_agents(self, auth_headers):
+        """Test that workspace info includes agent details."""
+        response = httpx.get(
+            f"{BASE_URL}/api/settings/slack/status",
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        for ws in data["workspaces"]:
+            assert "team_id" in ws
+            assert "team_name" in ws
+            assert "agent_count" in ws
+            assert "agents" in ws
+            assert isinstance(ws["agents"], list)
+            assert ws["agent_count"] == len(ws["agents"])
+
+
+class TestSlackChannelBinding:
+    """Test per-agent Slack channel binding endpoints (SLACK-002)."""
+
+    def test_get_channel_requires_auth(self):
+        """GET /api/agents/{name}/slack/channel requires authentication."""
+        response = httpx.get(f"{BASE_URL}/api/agents/test-agent/slack/channel")
+        assert response.status_code == 401
+
+    def test_create_channel_requires_auth(self):
+        """POST /api/agents/{name}/slack/channel requires authentication."""
+        response = httpx.post(f"{BASE_URL}/api/agents/test-agent/slack/channel")
+        assert response.status_code == 401
+
+    def test_delete_channel_requires_auth(self):
+        """DELETE /api/agents/{name}/slack/channel requires authentication."""
+        response = httpx.delete(f"{BASE_URL}/api/agents/test-agent/slack/channel")
+        assert response.status_code == 401
+
+    def test_get_channel_nonexistent_agent(self, auth_headers):
+        """GET /api/agents/{name}/slack/channel returns bound=false for nonexistent agent."""
+        response = httpx.get(
+            f"{BASE_URL}/api/agents/nonexistent-agent-xyz/slack/channel",
+            headers=auth_headers
+        )
+        # Admin can access all agents, so returns 200 with bound=false
+        assert response.status_code in [200, 403]
+        if response.status_code == 200:
+            assert response.json()["bound"] == False
+
+    def test_get_channel_unbound_agent(self, auth_headers, running_agent):
+        """GET /api/agents/{name}/slack/channel returns bound=false when not bound."""
+        response = httpx.get(
+            f"{BASE_URL}/api/agents/{running_agent}/slack/channel",
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "bound" in data
+
+    def test_get_channel_response_fields(self, auth_headers, running_agent):
+        """GET /api/agents/{name}/slack/channel returns correct fields when bound."""
+        response = httpx.get(
+            f"{BASE_URL}/api/agents/{running_agent}/slack/channel",
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        if data.get("bound"):
+            assert "channel_name" in data
+            assert "channel_id" in data
+            assert "workspace_name" in data
+
+    def test_delete_channel_not_bound(self, auth_headers, running_agent):
+        """DELETE /api/agents/{name}/slack/channel returns 404 when not bound."""
+        # First check if agent is bound
+        status = httpx.get(
+            f"{BASE_URL}/api/agents/{running_agent}/slack/channel",
+            headers=auth_headers
+        ).json()
+
+        if not status.get("bound"):
+            response = httpx.delete(
+                f"{BASE_URL}/api/agents/{running_agent}/slack/channel",
+                headers=auth_headers
+            )
+            assert response.status_code == 404
+
+    def test_create_channel_no_workspace(self, auth_headers, running_agent):
+        """POST /api/agents/{name}/slack/channel returns 400 when no workspace connected."""
+        # This test only applies when no workspaces are connected
+        # If workspaces exist, the endpoint will try to create a channel
+        status = httpx.get(
+            f"{BASE_URL}/api/settings/slack/status",
+            headers=auth_headers
+        ).json()
+
+        if len(status.get("workspaces", [])) == 0:
+            response = httpx.post(
+                f"{BASE_URL}/api/agents/{running_agent}/slack/channel",
+                headers=auth_headers
+            )
+            assert response.status_code == 400
+            assert "workspace" in response.json().get("detail", "").lower()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

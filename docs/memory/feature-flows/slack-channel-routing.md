@@ -18,26 +18,45 @@ As a **platform admin**, I want Slack messages to go through the same execution 
 
 ## Entry Points
 
-- **UI**: `src/frontend/src/components/PublicLinksPanel.vue:540` — "Connect Slack" button
-- **API**: `POST /api/agents/{name}/public-links/{link_id}/slack/connect` — initiates OAuth or binds agent to channel
+- **Settings UI**: `src/frontend/src/views/Settings.vue` — Slack Integration section (transport + workspace install)
+- **Agent UI**: `src/frontend/src/components/SlackChannelPanel.vue` — per-agent channel binding in Sharing tab
+- **Legacy UI**: `src/frontend/src/components/PublicLinksPanel.vue:540` — "Connect Slack" button (per public link)
+- **API**: `POST /api/settings/slack/connect` — start Socket Mode transport
+- **API**: `POST /api/settings/slack/install` — platform-level OAuth (workspace install)
+- **API**: `POST /api/agents/{name}/slack/channel` — create channel + bind agent
 - **Transport**: `src/backend/adapters/transports/slack_socket.py` — Socket Mode receives events
-- **Transport**: `src/backend/adapters/transports/slack_webhook.py` — HTTP webhook receives events (fallback)
 
 ## Frontend Layer
 
-### Components
+### Settings Page (Platform-Level)
+- `Settings.vue` — Unified Slack section with:
+  - OAuth credentials (Client ID, Client Secret, Signing Secret) + Save
+  - Transport connection: Socket Mode status badge, App Token input, Connect button
+  - "Install to Workspace" button → triggers platform OAuth → redirects to Slack → callback stores bot token → redirects to Settings with success notification
+  - Connected workspaces list with bound agent badges
+
+### Agent Detail — Sharing Tab (Per-Agent)
+- `SlackChannelPanel.vue` — Three states:
+  - **Bound**: Shows `#channel-name`, workspace name, DM default badge, "Unbind" button
+  - **Unbound**: "Create Slack Channel" button → creates channel in Slack + binds to agent
+  - **Access denied**: Informational message for non-owner shared users
+- `SharingPanel.vue` — Renders `SlackChannelPanel` between Team Sharing and Public Links sections
+
+### Legacy: PublicLinksPanel (Per Public Link)
 - `PublicLinksPanel.vue:540-556` — `connectSlack()` method handles two response types:
   - `status: "connected"` — workspace already linked, channel created → show success notification
   - `status: "oauth_required"` — redirect to Slack OAuth URL
 
-### State Management
-- `slackConnections` ref — tracks connection status per link
-- `slackLoading` ref — loading state per link
+### API Calls (Settings)
+- `GET /api/settings/slack/status` → `{connected, transport_mode, app_token_configured, workspaces}`
+- `POST /api/settings/slack/connect` → `{connected, transport_mode}`
+- `POST /api/settings/slack/disconnect` → `{disconnected, was_connected}`
+- `POST /api/settings/slack/install` → `{oauth_url}` (browser redirect)
 
-### API Calls
-- `POST /api/agents/{name}/public-links/{link_id}/slack/connect` → `{status, channel_id, channel_name}` or `{status, oauth_url}`
-- `GET /api/agents/{name}/public-links/{link_id}/slack` → connection status
-- `DELETE /api/agents/{name}/public-links/{link_id}/slack` → disconnect
+### API Calls (Per-Agent Channel)
+- `GET /api/agents/{name}/slack/channel` → `{bound, channel_name, channel_id, workspace_name}`
+- `POST /api/agents/{name}/slack/channel` → `{status, channel_name, channel_id, workspace_name}`
+- `DELETE /api/agents/{name}/slack/channel` → `{unbound, workspace_name}`
 
 ## Backend Layer
 
@@ -190,15 +209,69 @@ Priority in `SlackAdapter.get_agent_name()`:
 **Action**: Send 31 messages in under 60 seconds
 **Expected**: 31st message gets "sending too quickly" response
 
+#### 7. Settings — Connect Socket Mode
+**Action**: Settings → Slack Integration → enter App Token → click Connect
+**Expected**: Status badge turns green "Socket Mode", backend logs show `Slack Socket Mode transport connected`
+**Verify**:
+- [ ] `GET /api/settings/slack/status` returns `{connected: true, transport_mode: "socket"}`
+- [ ] Backend log: `Slack Socket Mode transport connected`
+
+#### 8. Settings — Disconnect and Reconnect
+**Action**: Click Disconnect (via API) → verify status → click Connect again
+**Expected**: Status goes red → green, Socket Mode re-established
+**Verify**:
+- [ ] Status shows `connected: false` after disconnect
+- [ ] Status shows `connected: true` after reconnect
+- [ ] No stale socket sessions in logs
+
+#### 9. Settings — Install to Workspace (OAuth)
+**Action**: Settings → Slack Integration → click "Install to Workspace"
+**Expected**: Browser redirects to Slack OAuth → authorize → redirects back to Settings with "Workspace installed" notification
+**Verify**:
+- [ ] `slack_workspaces` table has new entry with encrypted `bot_token`
+- [ ] `GET /api/settings/slack/status` shows workspace in `workspaces` list
+- [ ] Redirect URL uses `PUBLIC_CHAT_URL` (must be configured for callback to work)
+
+#### 10. Agent Sharing — Create Slack Channel
+**Action**: Agent Detail → Sharing tab → click "Create Slack Channel"
+**Expected**: Channel `#agent-name` created in Slack workspace, panel shows bound state with channel name
+**Verify**:
+- [ ] `GET /api/agents/{name}/slack/channel` returns `{bound: true, channel_name: "agent-name"}`
+- [ ] Channel visible in Slack workspace
+- [ ] `slack_channel_agents` table has binding entry
+
+#### 11. Agent Sharing — Already Bound
+**Action**: Click "Create Slack Channel" on an agent that already has a binding
+**Expected**: Success message "Already bound to #agent-name in workspace-name"
+**Verify**:
+- [ ] No duplicate channel created
+- [ ] `POST /api/agents/{name}/slack/channel` returns `{status: "already_bound"}`
+
+#### 12. Agent Sharing — Unbind Channel
+**Action**: Click "Unbind" on a bound agent
+**Expected**: Panel switches to unbound state showing "Create Slack Channel" button
+**Verify**:
+- [ ] `GET /api/agents/{name}/slack/channel` returns `{bound: false}`
+- [ ] `slack_channel_agents` table entry removed
+- [ ] Slack channel still exists (not deleted) but agent no longer responds to @mentions in it
+
+#### 13. Agent Sharing — No Workspace Connected
+**Action**: Click "Create Slack Channel" when no workspace is installed
+**Expected**: Error message "No Slack workspace connected. Install a workspace from Settings first."
+**Verify**:
+- [ ] `POST /api/agents/{name}/slack/channel` returns 400
+
 ### Edge Cases
 - [ ] Bot invited to #general (non-agent channel) → only responds to @mentions
 - [ ] Thread started by another user (not via @mention) → bot ignores replies
 - [ ] Agent stopped while message in flight → "not available" response
 - [ ] Two users in same channel → separate sessions (per-user isolation)
+- [ ] Non-owner views Sharing tab → SlackChannelPanel shows "Only the agent owner can manage Slack channel bindings"
+- [ ] `CREDENTIAL_ENCRYPTION_KEY` mismatch → bot token decryption fails → Slack API calls fail (logged, no crash)
 
-**Last Tested**: 2026-03-23
-**Tested By**: claude + human (manual)
-**Status**: ✅ Core flow working (Socket Mode + channel routing + thread replies)
+**Last Tested**: 2026-03-26
+**Tested By**: claude + human (manual + 15 integration tests)
+**Status**: ✅ Core flow + transport management + per-agent channel binding working
 **Issues**: MCP tools bypass `--allowedTools` restriction (documented in security findings)
 
 ## Related Flows

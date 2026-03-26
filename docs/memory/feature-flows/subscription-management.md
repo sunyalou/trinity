@@ -108,8 +108,9 @@ create_agent_internal()
 | **Agent Detail: AgentHeader subscription switcher** | `GET /api/subscriptions` | Load available subscriptions for dropdown (admin-only) |
 | **Agent Detail: AgentHeader subscription switcher** | `PUT /api/subscriptions/agents/{agent_name}?subscription_name={name}` | Assign subscription from dropdown |
 | **Agent Detail: AgentHeader subscription switcher** | `DELETE /api/subscriptions/agents/{agent_name}` | Revert to API Key from dropdown |
+| **Settings Page: Claude Subscriptions** | `GET /api/subscriptions/encryption-status` | Check if CREDENTIAL_ENCRYPTION_KEY is configured (shows warning banner if not) |
 | **Settings Page: Claude Subscriptions** | `GET /api/subscriptions` | List subscriptions (Settings UI) |
-| **Settings Page: Add Subscription** | `POST /api/subscriptions` | Register via token input |
+| **Settings Page: Add Subscription** | `POST /api/subscriptions` | Register via token input (returns 503 if encryption key missing) |
 | **Settings Page: Delete Button** | `DELETE /api/subscriptions/{id}` | Delete with cascade confirmation |
 | MCP Tool: `register_subscription` | `POST /api/subscriptions` | Register new subscription |
 | MCP Tool: `list_subscriptions` | `GET /api/subscriptions` | List all subscriptions with agents |
@@ -550,7 +551,20 @@ async registerSubscription(
 }
 ```
 
-### Backend Endpoint (`src/backend/routers/subscriptions.py:40-79`)
+### Encryption Status Check (`src/backend/routers/subscriptions.py:41-48`)
+
+```python
+@router.get("/encryption-status")
+async def get_encryption_status(current_user: User = Depends(get_current_user)):
+    """Check if credential encryption is configured for subscriptions."""
+    require_admin(current_user)
+    key = os.getenv("CREDENTIAL_ENCRYPTION_KEY")
+    return {"configured": bool(key and len(key) >= 64)}
+```
+
+Frontend calls this on Settings page load. If `configured: false`, a yellow warning banner is shown and the Register button is disabled.
+
+### Backend Endpoint (`src/backend/routers/subscriptions.py:51-99`)
 
 ```python
 @router.post("", response_model=SubscriptionCredential)
@@ -562,19 +576,13 @@ async def register_subscription(
     Token must start with `sk-ant-oat01-` (Claude Code OAuth access token)."""
     require_admin(current_user)
 
+    # Early validation — returns 503 with actionable instructions if key missing
+    encryption_key = os.getenv("CREDENTIAL_ENCRYPTION_KEY")
+    if not encryption_key:
+        raise HTTPException(status_code=503, detail="...")
+
     user = db.get_user_by_username(current_user.username)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    subscription = db.create_subscription(
-        name=request.name,
-        token=request.token,
-        owner_id=user["id"],
-        subscription_type=request.subscription_type,
-        rate_limit_tier=request.rate_limit_tier,
-    )
-
-    logger.info(f"Registered subscription '{request.name}' by {current_user.username}")
+    subscription = db.create_subscription(...)
     return subscription
 ```
 

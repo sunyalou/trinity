@@ -102,6 +102,24 @@ class SlackChannelOperations:
         ws = self.get_workspace_by_team(team_id)
         return ws["bot_token"] if ws else None
 
+    def get_all_workspaces(self) -> List[dict]:
+        """Get all enabled workspaces with decrypted bot tokens."""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, team_id, team_name, bot_token, connected_by, connected_at, enabled
+                FROM slack_workspaces
+                WHERE enabled = 1
+            """)
+            rows = cursor.fetchall()
+
+        results = []
+        for row in rows:
+            ws = self._row_to_workspace(row)
+            ws["bot_token"] = self._decrypt_token(ws["bot_token"]) or ""
+            results.append(ws)
+        return results
+
     def delete_workspace(self, team_id: str) -> bool:
         """Delete a workspace and all its channel bindings."""
         with get_db_connection() as conn:

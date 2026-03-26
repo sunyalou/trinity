@@ -4,12 +4,15 @@ System settings routes for the Trinity backend.
 Provides endpoints for managing system-wide configuration like the Trinity prompt.
 Admin-only access for modification, read access for all authenticated users.
 """
+import logging
 import os
 import re
 import httpx
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from models import User
 from database import db, SystemSetting, SystemSettingUpdate
@@ -553,6 +556,190 @@ async def delete_slack_settings(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete Slack settings: {str(e)}")
+
+
+# ============================================================================
+# Slack Transport Management (Socket Mode / Webhook)
+# ============================================================================
+
+
+class SlackConnectRequest(BaseModel):
+    """Request body for connecting Slack transport."""
+    app_token: Optional[str] = None  # xapp-... for Socket Mode
+    transport_mode: Optional[str] = None  # "socket" or "webhook"
+
+
+@router.get("/slack/status")
+async def get_slack_transport_status(
+    request: Request,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get Slack transport connection status.
+
+    Returns transport mode, connection state, and workspace info.
+    Admin-only.
+    """
+    require_admin(current_user)
+
+    from services.settings_service import get_slack_app_token, get_slack_transport_mode
+
+    transport = getattr(request.app.state, 'slack_transport', None)
+    connected = transport is not None and getattr(transport, '_running', False)
+
+    app_token = get_slack_app_token()
+    transport_mode = get_slack_transport_mode()
+
+    # Get workspace info
+    workspaces_raw = db.get_all_slack_workspaces()
+    workspaces = []
+    for ws in workspaces_raw:
+        agents = db.get_slack_agents_for_workspace(ws["team_id"])
+        workspaces.append({
+            "team_id": ws["team_id"],
+            "team_name": ws["team_name"],
+            "agent_count": len(agents),
+            "agents": [a["agent_name"] for a in agents],
+        })
+
+    return {
+        "connected": connected,
+        "transport_mode": transport_mode,
+        "app_token_configured": bool(app_token),
+        "app_token_masked": mask_api_key(app_token) if app_token else None,
+        "workspaces": workspaces,
+    }
+
+
+@router.post("/slack/connect")
+async def connect_slack_transport(
+    request: Request,
+    body: SlackConnectRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Save Slack transport config and start the connection.
+
+    Saves app_token and transport_mode to DB, stops any existing
+    transport, and starts a new one. Admin-only.
+    """
+    require_admin(current_user)
+
+    # Save settings to DB
+    if body.app_token is not None:
+        db.set_setting("slack_app_token", body.app_token.strip())
+    if body.transport_mode is not None:
+        if body.transport_mode.strip() not in ("socket", "webhook"):
+            raise HTTPException(status_code=400, detail="transport_mode must be 'socket' or 'webhook'")
+        db.set_setting("slack_transport_mode", body.transport_mode.strip())
+
+    # Stop existing transport
+    existing = getattr(request.app.state, 'slack_transport', None)
+    if existing:
+        try:
+            await existing.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping existing Slack transport: {e}")
+        request.app.state.slack_transport = None
+
+    # Start new transport
+    from services.settings_service import get_slack_app_token, get_slack_transport_mode, get_slack_signing_secret
+    from adapters.slack_adapter import SlackAdapter
+    from adapters.message_router import message_router
+
+    mode = get_slack_transport_mode()
+    adapter = SlackAdapter()
+    transport = None
+
+    try:
+        if mode == "socket":
+            app_token = get_slack_app_token()
+            if not app_token:
+                raise HTTPException(status_code=400, detail="App token required for Socket Mode")
+            from adapters.transports.slack_socket import SlackSocketTransport
+            transport = SlackSocketTransport(app_token, adapter, message_router)
+            await transport.start()
+        else:
+            signing_secret = get_slack_signing_secret()
+            if not signing_secret:
+                raise HTTPException(status_code=400, detail="Signing secret required for Webhook Mode")
+            from adapters.transports.slack_webhook import SlackWebhookTransport
+            transport = SlackWebhookTransport(signing_secret, adapter, message_router)
+            await transport.start()
+            # Register webhook transport for the events endpoint
+            from routers.slack import set_webhook_transport
+            set_webhook_transport(transport)
+
+        request.app.state.slack_transport = transport
+
+        return {
+            "connected": True,
+            "transport_mode": mode,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to start Slack transport: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to connect: {str(e)}")
+
+
+@router.post("/slack/install")
+async def install_slack_workspace(
+    request: Request,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Generate Slack OAuth URL to install the app to a workspace.
+
+    Redirects user to Slack for authorization. After approval, Slack
+    redirects back to the OAuth callback which stores the bot token
+    and redirects to Settings page. Admin-only.
+    """
+    require_admin(current_user)
+
+    from services.settings_service import get_slack_client_id
+    from services.slack_service import slack_service
+
+    if not get_slack_client_id():
+        raise HTTPException(status_code=400, detail="Slack Client ID not configured. Save OAuth credentials first.")
+
+    try:
+        state = slack_service.encode_oauth_state(
+            link_id="platform",
+            agent_name="platform",
+            user_id=str(current_user.id),
+            source="platform"
+        )
+        oauth_url = slack_service.get_oauth_url(state)
+        return {"oauth_url": oauth_url}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/slack/disconnect")
+async def disconnect_slack_transport(
+    request: Request,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Stop the Slack transport. Does not delete saved credentials.
+
+    Admin-only.
+    """
+    require_admin(current_user)
+
+    transport = getattr(request.app.state, 'slack_transport', None)
+    if not transport:
+        return {"disconnected": True, "was_connected": False}
+
+    try:
+        await transport.stop()
+    except Exception as e:
+        logger.warning(f"Error stopping Slack transport: {e}")
+
+    request.app.state.slack_transport = None
+
+    return {"disconnected": True, "was_connected": True}
 
 
 # ============================================================================

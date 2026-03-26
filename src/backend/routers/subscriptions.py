@@ -10,6 +10,7 @@ subscription is assigned, ANTHROPIC_API_KEY is removed from the container.
 """
 
 import logging
+import os
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional, List
 
@@ -37,6 +38,16 @@ def require_admin(current_user: User):
 # Subscription CRUD
 # ============================================================================
 
+@router.get("/encryption-status")
+async def get_encryption_status(
+    current_user: User = Depends(get_current_user)
+):
+    """Check if credential encryption is configured for subscriptions."""
+    require_admin(current_user)
+    key = os.getenv("CREDENTIAL_ENCRYPTION_KEY")
+    return {"configured": bool(key and len(key) >= 64)}
+
+
 @router.post("", response_model=SubscriptionCredential)
 async def register_subscription(
     request: SubscriptionCredentialCreate,
@@ -52,6 +63,15 @@ async def register_subscription(
     Token must start with `sk-ant-oat01-` (Claude Code OAuth access token).
     """
     require_admin(current_user)
+
+    # Validate encryption key before attempting storage
+    encryption_key = os.getenv("CREDENTIAL_ENCRYPTION_KEY")
+    if not encryption_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Subscription registration requires the CREDENTIAL_ENCRYPTION_KEY environment variable. "
+                   "Add it to your .env file (generate with: openssl rand -hex 32) and restart the backend."
+        )
 
     try:
         # Get the user's ID

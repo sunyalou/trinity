@@ -150,8 +150,12 @@ class SlackService:
             logger.error(f"Slack OAuth exchange failed: {e}")
             return False, {"error": str(e)}
 
-    def encode_oauth_state(self, link_id: str, agent_name: str, user_id: str) -> str:
-        """Encode OAuth state as a signed token."""
+    def encode_oauth_state(self, link_id: str, agent_name: str, user_id: str, source: str = "agent") -> str:
+        """Encode OAuth state as a signed token.
+
+        Args:
+            source: "agent" (per-agent flow) or "platform" (Settings install)
+        """
         import base64
         import json
 
@@ -159,6 +163,7 @@ class SlackService:
             "link_id": link_id,
             "agent_name": agent_name,
             "user_id": user_id,
+            "source": source,
             "timestamp": int(time.time())
         }
         state_json = json.dumps(state_data, separators=(',', ':'))
@@ -451,10 +456,16 @@ class SlackService:
         self,
         agent_name: str,
         success: bool = True,
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        source: str = "agent"
     ) -> str:
         """Get the redirect URL after OAuth completion."""
         base_url = FRONTEND_URL or "http://localhost"
+        if source == "platform":
+            if success:
+                return f"{base_url}/settings?slack=installed"
+            else:
+                return f"{base_url}/settings?slack=error&reason={error or 'unknown'}"
         if success:
             return f"{base_url}/agents/{agent_name}?tab=sharing&slack=connected"
         else:

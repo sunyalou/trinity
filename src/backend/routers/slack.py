@@ -113,15 +113,16 @@ async def slack_oauth_callback(code: str = None, state: str = None, error: str =
     link_id = state_data["link_id"]
     agent_name = state_data["agent_name"]
     user_id = state_data["user_id"]
+    source = state_data.get("source", "agent")
 
     # Exchange code for token
     success, result = await slack_service.exchange_oauth_code(code)
     if not success:
         return RedirectResponse(
-            slack_service.get_oauth_callback_redirect(agent_name, success=False, error=result.get("error"))
+            slack_service.get_oauth_callback_redirect(agent_name, success=False, error=result.get("error"), source=source)
         )
 
-    # Create workspace connection + legacy connection + channel binding
+    # Create workspace connection
     try:
         team_id = result["team_id"]
         team_name = result.get("team_name")
@@ -135,6 +136,14 @@ async def slack_oauth_callback(code: str = None, state: str = None, error: str =
             connected_by=user_id
         )
 
+        # Platform install: just store workspace, no channel binding
+        if source == "platform":
+            logger.info(f"Slack workspace {team_name} installed via Settings")
+            return RedirectResponse(
+                slack_service.get_oauth_callback_redirect(agent_name, success=True, source="platform")
+            )
+
+        # Agent-level install: also create channel binding + legacy connection
         # 2. Create legacy connection (backward compat)
         try:
             db.create_slack_connection(
@@ -144,8 +153,8 @@ async def slack_oauth_callback(code: str = None, state: str = None, error: str =
                 slack_bot_token=bot_token,
                 connected_by=user_id
             )
-        except Exception:
-            pass  # May fail on existing — ok
+        except Exception as e:
+            logger.debug(f"Legacy slack connection insert skipped: {e}")
 
         # 3. Create Slack channel for this agent and bind it
         try:
@@ -174,7 +183,7 @@ async def slack_oauth_callback(code: str = None, state: str = None, error: str =
     except Exception as e:
         logger.error(f"Failed to create Slack connection: {e}")
         return RedirectResponse(
-            slack_service.get_oauth_callback_redirect(agent_name, success=False, error="database_error")
+            slack_service.get_oauth_callback_redirect(agent_name, success=False, error="database_error", source=source)
         )
 
 
@@ -243,34 +252,9 @@ async def connect_slack(
     if all_connections:
         existing_workspaces.append(all_connections)
 
-    # Also check new slack_workspaces table
-    # We need to find ANY connected workspace — for now check legacy
-    # TODO: add get_all_workspaces() method
-
-    # Check if this agent already has a channel binding
-    # by looking through all connected workspaces
-    # For now, try to find a workspace connection from any source
-    workspace = None
-    try:
-        # Try to get workspace from legacy connections
-        # (We'll iterate through all link connections)
-        import sqlite3
-        from db.connection import get_db_connection
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            # Check new workspaces table first
-            cursor.execute("SELECT team_id, bot_token, team_name FROM slack_workspaces WHERE enabled = 1 LIMIT 1")
-            row = cursor.fetchone()
-            if row:
-                workspace = {"team_id": row[0], "bot_token": row[1], "team_name": row[2]}
-            else:
-                # Fallback: check legacy table
-                cursor.execute("SELECT slack_team_id, slack_bot_token, slack_team_name FROM slack_link_connections WHERE enabled = 1 LIMIT 1")
-                row = cursor.fetchone()
-                if row:
-                    workspace = {"team_id": row[0], "bot_token": row[1], "team_name": row[2]}
-    except Exception as e:
-        logger.error(f"Error checking workspace: {e}")
+    # Find a connected workspace (bot token is decrypted automatically)
+    workspaces = db.get_all_slack_workspaces()
+    workspace = workspaces[0] if workspaces else None
 
     if workspace:
         # Workspace connected — create channel and bind agent
@@ -379,3 +363,124 @@ async def update_slack_connection(
 
     db.update_slack_connection(connection["id"], enabled=enabled)
     return {"updated": True, "enabled": enabled}
+
+
+# =========================================================================
+# Per-Agent Slack Channel Binding (SLACK-002)
+# =========================================================================
+
+
+@auth_router.get("/api/agents/{name}/slack/channel")
+async def get_agent_slack_channel(
+    name: str,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get the Slack channel binding for an agent.
+
+    Returns binding info if the agent is bound to a channel,
+    or {bound: false} if not.
+    """
+    if not db.can_user_access_agent(current_user.username, name):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    workspaces = db.get_all_slack_workspaces()
+    for ws in workspaces:
+        binding = db.get_slack_channel_for_agent(ws["team_id"], name)
+        if binding:
+            return {
+                "bound": True,
+                "channel_name": binding["slack_channel_name"],
+                "channel_id": binding["slack_channel_id"],
+                "workspace_team_id": ws["team_id"],
+                "workspace_name": ws["team_name"],
+                "is_dm_default": binding.get("is_dm_default", False),
+                "created_at": binding.get("created_at"),
+            }
+
+    return {"bound": False}
+
+
+@auth_router.post("/api/agents/{name}/slack/channel")
+async def create_agent_slack_channel(
+    name: str,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Create a Slack channel for an agent and bind it.
+
+    Requires at least one connected workspace. Creates a channel
+    named after the agent and binds it for message routing.
+    """
+    if not db.can_user_share_agent(current_user.username, name):
+        raise HTTPException(status_code=403, detail="Only owners can manage Slack channels")
+
+    # Check if already bound
+    workspaces = db.get_all_slack_workspaces()
+    if not workspaces:
+        raise HTTPException(
+            status_code=400,
+            detail="No Slack workspace connected. Install a workspace from Settings first."
+        )
+
+    workspace = workspaces[0]
+
+    # Check if agent already has a binding in this workspace
+    existing = db.get_slack_channel_for_agent(workspace["team_id"], name)
+    if existing:
+        return {
+            "status": "already_bound",
+            "channel_name": existing["slack_channel_name"],
+            "channel_id": existing["slack_channel_id"],
+            "workspace_name": workspace["team_name"],
+        }
+
+    # Create channel in Slack
+    bot_token = workspace["bot_token"]
+    if not bot_token:
+        raise HTTPException(status_code=500, detail="Workspace bot token is missing or could not be decrypted")
+
+    success, channel_id, error = await slack_service.create_channel(bot_token, name)
+    if not success:
+        raise HTTPException(status_code=400, detail=f"Failed to create Slack channel: {error}")
+
+    # Bind channel to agent
+    agents_in_workspace = db.get_slack_agents_for_workspace(workspace["team_id"])
+    is_first = len(agents_in_workspace) == 0
+
+    db.bind_slack_channel_to_agent(
+        team_id=workspace["team_id"],
+        slack_channel_id=channel_id,
+        slack_channel_name=name,
+        agent_name=name,
+        created_by=str(current_user.id),
+        is_dm_default=is_first,
+    )
+
+    logger.info(f"Agent {name} bound to Slack channel #{name} in workspace {workspace['team_name']}")
+
+    return {
+        "status": "created",
+        "channel_name": name,
+        "channel_id": channel_id,
+        "workspace_name": workspace["team_name"],
+        "is_dm_default": is_first,
+    }
+
+
+@auth_router.delete("/api/agents/{name}/slack/channel")
+async def delete_agent_slack_channel(
+    name: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Unbind an agent from its Slack channel."""
+    if not db.can_user_share_agent(current_user.username, name):
+        raise HTTPException(status_code=403, detail="Only owners can manage Slack channels")
+
+    workspaces = db.get_all_slack_workspaces()
+    for ws in workspaces:
+        if db.unbind_slack_agent(ws["team_id"], name):
+            logger.info(f"Agent {name} unbound from Slack in workspace {ws['team_name']}")
+            return {"unbound": True, "workspace_name": ws["team_name"]}
+
+    raise HTTPException(status_code=404, detail="Agent is not bound to any Slack channel")

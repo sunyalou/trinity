@@ -79,6 +79,12 @@
     <!-- Divider -->
     <div class="border-t border-gray-200 dark:border-gray-700"></div>
 
+    <!-- Slack Channel Section -->
+    <SlackChannelPanel :agent-name="agentName" />
+
+    <!-- Divider -->
+    <div class="border-t border-gray-200 dark:border-gray-700"></div>
+
     <!-- Public Links Section -->
     <PublicLinksPanel :agent-name="agentName" />
   </div>
@@ -90,6 +96,7 @@ import { useAgentsStore } from '../stores/agents'
 import { useAgentSharing } from '../composables/useAgentSharing'
 import { useNotification } from '../composables'
 import PublicLinksPanel from './PublicLinksPanel.vue'
+import SlackChannelPanel from './SlackChannelPanel.vue'
 
 const props = defineProps({
   agentName: {

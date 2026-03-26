@@ -16,6 +16,17 @@ if [ ! -f .env ]; then
     echo ""
 fi
 
+# Auto-generate CREDENTIAL_ENCRYPTION_KEY if not set
+if grep -qE '^CREDENTIAL_ENCRYPTION_KEY=$' .env 2>/dev/null || ! grep -q 'CREDENTIAL_ENCRYPTION_KEY' .env 2>/dev/null; then
+    NEW_KEY=$(openssl rand -hex 32)
+    if grep -q 'CREDENTIAL_ENCRYPTION_KEY' .env; then
+        sed -i.bak "s/^CREDENTIAL_ENCRYPTION_KEY=$/CREDENTIAL_ENCRYPTION_KEY=${NEW_KEY}/" .env && rm -f .env.bak
+    else
+        echo "CREDENTIAL_ENCRYPTION_KEY=${NEW_KEY}" >> .env
+    fi
+    echo "Auto-generated CREDENTIAL_ENCRYPTION_KEY"
+fi
+
 echo "Starting services..."
 docker compose up -d
 

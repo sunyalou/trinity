@@ -220,17 +220,33 @@
             </div>
           </div>
 
-          <!-- Slack Integration Section (SLACK-001) -->
+          <!-- Slack Integration Section (SLACK-001/002) -->
           <div class="bg-white dark:bg-gray-800 shadow dark:shadow-gray-900 rounded-lg">
             <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-              <h2 class="text-lg font-medium text-gray-900 dark:text-white">Slack Integration</h2>
-              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                Configure Slack app credentials for public agent links via Slack DMs.
-              </p>
+              <div class="flex items-center justify-between">
+                <div>
+                  <h2 class="text-lg font-medium text-gray-900 dark:text-white">Slack Integration</h2>
+                  <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                    Connect your Slack workspace to route messages to Trinity agents.
+                  </p>
+                </div>
+                <span class="flex items-center gap-2">
+                  <span
+                    class="inline-block w-2.5 h-2.5 rounded-full"
+                    :class="slackTransportStatus.connected ? 'bg-green-500' : 'bg-red-500'"
+                  ></span>
+                  <span class="text-sm" :class="slackTransportStatus.connected ? 'text-green-700 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'">
+                    {{ slackTransportStatus.connected ? (slackTransportStatus.transport_mode === 'socket' ? 'Socket Mode' : 'Webhook') : 'Disconnected' }}
+                  </span>
+                </span>
+              </div>
             </div>
 
             <div class="px-6 py-4">
               <div class="space-y-4">
+                <!-- OAuth Credentials -->
+                <h3 class="text-sm font-medium text-gray-900 dark:text-white">OAuth Credentials</h3>
+
                 <!-- Slack Client ID -->
                 <div>
                   <label for="slack-client-id" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -317,7 +333,7 @@
                   </div>
                 </div>
 
-                <!-- Save Button -->
+                <!-- Save Credentials Button -->
                 <div class="flex items-center gap-3">
                   <button
                     @click="saveSlackSettings"
@@ -328,51 +344,136 @@
                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                       <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                     </svg>
-                    Save Slack Settings
+                    Save Credentials
                   </button>
                   <span v-if="slackSaveSuccess" class="text-sm text-green-600 dark:text-green-400">
-                    ✓ Settings saved
+                    ✓ Saved
                   </span>
                 </div>
 
-                <!-- Status -->
-                <div class="mt-4 p-4 rounded-lg" :class="slackSettings.configured ? 'bg-green-50 dark:bg-green-900/20' : 'bg-yellow-50 dark:bg-yellow-900/20'">
-                  <div class="flex items-start">
-                    <svg v-if="slackSettings.configured" class="h-5 w-5 text-green-500 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                <!-- Divider -->
+                <div class="border-t border-gray-200 dark:border-gray-700 pt-4">
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white mb-3">Transport Connection</h3>
+                </div>
+
+                <!-- Transport Mode (Socket Mode only for now) -->
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Transport Mode</label>
+                  <p class="text-sm text-gray-600 dark:text-gray-400">Socket Mode <span class="text-xs text-gray-400">(outbound WebSocket, no public URL needed)</span></p>
+                </div>
+
+                <!-- App Token (for Socket Mode) -->
+                <div v-if="slackTransportMode === 'socket'">
+                  <label for="slack-app-token" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    App Token
+                  </label>
+                  <div class="mt-1 relative">
+                    <input
+                      :type="showSlackAppToken ? 'text' : 'password'"
+                      id="slack-app-token"
+                      v-model="slackAppToken"
+                      :placeholder="slackTransportStatus.app_token_configured ? slackTransportStatus.app_token_masked : 'xapp-1-...'"
+                      :disabled="connectingSlack"
+                      class="block w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                    />
+                    <button
+                      type="button"
+                      @click="showSlackAppToken = !showSlackAppToken"
+                      class="absolute inset-y-0 right-0 pr-3 flex items-center"
+                    >
+                      <svg v-if="showSlackAppToken" class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                      </svg>
+                      <svg v-else class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div v-if="slackTransportStatus.app_token_configured" class="mt-1 text-xs text-green-600 dark:text-green-400">
+                    ✓ App token configured
+                  </div>
+                  <p class="mt-1 text-xs text-gray-400">
+                    From Slack App &gt; Basic Information &gt; App-Level Tokens (scope: <code class="px-0.5 bg-gray-200 dark:bg-gray-600 rounded">connections:write</code>)
+                  </p>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="flex items-center gap-3 flex-wrap">
+                  <!-- Connect Socket Mode -->
+                  <button
+                    v-if="!slackTransportStatus.connected"
+                    @click="connectSlackTransport"
+                    :disabled="connectingSlack || (!slackTransportStatus.app_token_configured && !slackAppToken)"
+                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <svg v-if="connectingSlack" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
+                      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                     </svg>
-                    <svg v-else class="h-5 w-5 text-yellow-500 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    {{ connectingSlack ? 'Connecting...' : 'Connect' }}
+                  </button>
+                  <span v-if="slackTransportStatus.connected" class="text-sm text-green-600 dark:text-green-400">
+                    ✓ Socket Mode active
+                  </span>
+
+                  <!-- Install to Workspace (OAuth) -->
+                  <button
+                    @click="installSlackWorkspace"
+                    :disabled="installingSlackWorkspace || !slackSettings.configured"
+                    class="inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <svg v-if="installingSlackWorkspace" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
+                      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                     </svg>
-                    <div class="ml-3">
-                      <h3 class="text-sm font-medium" :class="slackSettings.configured ? 'text-green-800 dark:text-green-200' : 'text-yellow-800 dark:text-yellow-200'">
-                        {{ slackSettings.configured ? 'Slack Integration Ready' : 'Configuration Required' }}
-                      </h3>
-                      <p class="mt-1 text-sm" :class="slackSettings.configured ? 'text-green-700 dark:text-green-300' : 'text-yellow-700 dark:text-yellow-300'">
-                        <template v-if="slackSettings.configured">
-                          All credentials configured. You can now connect public links to Slack workspaces.
-                        </template>
-                        <template v-else>
-                          Enter all three credentials above to enable Slack integration.
-                          Get credentials from your <a href="https://api.slack.com/apps" target="_blank" class="underline">Slack App settings</a>.
-                        </template>
-                      </p>
+                    {{ slackTransportStatus.workspaces.length > 0 ? 'Reinstall to Workspace' : 'Install to Workspace' }}
+                  </button>
+                  <span v-if="slackInstallSuccess" class="text-sm text-green-600 dark:text-green-400">
+                    ✓ Workspace installed
+                  </span>
+                </div>
+
+                <!-- Connected Workspaces -->
+                <div v-if="slackTransportStatus.workspaces.length > 0">
+                  <p class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Connected Workspaces</p>
+                  <div class="space-y-2">
+                    <div
+                      v-for="ws in slackTransportStatus.workspaces"
+                      :key="ws.team_id"
+                      class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg"
+                    >
+                      <div>
+                        <span class="text-sm font-medium text-gray-900 dark:text-white">{{ ws.team_name }}</span>
+                        <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">{{ ws.agent_count }} agent{{ ws.agent_count !== 1 ? 's' : '' }}</span>
+                      </div>
+                      <div class="flex gap-1 flex-wrap">
+                        <span
+                          v-for="agent in ws.agents"
+                          :key="agent"
+                          class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300"
+                        >
+                          {{ agent }}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
 
                 <!-- Setup Instructions -->
-                <details class="mt-4">
+                <details class="mt-2">
                   <summary class="text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400">
                     Setup Instructions
                   </summary>
                   <div class="mt-3 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg text-sm text-gray-600 dark:text-gray-300 space-y-2">
                     <p><strong>1.</strong> Create a Slack App at <a href="https://api.slack.com/apps" target="_blank" class="text-indigo-600 dark:text-indigo-400 hover:underline">api.slack.com/apps</a></p>
-                    <p><strong>2.</strong> Copy the <strong>Client ID</strong>, <strong>Client Secret</strong>, and <strong>Signing Secret</strong> from Basic Information</p>
-                    <p><strong>3.</strong> Add Bot Token Scopes: <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">im:history</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">chat:write</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">users:read.email</code></p>
-                    <p><strong>4.</strong> Enable Event Subscriptions and subscribe to <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">message.im</code></p>
-                    <p><strong>5.</strong> Set Request URL to: <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs break-all">https://YOUR_DOMAIN/api/public/slack/events</code></p>
+                    <p><strong>2.</strong> Copy <strong>Client ID</strong>, <strong>Client Secret</strong>, and <strong>Signing Secret</strong> from Basic Information and save above</p>
+                    <p><strong>3.</strong> Add Bot Token Scopes: <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">im:history</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">im:read</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">im:write</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">chat:write</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">chat:write.customize</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">users:read.email</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">app_mentions:read</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">channels:read</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">channels:manage</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">reactions:write</code></p>
+                    <p><strong>4.</strong> Enable <strong>Socket Mode</strong> and create an App-Level Token with <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">connections:write</code> scope. Paste it above as App Token.</p>
+                    <p><strong>5.</strong> Subscribe to events: <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">message.im</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">app_mention</code></p>
                     <p><strong>6.</strong> Add OAuth Redirect URL: <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs break-all">https://YOUR_DOMAIN/api/public/slack/oauth/callback</code></p>
+                    <p><strong>7.</strong> Click <strong>Connect</strong> above to start receiving messages</p>
+                    <p><strong>8.</strong> Install the app to your workspace, then bind agents to channels from each agent's Sharing tab</p>
                   </div>
                 </details>
               </div>
@@ -390,6 +491,24 @@
 
             <div class="px-6 py-4">
               <div class="space-y-4">
+                <!-- Encryption Not Configured Warning -->
+                <div v-if="!encryptionConfigured" class="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
+                  <div class="flex">
+                    <div class="flex-shrink-0">
+                      <svg class="h-5 w-5 text-yellow-400" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+                      </svg>
+                    </div>
+                    <div class="ml-3">
+                      <h3 class="text-sm font-medium text-yellow-800 dark:text-yellow-300">Encryption not configured</h3>
+                      <p class="mt-1 text-sm text-yellow-700 dark:text-yellow-400">
+                        Subscription storage requires <code class="px-1 py-0.5 bg-yellow-100 dark:bg-yellow-900 rounded text-xs">CREDENTIAL_ENCRYPTION_KEY</code> in your <code class="px-1 py-0.5 bg-yellow-100 dark:bg-yellow-900 rounded text-xs">.env</code> file.
+                        Generate with: <code class="px-1 py-0.5 bg-yellow-100 dark:bg-yellow-900 rounded text-xs">openssl rand -hex 32</code> and restart the backend.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
                 <!-- Add Subscription Form -->
                 <div class="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-4">
                   <h3 class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">Add Subscription</h3>
@@ -460,7 +579,7 @@
                     </button>
                     <button
                       @click="addSubscription"
-                      :disabled="!newSubscription.name || !newSubscription.token.startsWith('sk-ant-oat01-') || addingSubscription"
+                      :disabled="!newSubscription.name || !newSubscription.token.startsWith('sk-ant-oat01-') || addingSubscription || !encryptionConfigured"
                       class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <svg v-if="addingSubscription" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
@@ -1180,13 +1299,14 @@ Example:
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 import { useSettingsStore } from '../stores/settings'
 import NavBar from '../components/NavBar.vue'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
 const settingsStore = useSettingsStore()
 
@@ -1259,6 +1379,21 @@ const slackSettings = ref({
   signing_secret: { configured: false, masked: null, source: null }
 })
 
+// Slack Transport state (SLACK-002)
+const slackAppToken = ref('')
+const showSlackAppToken = ref(false)
+const slackTransportMode = ref('socket')
+const slackTransportStatus = ref({
+  connected: false,
+  transport_mode: null,
+  app_token_configured: false,
+  app_token_masked: null,
+  workspaces: []
+})
+const connectingSlack = ref(false)
+const installingSlackWorkspace = ref(false)
+const slackInstallSuccess = ref(false)
+
 // SSH Access state
 const sshAccessEnabled = ref(false)
 const savingSshAccess = ref(false)
@@ -1290,6 +1425,7 @@ const loadingSubscriptions = ref(false)
 const addingSubscription = ref(false)
 const deletingSubscription = ref(null)
 const expandedSubscriptions = ref(new Set())
+const encryptionConfigured = ref(true)
 const newSubscription = ref({
   name: '',
   type: 'max',
@@ -1333,6 +1469,9 @@ async function loadSettings() {
 
     // Load Slack settings (SLACK-001)
     await loadSlackSettings()
+
+    // Load Slack transport status (SLACK-002)
+    await loadSlackTransportStatus()
   } catch (e) {
     if (e.response?.status === 403) {
       error.value = 'Access denied. Admin privileges required.'
@@ -1522,6 +1661,50 @@ async function saveSlackSettings() {
     error.value = e.response?.data?.detail || 'Failed to save Slack settings'
   } finally {
     savingSlackSettings.value = false
+  }
+}
+
+async function loadSlackTransportStatus() {
+  try {
+    const response = await axios.get('/api/settings/slack/status')
+    slackTransportStatus.value = response.data
+    if (response.data.transport_mode) {
+      slackTransportMode.value = response.data.transport_mode
+    }
+  } catch (e) {
+    console.error('Failed to load Slack transport status:', e)
+  }
+}
+
+async function connectSlackTransport() {
+  connectingSlack.value = true
+  error.value = null
+  try {
+    const payload = { transport_mode: slackTransportMode.value }
+    if (slackAppToken.value) {
+      payload.app_token = slackAppToken.value
+    }
+    await axios.post('/api/settings/slack/connect', payload)
+    slackAppToken.value = ''
+    await loadSlackTransportStatus()
+  } catch (e) {
+    error.value = e.response?.data?.detail || 'Failed to connect Slack transport'
+  } finally {
+    connectingSlack.value = false
+  }
+}
+
+async function installSlackWorkspace() {
+  installingSlackWorkspace.value = true
+  error.value = null
+  try {
+    const response = await axios.post('/api/settings/slack/install')
+    if (response.data.oauth_url) {
+      window.location.href = response.data.oauth_url
+    }
+  } catch (e) {
+    error.value = e.response?.data?.detail || 'Failed to start Slack installation'
+    installingSlackWorkspace.value = false
   }
 }
 
@@ -1900,6 +2083,17 @@ async function generateDefaultAvatars() {
 async function loadSubscriptions() {
   loadingSubscriptions.value = true
   try {
+    // Check encryption status first
+    try {
+      const statusResponse = await axios.get('/api/subscriptions/encryption-status', {
+        headers: authStore.authHeader
+      })
+      encryptionConfigured.value = statusResponse.data?.configured ?? true
+    } catch {
+      // Endpoint may not exist on older backends - assume configured
+      encryptionConfigured.value = true
+    }
+
     const response = await axios.get('/api/subscriptions', {
       headers: authStore.authHeader
     })
@@ -2065,5 +2259,15 @@ onMounted(() => {
   loadSkillsLibrarySettings()
   loadSubscriptions()
   loadAutoSwitchSetting()
+
+  // Handle Slack OAuth callback
+  if (route.query.slack === 'installed') {
+    slackInstallSuccess.value = true
+    setTimeout(() => { slackInstallSuccess.value = false }, 3000)
+    router.replace({ query: {} })
+  } else if (route.query.slack === 'error') {
+    error.value = `Slack installation failed: ${route.query.reason || 'unknown error'}`
+    router.replace({ query: {} })
+  }
 })
 </script>

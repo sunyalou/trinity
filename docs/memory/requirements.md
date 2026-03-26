@@ -586,7 +586,7 @@ Trinity implements infrastructure for "System 2" AI — Deep Agents that plan, r
 - **Flow**: `docs/memory/feature-flows/slack-integration.md`
 
 ### 15.1b-ii Channel Adapters + Multi-Agent Slack (SLACK-002)
-- **Status**: ✅ Implemented (2026-03-23)
+- **Status**: ✅ Implemented (2026-03-23, updated 2026-03-26)
 - **Requirement ID**: SLACK-002
 - **Priority**: P1
 - **Description**: Pluggable channel adapter abstraction for external messaging platforms. Extends SLACK-001 with multi-agent routing (multiple agents per workspace), @mention support in channels, thread continuity (reply-without-mention), and configurable operational limits.
@@ -598,8 +598,11 @@ Trinity implements infrastructure for "System 2" AI — Deep Agents that plan, r
   - Thread tracking: bot auto-responds to thread replies without requiring @mention
   - Configurable rate limits, execution timeout, and allowed tools via `settings_service`
   - Periodic pruning of rate-limit buckets to prevent memory leaks
+  - **Settings UI**: Socket Mode connect/disconnect, app token management, connection status badge
+  - **Platform OAuth**: "Install to Workspace" from Settings page (no agent context needed)
+  - **Per-agent channel binding**: Standalone UI in Sharing tab to create/unbind Slack channels per agent
 - **Database Tables**:
-  - `slack_workspaces` — Workspace connections (team_id, bot_token)
+  - `slack_workspaces` — Workspace connections (team_id, bot_token encrypted)
   - `slack_channel_agents` — Channel-to-agent bindings (multi-agent routing)
   - `slack_active_threads` — Active thread tracking (reply-without-mention)
 - **Configurable Settings** (via Settings UI or DB):
@@ -607,6 +610,14 @@ Trinity implements infrastructure for "System 2" AI — Deep Agents that plan, r
   - `channel_rate_limit_window` — Window in seconds (default: 60)
   - `channel_timeout_seconds` — Execution timeout (default: 120)
   - `channel_allowed_tools` — Comma-separated tool list (default: WebSearch,WebFetch)
+- **API Endpoints (new in 2026-03-26)**:
+  - `GET /api/settings/slack/status` — Transport connection state + workspace info
+  - `POST /api/settings/slack/connect` — Save app token + start Socket Mode
+  - `POST /api/settings/slack/disconnect` — Stop transport
+  - `POST /api/settings/slack/install` — Platform-level OAuth (workspace install)
+  - `GET /api/agents/{name}/slack/channel` — Channel binding status
+  - `POST /api/agents/{name}/slack/channel` — Create channel + bind agent
+  - `DELETE /api/agents/{name}/slack/channel` — Unbind agent
 - **Flow**: `docs/memory/feature-flows/slack-channel-routing.md`
 
 ### 15.1c Telegram Bot Integration (TGRAM-001)

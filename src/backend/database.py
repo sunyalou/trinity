@@ -577,6 +577,9 @@ class DatabaseManager:
         return self._schedule_ops.update_execution_status(execution_id, status, response, error,
                                                           context_used, context_max, cost, tool_calls, execution_log, claude_session_id)
 
+    def mark_execution_dispatched(self, execution_id: str) -> bool:
+        return self._schedule_ops.mark_execution_dispatched(execution_id)
+
     def get_schedule_executions(self, schedule_id: str, limit: int = 50):
         return self._schedule_ops.get_schedule_executions(schedule_id, limit)
 
@@ -1249,6 +1252,9 @@ class DatabaseManager:
 
     def get_slack_workspace_bot_token(self, team_id):
         return self._slack_channel_ops.get_workspace_bot_token(team_id)
+
+    def get_all_slack_workspaces(self):
+        return self._slack_channel_ops.get_all_workspaces()
 
     def delete_slack_workspace(self, team_id):
         return self._slack_channel_ops.delete_workspace(team_id)
