@@ -325,8 +325,8 @@ async def lifespan(app: FastAPI):
                 from adapters.transports.slack_socket import SlackSocketTransport
                 _slack_transport = SlackSocketTransport(app_token, _slack_adapter, message_router)
                 await _slack_transport.start()
-                if _slack_transport._running:
-                    print(f"Slack transport started (Socket Mode)")
+                if _slack_transport.is_connected:
+                    print("Slack transport started (Socket Mode)")
                 else:
                     print("Slack Socket Mode: connection failed (check logs). Backend continues without Slack.")
                     _slack_transport = None

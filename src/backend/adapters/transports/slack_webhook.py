@@ -33,11 +33,12 @@ class SlackWebhookTransport(ChannelTransport):
 
     async def start(self) -> None:
         """No-op: webhook transport is passive (FastAPI endpoint handles requests)."""
+        self._running = True
         logger.info("Slack webhook transport ready")
 
     async def stop(self) -> None:
         """No-op: nothing to clean up."""
-        pass
+        self._running = False
 
     async def handle_http_request(self, request: Request) -> dict:
         """

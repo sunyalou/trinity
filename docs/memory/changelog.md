@@ -1,5 +1,15 @@
 ### 2026-03-27
 
+**fix: Non-blocking Slack Socket Mode startup (SLACK-002)**
+
+Slack Socket Mode with an invalid or missing token entered an infinite retry loop, blocking the entire event loop and making the backend unresponsive. Fixed with token format validation, 10s connect timeout, and graceful fallback — backend continues without Slack if connection fails.
+
+- `src/backend/adapters/transports/slack_socket.py` — validate `xapp-` format, `auto_reconnect=False` on initial connect, `asyncio.wait_for` timeout, `is_connected` property
+- `src/backend/main.py` — check `is_connected` after start, continue without Slack on failure
+- `src/backend/routers/settings.py` — return 400 on failed connect, stop-then-start ordering
+
+---
+
 🔒 **fix(security): Rate limiting bypass via X-Forwarded-For header spoofing (#181)**
 
 `POST /api/public/chat/{TOKEN}` trusted the client-supplied `X-Forwarded-For` header unconditionally, letting an attacker rotate spoofed IPs to bypass all per-IP rate limits (pentest finding 3.2.4, CVSS 5.1).

@@ -34,6 +34,12 @@ class ChannelTransport(ABC):
     def __init__(self, adapter, router):
         self.adapter = adapter
         self.router = router
+        self._running = False
+
+    @property
+    def is_connected(self) -> bool:
+        """Whether the transport is connected and running."""
+        return self._running
 
     @abstractmethod
     async def start(self) -> None:

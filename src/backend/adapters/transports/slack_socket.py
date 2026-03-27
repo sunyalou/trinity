@@ -24,7 +24,6 @@ class SlackSocketTransport(ChannelTransport):
         super().__init__(adapter, router)
         self.app_token = app_token
         self.client = None
-        self._running = False
 
     async def start(self) -> None:
         """Connect to Slack via WebSocket.
@@ -34,7 +33,7 @@ class SlackSocketTransport(ChannelTransport):
         """
         # Validate token format before attempting connection
         if not self.app_token or not self.app_token.startswith("xapp-"):
-            logger.error(f"Invalid Slack App Token format (must start with 'xapp-'). Socket Mode not started.")
+            logger.error("Invalid Slack App Token format (must start with 'xapp-'). Socket Mode not started.")
             return
 
         try:
