@@ -21,7 +21,7 @@ from services.docker_service import (
     get_agent_container,
 )
 from services.docker_utils import volume_get
-from services.settings_service import get_anthropic_api_key, get_agent_full_capabilities, settings_service
+from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities, settings_service
 from utils.helpers import sanitize_agent_name
 
 logger = logging.getLogger(__name__)
@@ -403,6 +403,27 @@ def check_api_key_env_matches(container, agent_name: str) -> bool:
     else:
         # Should NOT have the key or oauth token
         return not has_api_key and not has_oauth_token
+
+
+def check_github_pat_env_matches(container, agent_name: str) -> bool:
+    """
+    Check if container's GITHUB_PAT env var matches the current system setting.
+    Returns True if env matches (or agent has no PAT), False if recreation needed.
+    """
+    env_list = container.attrs.get("Config", {}).get("Env", [])
+    env_dict = {e.split("=", 1)[0]: e.split("=", 1)[1] for e in env_list if "=" in e}
+
+    container_pat = env_dict.get("GITHUB_PAT")
+    if not container_pat:
+        # Agent doesn't use GITHUB_PAT — no update needed
+        return True
+
+    current_pat = get_github_pat()
+    if not current_pat:
+        # No system PAT configured — can't update, leave as-is
+        return True
+
+    return container_pat == current_pat
 
 
 def check_resource_limits_match(container, agent_name: str) -> bool:

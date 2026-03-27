@@ -19,9 +19,9 @@ from services.docker_utils import (
     volume_get, volume_create, containers_run
 )
 from services.agent_service.helpers import validate_base_image
-from services.settings_service import get_anthropic_api_key, get_agent_full_capabilities
+from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities
 from services.skill_service import skill_service
-from .helpers import check_shared_folder_mounts_match, check_api_key_env_matches, check_resource_limits_match, check_full_capabilities_match
+from .helpers import check_shared_folder_mounts_match, check_api_key_env_matches, check_github_pat_env_matches, check_resource_limits_match, check_full_capabilities_match
 from .read_only import inject_read_only_hooks
 
 logger = logging.getLogger(__name__)
@@ -191,6 +191,7 @@ async def start_agent_internal(agent_name: str) -> dict:
     needs_recreation = (
         not shared_folder_match or
         not check_api_key_env_matches(container, agent_name) or
+        not check_github_pat_env_matches(container, agent_name) or
         not check_resource_limits_match(container, agent_name) or
         not check_full_capabilities_match(container, agent_name)
     )
@@ -279,6 +280,12 @@ async def recreate_container_with_updated_config(agent_name: str, old_container,
         # No subscription, no platform key — user will auth in terminal
         env_vars.pop('ANTHROPIC_API_KEY', None)
         env_vars.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
+
+    # Update GITHUB_PAT if the container has one and a current system PAT exists
+    if env_vars.get('GITHUB_PAT'):
+        current_pat = get_github_pat()
+        if current_pat:
+            env_vars['GITHUB_PAT'] = current_pat
 
     # Get port from labels
     ssh_port = int(labels.get("trinity.ssh-port", 2222))
