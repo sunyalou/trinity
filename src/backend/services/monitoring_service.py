@@ -22,7 +22,6 @@ import httpx
 from database import db
 from db_models import (
     AgentHealthStatus,
-    HealthCheckType,
     DockerHealthCheck,
     NetworkHealthCheck,
     BusinessHealthCheck,

@@ -7,7 +7,6 @@ Part of the Process-Driven Platform feature.
 
 import json
 import logging
-from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Callable, Optional, Set
 

@@ -22,7 +22,6 @@ from db_models import (
     FleetHealthSummary,
     AgentHealthDetail,
     AgentHealthSummary,
-    HealthCheckRecord,
 )
 from services.monitoring_service import (
     perform_health_check,

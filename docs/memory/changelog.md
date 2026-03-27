@@ -11,6 +11,19 @@ Agent creation via MCP `create_agent` with `template: "github:owner/repo"` silen
 
 ### 2026-03-27
 
+**refactor: Clean up dead code — unused imports across 4 files (#126)**
+
+Removed 11 unused imports detected by Vulture (80%+ confidence). Verified via grep that none are re-exported or referenced by other modules.
+
+- `src/backend/database.py` — Removed 8 unused re-exports: `AgentOwnership`, `AgentPermissionInfo`, `EmailWhitelistEntry`, `HealthCheckRecord`, `HealthCheckType`, `McpAgentKeyCreate`, `SharedFolderConfigUpdate`, `SharedFolderInfo`
+- `src/backend/routers/monitoring.py` — Removed unused `HealthCheckRecord` import
+- `src/backend/services/monitoring_service.py` — Removed unused `HealthCheckType` import
+- `src/backend/services/process_engine/events/websocket_publisher.py` — Removed unused `asdict` import
+
+---
+
+### 2026-03-27
+
 **fix: MCP schedule deletion error on empty 204 response**
 
 The `delete_agent_schedule` MCP tool failed with a JSON parse error because the backend returns HTTP 204 (No Content) on successful deletion, but the MCP API client unconditionally called `response.json()` on all successful responses.
