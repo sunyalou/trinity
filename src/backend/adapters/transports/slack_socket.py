@@ -27,23 +27,45 @@ class SlackSocketTransport(ChannelTransport):
         self._running = False
 
     async def start(self) -> None:
-        """Connect to Slack via WebSocket."""
+        """Connect to Slack via WebSocket.
+
+        Non-blocking: if connection fails (invalid token, network error),
+        logs the error but does not block startup or crash the backend.
+        """
+        # Validate token format before attempting connection
+        if not self.app_token or not self.app_token.startswith("xapp-"):
+            logger.error(f"Invalid Slack App Token format (must start with 'xapp-'). Socket Mode not started.")
+            return
+
         try:
             from slack_sdk.socket_mode.aiohttp import SocketModeClient
             self.client = SocketModeClient(
                 app_token=self.app_token,
-                auto_reconnect_enabled=True,
+                auto_reconnect_enabled=False,  # Don't auto-reconnect on invalid token
             )
             self.client.socket_mode_request_listeners.append(self._handle_request)
-            await self.client.connect()
+
+            # Connect with timeout to prevent blocking startup
+            try:
+                await asyncio.wait_for(self.client.connect(), timeout=10)
+            except asyncio.TimeoutError:
+                logger.error("Slack Socket Mode connection timed out (10s). Check app token and network.")
+                try:
+                    await self.client.disconnect()
+                except Exception:
+                    pass
+                self.client = None
+                return
+
+            # Connection succeeded — now enable auto-reconnect for resilience
+            self.client.auto_reconnect_enabled = True
             self._running = True
             logger.info("Slack Socket Mode transport connected")
         except ImportError:
             logger.error("slack_sdk[socket-mode] not installed. Run: pip install slack_sdk[socket-mode]")
-            raise
         except Exception as e:
             logger.error(f"Failed to start Slack Socket Mode: {e}")
-            raise
+            self.client = None
 
     async def stop(self) -> None:
         """Disconnect from Slack."""
