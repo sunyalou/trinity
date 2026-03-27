@@ -7,6 +7,7 @@ The old Redis-based credential system has been removed. Credentials are now:
 2. Exported to encrypted .credentials.enc files (can be committed to git)
 3. Imported from .credentials.enc files on agent startup
 """
+import logging
 import os
 from fastapi import APIRouter, Depends, HTTPException, Request
 import httpx
@@ -22,7 +23,13 @@ from config import OAUTH_CONFIGS, BACKEND_URL
 from dependencies import get_current_user, require_admin, get_authorized_agent_by_name, get_owned_agent_by_name
 from services.docker_service import get_agent_container, get_agent_status_from_container
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api", tags=["credentials"])
+
+# Allowlist of credential file paths that can be injected into agents.
+# Blocks arbitrary file writes (pentest 3.2.6 / #183).
+ALLOWED_CREDENTIAL_PATHS = {".env", ".mcp.json", ".mcp.json.template", ".credentials.enc"}
 
 
 # ============================================================================
@@ -178,6 +185,19 @@ async def inject_credentials(
 
     if not request_body.files:
         raise HTTPException(status_code=400, detail="No files provided for injection")
+
+    # Validate all file paths against allowlist (pentest 3.2.6 / #183)
+    disallowed = [p for p in request_body.files if p not in ALLOWED_CREDENTIAL_PATHS]
+    if disallowed:
+        logger.warning(
+            f"Credential injection blocked: disallowed paths {disallowed} "
+            f"for agent {agent_name} by user {current_user.email}"
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Disallowed file path(s): {disallowed}. "
+                   f"Allowed: {sorted(ALLOWED_CREDENTIAL_PATHS)}"
+        )
 
     try:
         async with httpx.AsyncClient() as client:

@@ -1,3 +1,15 @@
+### 2026-03-27
+
+🔒 **fix(security): Credential injection file path allowlist — block arbitrary file writes (#183)**
+
+`POST /api/agents/{name}/credentials/inject` now validates all file paths against a strict allowlist before forwarding to the agent container. Previously, any authenticated owner could supply arbitrary paths (e.g., `/hello/anyfile.html`, `CLAUDE.md`, `.bashrc`), causing the agent to write attacker-controlled content to any location within `/home/developer/`. CVSS 4.8 (Medium).
+
+- **Backend** (`src/backend/routers/credentials.py`): Added `ALLOWED_CREDENTIAL_PATHS` set (`{.env, .mcp.json, .mcp.json.template, .credentials.enc}`). Rejects entire request with HTTP 400 if any path is not in the allowlist. Logs blocked attempts with user identity.
+- **Agent** (`docker/base-image/agent_server/routers/credentials.py`): Same allowlist as defense in depth. Replaces previous path-traversal-only check with strict allowlist. Simplified path handling — no more directory creation for arbitrary paths.
+- **Tests**: `tests/unit/test_credential_inject_allowlist.py` — 20 tests covering allowed paths, blocked paths (pentest reproduction, traversal, absolute, overwrite attacks), mixed paths, and edge cases.
+
+---
+
 ### 2026-03-26
 
 🔒 **fix(security): Broken access control — user-level horizontal privilege escalation (#174)**

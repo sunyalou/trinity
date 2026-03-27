@@ -431,11 +431,12 @@ async def decrypt_and_inject(request: InternalDecryptInjectRequest):
 ## Security Considerations
 
 1. **Encryption Key**: AES-256-GCM key derived from `CREDENTIAL_ENCRYPTION_KEY` env var or JWT secret. The `GET /credentials/encryption-key` endpoint is admin-only (C-001, 2026-03-09).
-2. **Agent Access Control**: All credential endpoints (`inject`, `export`, `import`, `status`) require `get_authorized_agent_by_name` dependency — users can only manage credentials for agents they own or have been shared access to (M-006, 2026-03-09).
-3. **File Permissions**: All credential files written with 600 permissions (owner read/write only)
-4. **Internal API**: `/api/internal/*` endpoints require `X-Internal-Secret` header (C-003, 2026-03-09)
-5. **No Secret Logging**: Credential values never logged, only file names and counts
-6. **Git Safety**: `.credentials.enc` is safe to commit - encrypted with platform key
+2. **Agent Access Control**: All credential endpoints (`inject`, `export`, `import`, `status`) require `get_owned_agent_by_name` dependency — only agent owners and admins can manage credentials (M-006 upgraded to owner-only in #174, 2026-03-26).
+3. **File Path Allowlist** (pentest 3.2.6 / #183, 2026-03-27): The `inject` endpoint validates all file paths against `ALLOWED_CREDENTIAL_PATHS = {.env, .mcp.json, .mcp.json.template, .credentials.enc}`. Requests with any other path are rejected with HTTP 400. Enforced at both backend and agent layers (defense in depth).
+4. **File Permissions**: All credential files written with 600 permissions (owner read/write only)
+5. **Internal API**: `/api/internal/*` endpoints require `X-Internal-Secret` header (C-003, 2026-03-09)
+6. **No Secret Logging**: Credential values never logged, only file names and counts
+7. **Git Safety**: `.credentials.enc` is safe to commit - encrypted with platform key
 
 ---
 
@@ -443,6 +444,7 @@ async def decrypt_and_inject(request: InternalDecryptInjectRequest):
 
 | Error Case | HTTP Status | Message |
 |------------|-------------|---------|
+| Disallowed file path | 400 | "Disallowed file path(s): [...]. Allowed: [...]" |
 | Agent not running | 400 | "Agent is not running" |
 | No encrypted file | 404 | "No .credentials.enc file found" |
 | Decryption failed | 400 | "Failed to decrypt credentials" |

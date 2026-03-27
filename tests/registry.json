@@ -75,6 +75,13 @@
       "added": "2026-03-26",
       "categories": ["backend", "security", "api", "access-control"],
       "description": "Tests for broken access control fix: admin-only endpoints (ops, observability, system-agent, alerts), owner-only agent endpoints (credentials, chat history, queue, skills), agent access checks (stats, queue, skills, detail, logs)"
+    },
+    {
+      "file": "unit/test_credential_inject_allowlist.py",
+      "feature": "Issue #183",
+      "added": "2026-03-27",
+      "categories": ["backend", "security", "credentials", "unit"],
+      "description": "Tests for credential injection file path allowlist: allowed paths (.env, .mcp.json, etc.), blocked paths (arbitrary HTML, path traversal, CLAUDE.md overwrite), mixed paths, edge cases (20 tests)"
     }
   ]
 }

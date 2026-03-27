@@ -225,6 +225,9 @@ async def read_credential_files(paths: str = Query(..., description="Comma-separ
     return CredentialReadResponse(files=files)
 
 
+ALLOWED_CREDENTIAL_PATHS = {".env", ".mcp.json", ".mcp.json.template", ".credentials.enc"}
+
+
 @router.post("/api/credentials/inject")
 async def inject_credential_files(request: CredentialInjectRequest):
     """
@@ -233,6 +236,8 @@ async def inject_credential_files(request: CredentialInjectRequest):
     This is the simplified credential injection that writes files directly
     without template processing. Used by the new credential system.
 
+    Only files in ALLOWED_CREDENTIAL_PATHS are accepted (pentest 3.2.6 / #183).
+
     Args:
         request: Contains files dict mapping paths to contents
     """
@@ -240,28 +245,18 @@ async def inject_credential_files(request: CredentialInjectRequest):
     files_written = []
 
     for rel_path, content in request.files.items():
-        # Security: prevent path traversal
-        clean_path = rel_path.lstrip("/")
-        if ".." in clean_path:
-            logger.warning(f"Path traversal attempt blocked: {rel_path}")
-            continue
+        # Security: allowlist check (defense in depth — backend also validates)
+        if rel_path not in ALLOWED_CREDENTIAL_PATHS:
+            logger.warning(f"Credential injection blocked: disallowed path '{rel_path}'")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Disallowed file path: '{rel_path}'. "
+                       f"Allowed: {sorted(ALLOWED_CREDENTIAL_PATHS)}"
+            )
 
-        # Handle paths starting with . (like .env, .mcp.json)
-        if clean_path.startswith(".") or rel_path.startswith("."):
-            filepath = home_dir / rel_path
-        else:
-            filepath = home_dir / clean_path
+        filepath = home_dir / rel_path
 
         try:
-            # Verify the resolved path is still under home_dir
-            resolved = filepath.resolve()
-            if not str(resolved).startswith(str(home_dir.resolve())):
-                logger.warning(f"Path resolved outside home directory: {rel_path}")
-                continue
-
-            # Create parent directories if needed
-            filepath.parent.mkdir(parents=True, exist_ok=True)
-
             # Write the file
             filepath.write_text(content)
 
