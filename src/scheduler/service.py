@@ -264,6 +264,11 @@ class SchedulerService:
           - "0 9 * * *" = Every day at 9:00 AM
           - "*/15 * * * *" = Every 15 minutes
           - "0 0 * * 0" = Every Sunday at midnight
+
+        Note: the raw day_of_week value uses Unix cron numbering (0=Sun,
+        1=Mon, …).  Callers that build an APScheduler CronTrigger must
+        first run the value through _cron_dow_to_apscheduler() to avoid
+        a one-day shift (see Issue #220).
         """
         parts = cron_expression.strip().split()
         if len(parts) != 5:
@@ -277,6 +282,43 @@ class SchedulerService:
             'day_of_week': parts[4]
         }
 
+    @staticmethod
+    def _cron_dow_to_apscheduler(dow: str) -> str:
+        """
+        Translate a Unix cron day-of-week field to APScheduler named-day format.
+
+        Unix cron:   0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat, 7=Sun
+        APScheduler: 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
+
+        Passing raw cron numeric values straight to CronTrigger shifts every
+        schedule one day forward (e.g. cron '1'=Monday fires on Tuesday).
+        Converting to APScheduler's named abbreviations (mon, tue, …) removes
+        the ambiguity because the names mean the same thing in both systems.
+
+        Handles: wildcard (*), single value (1), comma list (1,3,5),
+        range (1-5).  Step expressions (*/2) are returned unchanged — they
+        are uncommon for day-of-week and can be addressed separately.
+        """
+        _NAMES = {
+            0: 'sun', 1: 'mon', 2: 'tue', 3: 'wed',
+            4: 'thu', 5: 'fri', 6: 'sat', 7: 'sun',
+        }
+
+        def _token(t: str) -> str:
+            try:
+                return _NAMES[int(t)]
+            except (ValueError, KeyError):
+                return t  # already a named day or unrecognised — leave as-is
+
+        if dow == '*' or '/' in dow:
+            return dow
+        if ',' in dow:
+            return ','.join(_token(t) for t in dow.split(','))
+        if '-' in dow:
+            lo, hi = dow.split('-', 1)
+            return f'{_token(lo)}-{_token(hi)}'
+        return _token(dow)
+
     def _add_job(self, schedule: Schedule):
         """Add a schedule as an APScheduler job."""
         if not self.scheduler:
@@ -288,9 +330,17 @@ class SchedulerService:
             # Parse cron expression
             cron_kwargs = self._parse_cron(schedule.cron_expression)
 
+            # Build APScheduler trigger kwargs, translating day_of_week from
+            # Unix cron convention (0=Sun, 1=Mon) to APScheduler named days
+            # to prevent a one-day shift on weekday-based schedules (Issue #220).
+            trigger_kwargs = dict(cron_kwargs)
+            trigger_kwargs['day_of_week'] = self._cron_dow_to_apscheduler(
+                cron_kwargs['day_of_week']
+            )
+
             # Create timezone-aware trigger
             timezone = pytz.timezone(schedule.timezone) if schedule.timezone else pytz.UTC
-            trigger = CronTrigger(timezone=timezone, **cron_kwargs)
+            trigger = CronTrigger(timezone=timezone, **trigger_kwargs)
 
             # Add the job
             self.scheduler.add_job(
@@ -946,9 +996,17 @@ class SchedulerService:
             # Parse cron expression
             cron_kwargs = self._parse_cron(schedule.cron_expression)
 
+            # Build APScheduler trigger kwargs, translating day_of_week from
+            # Unix cron convention (0=Sun, 1=Mon) to APScheduler named days
+            # to prevent a one-day shift on weekday-based schedules (Issue #220).
+            trigger_kwargs = dict(cron_kwargs)
+            trigger_kwargs['day_of_week'] = self._cron_dow_to_apscheduler(
+                cron_kwargs['day_of_week']
+            )
+
             # Create timezone-aware trigger
             timezone = pytz.timezone(schedule.timezone) if schedule.timezone else pytz.UTC
-            trigger = CronTrigger(timezone=timezone, **cron_kwargs)
+            trigger = CronTrigger(timezone=timezone, **trigger_kwargs)
 
             # Add the job
             self.scheduler.add_job(
