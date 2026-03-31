@@ -629,6 +629,27 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
   - `DELETE /api/agents/{name}/slack/channel` — Unbind agent
 - **Flow**: `docs/memory/feature-flows/slack-channel-routing.md`
 
+### 15.1b-iii Slack Inbound File Sharing (SLACK-FILES)
+- **Status**: ✅ Implemented (2026-03-31)
+- **Requirement ID**: SLACK-FILES
+- **Priority**: P2
+- **GitHub Issue**: #222
+- **Extends**: SLACK-002
+- **Description**: Slack users can upload files that agents process. Images embedded as base64 data URIs for Claude vision. Text files (CSV, JSON, TXT, MD, etc.) copied into per-session container directories via Docker `put_archive` API.
+- **Key Features**:
+  - `FileAttachment` model + `files` field on `NormalizedMessage` (channel-agnostic)
+  - `ChannelAdapter.download_file()` — each channel implements own download auth
+  - Images (`image/*`): base64 inline in prompt (Claude vision, 5MB/image, 10MB total)
+  - Text files: copied to `/home/developer/uploads/{session_id}/`, `Read` tool added
+  - Unsupported formats (PDF, ZIP, video, audio) rejected with user-friendly message
+  - Filename sanitization (path traversal, hidden files, special chars)
+  - File upload rate limit: 5 files/min per user
+  - Per-session upload dirs cleaned after execution
+  - `files:read` OAuth scope (requires Slack app reinstall)
+  - Max 10 files per message
+- **Future**: PDF support (text extraction), agent→Slack outbound file attachments (Phase 2)
+- **Flow**: `docs/memory/feature-flows/slack-file-sharing.md`
+
 ### 15.1c Telegram Bot Integration (TGRAM-001)
 - **Status**: ⏳ Not Started
 - **Requirement ID**: TGRAM-001

@@ -364,7 +364,8 @@ class ChannelMessageRouter:
                              "video/", "audio/"}
 
         UPLOAD_BASE = "/home/developer/uploads"
-        upload_dir = f"{UPLOAD_BASE}/{session_id}"
+        safe_session_id = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id)
+        upload_dir = f"{UPLOAD_BASE}/{safe_session_id}"
         descriptions = []
         dir_created = False
         total_image_bytes = 0

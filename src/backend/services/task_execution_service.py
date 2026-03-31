@@ -186,6 +186,8 @@ class TaskExecutionService:
             )
             execution_id = execution.id if execution else None
 
+        start_time = datetime.utcnow()
+
         # Wrap entire execution flow to ensure execution status is updated on any failure.
         # This fixes issue #90 where exceptions during slot acquisition left executions
         # stuck in 'running' status with NULL session_id and duration_ms.
@@ -261,7 +263,6 @@ class TaskExecutionService:
                 "resume_session_id": resume_session_id,
             }
 
-            start_time = datetime.utcnow()
             effective_timeout = float(timeout_seconds or 600) + 10
             logger.info(f"[TaskExecService] Calling agent {agent_name} /api/task (timeout={effective_timeout}s, tools={allowed_tools}, msg_len={len(message)})")
 
@@ -340,7 +341,7 @@ class TaskExecutionService:
             )
 
         except httpx.TimeoutException:
-            elapsed = int((datetime.utcnow() - start_time).total_seconds()) if 'start_time' in dir() else 0
+            elapsed = int((datetime.utcnow() - start_time).total_seconds())
             error_msg = f"Task execution timed out after {timeout_seconds} seconds"
             logger.error(f"[TaskExecService] TIMEOUT on {agent_name} after {elapsed}s (limit={timeout_seconds}s)")
             # Don't overwrite cancelled executions
