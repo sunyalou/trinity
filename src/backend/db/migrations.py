@@ -34,6 +34,7 @@ Migration Order (as of 2026-02-28):
 27. agent_ownership_execution_timeout - TIMEOUT-001 per-agent execution timeout
 28. public_user_memory_table - MEM-001 per-user persistent memory for public link agents
 29. subscription_rate_limit_tracking - SUB-003 rate-limit event tracking for auto-switch
+30. execution_fan_out_id - FANOUT-001 fan-out operation linkage
 """
 
 
@@ -76,6 +77,7 @@ def run_all_migrations(cursor, conn):
         ("chat_messages_source_column", _migrate_chat_messages_source_column),
         ("agent_ownership_voice_prompt", _migrate_agent_ownership_voice_prompt),
         ("slack_channel_agents", _migrate_slack_channel_agents),
+        ("execution_fan_out_id", _migrate_execution_fan_out_id),
     ]
 
     for name, migration_fn in migrations:
@@ -886,5 +888,22 @@ def _migrate_slack_channel_agents(cursor, conn):
         migrated = cursor.rowcount
         if migrated > 0:
             print(f"Migrated {migrated} workspace(s) from slack_link_connections to slack_workspaces")
+
+    conn.commit()
+
+
+def _migrate_execution_fan_out_id(cursor, conn):
+    """Add fan_out_id column to schedule_executions table (FANOUT-001).
+
+    Links individual execution records back to a parent fan-out operation
+    for observability and result aggregation.
+    """
+    cursor.execute("PRAGMA table_info(schedule_executions)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    if "fan_out_id" not in columns:
+        print("Adding fan_out_id column to schedule_executions for fan-out linkage...")
+        cursor.execute("ALTER TABLE schedule_executions ADD COLUMN fan_out_id TEXT")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_executions_fan_out ON schedule_executions(fan_out_id)")
 
     conn.commit()

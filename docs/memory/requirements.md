@@ -818,17 +818,26 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
 - **Key Features**: `async=true` parameter (requires `parallel=true`), returns `execution_id` immediately, poll `GET /api/agents/{name}/executions/{id}` for results
 - **Use Case**: Orchestrator sends tasks to 5 worker agents simultaneously, collects results as they complete
 
-### 17.5 Automated Git Sync
+### 17.5 Fan-Out Parallel Self-Invocation (FANOUT-001)
+- **Status**: ✅ Implemented
+- **Description**: Dispatch N independent tasks to an agent in parallel, collect results with per-task status
+- **Key Features**: `POST /api/agents/{name}/fan-out` endpoint, `fan_out` MCP tool, configurable `max_concurrency` (1-10, default 3), overall deadline with per-task timeout, best-effort policy (partial results on failure), dedicated fan-out concurrency (doesn't starve normal operations)
+- **Use Case**: Agent self-invocation for batch predictions, parallel analysis, ensemble methods — each subtask gets a fresh context window
+- **Execution Tracking**: All subtasks follow standard `TaskExecutionService` path — visible on dashboard with full observability (cost, tokens, logs), linked by `fan_out_id`
+- **Limits**: Max 50 tasks per fan-out, max 10 concurrency, timeout 10-3600s, task IDs must be unique alphanumeric (max 64 chars)
+- **Flow**: `docs/memory/feature-flows/fan-out.md`
+
+### 17.6 Automated Git Sync
 - **Status**: ⏳ Not Started
 - **Priority**: Medium
 - **Description**: Sync modes - Manual / Scheduled / On Stop
 
-### 17.6 Automated Secret Rotation
+### 17.7 Automated Secret Rotation
 - **Status**: ⏳ Not Started
 - **Priority**: Medium
 - **Description**: Automatic credential rotation with notifications
 
-### 17.7 Kubernetes Deployment
+### 17.8 Kubernetes Deployment
 - **Status**: ⏳ Not Started
 - **Priority**: Low
 - **Description**: Helm charts, StatefulSet for agents

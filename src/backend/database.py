@@ -530,6 +530,7 @@ class DatabaseManager:
         source_mcp_key_id: str = None,
         source_mcp_key_name: str = None,
         model_used: str = None,
+        fan_out_id: str = None,
     ):
         """Create an execution record for a manual/API-triggered task (no schedule)."""
         return self._schedule_ops.create_task_execution(
@@ -540,6 +541,7 @@ class DatabaseManager:
             source_mcp_key_id=source_mcp_key_id,
             source_mcp_key_name=source_mcp_key_name,
             model_used=model_used,
+            fan_out_id=fan_out_id,
         )
 
     def create_schedule_execution(

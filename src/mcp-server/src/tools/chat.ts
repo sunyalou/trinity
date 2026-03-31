@@ -344,5 +344,116 @@ export function createChatTools(client: TrinityClient, requireApiKey: boolean) {
         return logs;
       },
     },
+
+    // ========================================================================
+    // fan_out - Parallel task dispatch and result collection (FANOUT-001)
+    // ========================================================================
+    fanOut: {
+      name: "fan_out",
+      description:
+        "Fan out N independent tasks to an agent in parallel and collect all results. " +
+        "Each task runs as a separate stateless execution with its own fresh context window. " +
+        "Results are collected and returned together with per-task status. " +
+        "All subtask executions are tracked on the dashboard with full observability. " +
+        "\n\n**Use cases:** batch predictions, parallel analysis, ensemble methods, " +
+        "any workload that is embarrassingly parallel. " +
+        "\n\n**Concurrency:** Controlled by max_concurrency (default 3, max 10). " +
+        "Tasks beyond the limit queue internally until a slot frees up. " +
+        "\n\n**Timeout:** Overall deadline for the entire fan-out. Tasks still running " +
+        "when the deadline hits are marked as failed with timeout error.",
+      parameters: z.object({
+        agent_name: z
+          .string()
+          .describe("The name of the agent to fan out tasks to (typically yourself)"),
+        tasks: z
+          .array(
+            z.object({
+              id: z.string().describe("Unique task identifier (alphanumeric, hyphens, underscores, max 64 chars)"),
+              message: z.string().describe("The task message/prompt to execute"),
+            })
+          )
+          .min(1)
+          .max(50)
+          .describe("Array of tasks to execute in parallel (1-50 tasks)"),
+        timeout_seconds: z
+          .number()
+          .optional()
+          .default(600)
+          .describe("Overall deadline in seconds for the entire fan-out (default: 600, max: 3600)"),
+        max_concurrency: z
+          .number()
+          .optional()
+          .default(3)
+          .describe("Maximum number of tasks to run simultaneously (default: 3, max: 10)"),
+        model: z
+          .string()
+          .optional()
+          .describe("Model override for all subtasks (sonnet, opus, haiku)"),
+        system_prompt: z
+          .string()
+          .optional()
+          .describe("System prompt to append for all subtasks"),
+        allowed_tools: z
+          .array(z.string())
+          .optional()
+          .describe("Restrict which tools subtasks can use"),
+      }),
+      execute: async (
+        {
+          agent_name,
+          tasks,
+          timeout_seconds,
+          max_concurrency,
+          model,
+          system_prompt,
+          allowed_tools,
+        }: {
+          agent_name: string;
+          tasks: Array<{ id: string; message: string }>;
+          timeout_seconds?: number;
+          max_concurrency?: number;
+          model?: string;
+          system_prompt?: string;
+          allowed_tools?: string[];
+        },
+        context: any
+      ) => {
+        const authContext = requireApiKey ? context?.session : undefined;
+        const apiClient = getClient(authContext);
+
+        const accessCheck = await checkAgentAccess(apiClient, authContext, agent_name);
+        if (!accessCheck.allowed) {
+          console.log(`[Access Denied] ${authContext?.agentName || authContext?.userId || "unknown"} -> ${agent_name}: ${accessCheck.reason}`);
+          return JSON.stringify({
+            error: "Access denied",
+            reason: accessCheck.reason,
+          }, null, 2);
+        }
+
+        const sourceAgent = authContext?.scope === "agent" ? authContext.agentName : undefined;
+        const mcpKeyInfo = authContext ? {
+          keyId: authContext.keyId,
+          keyName: authContext.keyName,
+        } : undefined;
+
+        console.log(`[Fan-Out] ${sourceAgent || "user"} -> ${agent_name}: ${tasks.length} tasks (concurrency=${max_concurrency || 3})`);
+
+        const response = await apiClient.fanOut(
+          agent_name,
+          tasks,
+          {
+            timeout_seconds,
+            max_concurrency,
+            model,
+            system_prompt,
+            allowed_tools,
+          },
+          sourceAgent,
+          mcpKeyInfo
+        );
+
+        return JSON.stringify(response, null, 2);
+      },
+    },
   };
 }

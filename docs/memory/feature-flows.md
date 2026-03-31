@@ -11,6 +11,7 @@
 
 | Date | ID | Feature | Flow |
 |------|-----|---------|------|
+| 2026-03-30 | FANOUT-001 | Fan-out parallel task dispatch and result collection | [fan-out.md](feature-flows/fan-out.md) |
 | 2026-03-27 | #182 | Subscription BOLA fix — restrict assign/clear to owner/admin via `can_user_share_agent` | [subscription-management.md](feature-flows/subscription-management.md) |
 | 2026-03-27 | SEC-179 | SSRF prevention — skills library URL validation against github.com allowlist | [skills-library-sync.md](feature-flows/skills-library-sync.md) |
 | 2026-03-27 | #137 | Fix cleanup service: SQLite datetime format mismatch, skipped terminal state, empty session ID | [cleanup-service.md](feature-flows/cleanup-service.md) |
@@ -100,6 +101,7 @@
 | Parallel Headless Execution | [parallel-headless-execution.md](feature-flows/parallel-headless-execution.md) | Stateless parallel task execution via POST /task |
 | Parallel Capacity | [parallel-capacity.md](feature-flows/parallel-capacity.md) | Per-agent parallel execution slot tracking |
 | Task Execution Service | [task-execution-service.md](feature-flows/task-execution-service.md) | Unified execution lifecycle for all task callers (EXEC-024) |
+| Fan-Out | [fan-out.md](feature-flows/fan-out.md) | Parallel task dispatch and result collection via semaphore (FANOUT-001) |
 
 ### Dashboard & Monitoring
 

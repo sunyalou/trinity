@@ -137,6 +137,8 @@ class ExecutionSummary(BaseModel):
     claude_session_id: Optional[str] = None
     # Model selection (small) - MODEL-001
     model_used: Optional[str] = None
+    # Fan-out linkage (small) - FANOUT-001
+    fan_out_id: Optional[str] = None
 
     # EXCLUDED (large fields - fetch via /executions/{id}):
     # - response: Optional[str]      # Full response text
@@ -180,6 +182,8 @@ class ExecutionResponse(BaseModel):
     claude_session_id: Optional[str] = None
     # Model selection - MODEL-001
     model_used: Optional[str] = None
+    # Fan-out linkage - FANOUT-001
+    fan_out_id: Optional[str] = None
 
     class Config:
         from_attributes = True

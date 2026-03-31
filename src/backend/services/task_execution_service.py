@@ -131,7 +131,7 @@ class TaskExecutionService:
         self,
         agent_name: str,
         message: str,
-        triggered_by: str,                      # "manual"|"public"|"schedule"|"agent"|"mcp"
+        triggered_by: str,                      # "manual"|"public"|"schedule"|"agent"|"mcp"|"fan_out"
         source_user_id: Optional[int] = None,
         source_user_email: Optional[str] = None,
         source_agent_name: Optional[str] = None,
@@ -143,6 +143,7 @@ class TaskExecutionService:
         allowed_tools: Optional[list] = None,
         system_prompt: Optional[str] = None,
         execution_id: Optional[str] = None,
+        fan_out_id: Optional[str] = None,
     ) -> TaskExecutionResult:
         """
         Execute a task on an agent container with full lifecycle management.
@@ -183,6 +184,7 @@ class TaskExecutionService:
                 source_mcp_key_id=source_mcp_key_id,
                 source_mcp_key_name=source_mcp_key_name,
                 model_used=model,
+                fan_out_id=fan_out_id,
             )
             execution_id = execution.id if execution else None
 
