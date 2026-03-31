@@ -166,6 +166,8 @@ class ScheduleExecution(BaseModel):
     claude_session_id: Optional[str] = None    # Claude Code session ID for --resume
     # Model selection (MODEL-001)
     model_used: Optional[str] = None           # Model used for this execution
+    # Fan-out linkage (FANOUT-001)
+    fan_out_id: Optional[str] = None           # Parent fan-out operation ID
 
 
 # =========================================================================

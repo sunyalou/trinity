@@ -598,6 +598,119 @@ export class TrinityClient {
   }
 
   // ============================================================================
+  // Fan-Out (FANOUT-001)
+  // ============================================================================
+
+  /**
+   * Fan out N independent tasks to an agent in parallel and collect results.
+   *
+   * Each subtask follows the standard execution path (visible on dashboard).
+   * Results are collected with per-task status and returned as a single response.
+   */
+  async fanOut(
+    name: string,
+    tasks: Array<{ id: string; message: string }>,
+    options?: {
+      agent?: string;
+      timeout_seconds?: number;
+      max_concurrency?: number;
+      policy?: string;
+      model?: string;
+      system_prompt?: string;
+      allowed_tools?: string[];
+    },
+    sourceAgent?: string,
+    mcpKeyInfo?: { keyId?: string; keyName?: string }
+  ): Promise<{
+    fan_out_id: string;
+    status: string;
+    total: number;
+    completed: number;
+    failed: number;
+    results: Array<{
+      id: string;
+      status: string;
+      response?: string;
+      error?: string;
+      error_code?: string;
+      execution_id?: string;
+      cost?: number;
+      context_used?: number;
+      duration_ms?: number;
+    }>;
+  }> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...(this.token && { Authorization: `Bearer ${this.token}` }),
+      "X-Via-MCP": "true",
+    };
+
+    if (sourceAgent) {
+      headers["X-Source-Agent"] = sourceAgent;
+    }
+    if (mcpKeyInfo?.keyId) {
+      headers["X-MCP-Key-ID"] = mcpKeyInfo.keyId;
+    }
+    if (mcpKeyInfo?.keyName) {
+      headers["X-MCP-Key-Name"] = mcpKeyInfo.keyName;
+    }
+
+    const body = {
+      tasks,
+      agent: options?.agent || "self",
+      timeout_seconds: options?.timeout_seconds || 600,
+      max_concurrency: options?.max_concurrency || 3,
+      policy: options?.policy || "best-effort",
+      model: options?.model,
+      system_prompt: options?.system_prompt,
+      allowed_tools: options?.allowed_tools,
+    };
+
+    // Overall timeout: the fan-out timeout + buffer for HTTP overhead
+    const timeout = (options?.timeout_seconds || 600) + 30;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout * 1000);
+
+    try {
+      const response = await fetch(
+        `${this.baseUrl}/api/agents/${encodeURIComponent(name)}/fan-out`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`API error (${response.status}): ${error}`);
+      }
+
+      return (await response.json()) as {
+        fan_out_id: string;
+        status: string;
+        total: number;
+        completed: number;
+        failed: number;
+        results: Array<{
+          id: string;
+          status: string;
+          response?: string;
+          error?: string;
+          error_code?: string;
+          execution_id?: string;
+          cost?: number;
+          context_used?: number;
+          duration_ms?: number;
+        }>;
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  // ============================================================================
   // Templates
   // ============================================================================
 

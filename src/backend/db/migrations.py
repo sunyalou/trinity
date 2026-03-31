@@ -34,6 +34,7 @@ Migration Order (as of 2026-02-28):
 27. agent_ownership_execution_timeout - TIMEOUT-001 per-agent execution timeout
 28. public_user_memory_table - MEM-001 per-user persistent memory for public link agents
 29. subscription_rate_limit_tracking - SUB-003 rate-limit event tracking for auto-switch
+30. execution_fan_out_id - FANOUT-001 fan-out operation linkage
 """
 
 
@@ -76,6 +77,8 @@ def run_all_migrations(cursor, conn):
         ("chat_messages_source_column", _migrate_chat_messages_source_column),
         ("agent_ownership_voice_prompt", _migrate_agent_ownership_voice_prompt),
         ("slack_channel_agents", _migrate_slack_channel_agents),
+        ("execution_fan_out_id", _migrate_execution_fan_out_id),
+        ("telegram_bindings", _migrate_telegram_bindings),
     ]
 
     for name, migration_fn in migrations:
@@ -886,5 +889,72 @@ def _migrate_slack_channel_agents(cursor, conn):
         migrated = cursor.rowcount
         if migrated > 0:
             print(f"Migrated {migrated} workspace(s) from slack_link_connections to slack_workspaces")
+
+    conn.commit()
+
+
+def _migrate_execution_fan_out_id(cursor, conn):
+    """Add fan_out_id column to schedule_executions table (FANOUT-001).
+
+    Links individual execution records back to a parent fan-out operation
+    for observability and result aggregation.
+    """
+    cursor.execute("PRAGMA table_info(schedule_executions)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    if "fan_out_id" not in columns:
+        print("Adding fan_out_id column to schedule_executions for fan-out linkage...")
+        cursor.execute("ALTER TABLE schedule_executions ADD COLUMN fan_out_id TEXT")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_executions_fan_out ON schedule_executions(fan_out_id)")
+
+    conn.commit()
+
+
+def _migrate_telegram_bindings(cursor, conn):
+    """Create Telegram bot binding and chat link tables (TELEGRAM-001)."""
+
+    # 1. telegram_bindings — one bot per agent
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS telegram_bindings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_name TEXT NOT NULL UNIQUE,
+            bot_token_encrypted TEXT NOT NULL,
+            bot_username TEXT,
+            bot_id TEXT UNIQUE,
+            webhook_secret TEXT NOT NULL,
+            webhook_url TEXT,
+            telegram_secret_token TEXT,
+            last_update_id INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_bindings_agent ON telegram_bindings(agent_name)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_bindings_bot_id ON telegram_bindings(bot_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_bindings_webhook ON telegram_bindings(webhook_secret)"
+    )
+
+    # 2. telegram_chat_links — tracks Telegram users per bot
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS telegram_chat_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            binding_id INTEGER NOT NULL REFERENCES telegram_bindings(id),
+            telegram_user_id TEXT NOT NULL,
+            telegram_username TEXT,
+            session_id TEXT,
+            message_count INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            last_active TEXT,
+            UNIQUE(binding_id, telegram_user_id)
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_chat_links_binding ON telegram_chat_links(binding_id)"
+    )
 
     conn.commit()

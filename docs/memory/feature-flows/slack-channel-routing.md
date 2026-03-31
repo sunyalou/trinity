@@ -1,12 +1,13 @@
 # Channel Adapter Message Routing (SLACK-002)
 
-> **Status**: Complete
+> **Status**: Complete (updated 2026-03-31 — router generalized for multi-channel)
 > **Created**: 2026-03-23
 > **Extends**: SLACK-001
+> **See also**: [telegram-integration.md](telegram-integration.md) — TGRAM-001 (second adapter implementation)
 
 ## Overview
 
-Pluggable channel adapter abstraction for external messaging platforms. Any incoming message follows the same pipeline: Transport → Adapter → Router → Agent → Response. Single Slack App supports multiple agents, each with a dedicated channel. Designed for future Telegram, Discord, etc.
+Pluggable channel adapter abstraction for external messaging platforms. Any incoming message follows the same pipeline: Transport → Adapter → Router → Agent → Response. Single Slack App supports multiple agents, each with a dedicated channel. Telegram bots follow the same pipeline with `TelegramAdapter`.
 
 ## User Story
 
@@ -74,9 +75,9 @@ ChannelAdapter.parse_message(raw_event)
        ▼
 ChannelMessageRouter.handle_message(adapter, message)
        │
-       ├─ 1. adapter.get_agent_name(message)     → resolve agent
-       ├─ 2. adapter.get_bot_token(team_id)       → credentials
-       ├─ 3. _check_rate_limit(key)               → sliding window
+       ├─ 1. adapter.get_agent_name(message)       → resolve agent
+       ├─ 2. adapter.get_bot_token(message)        → credentials
+       ├─ 3. _check_rate_limit(adapter.get_rate_key) → sliding window
        ├─ 4. get_agent_container(agent_name)       → verify running
        ├─ 5. adapter.handle_verification(message)  → sender auth
        ├─ 6. db.get_or_create_public_chat_session  → session
@@ -168,7 +169,9 @@ Priority in `SlackAdapter.get_agent_name()`:
 - Session identifiers: `{team_id}:{user_id}:{channel_id}` — no PII
 
 ### Audit Trail
-- All executions recorded with `triggered_by="slack"` and `source_user_email="slack:{team}:{user}"`
+- All executions recorded with `triggered_by=adapter.channel_type` and `source_user_email=adapter.get_source_identifier(message)`
+- Slack: `triggered_by="slack"`, `source="slack:{team}:{user}"`
+- Telegram: `triggered_by="telegram"`, `source="telegram:{bot_id}:{user_id}"`
 - Visible in Tasks tab and Dashboard timeline
 
 ## Testing
@@ -277,6 +280,7 @@ Priority in `SlackAdapter.get_agent_name()`:
 ## Related Flows
 
 - [slack-integration.md](slack-integration.md) — SLACK-001: Original Slack DM integration
+- [telegram-integration.md](telegram-integration.md) — TGRAM-001: Telegram Bot Integration (second adapter)
 - [task-execution-service.md](task-execution-service.md) — EXEC-024: Unified execution lifecycle
 - [public-agent-links.md](public-agent-links.md) — Public chat session persistence
 

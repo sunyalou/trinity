@@ -189,6 +189,7 @@ export async function createServer(config: ServerConfig = {}) {
   // Register chat tools with auth context for access control
   const chatTools = createChatTools(client, requireApiKey);
   server.addTool(chatTools.chatWithAgent);
+  server.addTool(chatTools.fanOut);
   server.addTool(chatTools.getChatHistory);
   server.addTool(chatTools.getAgentLogs);
 

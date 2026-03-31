@@ -651,32 +651,41 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
 - **Flow**: `docs/memory/feature-flows/slack-file-sharing.md`
 
 ### 15.1c Telegram Bot Integration (TGRAM-001)
-- **Status**: ⏳ Not Started
+- **Status**: 🚧 In Progress (2026-03-31)
 - **Requirement ID**: TGRAM-001
 - **Priority**: P2
-- **Description**: Per-agent Telegram bot integration. Each agent gets its own Telegram bot (via @BotFather), enabling mobile-first chat and notifications.
+- **Description**: Per-agent Telegram bot integration. Each agent gets its own Telegram bot (1:1 via @BotFather), shareable via `t.me/BotUsername` links. Reuses the `ChannelAdapter` abstraction proven by SLACK-002.
 - **Key Features**:
-  - Per-agent bots (one bot per agent, token in `.env`)
-  - Bidirectional chat (users message bot → agent responds)
-  - Polling mode (dev) and webhook mode (production)
-  - Reuses CRED-002 credential injection system
-  - Reuses `public_chat_sessions` for conversation context
-  - `/start` and `/help` command handlers
+  - Per-agent bots (one bot per agent, token encrypted via AES-256-GCM)
+  - Bidirectional text chat (users message bot → agent responds via HTML formatting)
+  - Photo and document support (download, text extraction for plain text files)
+  - Webhook mode (production) — returns 200 immediately, processes async
+  - Webhook reconciliation on backend startup (re-registers all active bots)
+  - Bot commands: `/start`, `/help`, `/reset` (clear conversation)
+  - Message splitting at 4096 char limit (paragraph boundaries)
+  - Telegram API 429 retry with `retry_after` backoff
+  - No new Python dependencies (httpx only)
+  - Router generalization: `ChannelMessageRouter` now uses adapter methods instead of Slack-specific hardcodings
 - **Database Tables**:
-  - `telegram_bindings` - Maps bots to agents (bot_id, bot_username, webhook_secret)
-  - `telegram_chat_links` - Maps Telegram users to sessions
+  - `telegram_bindings` — Maps bots to agents (bot_id UNIQUE, bot_username, webhook_secret, telegram_secret_token, encrypted bot token)
+  - `telegram_chat_links` — Maps Telegram users to sessions (binding_id, telegram_user_id, message_count)
 - **API Endpoints**:
-  - `POST /api/telegram/webhook/{webhook_secret}` - Receive Telegram updates
-  - `GET /api/agents/{name}/telegram` - Bot status
-  - `POST /api/agents/{name}/telegram/register` - Register bot
-  - `DELETE /api/agents/{name}/telegram` - Unregister bot
-  - `POST /api/agents/{name}/telegram/test` - Test message
-- **Dependency**: `aiogram>=3.0.0` (async Telegram Bot API framework)
-- **Spec**: `docs/requirements/TELEGRAM_INTEGRATION.md`
+  - `POST /api/telegram/webhook/{webhook_secret}` — Receive Telegram updates (validated by X-Telegram-Bot-Api-Secret-Token header)
+  - `GET /api/agents/{name}/telegram` — Bot binding status
+  - `PUT /api/agents/{name}/telegram` — Configure bot token (validates via getMe)
+  - `DELETE /api/agents/{name}/telegram` — Remove bot binding + delete webhook
+  - `POST /api/agents/{name}/telegram/test` — Test bot connectivity / send test message
+- **Security**:
+  - Bot tokens AES-256-GCM encrypted at rest (same `CredentialEncryptionService` as Slack)
+  - Webhook auth via `X-Telegram-Bot-Api-Secret-Token` header (set during setWebhook)
+  - SSRF prevention: media downloads restricted to `api.telegram.org` domain
+  - Restricted tools for Telegram users (WebSearch, WebFetch — same as Slack)
+  - Update dedup via `last_update_id` tracking
+  - Bot token values never logged
+- **Flow**: `docs/memory/feature-flows/telegram-integration.md`
 - **Future Phases**:
-  - Phase 2: Notification forwarding to Telegram
-  - Phase 3: Inline keyboards for approve/reject
-  - Phase 4: Production webhook mode
+  - Phase 2: Voice transcription (Whisper API), notification forwarding
+  - Phase 3: Inline keyboards for approve/reject, deep links with start parameters
 
 ### 15.1d Public Chat Session Memory (PUB-006)
 - **Status**: ⏳ Not Started
@@ -839,17 +848,26 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
 - **Key Features**: `async=true` parameter (requires `parallel=true`), returns `execution_id` immediately, poll `GET /api/agents/{name}/executions/{id}` for results
 - **Use Case**: Orchestrator sends tasks to 5 worker agents simultaneously, collects results as they complete
 
-### 17.5 Automated Git Sync
+### 17.5 Fan-Out Parallel Self-Invocation (FANOUT-001)
+- **Status**: ✅ Implemented
+- **Description**: Dispatch N independent tasks to an agent in parallel, collect results with per-task status
+- **Key Features**: `POST /api/agents/{name}/fan-out` endpoint, `fan_out` MCP tool, configurable `max_concurrency` (1-10, default 3), overall deadline with per-task timeout, best-effort policy (partial results on failure), dedicated fan-out concurrency (doesn't starve normal operations)
+- **Use Case**: Agent self-invocation for batch predictions, parallel analysis, ensemble methods — each subtask gets a fresh context window
+- **Execution Tracking**: All subtasks follow standard `TaskExecutionService` path — visible on dashboard with full observability (cost, tokens, logs), linked by `fan_out_id`
+- **Limits**: Max 50 tasks per fan-out, max 10 concurrency, timeout 10-3600s, task IDs must be unique alphanumeric (max 64 chars)
+- **Flow**: `docs/memory/feature-flows/fan-out.md`
+
+### 17.6 Automated Git Sync
 - **Status**: ⏳ Not Started
 - **Priority**: Medium
 - **Description**: Sync modes - Manual / Scheduled / On Stop
 
-### 17.6 Automated Secret Rotation
+### 17.7 Automated Secret Rotation
 - **Status**: ⏳ Not Started
 - **Priority**: Medium
 - **Description**: Automatic credential rotation with notifications
 
-### 17.7 Kubernetes Deployment
+### 17.8 Kubernetes Deployment
 - **Status**: ⏳ Not Started
 - **Priority**: Low
 - **Description**: Helm charts, StatefulSet for agents

@@ -124,6 +124,8 @@ class ScheduleOperations:
             claude_session_id=row["claude_session_id"] if "claude_session_id" in row_keys else None,
             # Model selection (MODEL-001)
             model_used=row["model_used"] if "model_used" in row_keys else None,
+            # Fan-out linkage (FANOUT-001)
+            fan_out_id=row["fan_out_id"] if "fan_out_id" in row_keys else None,
         )
 
     @staticmethod
@@ -446,19 +448,21 @@ class ScheduleOperations:
         source_mcp_key_id: str = None,
         source_mcp_key_name: str = None,
         model_used: str = None,
+        fan_out_id: str = None,
     ) -> Optional[ScheduleExecution]:
         """Create a new execution record for a manual/API-triggered task (no schedule).
 
         Args:
             agent_name: Target agent name
             message: Task message
-            triggered_by: Trigger type - "manual", "mcp", "agent"
+            triggered_by: Trigger type - "manual", "mcp", "agent", "fan_out"
             source_user_id: User ID who triggered (for manual/mcp triggers)
             source_user_email: User email (denormalized for queries)
             source_agent_name: Calling agent name (for agent-to-agent)
             source_mcp_key_id: MCP API key ID (for mcp/agent triggers)
             source_mcp_key_name: MCP API key name (denormalized)
             model_used: Model used for this execution (MODEL-001)
+            fan_out_id: Parent fan-out operation ID (FANOUT-001)
         """
         execution_id = self._generate_id()
         now = utc_now_iso()
@@ -469,8 +473,8 @@ class ScheduleOperations:
                 INSERT INTO schedule_executions (
                     id, schedule_id, agent_name, status, started_at, message, triggered_by,
                     source_user_id, source_user_email, source_agent_name,
-                    source_mcp_key_id, source_mcp_key_name, model_used
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_mcp_key_id, source_mcp_key_name, model_used, fan_out_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 execution_id,
                 "__manual__",  # Special marker for manual/API-triggered tasks
@@ -485,6 +489,7 @@ class ScheduleOperations:
                 source_mcp_key_id,
                 source_mcp_key_name,
                 model_used,
+                fan_out_id,
             ))
             conn.commit()
 
@@ -502,6 +507,7 @@ class ScheduleOperations:
                 source_mcp_key_id=source_mcp_key_id,
                 source_mcp_key_name=source_mcp_key_name,
                 model_used=model_used,
+                fan_out_id=fan_out_id,
             )
 
     def create_schedule_execution(
@@ -688,7 +694,8 @@ class ScheduleOperations:
                     id, schedule_id, agent_name, status, started_at, completed_at,
                     duration_ms, message, triggered_by, context_used, context_max, cost,
                     source_user_id, source_user_email, source_agent_name,
-                    source_mcp_key_id, source_mcp_key_name, claude_session_id, model_used
+                    source_mcp_key_id, source_mcp_key_name, claude_session_id, model_used,
+                    fan_out_id
                 FROM schedule_executions
                 WHERE agent_name = ?
                 ORDER BY started_at DESC
