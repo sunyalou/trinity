@@ -126,6 +126,7 @@ from db.slack_channels import SlackChannelOperations
 from db.nevermined import NeverminedOperations
 from db.operator_queue import OperatorQueueOperations
 from db.event_subscriptions import EventSubscriptionOperations
+from db.telegram_channels import TelegramChannelOperations
 
 
 def init_database():
@@ -255,6 +256,7 @@ class DatabaseManager:
         self._nevermined_ops = NeverminedOperations()
         self._operator_queue_ops = OperatorQueueOperations()
         self._event_subscription_ops = EventSubscriptionOperations()
+        self._telegram_channel_ops = TelegramChannelOperations()
 
     # =========================================================================
     # User Management (delegated to db/users.py)
@@ -1289,6 +1291,43 @@ class DatabaseManager:
 
     def is_slack_active_thread(self, team_id, channel_id, thread_ts):
         return self._slack_channel_ops.is_active_thread(team_id, channel_id, thread_ts)
+
+    # =========================================================================
+    # Telegram Bot Integration (delegated to db/telegram_channels.py) - TELEGRAM-001
+    # =========================================================================
+
+    def create_telegram_binding(self, agent_name, bot_token, bot_username=None, bot_id=None):
+        return self._telegram_channel_ops.create_binding(agent_name, bot_token, bot_username, bot_id)
+
+    def get_telegram_binding(self, agent_name):
+        return self._telegram_channel_ops.get_binding_by_agent(agent_name)
+
+    def get_telegram_binding_by_bot_id(self, bot_id):
+        return self._telegram_channel_ops.get_binding_by_bot_id(bot_id)
+
+    def get_telegram_binding_by_webhook_secret(self, webhook_secret):
+        return self._telegram_channel_ops.get_binding_by_webhook_secret(webhook_secret)
+
+    def get_telegram_bot_token(self, agent_name):
+        return self._telegram_channel_ops.get_decrypted_bot_token(agent_name)
+
+    def get_all_telegram_bindings(self):
+        return self._telegram_channel_ops.get_all_bindings()
+
+    def update_telegram_webhook_url(self, agent_name, webhook_url):
+        return self._telegram_channel_ops.update_webhook_url(agent_name, webhook_url)
+
+    def update_telegram_last_update_id(self, agent_name, update_id):
+        return self._telegram_channel_ops.update_last_update_id(agent_name, update_id)
+
+    def delete_telegram_binding(self, agent_name):
+        return self._telegram_channel_ops.delete_binding(agent_name)
+
+    def get_or_create_telegram_chat_link(self, binding_id, telegram_user_id, telegram_username=None):
+        return self._telegram_channel_ops.get_or_create_chat_link(binding_id, telegram_user_id, telegram_username)
+
+    def increment_telegram_message_count(self, chat_link_id):
+        return self._telegram_channel_ops.increment_message_count(chat_link_id)
 
     # =========================================================================
     # Nevermined Payment Integration (delegated to db/nevermined.py) - NVM-001

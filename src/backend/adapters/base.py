@@ -44,6 +44,27 @@ class ChannelAdapter(ABC):
     live on the concrete adapter, not here.
     """
 
+    @property
+    @abstractmethod
+    def channel_type(self) -> str:
+        """Channel identifier string, e.g. 'slack', 'telegram'."""
+
+    @abstractmethod
+    def get_rate_key(self, message: NormalizedMessage) -> str:
+        """Build a rate-limit key unique to this sender on this channel."""
+
+    @abstractmethod
+    def get_session_identifier(self, message: NormalizedMessage) -> str:
+        """Build a session identifier for conversation persistence."""
+
+    @abstractmethod
+    def get_source_identifier(self, message: NormalizedMessage) -> str:
+        """Build a source identifier for audit/execution tracking."""
+
+    @abstractmethod
+    def get_bot_token(self, message: NormalizedMessage) -> Optional[str]:
+        """Get the bot/app token needed to send responses for this message."""
+
     @abstractmethod
     def parse_message(self, raw_event: dict) -> Optional[NormalizedMessage]:
         """

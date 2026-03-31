@@ -103,26 +103,27 @@ class ChannelMessageRouter:
             logger.error(f"[ROUTER] Unhandled error in handle_message: {e}", exc_info=True)
 
     async def _handle_message_inner(self, adapter: ChannelAdapter, message: NormalizedMessage) -> None:
-        logger.info(f"[ROUTER] START: sender={message.sender_id}, channel={message.channel_id}, team={message.metadata.get('team_id')}")
+        channel = adapter.channel_type
+        logger.info(f"[ROUTER:{channel}] START: sender={message.sender_id}, channel={message.channel_id}")
 
         # 1. Resolve agent
         agent_name = await adapter.get_agent_name(message)
-        logger.debug(f"[ROUTER] Step 1 - resolved agent: {agent_name}")
+        logger.debug(f"[ROUTER:{channel}] Step 1 - resolved agent: {agent_name}")
         if not agent_name:
-            logger.warning(f"[ROUTER] No agent found for channel {message.channel_id}")
+            logger.warning(f"[ROUTER:{channel}] No agent found for channel {message.channel_id}")
             return
 
         # 2. Resolve bot token (needed for all responses)
-        bot_token = self._get_bot_token(adapter, message)
-        logger.debug(f"[ROUTER] Step 2 - bot_token: {'yes' if bot_token else 'NO'}")
+        bot_token = adapter.get_bot_token(message)
+        logger.debug(f"[ROUTER:{channel}] Step 2 - bot_token: {'yes' if bot_token else 'NO'}")
         if not bot_token:
-            logger.error(f"[ROUTER] No bot token for team {message.metadata.get('team_id')}")
+            logger.error(f"[ROUTER:{channel}] No bot token for message in {message.channel_id}")
             return
 
-        # 3. Rate limiting per Slack user
-        rate_key = f"slack:{message.metadata.get('team_id')}:{message.sender_id}"
+        # 3. Rate limiting per channel user
+        rate_key = adapter.get_rate_key(message)
         if not _check_rate_limit(rate_key):
-            logger.warning(f"[ROUTER] Rate limited: {rate_key}")
+            logger.warning(f"[ROUTER:{channel}] Rate limited: {rate_key}")
             await adapter.send_response(
                 message.channel_id,
                 ChannelResponse(
@@ -136,7 +137,7 @@ class ChannelMessageRouter:
         # 4. Check agent availability
         container = get_agent_container(agent_name)
         container_status = container.status if container else "not_found"
-        logger.debug(f"[ROUTER] Step 4 - container: {container_status}")
+        logger.debug(f"[ROUTER:{channel}] Step 4 - container: {container_status}")
         if not container or container.status != "running":
             await adapter.send_response(
                 message.channel_id,
@@ -148,31 +149,31 @@ class ChannelMessageRouter:
             return
 
         # 5. Handle verification (base class default: always verified)
-        logger.debug(f"[ROUTER] Step 5 - running verification")
+        logger.debug(f"[ROUTER:{channel}] Step 5 - running verification")
         verified = await adapter.handle_verification(message)
-        logger.debug(f"[ROUTER] Step 5 - verified: {verified}")
+        logger.debug(f"[ROUTER:{channel}] Step 5 - verified: {verified}")
         if not verified:
             return
 
         # 6. Get/create session
-        logger.debug(f"[ROUTER] Step 6 - creating session")
-        session_identifier = self._build_session_identifier(message)
+        logger.debug(f"[ROUTER:{channel}] Step 6 - creating session")
+        session_identifier = adapter.get_session_identifier(message)
         session = db.get_or_create_public_chat_session(
-            agent_name, session_identifier, "slack"
+            agent_name, session_identifier, channel
         )
         session_id = session.id if hasattr(session, 'id') else session["id"]
-        logger.debug(f"[ROUTER] Step 6 - session_id: {session_id}")
+        logger.debug(f"[ROUTER:{channel}] Step 6 - session_id: {session_id}")
 
         # 7. Build context prompt (same as web public chat)
         context_prompt = db.build_public_chat_context(session_id, message.text)
-        logger.debug(f"[ROUTER] Step 7 - context built ({len(context_prompt)} chars)")
+        logger.debug(f"[ROUTER:{channel}] Step 7 - context built ({len(context_prompt)} chars)")
 
         # 8. Show processing indicator (⏳ on Slack, typing on Telegram, etc.)
         await adapter.indicate_processing(message)
 
         # 9. Execute via TaskExecutionService (same path as web public chat)
-        logger.debug(f"[ROUTER] Step 9 - executing via TaskExecutionService")
-        source_email = f"slack:{message.metadata.get('team_id')}:{message.sender_id}"
+        logger.debug(f"[ROUTER:{channel}] Step 9 - executing via TaskExecutionService")
+        source_email = adapter.get_source_identifier(message)
 
         # Security: restrict tools for public channel users
         # No file access (Read exposes .env/credentials), no Bash, no Write/Edit
@@ -185,7 +186,7 @@ class ChannelMessageRouter:
             result = await task_execution_service.execute_task(
                 agent_name=agent_name,
                 message=context_prompt,
-                triggered_by="slack",
+                triggered_by=channel,
                 source_user_email=source_email,
                 timeout_seconds=None,  # Uses agent's configured timeout (TIMEOUT-001)
                 allowed_tools=public_allowed_tools,
@@ -193,7 +194,7 @@ class ChannelMessageRouter:
 
             if result.status == "failed":
                 error_msg = result.error or "Unknown error"
-                logger.error(f"[ROUTER] Step 9 - task failed: {error_msg}")
+                logger.error(f"[ROUTER:{channel}] Step 9 - task failed: {error_msg}")
                 await adapter.indicate_done(message)
 
                 # User-friendly error messages
@@ -214,10 +215,10 @@ class ChannelMessageRouter:
                 return
 
             response_text = result.response or ""
-            logger.debug(f"[ROUTER] Step 9 - agent responded ({len(response_text)} chars, cost=${result.cost or 0:.4f})")
+            logger.debug(f"[ROUTER:{channel}] Step 9 - agent responded ({len(response_text)} chars, cost=${result.cost or 0:.4f})")
 
         except Exception as e:
-            logger.error(f"[ROUTER] Step 9 - execution error: {e}", exc_info=True)
+            logger.error(f"[ROUTER:{channel}] Step 9 - execution error: {e}", exc_info=True)
             await adapter.indicate_done(message)
             await adapter.send_response(
                 message.channel_id,
@@ -233,12 +234,12 @@ class ChannelMessageRouter:
         await adapter.indicate_done(message)
 
         # 11. Persist messages in session
-        logger.debug(f"[ROUTER] Step 11 - persisting messages")
+        logger.debug(f"[ROUTER:{channel}] Step 11 - persisting messages")
         db.add_public_chat_message(session_id, "user", message.text)
         db.add_public_chat_message(session_id, "assistant", response_text, cost=result.cost)
 
         # 12. Send response to channel
-        logger.debug(f"[ROUTER] Step 12 - sending response")
+        logger.debug(f"[ROUTER:{channel}] Step 12 - sending response")
         await adapter.send_response(
             message.channel_id,
             ChannelResponse(text=response_text, metadata={"bot_token": bot_token, "agent_name": agent_name}),
@@ -248,23 +249,7 @@ class ChannelMessageRouter:
         # 13. Post-response hook (thread tracking, etc.)
         await adapter.on_response_sent(message, agent_name)
 
-        logger.info(f"[ROUTER] DONE: {agent_name}, execution_id={result.execution_id}")
-
-    # =========================================================================
-    # Private helpers
-    # =========================================================================
-
-    def _get_bot_token(self, adapter: ChannelAdapter, message: NormalizedMessage) -> Optional[str]:
-        """Get bot token from adapter."""
-        if hasattr(adapter, 'get_bot_token'):
-            return adapter.get_bot_token(message.metadata.get("team_id"))
-        return None
-
-    def _build_session_identifier(self, message: NormalizedMessage) -> str:
-        """Build a session identifier: team:user:channel for isolation."""
-        team_id = message.metadata.get("team_id", "unknown")
-        channel_id = message.channel_id
-        return f"{team_id}:{message.sender_id}:{channel_id}"
+        logger.info(f"[ROUTER:{channel}] DONE: {agent_name}, execution_id={result.execution_id}")
 
 
 # Singleton instance

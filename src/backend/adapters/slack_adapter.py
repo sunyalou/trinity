@@ -31,7 +31,39 @@ class SlackAdapter(ChannelAdapter):
     """Slack implementation of ChannelAdapter with multi-agent channel routing."""
 
     # =========================================================================
-    # ChannelAdapter interface
+    # ChannelAdapter interface — identity & routing
+    # =========================================================================
+
+    @property
+    def channel_type(self) -> str:
+        return "slack"
+
+    def get_rate_key(self, message: NormalizedMessage) -> str:
+        return f"slack:{message.metadata.get('team_id')}:{message.sender_id}"
+
+    def get_session_identifier(self, message: NormalizedMessage) -> str:
+        team_id = message.metadata.get("team_id", "unknown")
+        return f"{team_id}:{message.sender_id}:{message.channel_id}"
+
+    def get_source_identifier(self, message: NormalizedMessage) -> str:
+        return f"slack:{message.metadata.get('team_id')}:{message.sender_id}"
+
+    def get_bot_token(self, message: NormalizedMessage) -> Optional[str]:
+        team_id = message.metadata.get("team_id")
+        if not team_id:
+            return None
+        # New: slack_workspaces table
+        token = db.get_slack_workspace_bot_token(team_id)
+        if token:
+            return token
+        # Legacy: slack_link_connections
+        connection = db.get_slack_connection_by_team(team_id)
+        if connection:
+            return connection.get("slack_bot_token")
+        return None
+
+    # =========================================================================
+    # ChannelAdapter interface — message processing
     # =========================================================================
 
     def parse_message(self, raw_event: dict) -> Optional[NormalizedMessage]:
@@ -87,7 +119,7 @@ class SlackAdapter(ChannelAdapter):
 
     async def indicate_processing(self, message: NormalizedMessage) -> None:
         """Add ⏳ reaction to the user's message."""
-        bot_token = self.get_bot_token(message.metadata.get("team_id"))
+        bot_token = self.get_bot_token(message)
         if bot_token and message.timestamp:
             await slack_service.add_reaction(
                 bot_token, message.channel_id, message.timestamp, "hourglass_flowing_sand"
@@ -95,7 +127,7 @@ class SlackAdapter(ChannelAdapter):
 
     async def indicate_done(self, message: NormalizedMessage) -> None:
         """Remove ⏳, add ✅ to the user's message."""
-        bot_token = self.get_bot_token(message.metadata.get("team_id"))
+        bot_token = self.get_bot_token(message)
         if bot_token and message.timestamp:
             await slack_service.remove_reaction(
                 bot_token, message.channel_id, message.timestamp, "hourglass_flowing_sand"
@@ -261,24 +293,6 @@ class SlackAdapter(ChannelAdapter):
         )
 
     # =========================================================================
-    # Slack-specific: bot token resolution
-    # =========================================================================
-
-    def get_bot_token(self, team_id: str) -> Optional[str]:
-        """Get bot token for a workspace (new table first, legacy fallback)."""
-        # New: slack_workspaces table
-        token = db.get_slack_workspace_bot_token(team_id)
-        if token:
-            return token
-
-        # Legacy: slack_link_connections
-        connection = db.get_slack_connection_by_team(team_id)
-        if connection:
-            return connection.get("slack_bot_token")
-
-        return None
-
-    # =========================================================================
     # Slack-specific: verification
     # =========================================================================
 
@@ -290,7 +304,7 @@ class SlackAdapter(ChannelAdapter):
         Returns False if verification in progress (sends its own messages).
         """
         team_id = message.metadata.get("team_id")
-        bot_token = self.get_bot_token(team_id)
+        bot_token = self.get_bot_token(message)
         if not bot_token:
             return False
 

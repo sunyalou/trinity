@@ -69,6 +69,7 @@ from routers.notifications import router as notifications_router, set_websocket_
 from routers.subscriptions import router as subscriptions_router
 from routers.monitoring import router as monitoring_router, set_websocket_manager as set_monitoring_ws_manager, set_filtered_websocket_manager as set_monitoring_filtered_ws_manager
 from routers.slack import public_router as slack_public_router, auth_router as slack_auth_router
+from routers.telegram import public_router as telegram_public_router, auth_router as telegram_auth_router
 from routers.paid import router as paid_router
 from routers.nevermined import router as nevermined_router
 from routers.image_generation import router as image_generation_router
@@ -351,6 +352,38 @@ async def lifespan(app: FastAPI):
         print(f"Error starting Slack transport: {e}")
         # Don't fail startup — Slack is optional
 
+    # Start Telegram webhook transport
+    try:
+        from adapters.telegram_adapter import TelegramAdapter
+        from adapters.transports.telegram_webhook import TelegramWebhookTransport, register_webhook
+        from routers.telegram import set_webhook_transport as set_telegram_webhook_transport
+
+        _telegram_adapter = TelegramAdapter()
+        _telegram_transport = TelegramWebhookTransport(_telegram_adapter, message_router)
+        await _telegram_transport.start()
+        set_telegram_webhook_transport(_telegram_transport)
+        app.state.telegram_transport = _telegram_transport
+
+        # Reconcile webhooks for all existing bindings on startup
+        from services.settings_service import settings_service
+        public_url = settings_service.get_setting("public_chat_url", "")
+        if public_url:
+            bindings = db.get_all_telegram_bindings()
+            for binding in bindings:
+                try:
+                    await register_webhook(binding["agent_name"], public_url)
+                except Exception as we:
+                    print(f"Telegram webhook reconciliation failed for {binding['agent_name']}: {we}")
+            if bindings:
+                print(f"Telegram transport ready ({len(bindings)} bot(s) registered)")
+            else:
+                print("Telegram transport ready (no bots configured)")
+        else:
+            print("Telegram transport ready (no public URL — webhooks not registered)")
+    except Exception as e:
+        print(f"Error starting Telegram transport: {e}")
+        # Don't fail startup — Telegram is optional
+
     # Run process execution recovery (IT5 P0 reliability feature)
     try:
         recovery_report = await run_execution_recovery()
@@ -395,6 +428,15 @@ async def lifespan(app: FastAPI):
             print("Slack transport stopped")
     except Exception as e:
         print(f"Error stopping Slack transport: {e}")
+
+    # Shutdown Telegram transport
+    try:
+        telegram_transport = getattr(app.state, 'telegram_transport', None)
+        if telegram_transport:
+            await telegram_transport.stop()
+            print("Telegram transport stopped")
+    except Exception as e:
+        print(f"Error stopping Telegram transport: {e}")
 
     # Shutdown operator queue sync service
     try:
@@ -478,6 +520,8 @@ app.include_router(subscriptions_router)  # Subscription Management (SUB-001)
 app.include_router(monitoring_router)  # Agent Monitoring (MON-001)
 app.include_router(slack_public_router)  # Slack Integration Public (SLACK-001)
 app.include_router(slack_auth_router)  # Slack Integration Auth (SLACK-001)
+app.include_router(telegram_public_router)  # Telegram Integration Public (TELEGRAM-001)
+app.include_router(telegram_auth_router)  # Telegram Integration Auth (TELEGRAM-001)
 app.include_router(paid_router)  # Nevermined Paid Chat (NVM-001)
 app.include_router(nevermined_router)  # Nevermined Admin Config (NVM-001)
 app.include_router(image_generation_router)  # Image Generation (IMG-001)
