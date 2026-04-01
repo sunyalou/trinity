@@ -36,56 +36,54 @@ Migration Order (as of 2026-02-28):
 29. subscription_rate_limit_tracking - SUB-003 rate-limit event tracking for auto-switch
 30. execution_fan_out_id - FANOUT-001 fan-out operation linkage
 """
+import logging
+import sqlite3
+from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 
 def run_all_migrations(cursor, conn):
-    """Run all migrations in order. Called from init_database().
+    """Run all pending migrations in order. Called from init_database().
 
-    Each migration is wrapped in try/except to log errors but continue.
-    Migrations are idempotent - safe to run on existing databases.
+    Tracks applied migrations in schema_migrations table for idempotency and
+    to prevent race conditions when multiple uvicorn workers start simultaneously.
+    Raises on failure so the backend refuses to start with an inconsistent schema.
     """
-    migrations = [
-        ("agent_sharing", _migrate_agent_sharing_table),
-        ("schedule_executions_observability", _migrate_schedule_executions_observability),
-        ("mcp_api_keys_agent_scope", _migrate_mcp_api_keys_agent_scope),
-        ("agent_ownership_system_flag", _migrate_agent_ownership_system_flag),
-        ("agent_ownership_platform_key", _migrate_agent_ownership_platform_key),
-        ("agent_git_config_source_branch", _migrate_agent_git_config_source_branch),
-        ("agent_ownership_autonomy", _migrate_agent_ownership_autonomy),
-        ("agent_ownership_resource_limits", _migrate_agent_ownership_resource_limits),
-        ("agent_skills", _migrate_agent_skills_table),
-        ("agent_ownership_full_capabilities", _migrate_agent_ownership_full_capabilities),
-        ("agent_ownership_read_only_mode", _migrate_agent_ownership_read_only_mode),
-        ("agent_schedules_execution_config", _migrate_agent_schedules_execution_config),
-        ("agent_notifications", _migrate_agent_notifications_table),
-        ("execution_origin_tracking", _migrate_execution_origin_tracking),
-        ("execution_session_tracking", _migrate_execution_session_tracking),
-        ("subscription_credentials", _migrate_subscription_credentials_table),
-        ("agent_ownership_subscription_id", _migrate_agent_ownership_subscription_id),
-        ("agent_dashboard_values", _migrate_agent_dashboard_values_table),
-        ("setup_completed_backfill", _migrate_setup_completed_backfill),
-        ("slack_integration_tables", _migrate_slack_integration_tables),
-        ("agent_ownership_parallel_capacity", _migrate_agent_ownership_parallel_capacity),
-        ("schedule_model_selection", _migrate_schedule_model_selection),
-        ("nevermined_tables", _migrate_nevermined_tables),
-        ("agent_avatar_columns", _migrate_agent_avatar_columns),
-        ("operator_queue_table", _migrate_operator_queue_table),
-        ("agent_ownership_default_avatar", _migrate_agent_ownership_default_avatar),
-        ("agent_ownership_execution_timeout", _migrate_agent_ownership_execution_timeout),
-        ("public_user_memory_table", _migrate_public_user_memory_table),
-        ("subscription_rate_limit_tracking", _migrate_subscription_rate_limit_tracking),
-        ("chat_messages_source_column", _migrate_chat_messages_source_column),
-        ("agent_ownership_voice_prompt", _migrate_agent_ownership_voice_prompt),
-        ("slack_channel_agents", _migrate_slack_channel_agents),
-        ("execution_fan_out_id", _migrate_execution_fan_out_id),
-        ("telegram_bindings", _migrate_telegram_bindings),
-    ]
+    # Create tracking table — atomic, safe to call on every startup
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            name TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
 
-    for name, migration_fn in migrations:
+    # Fetch already-applied migrations to skip them
+    cursor.execute("SELECT name FROM schema_migrations")
+    applied = {row[0] for row in cursor.fetchall()}
+
+    for name, migration_fn in MIGRATIONS:
+        if name in applied:
+            continue
         try:
             migration_fn(cursor, conn)
+            cursor.execute(
+                "INSERT OR IGNORE INTO schema_migrations (name, applied_at) VALUES (?, ?)",
+                (name, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                # Target table doesn't exist yet — this is a fresh install.
+                # init_schema will create it with the correct current schema.
+                logger.debug("Migration %s: table not present yet, skipping (fresh install)", name)
+            else:
+                logger.error("Migration FAILED (%s): %s", name, e, exc_info=True)
+                raise
         except Exception as e:
-            print(f"Migration check ({name}): {e}")
+            logger.error("Migration FAILED (%s): %s", name, e, exc_info=True)
+            raise
 
 
 def _migrate_agent_sharing_table(cursor, conn):
@@ -958,3 +956,44 @@ def _migrate_telegram_bindings(cursor, conn):
     )
 
     conn.commit()
+
+
+# Ordered list of all migrations. Defined at module level (after all _migrate_* functions)
+# so run_all_migrations and the health check can both reference it.
+# IMPORTANT: append-only — never reorder or remove entries.
+MIGRATIONS = [
+    ("agent_sharing", _migrate_agent_sharing_table),
+    ("schedule_executions_observability", _migrate_schedule_executions_observability),
+    ("mcp_api_keys_agent_scope", _migrate_mcp_api_keys_agent_scope),
+    ("agent_ownership_system_flag", _migrate_agent_ownership_system_flag),
+    ("agent_ownership_platform_key", _migrate_agent_ownership_platform_key),
+    ("agent_git_config_source_branch", _migrate_agent_git_config_source_branch),
+    ("agent_ownership_autonomy", _migrate_agent_ownership_autonomy),
+    ("agent_ownership_resource_limits", _migrate_agent_ownership_resource_limits),
+    ("agent_skills", _migrate_agent_skills_table),
+    ("agent_ownership_full_capabilities", _migrate_agent_ownership_full_capabilities),
+    ("agent_ownership_read_only_mode", _migrate_agent_ownership_read_only_mode),
+    ("agent_schedules_execution_config", _migrate_agent_schedules_execution_config),
+    ("agent_notifications", _migrate_agent_notifications_table),
+    ("execution_origin_tracking", _migrate_execution_origin_tracking),
+    ("execution_session_tracking", _migrate_execution_session_tracking),
+    ("subscription_credentials", _migrate_subscription_credentials_table),
+    ("agent_ownership_subscription_id", _migrate_agent_ownership_subscription_id),
+    ("agent_dashboard_values", _migrate_agent_dashboard_values_table),
+    ("setup_completed_backfill", _migrate_setup_completed_backfill),
+    ("slack_integration_tables", _migrate_slack_integration_tables),
+    ("agent_ownership_parallel_capacity", _migrate_agent_ownership_parallel_capacity),
+    ("schedule_model_selection", _migrate_schedule_model_selection),
+    ("nevermined_tables", _migrate_nevermined_tables),
+    ("agent_avatar_columns", _migrate_agent_avatar_columns),
+    ("operator_queue_table", _migrate_operator_queue_table),
+    ("agent_ownership_default_avatar", _migrate_agent_ownership_default_avatar),
+    ("agent_ownership_execution_timeout", _migrate_agent_ownership_execution_timeout),
+    ("public_user_memory_table", _migrate_public_user_memory_table),
+    ("subscription_rate_limit_tracking", _migrate_subscription_rate_limit_tracking),
+    ("chat_messages_source_column", _migrate_chat_messages_source_column),
+    ("agent_ownership_voice_prompt", _migrate_agent_ownership_voice_prompt),
+    ("slack_channel_agents", _migrate_slack_channel_agents),
+    ("execution_fan_out_id", _migrate_execution_fan_out_id),
+    ("telegram_bindings", _migrate_telegram_bindings),
+]

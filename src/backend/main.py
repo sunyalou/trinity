@@ -101,7 +101,10 @@ from services.process_engine.events import set_websocket_publisher_broadcast
 from routers.executions import run_execution_recovery
 
 # Import logging configuration
+import logging
 from logging_config import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 class ConnectionManager:
@@ -660,7 +663,30 @@ async def websocket_events_endpoint(
 # Health check endpoint
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint. Reports unhealthy if schema migrations are incomplete."""
+    from db.migrations import MIGRATIONS
+    from db.connection import get_db_connection
+    from fastapi.responses import JSONResponse
+
+    expected = len(MIGRATIONS)
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM schema_migrations")
+            applied = cursor.fetchone()[0]
+    except Exception as e:
+        logger.warning("health_check: could not query schema_migrations: %s", e)
+        applied = 0
+
+    if applied < expected:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "timestamp": datetime.now().isoformat(),
+                "migrations": {"applied": applied, "expected": expected},
+            },
+        )
     return {"status": "healthy", "timestamp": datetime.now()}
 
 
