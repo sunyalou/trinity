@@ -389,7 +389,8 @@ Parallel to the SSE subscription, the frontend polls for execution completion:
 - **Max duration**: 30 minutes (360 attempts)
 - **Terminal statuses**: `success`, `failed`, `cancelled`
 - **On success**: adds assistant response to `messages[]`
-- **On failure/cancel**: sets `error` ref
+- **On failure**: sets `error` ref
+- **On cancel**: no error shown (user-initiated stop)
 
 ```javascript
 const pollExecution = async (executionId) => {
@@ -424,6 +425,21 @@ The indicator shows three bouncing dots plus a dynamic text label. The `:key="te
 ```
 
 The `:key` binding is critical -- it forces Vue to destroy and recreate the `<span>` element whenever `text` changes, retriggering the CSS animation each time.
+
+### Stop Button (`ChatPanel.vue`, `ChatInput.vue`)
+
+While a chat request is in progress, the send button is replaced with a red stop button (square icon). Clicking it:
+
+1. Calls `POST /api/agents/{name}/executions/{executionId}/terminate` (reuses existing terminate endpoint)
+2. Backend sends SIGINT to Claude Code process, marks execution as `cancelled`
+3. `pollExecution()` detects `cancelled` terminal status
+4. `sendMessage()` handles cancellation silently (no error banner)
+5. `finally` block resets `loading`, `currentExecutionId`, closes SSE
+6. User can immediately type a new message
+
+**State:** `currentExecutionId` ref tracks the active execution ID, set on task submission, cleared in `finally`.
+
+**Edge case:** If execution finishes between click and API call, terminate returns 404 — ignored gracefully.
 
 ## Data Flow
 
@@ -504,7 +520,7 @@ The following components are shared between ChatPanel and PublicChat:
 src/frontend/src/components/chat/
 ├── index.js                  # Export barrel (5 lines)
 ├── ChatBubble.vue            # Message bubble with markdown + timestamps (61 lines)
-├── ChatInput.vue             # Auto-resize textarea + send button (83 lines)
+├── ChatInput.vue             # Auto-resize textarea + send/stop button (83 lines)
 ├── ChatMessages.vue          # Message list with auto-scroll (87 lines)
 └── ChatLoadingIndicator.vue  # Dynamic status indicator with fade animation (51 lines)
 ```

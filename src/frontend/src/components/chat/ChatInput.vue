@@ -126,8 +126,22 @@
         </svg>
       </button>
 
-      <!-- Send button -->
+      <!-- Stop button (shown while loading) -->
       <button
+        v-if="loading"
+        type="button"
+        @click="$emit('stop')"
+        class="p-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors shrink-0"
+        title="Stop generation"
+      >
+        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+          <rect x="6" y="6" width="12" height="12" rx="2" />
+        </svg>
+      </button>
+
+      <!-- Send button (hidden while loading) -->
+      <button
+        v-else
         type="submit"
         :disabled="disabled || !localMessage.trim()"
         class="p-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white rounded-lg transition-colors shrink-0"
@@ -182,6 +196,10 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  loading: {
+    type: Boolean,
+    default: false
+  },
   agentName: {
     type: String,
     default: null
@@ -204,7 +222,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update:modelValue', 'submit', 'voice'])
+const emit = defineEmits(['update:modelValue', 'submit', 'stop', 'voice'])
 
 const authStore = useAuthStore()
 const ac = usePlaybookAutocomplete()

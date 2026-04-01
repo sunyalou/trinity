@@ -161,11 +161,13 @@
           ref="chatInputRef"
           v-model="message"
           :disabled="loading || voice.isActive.value"
+          :loading="loading"
           :agent-name="agentName"
           :agent-status="agentStatus"
           :voice-available="voiceAvailable"
           :voice-active="voice.isActive.value"
           @submit="sendMessage"
+          @stop="stopExecution"
           @voice="startVoice"
         />
       </div>
@@ -257,6 +259,7 @@ const message = ref('')
 const messages = ref([])
 const loading = ref(false)
 const loadingText = ref('Thinking...')
+const currentExecutionId = ref(null)
 const error = ref(null)
 const isRateLimitError = computed(() => {
   if (!error.value) return false
@@ -638,6 +641,8 @@ const sendMessage = async (userMessage) => {
       throw new Error('No execution_id returned from async task submission')
     }
 
+    currentExecutionId.value = executionId
+
     // Subscribe to SSE stream for real-time status updates
     subscribeToStream(executionId)
 
@@ -656,7 +661,7 @@ const sendMessage = async (userMessage) => {
       } else if (execution.status === 'failed') {
         error.value = execution.error || 'Task execution failed'
       } else if (execution.status === 'cancelled') {
-        error.value = 'Task was cancelled'
+        // Don't show as error — user intentionally stopped
       }
 
       // Update session ID from the execution
@@ -683,8 +688,29 @@ const sendMessage = async (userMessage) => {
   } finally {
     loading.value = false
     loadingText.value = 'Thinking...'
+    currentExecutionId.value = null
     closeSSE()
   }
+}
+
+// Stop running execution
+const stopExecution = async () => {
+  if (!currentExecutionId.value || !loading.value) return
+
+  const executionId = currentExecutionId.value
+  try {
+    await axios.post(
+      `/api/agents/${props.agentName}/executions/${executionId}/terminate`,
+      {},
+      { headers: authStore.authHeader }
+    )
+  } catch (err) {
+    // 404 means execution already finished — that's fine
+    if (err.response?.status !== 404) {
+      console.error('Failed to stop execution:', err)
+    }
+  }
+  // State cleanup happens in sendMessage's finally block when polling detects cancelled status
 }
 
 // Click outside to close dropdown
