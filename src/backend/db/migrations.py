@@ -44,7 +44,13 @@ logger = logging.getLogger(__name__)
 
 
 def run_all_migrations(cursor, conn):
-    """Run all pending migrations in order. Called from init_database().
+    """Run all pending migrations in order. Called twice from init_database().
+
+    First call: upgrades existing DBs (skips migrations whose target table
+    doesn't exist yet on fresh install).
+    Second call (after init_schema): records those fresh-install skips so the
+    health check stays accurate — re-running is safe because every migration
+    guards with PRAGMA table_info before mutating anything.
 
     Tracks applied migrations in schema_migrations table for idempotency and
     to prevent race conditions when multiple uvicorn workers start simultaneously.

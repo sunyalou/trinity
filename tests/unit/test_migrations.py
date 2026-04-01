@@ -183,6 +183,36 @@ class TestFailurePropagation:
             # Should NOT raise
             run_all_migrations(cursor, conn)
 
+    def test_fresh_install_skip_recorded_on_second_run(self):
+        """Migrations skipped on first pass (no such table) are recorded when re-run after
+        init_schema creates the tables — keeping the health check accurate on fresh installs."""
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        called = []
+
+        def migration_needs_table(cursor, conn):
+            called.append("run")
+            # Raises on first call (table doesn't exist), succeeds on second
+            if len(called) == 1:
+                raise sqlite3.OperationalError("no such table: some_table")
+
+        with patch.object(_migrations_mod, "MIGRATIONS", [("needs_table", migration_needs_table)]):
+            # First pass: skipped, not recorded
+            run_all_migrations(cursor, conn)
+            cursor.execute("SELECT COUNT(*) FROM schema_migrations WHERE name='needs_table'")
+            assert cursor.fetchone()[0] == 0, "Should not be recorded after skip"
+
+            # Simulate init_schema creating the table
+            cursor.execute("CREATE TABLE some_table (id INTEGER PRIMARY KEY)")
+            conn.commit()
+
+            # Second pass: succeeds and is recorded
+            run_all_migrations(cursor, conn)
+            cursor.execute("SELECT COUNT(*) FROM schema_migrations WHERE name='needs_table'")
+            assert cursor.fetchone()[0] == 1, "Should be recorded after second pass succeeds"
+
     def test_failing_migration_logs_error(self):
         conn, cursor = _make_db()
 
