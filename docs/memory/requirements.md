@@ -1657,6 +1657,12 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
 - **Status**: ✅ Implemented
 - **Description**: `--format json` (default, for scripting) and `--format table` (human-readable via Rich)
 
+### 30.5 CLI Multi-Instance Profiles (CLI-005)
+- **Status**: 🚧 In Progress
+- **Description**: Named profiles for managing multiple Trinity instances (local, staging, production) from a single CLI installation
+- **Key Features**: `trinity profile list|use|remove`, `--profile` global flag, `TRINITY_PROFILE` env var, legacy flat config auto-migration to `default` profile
+- **Location**: `src/cli/trinity_cli/config.py`, `src/cli/trinity_cli/commands/profiles.py`
+
 ---
 
 ## Out of Scope
