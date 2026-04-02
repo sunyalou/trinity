@@ -1634,6 +1634,31 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
 
 ---
 
+## 30. CLI Tool (CLI-001)
+
+### 30.1 CLI Package
+- **Status**: 🚧 In Progress
+- **Description**: Python Click CLI (`trinity`) that provides shell-level access to the platform
+- **Key Features**: `pip install -e src/cli/`, mirrors core MCP tools as shell commands, JSON and table output
+- **Location**: `src/cli/`
+
+### 30.2 CLI Authentication (CLI-002)
+- **Status**: ✅ Implemented
+- **Description**: Email-based login flow for CLI users
+- **Key Features**: `trinity init` (onboarding), `trinity login` (email + code), `trinity logout`, `trinity status`, config stored in `~/.trinity/config.json`
+- **API**: `POST /api/access/request` (auto-approve whitelist), reuses `/api/auth/email/request` + `/api/auth/email/verify`
+
+### 30.3 CLI Agent Operations (CLI-003)
+- **Status**: ✅ Implemented
+- **Description**: Core agent management commands
+- **Key Features**: `trinity agents list|get|create|delete|start|stop|rename`, `trinity chat`, `trinity logs`, `trinity health`, `trinity skills`, `trinity schedules`, `trinity tags`
+
+### 30.4 CLI Output Formatting (CLI-004)
+- **Status**: ✅ Implemented
+- **Description**: `--format json` (default, for scripting) and `--format table` (human-readable via Rich)
+
+---
+
 ## Out of Scope
 
 - Multi-tenant deployment (single org only)

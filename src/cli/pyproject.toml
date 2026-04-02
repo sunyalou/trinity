@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trinity-cli"
+version = "0.1.0"
+description = "CLI for the Trinity Autonomous Agent Orchestration Platform"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.0",
+    "httpx>=0.24",
+    "rich>=13.0",
+]
+
+[project.scripts]
+trinity = "trinity_cli.main:cli"
+
+[tool.setuptools.packages.find]
+include = ["trinity_cli*"]

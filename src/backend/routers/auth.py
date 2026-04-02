@@ -431,3 +431,65 @@ async def verify_email_login_code(request: Request):
             "picture": user.get("picture")
         }
     )
+
+
+# =========================================================================
+# Public Access Request (CLI onboarding)
+# =========================================================================
+
+@router.post("/api/access/request")
+async def request_access(request: Request):
+    """
+    Request access to this Trinity instance.
+
+    Unauthenticated endpoint. Auto-approves the email by adding it to the
+    whitelist. Idempotent — returns success if already whitelisted.
+
+    Rate limit: 5 requests per 10 minutes per IP.
+    """
+    # Block if setup is not completed
+    if not is_setup_completed():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="setup_required"
+        )
+
+    # Check if email auth is enabled (access request only makes sense with email auth)
+    email_auth_setting = db.get_setting_value("email_auth_enabled", str(EMAIL_AUTH_ENABLED).lower())
+    if email_auth_setting.lower() != "true":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email authentication is disabled"
+        )
+
+    # Rate limit by IP
+    client_ip = request.client.host if request.client else "unknown"
+    check_login_rate_limit(client_ip)
+
+    # Parse request
+    body = await request.json()
+    email = body.get("email", "").lower().strip()
+    if not email or "@" not in email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Valid email address required"
+        )
+
+    # Auto-approve: add to whitelist if not already present
+    if db.is_email_whitelisted(email):
+        record_login_attempt(client_ip, success=True)
+        return {"success": True, "message": "Access granted", "already_registered": True}
+
+    try:
+        db.add_to_whitelist(email, added_by="admin", source="cli")
+    except Exception as e:
+        logger.error(f"Failed to add {email} to whitelist: {e}")
+        record_login_attempt(client_ip, success=False)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to grant access"
+        )
+
+    record_login_attempt(client_ip, success=True)
+    logger.info(f"CLI access granted: {email}")
+    return {"success": True, "message": "Access granted", "already_registered": False}

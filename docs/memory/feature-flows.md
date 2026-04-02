@@ -11,6 +11,7 @@
 
 | Date | ID | Feature | Flow |
 |------|-----|---------|------|
+| 2026-04-01 | CLI-001 | Trinity CLI tool — Python Click CLI mirroring core MCP tools as shell commands | [cli-tool.md](feature-flows/cli-tool.md) |
 | 2026-04-01 | SUB-004 | Per-subscription rolling token/cost usage windows (5h, 7d) across chat and executions | [subscription-usage-tracking.md](feature-flows/subscription-usage-tracking.md) |
 | 2026-03-31 | #222 | Slack inbound file sharing — images via vision, text files via container copy (SLACK-FILES) | [slack-file-sharing.md](feature-flows/slack-file-sharing.md) |
 | 2026-03-31 | TELEGRAM-001 | Telegram bot integration — per-agent bots, webhook transport, encrypted tokens | [telegram-integration.md](feature-flows/telegram-integration.md) |
@@ -190,6 +191,7 @@
 | Flow | Document | Description |
 |------|----------|-------------|
 | MCP Orchestration | [mcp-orchestration.md](feature-flows/mcp-orchestration.md) | 62 MCP tools for agent orchestration |
+| Trinity CLI | [cli-tool.md](feature-flows/cli-tool.md) | Python Click CLI mirroring core MCP tools as shell commands |
 | Trinity Connect | [trinity-connect.md](feature-flows/trinity-connect.md) | Local-remote agent sync via WebSocket |
 
 ### GitHub Integration
