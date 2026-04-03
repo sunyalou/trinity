@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from models import AgentConfig, AgentStatus, User, DeployLocalRequest
 from database import db
-from dependencies import get_current_user, decode_token, require_role, AuthorizedAgentByName, CurrentUser
+from dependencies import get_current_user, decode_token, require_role, AuthorizedAgentByName, OwnedAgentByName, CurrentUser
 from services.docker_service import (
     docker_client,
     get_agent_container,
@@ -377,6 +377,12 @@ async def delete_agent_endpoint(agent_name: str, request: Request, current_user:
     except Exception as e:
         logger.warning(f"Failed to delete permissions for agent {agent_name}: {e}")
 
+    # Delete agent event subscriptions (EVT-001)
+    try:
+        db.delete_agent_event_subscriptions(agent_name)
+    except Exception as e:
+        logger.warning(f"Failed to delete event subscriptions for agent {agent_name}: {e}")
+
     # Delete agent skills
     try:
         db.delete_agent_skills(agent_name)
@@ -516,9 +522,9 @@ async def get_agent_logs_endpoint(
 
 @router.get("/{agent_name}/stats")
 async def get_agent_stats_endpoint(
-    agent_name: str,
+    agent_name: AuthorizedAgentByName,
     request: Request,
-    current_user: User = Depends(get_current_user)
+    current_user: CurrentUser,
 ):
     """Get live container stats (CPU, memory, network) for an agent."""
     return await get_agent_stats_logic(agent_name, current_user)
@@ -530,8 +536,8 @@ async def get_agent_stats_endpoint(
 
 @router.get("/{agent_name}/queue")
 async def get_agent_queue_status(
-    agent_name: str,
-    current_user: User = Depends(get_current_user)
+    agent_name: AuthorizedAgentByName,
+    current_user: CurrentUser,
 ):
     """Get execution queue status for an agent."""
     return await get_agent_queue_status_logic(agent_name, current_user)
@@ -539,19 +545,19 @@ async def get_agent_queue_status(
 
 @router.post("/{agent_name}/queue/clear")
 async def clear_agent_queue(
-    agent_name: str,
-    current_user: User = Depends(get_current_user)
+    agent_name: OwnedAgentByName,
+    current_user: CurrentUser,
 ):
-    """Clear all queued executions for an agent."""
+    """Clear all queued executions for an agent. Owner-only."""
     return await clear_agent_queue_logic(agent_name, current_user)
 
 
 @router.post("/{agent_name}/queue/release")
 async def force_release_agent(
-    agent_name: str,
-    current_user: User = Depends(get_current_user)
+    agent_name: OwnedAgentByName,
+    current_user: CurrentUser,
 ):
-    """Force release an agent from its running state."""
+    """Force release an agent from its running state. Owner-only."""
     return await force_release_agent_logic(agent_name, current_user)
 
 

@@ -89,8 +89,11 @@ class TestUpdateUserRole:
 
     def test_update_role_invalid_value(self, api_client: TrinityApiClient):
         """Invalid role value is rejected with 400."""
-        response = api_client.put("/api/users/admin/role", json={"role": "superuser"})
+        # Target a different username to avoid hitting the self-guard first
+        response = api_client.put("/api/users/nonexistent-user-xyz/role", json={"role": "superuser"})
         assert_status(response, 400)
+        data = response.json()
+        assert "invalid role" in data.get("detail", "").lower()
 
     def test_update_role_nonexistent_user(self, api_client: TrinityApiClient):
         """Updating role for non-existent user returns 404."""

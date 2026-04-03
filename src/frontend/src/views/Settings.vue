@@ -1399,9 +1399,10 @@ const usersList = ref([])
 const loadingUsers = ref(false)
 const currentUsername = computed(() => {
   const u = authStore.user
-  // admin login stores email as `${username}@localhost`
-  if (u?.email?.endsWith('@localhost')) return u.email.replace('@localhost', '')
-  return u?.email || u?.name || null
+  // admin login sets name=username, email=username@localhost
+  // email login sets email=actual_email (which is also the username)
+  if (u?.email?.endsWith('@localhost')) return u.name || u.email.replace('@localhost', '')
+  return u?.email || null
 })
 
 // GitHub Templates state (TMPL-001)

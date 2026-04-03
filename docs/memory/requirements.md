@@ -82,7 +82,22 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
 - **Description**: Share agents with team members
 - **Key Features**: Share via email, access levels (Owner/Shared/Admin), sharing tab for owners
 
-### 2.5 Auth0 OAuth
+### 2.5 User Role Model (ROLE-001)
+- **Status**: ✅ Implemented (2026-03-20)
+- **Requirement ID**: ROLE-001
+- **GitHub Issue**: #143
+- **Description**: 4-tier role hierarchy (admin > creator > operator > user) with server-side enforcement via `require_role()` dependency factory
+- **Key Features**:
+  - Role hierarchy: `user` < `operator` < `creator` < `admin`
+  - `require_role(min_role)` FastAPI dependency factory for endpoint protection
+  - Agent creation restricted to `creator`+ role
+  - Admin-only user management: `GET /api/users`, `PUT /api/users/{username}/role`
+  - New email users default to `creator` role
+  - Settings UI "User Management" section with role dropdowns
+- **Database**: `role` column on `users` table (default `"user"`)
+- **Flow**: `docs/memory/feature-flows/role-model.md`
+
+### 2.6 Auth0 OAuth
 - **Status**: ❌ Removed (2026-01-01)
 - **Reason**: Auth0 SDK caused blank pages on HTTP LAN access. Email auth is simpler and works everywhere.
 

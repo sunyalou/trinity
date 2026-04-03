@@ -107,6 +107,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 
 *Auth & Security:*
 - `auth.py` - Authentication endpoints (admin login, email auth, token validation)
+- `users.py` - User management (list users, update roles) (ROLE-001)
 - `mcp_keys.py` - MCP API key management
 - `setup.py` - First-time setup wizard
 
@@ -590,7 +591,7 @@ Services that run continuously in the backend process:
 | POST | `/api/agents/{name}/schedules/{id}/trigger` | Manual trigger |
 | GET | `/api/agents/{name}/schedules/{id}/executions` | Execution history |
 
-### Auth & MCP (12 endpoints)
+### Auth, Users & MCP (15 endpoints)
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/auth/mode` | Get auth mode config - unauthenticated |
@@ -599,6 +600,8 @@ Services that run continuously in the backend process:
 | POST | `/api/auth/email/verify` | Verify email code and login |
 | GET | `/api/auth/validate` | Validate JWT (for nginx auth_request) |
 | GET | `/api/users/me` | Current user |
+| GET | `/api/users` | List all users with roles (admin-only, ROLE-001) |
+| PUT | `/api/users/{username}/role` | Update user role (admin-only, ROLE-001) |
 | GET | `/api/mcp/info` | MCP server info |
 | POST | `/api/mcp/keys` | Create API key |
 | GET | `/api/mcp/keys` | List API keys |

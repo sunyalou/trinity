@@ -231,7 +231,7 @@ class UserOperations:
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE users SET role = ?, updated_at = ? WHERE username = ?
-            """, (role, datetime.utcnow().isoformat(), username))
+            """, (role, datetime.now().isoformat(), username))
             conn.commit()
             if cursor.rowcount == 0:
                 return None

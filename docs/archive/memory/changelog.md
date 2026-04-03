@@ -111,6 +111,12 @@ Unauthenticated information disclosure (pentest finding 3.2.3, CVSS 5.1). Teleme
 
 🐛 **fix: Update GITHUB_PAT env var on container recreation (#209)**
 
+Container recreation now updates `GITHUB_PAT` to the current system value, and agent restart detects stale PATs to trigger recreation. Previously, PAT was frozen at agent creation time.
+
+- `src/backend/services/agent_service/helpers.py` — Added `check_github_pat_env_matches()` to detect stale PAT
+- `src/backend/services/agent_service/lifecycle.py` — Added PAT check to `needs_recreation` and PAT update to `recreate_container_with_updated_config`
+- `tests/unit/test_github_pat_recreation.py` — 7 unit tests
+
 ---
 
 🔒 **fix(security): Credential injection file path allowlist — block arbitrary file writes (#183)**
