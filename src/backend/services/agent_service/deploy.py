@@ -26,6 +26,7 @@ from models import (
 from services.template_service import is_trinity_compatible
 from services.docker_service import get_agent_container
 from services.docker_utils import container_stop
+from services.agent_client import get_agent_client
 from utils.helpers import sanitize_agent_name
 from .helpers import get_agents_by_prefix, get_next_version_name, get_latest_version
 
@@ -372,26 +373,65 @@ async def deploy_local_agent_logic(
         # 11. CRED-002: Inject credentials using new simplified system
         if body.credentials:
             try:
-                # Wait a moment for the agent to start
-                await asyncio.sleep(2)
+                # Wait for agent to become healthy before injecting credentials.
+                # Agent startup time varies (5-30s+) depending on template,
+                # GitHub clone, and container init overhead.
+                agent_client = get_agent_client(version_name)
+                agent_ready = False
+                max_wait = 60  # seconds
+                poll_interval = 2  # seconds
+                elapsed = 0
 
-                # Build .env content from credentials
-                env_content = "\n".join(f"{k}={v}" for k, v in body.credentials.items())
+                logger.info(f"Waiting for agent {version_name} to become ready for credential injection...")
+                while elapsed < max_wait:
+                    await asyncio.sleep(poll_interval)
+                    elapsed += poll_interval
+                    if await agent_client.health_check(timeout=3.0):
+                        agent_ready = True
+                        logger.info(f"Agent {version_name} ready after {elapsed}s")
+                        break
 
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    await client.post(
-                        f"http://agent-{version_name}:8000/api/credentials/inject",
-                        json={"files": {".env": env_content}}
+                if not agent_ready:
+                    logger.warning(
+                        f"Agent {version_name} not ready after {max_wait}s — "
+                        f"credentials left as pending_injection"
                     )
-                    logger.info(f"Injected {len(body.credentials)} credentials into {version_name}")
+                else:
+                    # Build .env content from credentials
+                    env_content = "\n".join(f"{k}={v}" for k, v in body.credentials.items())
 
-                # Update credential results to show success
-                for key in cred_results:
-                    cred_results[key] = CredentialImportResult(
-                        status="injected",
-                        name=key,
-                        original=None
-                    )
+                    # Retry injection up to 3 times with backoff
+                    injected = False
+                    for attempt in range(3):
+                        try:
+                            async with httpx.AsyncClient(timeout=30.0) as client:
+                                resp = await client.post(
+                                    f"http://agent-{version_name}:8000/api/credentials/inject",
+                                    json={"files": {".env": env_content}}
+                                )
+                                if resp.status_code == 200:
+                                    injected = True
+                                    break
+                                logger.warning(
+                                    f"Credential injection attempt {attempt + 1} returned {resp.status_code}"
+                                )
+                        except Exception as e:
+                            logger.warning(f"Credential injection attempt {attempt + 1} failed: {e}")
+                        if attempt < 2:
+                            await asyncio.sleep(2 * (attempt + 1))
+
+                    if injected:
+                        logger.info(f"Injected {len(body.credentials)} credentials into {version_name}")
+                        for key in cred_results:
+                            cred_results[key] = CredentialImportResult(
+                                status="injected",
+                                name=key,
+                                original=None
+                            )
+                    else:
+                        logger.warning(
+                            f"Failed to inject credentials into {version_name} after 3 attempts"
+                        )
             except Exception as e:
                 logger.warning(f"Failed to inject credentials: {e}")
 
@@ -409,7 +449,7 @@ async def deploy_local_agent_logic(
                 new_version=version_name
             ),
             credentials_imported={k: v.dict() for k, v in cred_results.items()},
-            credentials_injected=len(cred_results)
+            credentials_injected=sum(1 for v in cred_results.values() if v.status == "injected")
         )
 
     except HTTPException:
