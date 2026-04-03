@@ -67,6 +67,42 @@
                     </div>
                   </div>
 
+                  <!-- GitHub Repository URL option -->
+                  <div
+                    @click="form.template = 'github-custom'"
+                    :class="[
+                      'relative flex items-center p-3 border rounded-lg cursor-pointer transition-all',
+                      form.template === 'github-custom' ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/30 ring-2 ring-indigo-500' : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
+                    ]"
+                  >
+                    <div class="flex-shrink-0 w-8 h-8 rounded-full bg-gray-900 dark:bg-gray-700 flex items-center justify-center">
+                      <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                      </svg>
+                    </div>
+                    <div class="ml-3 flex-1">
+                      <p class="text-sm font-medium text-gray-900 dark:text-white">GitHub Repository</p>
+                      <p class="text-xs text-gray-500 dark:text-gray-400">Create from any GitHub repository URL</p>
+                    </div>
+                    <div v-if="form.template === 'github-custom'" class="flex-shrink-0 text-indigo-500 dark:text-indigo-400">
+                      <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+                      </svg>
+                    </div>
+                  </div>
+                  <!-- GitHub repo URL input (shown when GitHub Repository is selected) -->
+                  <div v-if="form.template === 'github-custom'" class="pl-11">
+                    <input
+                      v-model="githubRepoUrl"
+                      type="text"
+                      ref="githubRepoInput"
+                      class="block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm px-3 py-2 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
+                      placeholder="owner/repo or https://github.com/owner/repo"
+                      @click.stop
+                    />
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Enter a GitHub repository in <code>owner/repo</code> format</p>
+                  </div>
+
                   <!-- Local templates section (shown first after Blank Agent) -->
                   <div v-if="localTemplates.length > 0" class="pt-2">
                     <p class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2 flex items-center">
@@ -183,7 +219,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed, watch } from 'vue'
+import { ref, reactive, onMounted, computed, watch, nextTick } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
@@ -204,9 +240,21 @@ const form = reactive({
   template: props.initialTemplate || ''
 })
 
+const githubRepoUrl = ref('')
+const githubRepoInput = ref(null)
+
 // Watch for initialTemplate changes (in case modal is reused)
 watch(() => props.initialTemplate, (newVal) => {
   form.template = newVal || ''
+})
+
+// Auto-focus GitHub repo input when selected
+watch(() => form.template, (newVal) => {
+  if (newVal === 'github-custom') {
+    nextTick(() => {
+      githubRepoInput.value?.focus()
+    })
+  }
 })
 
 const templates = ref([])
@@ -237,6 +285,22 @@ const truncateDescription = (description) => {
     return firstLine.substring(0, 57) + '...'
   }
   return firstLine
+}
+
+// Parse GitHub repo from various input formats into owner/repo
+const parseGithubRepo = (input) => {
+  if (!input) return null
+  let repo = input.trim()
+  // Handle full URLs: https://github.com/owner/repo(.git)
+  const urlMatch = repo.match(/github\.com\/([^/]+\/[^/\s#?.]+)/)
+  if (urlMatch) {
+    repo = urlMatch[1].replace(/\.git$/, '')
+  }
+  // Validate owner/repo format
+  if (/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(repo)) {
+    return repo
+  }
+  return null
 }
 
 const onTemplateChange = () => {
@@ -270,7 +334,15 @@ const createAgent = async () => {
       name: form.name
     }
 
-    if (form.template) {
+    if (form.template === 'github-custom') {
+      const repo = parseGithubRepo(githubRepoUrl.value)
+      if (!repo) {
+        error.value = 'Please enter a valid GitHub repository (e.g., owner/repo)'
+        loading.value = false
+        return
+      }
+      payload.template = `github:${repo}`
+    } else if (form.template) {
       payload.template = form.template
     }
 
