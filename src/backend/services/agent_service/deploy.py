@@ -7,7 +7,6 @@ import base64
 import tarfile
 import tempfile
 import shutil
-import asyncio
 import logging
 from pathlib import Path
 from io import BytesIO
@@ -21,12 +20,10 @@ from models import (
     DeployLocalRequest,
     DeployLocalResponse,
     VersioningInfo,
-    CredentialImportResult,
 )
 from services.template_service import is_trinity_compatible
 from services.docker_service import get_agent_container
 from services.docker_utils import container_stop
-from services.agent_client import get_agent_client
 from utils.helpers import sanitize_agent_name
 from .helpers import get_agents_by_prefix, get_next_version_name, get_latest_version
 
@@ -34,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 # Size limits for local deployment
 MAX_ARCHIVE_SIZE = 50 * 1024 * 1024  # 50 MB
-MAX_CREDENTIALS = 100
 MAX_FILES = 1000
 
 
@@ -195,11 +191,11 @@ async def deploy_local_agent_logic(
     directory, validates it's Trinity-compatible (has template.yaml), handles
     versioning if an agent with the same name exists, and creates the agent.
 
-    CRED-002: Credentials are now injected after agent creation via
-    inject_credentials endpoint, not during deployment.
+    Credentials should be included in the archive (.env file) — no
+    separate credential injection step.
 
     Args:
-        body: Deploy request with archive and credentials
+        body: Deploy request with archive
         current_user: Authenticated user
         request: FastAPI request object
         create_agent_fn: Function to create agent (create_agent_internal)
@@ -207,8 +203,6 @@ async def deploy_local_agent_logic(
     Returns:
         DeployLocalResponse with deployment details
     """
-    import httpx
-
     temp_dir = None
 
     try:
@@ -233,17 +227,7 @@ async def deploy_local_agent_logic(
                 }
             )
 
-        # 2. Validate credentials count
-        if body.credentials and len(body.credentials) > MAX_CREDENTIALS:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": f"Credentials exceed maximum count of {MAX_CREDENTIALS}",
-                    "code": "TOO_MANY_CREDENTIALS"
-                }
-            )
-
-        # 3. Extract archive to temp directory
+        # 2. Extract archive to temp directory
         temp_dir = Path(tempfile.mkdtemp(prefix="trinity-deploy-"))
         try:
             with tarfile.open(fileobj=BytesIO(archive_bytes), mode='r:gz') as tar:
@@ -308,18 +292,7 @@ async def deploy_local_agent_logic(
             except Exception as e:
                 logger.warning(f"Failed to stop previous version {previous_version.name}: {e}")
 
-        # 8. CRED-002: Credentials are passed to agent after creation via inject
-        # Just track what credentials were provided
-        cred_results = {}
-        if body.credentials:
-            for key, value in body.credentials.items():
-                cred_results[key] = CredentialImportResult(
-                    status="pending_injection",
-                    name=key,
-                    original=None
-                )
-
-        # 9. Copy to templates directory
+        # 8. Copy to templates directory
         # Try /agent-configs/templates first, but check if writable (not just if exists)
         # The read-only mount makes this path exist but not writable
         templates_dir = Path("/agent-configs/templates")
@@ -370,75 +343,7 @@ async def deploy_local_agent_logic(
             skip_name_sanitization=True
         )
 
-        # 11. CRED-002: Inject credentials using new simplified system
-        if body.credentials:
-            try:
-                # Wait for agent to become healthy before injecting credentials.
-                # Agent startup time varies (5-30s+) depending on template,
-                # GitHub clone, and container init overhead.
-                agent_client = get_agent_client(version_name)
-                agent_ready = False
-                max_wait = 60  # seconds
-                poll_interval = 2  # seconds
-                elapsed = 0
-
-                logger.info(f"Waiting for agent {version_name} to become ready for credential injection...")
-                while elapsed < max_wait:
-                    await asyncio.sleep(poll_interval)
-                    elapsed += poll_interval
-                    if await agent_client.health_check(timeout=3.0):
-                        agent_ready = True
-                        logger.info(f"Agent {version_name} ready after {elapsed}s")
-                        break
-
-                if not agent_ready:
-                    logger.warning(
-                        f"Agent {version_name} not ready after {max_wait}s — "
-                        f"credentials left as pending_injection"
-                    )
-                else:
-                    # Build .env content from credentials
-                    env_content = "\n".join(f"{k}={v}" for k, v in body.credentials.items())
-
-                    # Retry injection up to 3 times with backoff
-                    injected = False
-                    for attempt in range(3):
-                        try:
-                            async with httpx.AsyncClient(timeout=30.0) as client:
-                                resp = await client.post(
-                                    f"http://agent-{version_name}:8000/api/credentials/inject",
-                                    json={"files": {".env": env_content}}
-                                )
-                                if resp.status_code == 200:
-                                    injected = True
-                                    break
-                                logger.warning(
-                                    f"Credential injection attempt {attempt + 1} returned {resp.status_code}"
-                                )
-                        except Exception as e:
-                            logger.warning(f"Credential injection attempt {attempt + 1} failed: {e}")
-                        if attempt < 2:
-                            await asyncio.sleep(2 * (attempt + 1))
-
-                    if injected:
-                        logger.info(f"Injected {len(body.credentials)} credentials into {version_name}")
-                        for key in cred_results:
-                            cred_results[key] = CredentialImportResult(
-                                status="injected",
-                                name=key,
-                                original=None
-                            )
-                    else:
-                        logger.warning(
-                            f"Failed to inject credentials into {version_name} after 3 attempts"
-                        )
-            except Exception as e:
-                logger.warning(f"Failed to inject credentials: {e}")
-
-        # NOTE: Platform instructions are now injected at runtime via --append-system-prompt
-        # on every chat/task request (Issue #136). No file-based injection needed on deploy.
-
-        # 12. Return response
+        # 11. Return response
         return DeployLocalResponse(
             status="success",
             agent=agent_status,
@@ -448,8 +353,6 @@ async def deploy_local_agent_logic(
                 previous_version_stopped=previous_stopped,
                 new_version=version_name
             ),
-            credentials_imported={k: v.dict() for k, v in cred_results.items()},
-            credentials_injected=sum(1 for v in cred_results.values() if v.status == "injected")
         )
 
     except HTTPException:

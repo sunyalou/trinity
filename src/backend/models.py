@@ -316,7 +316,6 @@ class VersioningInfo(BaseModel):
 class DeployLocalRequest(BaseModel):
     """Request to deploy a local agent."""
     archive: str  # Base64-encoded tar.gz
-    credentials: Optional[Dict[str, str]] = None  # KEY=VALUE pairs
     name: Optional[str] = None  # Override name from template.yaml
 
 
@@ -325,8 +324,6 @@ class DeployLocalResponse(BaseModel):
     status: str  # "success" or "error"
     agent: Optional[AgentStatus] = None
     versioning: Optional[VersioningInfo] = None
-    credentials_imported: Dict[str, CredentialImportResult] = {}
-    credentials_injected: int = 0
     error: Optional[str] = None
     code: Optional[str] = None  # Error code for machine-readable errors
 

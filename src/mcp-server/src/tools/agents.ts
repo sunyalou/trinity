@@ -559,26 +559,19 @@ export function createAgentTools(
         "Deploy a Trinity-compatible local agent to the remote Trinity platform. " +
         "IMPORTANT: The calling agent must package the directory locally before calling this tool. " +
         "Steps for the calling agent: " +
-        "1. Create tar.gz archive: `tar -czf agent.tar.gz --exclude='.git' --exclude='node_modules' --exclude='__pycache__' --exclude='.venv' --exclude='.env' -C /path/to agent-dir` " +
+        "1. Create tar.gz archive: `tar -czf agent.tar.gz --exclude='.git' --exclude='node_modules' --exclude='__pycache__' --exclude='.venv' -C /path/to agent-dir` " +
         "2. Base64 encode: `base64 -i agent.tar.gz` (macOS) or `base64 agent.tar.gz` (Linux) " +
-        "3. Optionally read .env file for credentials " +
-        "4. Call this tool with the base64 archive and credentials. " +
+        "3. Call this tool with the base64 archive. " +
         "The archive must contain a template.yaml with 'name' and 'resources' fields. " +
+        "Include .env and other credential files in the archive — they are deployed as-is. " +
         "If agent name exists, creates new version (my-agent-2) and stops old one.",
       parameters: z.object({
         archive: z
           .string()
           .describe(
             "Base64-encoded tar.gz archive of the agent directory. " +
-            "The archive should contain the agent files at the root level (template.yaml, CLAUDE.md, etc.). " +
-            "Exclude .git, node_modules, __pycache__, .venv, and .env from the archive."
-          ),
-        credentials: z
-          .record(z.string())
-          .optional()
-          .describe(
-            "Key-value pairs of credentials to inject (e.g., {\"API_KEY\": \"sk-xxx\", \"SECRET\": \"yyy\"}). " +
-            "Read these from the local .env file before calling."
+            "The archive should contain the agent files at the root level (template.yaml, CLAUDE.md, .env, etc.). " +
+            "Exclude .git, node_modules, __pycache__, and .venv from the archive."
           ),
         name: z
           .string()
@@ -586,7 +579,7 @@ export function createAgentTools(
           .describe("Agent name override (defaults to name from template.yaml)"),
       }),
       execute: async (
-        args: { archive: string; credentials?: Record<string, string>; name?: string },
+        args: { archive: string; name?: string },
         context?: { session?: McpAuthContext }
       ) => {
         const authContext = context?.session;
@@ -608,9 +601,8 @@ export function createAgentTools(
 
         // Log for debugging
         const archiveSize = Math.round((args.archive.length * 3) / 4 / 1024);
-        const credCount = args.credentials ? Object.keys(args.credentials).length : 0;
         console.log(
-          `[deploy_local_agent] Deploying archive: ~${archiveSize}KB, ${credCount} credentials`
+          `[deploy_local_agent] Deploying archive: ~${archiveSize}KB`
         );
 
         // Call backend
@@ -628,15 +620,6 @@ export function createAgentTools(
             previous_version_stopped: boolean;
             new_version: string;
           };
-          credentials_imported: Record<
-            string,
-            {
-              status: string;
-              name: string;
-              original?: string;
-            }
-          >;
-          credentials_injected: number;
           error?: string;
           code?: string;
         }
@@ -646,7 +629,6 @@ export function createAgentTools(
           "/api/agents/deploy-local",
           {
             archive: args.archive,
-            credentials: args.credentials,
             name: args.name,
           }
         );
