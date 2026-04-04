@@ -9,7 +9,7 @@ from ..output import format_output
 @click.command("chat")
 @click.argument("agent")
 @click.argument("message")
-@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="json", help="Output format")
+@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table", help="Output format")
 def chat_with_agent(agent, message, fmt):
     """Send a message to an agent.
 
@@ -33,7 +33,7 @@ def chat_history_group():
 
 @click.command("history")
 @click.argument("agent")
-@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="json", help="Output format")
+@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table", help="Output format")
 def chat_history(agent, fmt):
     """Get chat history for an agent."""
     client = TrinityClient()
@@ -44,7 +44,7 @@ def chat_history(agent, fmt):
 @click.command("logs")
 @click.argument("agent")
 @click.option("--tail", default=50, help="Number of log lines")
-@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="json", help="Output format")
+@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table", help="Output format")
 def logs(agent, tail, fmt):
     """View agent container logs.
 

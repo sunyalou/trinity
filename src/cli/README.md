@@ -67,11 +67,11 @@ trinity profile list
 ## Output Formats
 
 ```bash
-# JSON (default)
+# Table (default, human-readable)
 trinity agents list
 
-# Table
-trinity agents list --format table
+# JSON (for piping/scripting)
+trinity agents list --format json
 ```
 
 ## Environment Variables

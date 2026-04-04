@@ -16,12 +16,28 @@ jobs:
     environment:
       name: pypi
       url: https://pypi.org/project/trinity-cli/
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          # cli-v0.2.0 → 0.2.0
+          VERSION="${GITHUB_REF_NAME#cli-v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing version: $VERSION"
+
+      - name: Inject version into pyproject.toml
+        working-directory: src/cli
+        run: |
+          sed -i 's/^version = .*/version = "${{ steps.version.outputs.version }}"/' pyproject.toml
+          grep '^version' pyproject.toml
 
       - name: Install build tools
         run: pip install build
@@ -34,3 +50,62 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: src/cli/dist/
+
+  update-homebrew:
+    name: Update Homebrew formula
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for PyPI availability
+        run: |
+          VERSION="${{ needs.publish.outputs.version }}"
+          URL="https://files.pythonhosted.org/packages/source/t/trinity-cli/trinity_cli-${VERSION}.tar.gz"
+          echo "Waiting for $URL ..."
+          for i in $(seq 1 30); do
+            if curl -sf --head "$URL" > /dev/null 2>&1; then
+              echo "Available after ${i}0 seconds"
+              break
+            fi
+            sleep 10
+          done
+
+      - name: Download sdist and compute sha256
+        id: hash
+        run: |
+          VERSION="${{ needs.publish.outputs.version }}"
+          URL="https://files.pythonhosted.org/packages/source/t/trinity-cli/trinity_cli-${VERSION}.tar.gz"
+          curl -sfL -o trinity_cli.tar.gz "$URL"
+          SHA256=$(sha256sum trinity_cli.tar.gz | cut -d' ' -f1)
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "SHA256: $SHA256"
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ needs.publish.outputs.version }}"
+          SHA256="${{ steps.hash.outputs.sha256 }}"
+
+          # Clone the tap repo
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/abilityai/homebrew-tap.git" tap
+          cd tap
+
+          FORMULA="Formula/trinity-cli.rb"
+          if [ ! -f "$FORMULA" ]; then
+            echo "Formula not found at $FORMULA, checking root..."
+            FORMULA="trinity-cli.rb"
+          fi
+
+          # Update version URL and sha256
+          sed -i "s|url \"https://files.pythonhosted.org/packages/source/t/trinity-cli/trinity_cli-.*\.tar\.gz\"|url \"https://files.pythonhosted.org/packages/source/t/trinity-cli/trinity_cli-${VERSION}.tar.gz\"|" "$FORMULA"
+          sed -i "0,/sha256 \"[a-f0-9]*\"/s|sha256 \"[a-f0-9]*\"|sha256 \"${SHA256}\"|" "$FORMULA"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$FORMULA"
+          git commit -m "trinity-cli ${VERSION}" || echo "No changes to commit"
+          git push

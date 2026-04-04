@@ -73,6 +73,17 @@ Environment variables take precedence over the config file.
 | `trinity logout` | Clear stored credentials |
 | `trinity status` | Show instance, user, and connection status |
 
+### Deploy
+
+| Command | Description |
+|---------|-------------|
+| `trinity deploy .` | Deploy current directory as an agent |
+| `trinity deploy ./path` | Deploy a specific directory |
+| `trinity deploy . --name bot` | Override agent name |
+| `trinity deploy --repo user/repo` | Deploy from a GitHub repo |
+
+On first deploy, writes `.trinity-remote.yaml` for tracking. Subsequent deploys update the same agent.
+
 ### Agents
 
 | Command | Description |
@@ -123,15 +134,15 @@ Environment variables take precedence over the config file.
 
 ## Output Formats
 
-All commands support `--format json` (default) and `--format table`:
+All commands support `--format table` (default) and `--format json`:
 
 ```bash
-# JSON (default) — good for piping and scripts
+# Table (default) — human-readable
 trinity agents list
-trinity agents list | jq '.[].name'
 
-# Table — human-readable
-trinity agents list --format table
+# JSON — for piping and scripts
+trinity agents list --format json
+trinity agents list --format json | jq '.[].name'
 ```
 
 ## Configuration

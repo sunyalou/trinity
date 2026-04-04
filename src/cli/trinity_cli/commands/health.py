@@ -13,7 +13,7 @@ def health():
 
 
 @health.command("fleet")
-@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="json", help="Output format")
+@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table", help="Output format")
 def fleet_health(fmt):
     """Show fleet-wide health status."""
     client = TrinityClient()
@@ -23,7 +23,7 @@ def fleet_health(fmt):
 
 @health.command("agent")
 @click.argument("name")
-@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="json", help="Output format")
+@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table", help="Output format")
 def agent_health(name, fmt):
     """Show health status for a specific agent."""
     client = TrinityClient()

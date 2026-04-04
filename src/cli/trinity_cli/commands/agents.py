@@ -13,7 +13,7 @@ def agents():
 
 
 @agents.command("list")
-@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="json", help="Output format")
+@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table", help="Output format")
 def list_agents(fmt):
     """List all agents."""
     client = TrinityClient()
@@ -36,7 +36,7 @@ def list_agents(fmt):
 
 @agents.command("get")
 @click.argument("name")
-@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="json", help="Output format")
+@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table", help="Output format")
 def get_agent(name, fmt):
     """Get agent details."""
     client = TrinityClient()
@@ -47,7 +47,7 @@ def get_agent(name, fmt):
 @agents.command("create")
 @click.argument("name")
 @click.option("--template", default=None, help="Template (e.g. github:Org/repo)")
-@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="json", help="Output format")
+@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table", help="Output format")
 def create_agent(name, template, fmt):
     """Create a new agent."""
     client = TrinityClient()

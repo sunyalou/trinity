@@ -1,6 +1,6 @@
 """Output formatting for Trinity CLI.
 
-JSON by default (for piping/scripting). --format table for humans.
+Table (human-readable) by default. Use --format json for piping/scripting.
 """
 
 import json
@@ -10,7 +10,7 @@ from typing import Any
 import click
 
 
-def format_output(data: Any, fmt: str = "json"):
+def format_output(data: Any, fmt: str = "table"):
     """Format and print data according to the chosen format."""
     if fmt == "json":
         click.echo(json.dumps(data, indent=2, default=str))

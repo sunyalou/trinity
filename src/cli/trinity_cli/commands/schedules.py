@@ -14,7 +14,7 @@ def schedules():
 
 @schedules.command("list")
 @click.argument("agent")
-@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="json", help="Output format")
+@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table", help="Output format")
 def list_schedules(agent, fmt):
     """List schedules for an agent."""
     client = TrinityClient()

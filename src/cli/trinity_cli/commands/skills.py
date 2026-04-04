@@ -13,7 +13,7 @@ def skills():
 
 
 @skills.command("list")
-@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="json", help="Output format")
+@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table", help="Output format")
 def list_skills(fmt):
     """List all available skills."""
     client = TrinityClient()
@@ -34,7 +34,7 @@ def list_skills(fmt):
 
 @skills.command("get")
 @click.argument("name")
-@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="json", help="Output format")
+@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table", help="Output format")
 def get_skill(name, fmt):
     """Get details for a specific skill."""
     client = TrinityClient()

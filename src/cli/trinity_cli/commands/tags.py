@@ -13,7 +13,7 @@ def tags():
 
 
 @tags.command("list")
-@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="json", help="Output format")
+@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table", help="Output format")
 def list_tags(fmt):
     """List all tags in use."""
     client = TrinityClient()
@@ -23,7 +23,7 @@ def list_tags(fmt):
 
 @tags.command("get")
 @click.argument("agent")
-@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="json", help="Output format")
+@click.option("--format", "fmt", type=click.Choice(["json", "table"]), default="table", help="Output format")
 def get_agent_tags(agent, fmt):
     """Get tags for a specific agent."""
     client = TrinityClient()

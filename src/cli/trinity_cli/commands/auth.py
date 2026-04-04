@@ -70,6 +70,16 @@ def _write_mcp_json(instance_url: str, mcp_api_key: str):
             gitignore.write_text(f"{marker}\n")
 
 
+def _normalize_url(url: str) -> str:
+    """Normalize a URL: add https:// if no scheme, strip trailing slash."""
+    url = url.strip().rstrip("/")
+    if not url:
+        return url
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+    return url
+
+
 def _get_profile_name(ctx: click.Context) -> str | None:
     """Extract the --profile value from the root context."""
     root = ctx.find_root()
@@ -87,9 +97,21 @@ def login(ctx, instance, profile_opt):
     url = instance or get_instance_url(profile_name)
     if not url:
         url = click.prompt("Trinity instance URL")
-    url = url.rstrip("/")
+    url = _normalize_url(url)
 
-    client = TrinityClient(base_url=url, token="none")
+    # Verify instance is reachable (with retry)
+    for attempt in range(3):
+        client = TrinityClient(base_url=url, token="none")
+        try:
+            client.get_unauthenticated("/api/auth/mode")
+            break
+        except Exception:
+            click.echo(f"Cannot reach {url}.", err=True)
+            if attempt < 2:
+                url = _normalize_url(click.prompt("Try a different URL"))
+            else:
+                click.echo("Giving up after 3 attempts.", err=True)
+                raise SystemExit(1)
 
     email = click.prompt("Email")
 
@@ -184,18 +206,22 @@ def init(ctx, profile_opt):
     for the instance (defaults to hostname).
     """
     url = click.prompt("Trinity instance URL", default="http://localhost:8000")
-    url = url.rstrip("/")
+    url = _normalize_url(url)
 
-    client = TrinityClient(base_url=url, token="none")
-
-    # Verify instance is reachable
-    try:
-        client.get_unauthenticated("/api/auth/mode")
-    except Exception:
-        click.echo(f"Cannot reach {url}. Check the URL and try again.", err=True)
-        raise SystemExit(1)
-
-    click.echo(f"Connected to {url}")
+    # Verify instance is reachable (with retry)
+    for attempt in range(3):
+        client = TrinityClient(base_url=url, token="none")
+        try:
+            client.get_unauthenticated("/api/auth/mode")
+            click.echo(f"Connected to {url}")
+            break
+        except Exception:
+            click.echo(f"Cannot reach {url}.", err=True)
+            if attempt < 2:
+                url = _normalize_url(click.prompt("Try a different URL"))
+            else:
+                click.echo("Giving up after 3 attempts.", err=True)
+                raise SystemExit(1)
 
     # Determine profile name
     profile_name = profile_opt or _get_profile_name(ctx) or profile_name_from_url(url)
