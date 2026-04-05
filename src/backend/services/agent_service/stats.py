@@ -5,6 +5,7 @@ Handles fetching context window and container stats.
 """
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta
 
 import httpx
@@ -17,6 +18,19 @@ from services.docker_utils import container_reload, container_stats
 from .helpers import get_accessible_agents
 
 logger = logging.getLogger(__name__)
+
+# PERF-269: In-memory cache for context stats (15s TTL)
+_context_stats_cache = {
+    "data": None,
+    "timestamp": 0,
+    "ttl": 15  # seconds
+}
+
+
+def invalidate_context_stats_cache():
+    """Invalidate the context stats cache (call on agent start/stop)."""
+    _context_stats_cache["data"] = None
+    _context_stats_cache["timestamp"] = 0
 
 
 async def _fetch_single_agent_context(agent: dict, client: httpx.AsyncClient) -> dict:
@@ -88,37 +102,70 @@ async def get_agents_context_stats_logic(
     """
     Get context window stats and activity state for all accessible agents.
 
-    Fetches all agent stats CONCURRENTLY for better performance.
+    PERF-269: Results are cached for 15 seconds to avoid repeated N+1 HTTP
+    fan-out to every running agent container. Cache is invalidated on
+    agent start/stop events.
 
     Returns: List of agent stats with context usage and active/idle/offline state
     """
+    now = time.monotonic()
+
+    # Check cache (PERF-269)
+    if (_context_stats_cache["data"] is not None
+            and (now - _context_stats_cache["timestamp"]) < _context_stats_cache["ttl"]):
+        # Return cached data, filtered to accessible agents for this user
+        accessible_names = {a["name"] for a in get_accessible_agents(current_user)}
+        cached = _context_stats_cache["data"]
+        filtered = [s for s in cached if s["name"] in accessible_names]
+        return {"agents": filtered}
+
     accessible_agents = get_accessible_agents(current_user)
 
-    # Fetch all agent stats concurrently using a shared client
-    async with httpx.AsyncClient(timeout=2.0) as client:
-        tasks = [_fetch_single_agent_context(agent, client) for agent in accessible_agents]
-        agent_stats = await asyncio.gather(*tasks, return_exceptions=True)
+    # PERF-269: Only fan out HTTP calls to running agents (stopped agents return defaults)
+    running_agents = [a for a in accessible_agents if a.get("status") == "running"]
+    stopped_agents = [a for a in accessible_agents if a.get("status") != "running"]
 
-    # Filter out any exceptions and keep successful results
-    valid_stats = []
-    for i, result in enumerate(agent_stats):
-        if isinstance(result, Exception):
-            logger.debug(f"Error fetching stats for agent: {result}")
-            # Return default stats for failed agents
-            agent = accessible_agents[i]
-            valid_stats.append({
-                "name": agent["name"],
-                "status": agent["status"],
-                "activityState": "offline" if agent["status"] != "running" else "idle",
-                "contextPercent": 0,
-                "contextUsed": 0,
-                "contextMax": 200000,
-                "lastActivityTime": None
-            })
-        else:
-            valid_stats.append(result)
+    # Build default stats for stopped agents (no HTTP call needed)
+    stopped_stats = [{
+        "name": a["name"],
+        "status": a["status"],
+        "activityState": "offline",
+        "contextPercent": 0,
+        "contextUsed": 0,
+        "contextMax": 200000,
+        "lastActivityTime": None
+    } for a in stopped_agents]
 
-    return {"agents": valid_stats}
+    # Fetch running agent stats concurrently using a shared client
+    running_stats = []
+    if running_agents:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            tasks = [_fetch_single_agent_context(agent, client) for agent in running_agents]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.debug(f"Error fetching stats for agent: {result}")
+                agent = running_agents[i]
+                running_stats.append({
+                    "name": agent["name"],
+                    "status": agent["status"],
+                    "activityState": "idle",
+                    "contextPercent": 0,
+                    "contextUsed": 0,
+                    "contextMax": 200000,
+                    "lastActivityTime": None
+                })
+            else:
+                running_stats.append(result)
+
+    all_stats = running_stats + stopped_stats
+
+    # Update cache (PERF-269)
+    _context_stats_cache["data"] = all_stats
+    _context_stats_cache["timestamp"] = now
+
+    return {"agents": all_stats}
 
 
 async def get_agent_stats_logic(

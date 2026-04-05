@@ -224,7 +224,7 @@ export const useNotificationsStore = defineStore('notifications', () => {
     stopPolling()
     fetchPendingCount()
     pollInterval = setInterval(() => {
-      fetchPendingCount()
+      if (!document.hidden) fetchPendingCount()  // PERF-269: skip when tab backgrounded
     }, intervalMs)
   }
 

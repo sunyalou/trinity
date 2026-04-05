@@ -148,7 +148,7 @@ export const useAlertsStore = defineStore('alerts', () => {
     stopPolling()
     fetchActiveCount()
     pollInterval = setInterval(() => {
-      fetchActiveCount()
+      if (!document.hidden) fetchActiveCount()  // PERF-269: skip when tab backgrounded
     }, intervalMs)
   }
 

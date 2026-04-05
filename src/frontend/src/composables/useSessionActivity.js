@@ -113,8 +113,11 @@ export function useSessionActivity(agentRef, agentsStore) {
   }
 
   const startActivityPolling = () => {
+    if (activityRefreshInterval) clearInterval(activityRefreshInterval)  // PERF-269: guard double-registration
     loadSessionActivity() // Load immediately
-    activityRefreshInterval = setInterval(loadSessionActivity, 5000) // Then every 5 seconds
+    activityRefreshInterval = setInterval(() => {
+      if (!document.hidden) loadSessionActivity()  // PERF-269: skip when tab backgrounded
+    }, 5000) // Then every 5 seconds
   }
 
   const stopActivityPolling = () => {

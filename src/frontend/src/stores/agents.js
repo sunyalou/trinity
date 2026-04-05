@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import axios from 'axios'
 import { useAuthStore } from './auth'
+import { useNetworkStore } from './network'
 
 export const useAgentsStore = defineStore('agents', {
   state: () => ({
@@ -8,13 +9,7 @@ export const useAgentsStore = defineStore('agents', {
     selectedAgent: null,
     loading: false,
     error: null,
-    // Context stats for agents list page
-    contextStats: {},  // Map of agent name -> stats
-    // Execution stats for agents list page (tasks, success rate, cost, last run)
-    executionStats: {},  // Map of agent name -> execution stats
-    // Slot stats for capacity meters (active/max parallel slots)
-    slotStats: {},  // Map of agent name -> { max, active }
-    contextPollingInterval: null,
+    // PERF-269: Stats moved to networkStore (single source of truth, no duplicate polling)
     sortBy: 'created_desc',  // Default sort order
     // Running toggle loading state per agent
     runningToggleLoading: {}  // Map of agent name -> boolean
@@ -65,8 +60,9 @@ export const useAgentsStore = defineStore('agents', {
             break
           case 'success_desc':
             sorted.sort((a, b) => {
-              const aRate = this.executionStats[a.name]?.successRate || 0
-              const bRate = this.executionStats[b.name]?.successRate || 0
+              const networkStore = useNetworkStore()
+              const aRate = networkStore.executionStats[a.name]?.successRate || 0
+              const bRate = networkStore.executionStats[b.name]?.successRate || 0
               return bRate - aRate
             })
             break
@@ -565,85 +561,8 @@ export const useAgentsStore = defineStore('agents', {
       if (agent) agent.status = status
     },
 
-    // Context Stats Actions (for Agents list page)
-    async fetchContextStats() {
-      try {
-        const authStore = useAuthStore()
-        const response = await axios.get('/api/agents/context-stats', {
-          headers: authStore.authHeader
-        })
-        const agentStats = response.data.agents || []
-
-        const newStats = {}
-        agentStats.forEach(stat => {
-          newStats[stat.name] = {
-            contextPercent: stat.contextPercent || 0,
-            contextUsed: stat.contextUsed || 0,
-            contextMax: stat.contextMax || 200000,
-            activityState: stat.activityState || 'offline',
-            lastActivityTime: stat.lastActivityTime
-          }
-        })
-        this.contextStats = newStats
-      } catch (error) {
-        console.error('Failed to fetch context stats:', error)
-      }
-    },
-
-    // Execution Stats Actions (for Agents list page - tasks, success rate, cost, last run)
-    async fetchExecutionStats() {
-      try {
-        const authStore = useAuthStore()
-        const response = await axios.get('/api/agents/execution-stats', {
-          params: { include_7d: true },
-          headers: authStore.authHeader
-        })
-        const agentStats = response.data.agents || []
-
-        const newStats = {}
-        agentStats.forEach(stat => {
-          newStats[stat.name] = {
-            taskCount: stat.task_count_24h || 0,
-            successCount: stat.success_count || 0,
-            failedCount: stat.failed_count || 0,
-            runningCount: stat.running_count || 0,
-            successRate: stat.success_rate || 0,
-            totalCost: stat.total_cost || 0,
-            lastExecutionAt: stat.last_execution_at,
-            taskCount7d: stat.task_count_7d || 0,
-            successRate7d: stat.success_rate_7d || 0
-          }
-        })
-        this.executionStats = newStats
-      } catch (error) {
-        console.error('Failed to fetch execution stats:', error)
-      }
-    },
-
-    // Slot Stats Actions (for capacity meters on Agents list page)
-    async fetchSlotStats() {
-      try {
-        const authStore = useAuthStore()
-        const response = await axios.get('/api/agents/slots', {
-          headers: authStore.authHeader
-        })
-        const agentsMap = response.data.agents || {}
-
-        const newStats = {}
-        Object.entries(agentsMap).forEach(([name, stat]) => {
-          newStats[name] = {
-            max: stat.max || 1,
-            active: stat.active || 0
-          }
-        })
-        this.slotStats = newStats
-      } catch (error) {
-        // Slots endpoint may not exist yet - fail silently
-        if (error.response?.status !== 404) {
-          console.error('Failed to fetch slot stats:', error)
-        }
-      }
-    },
+    // PERF-269: fetchContextStats, fetchExecutionStats, fetchSlotStats removed
+    // Stats are now fetched exclusively by networkStore to eliminate duplicate polling
 
     // Toggle autonomy mode for an agent
     async toggleAutonomy(agentName) {
@@ -674,33 +593,7 @@ export const useAgentsStore = defineStore('agents', {
       }
     },
 
-    startContextPolling() {
-      if (this.contextPollingInterval) {
-        clearInterval(this.contextPollingInterval)
-      }
-
-      // Fetch immediately
-      this.fetchContextStats()
-      this.fetchExecutionStats()
-      this.fetchSlotStats()
-
-      // Then poll every 5 seconds
-      this.contextPollingInterval = setInterval(() => {
-        this.fetchContextStats()
-        this.fetchExecutionStats()
-        this.fetchSlotStats()
-      }, 5000)
-
-      console.log('[Agents] Started context polling (every 5s)')
-    },
-
-    stopContextPolling() {
-      if (this.contextPollingInterval) {
-        clearInterval(this.contextPollingInterval)
-        this.contextPollingInterval = null
-        console.log('[Agents] Stopped context polling')
-      }
-    },
+    // PERF-269: startContextPolling/stopContextPolling removed — use networkStore
 
     setSortBy(sortBy) {
       this.sortBy = sortBy

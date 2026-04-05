@@ -573,7 +573,6 @@ const stoppedCount = computed(() => {
 onMounted(async () => {
   // Initialize system views store (restores persisted view selection)
   systemViewsStore.initialize()
-  await systemViewsStore.fetchViews()
 
   // Apply persisted time range to network store
   networkStore.timeRangeHours = selectedTimeRange.value
@@ -583,34 +582,27 @@ onMounted(async () => {
     networkStore.setFilterTags([...selectedQuickTags.value])
   }
 
-  // Fetch agents first
-  await networkStore.fetchAgents()
-
-  // Fetch historical communication data from Activity Stream
-  await networkStore.fetchHistoricalCommunications()
-
-  // Fetch enabled schedules for timeline markers
-  await networkStore.fetchSchedules()
-
-  // Fetch available tags for quick filter
-  await fetchAvailableTags()
+  // PERF-269: Parallelize independent mount calls
+  await Promise.allSettled([
+    systemViewsStore.fetchViews(),
+    networkStore.fetchAgents(),
+    networkStore.fetchHistoricalCommunications(),
+    networkStore.fetchSchedules(),
+    fetchAvailableTags(),
+    observabilityStore.fetchStatus()
+  ])
 
   // Connect WebSocket for real-time updates
   networkStore.connectWebSocket()
 
-  // Start polling for context stats
+  // Start polling (PERF-269: reduced frequencies, visibility-aware)
   networkStore.startContextPolling()
-
-  // Start polling for agent list updates
   networkStore.startAgentRefresh()
 
   // Start activity refresh polling if in timeline mode (fallback for WebSocket gaps)
   if (networkStore.isTimelineMode) {
     networkStore.startActivityRefresh()
   }
-
-  // Initialize observability (checks if OTel is enabled)
-  await observabilityStore.fetchStatus()
 
   // Add click outside listener for tag dropdown
   document.addEventListener('click', handleClickOutside)

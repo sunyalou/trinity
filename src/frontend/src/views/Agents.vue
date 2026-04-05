@@ -677,6 +677,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useAgentsStore } from '../stores/agents'
+import { useNetworkStore } from '../stores/network'
 import NavBar from '../components/NavBar.vue'
 import CreateAgentModal from '../components/CreateAgentModal.vue'
 import AgentAvatar from '../components/AgentAvatar.vue'
@@ -689,6 +690,7 @@ import { ServerIcon } from '@heroicons/vue/24/outline'
 import axios from 'axios'
 
 const agentsStore = useAgentsStore()
+const networkStore = useNetworkStore()
 const showCreateModal = ref(false)
 const notification = ref(null)
 const actionInProgress = ref(null)
@@ -809,36 +811,40 @@ const showNotification = (message, type = 'success') => {
 }
 
 onMounted(async () => {
-  await agentsStore.fetchAgents()
-  agentsStore.startContextPolling()
-
-  // Check if user is admin
-  try {
-    const token = localStorage.getItem('token')
-    if (token) {
-      const response = await axios.get('/api/users/me', {
-        headers: { Authorization: `Bearer ${token}` }
-      })
-      isAdmin.value = response.data.role === 'admin'
+  // PERF-269: Parallelize independent mount calls
+  const fetchUserRole = async () => {
+    try {
+      const token = localStorage.getItem('token')
+      if (token) {
+        const response = await axios.get('/api/users/me', {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        isAdmin.value = response.data.role === 'admin'
+      }
+    } catch (e) {
+      console.warn('Failed to fetch user role:', e)
+      isAdmin.value = false
     }
-  } catch (e) {
-    console.warn('Failed to fetch user role:', e)
-    isAdmin.value = false
   }
 
-  // Fetch tags and read-only states
-  await fetchAvailableTags()
-  await fetchAllAgentTags()
-  await fetchAllReadOnlyStates()
+  await Promise.allSettled([
+    agentsStore.fetchAgents(),
+    fetchUserRole(),
+    fetchAvailableTags(),
+    fetchAllAgentTags(),
+    fetchAllReadOnlyStates()
+  ])
+
+  networkStore.startContextPolling()
 })
 
 onUnmounted(() => {
-  agentsStore.stopContextPolling()
+  networkStore.stopContextPolling()
 })
 
 // Activity state helpers
 const getActivityState = (agentName) => {
-  const stats = agentsStore.contextStats[agentName]
+  const stats = networkStore.contextStats[agentName]
   if (!stats) return 'Offline'
   const state = stats.activityState
   if (state === 'active') return 'Active'
@@ -865,7 +871,7 @@ const getActivityLabelClass = (agentName) => {
 
 // Success rate bar helpers
 const getSuccessBarPercent = (agentName) => {
-  const stats = agentsStore.executionStats[agentName]
+  const stats = networkStore.executionStats[agentName]
   return stats ? Math.round(stats.successRate || 0) : 0
 }
 
@@ -877,22 +883,22 @@ const getSuccessBarColor = (agentName) => {
 }
 
 const hasSuccessData = (agentName) => {
-  const stats = agentsStore.executionStats[agentName]
+  const stats = networkStore.executionStats[agentName]
   return stats && stats.taskCount > 0
 }
 
 const has7dOnlyStats = (agentName) => {
-  const stats = agentsStore.executionStats[agentName]
+  const stats = networkStore.executionStats[agentName]
   return stats && stats.taskCount === 0 && stats.taskCount7d > 0
 }
 
 const has7dStats = (agentName) => {
-  const stats = agentsStore.executionStats[agentName]
+  const stats = networkStore.executionStats[agentName]
   return stats && stats.taskCount7d > 0
 }
 
 const get7dSuccessRate = (agentName) => {
-  const stats = agentsStore.executionStats[agentName]
+  const stats = networkStore.executionStats[agentName]
   return stats ? Math.round(stats.successRate7d || 0) : 0
 }
 
@@ -905,12 +911,12 @@ const get7dSuccessBarColor = (agentName) => {
 
 // Slot stats helpers (for capacity meters)
 const getSlotStats = (agentName) => {
-  return agentsStore.slotStats[agentName] || null
+  return networkStore.slotStats[agentName] || null
 }
 
 // Execution stats helpers
 const getExecutionStats = (agentName) => {
-  return agentsStore.executionStats[agentName] || null
+  return networkStore.executionStats[agentName] || null
 }
 
 const hasExecutionStats = (agentName) => {

@@ -58,6 +58,7 @@ from services.agent_service import (
     # Stats
     get_agents_context_stats_logic,
     get_agent_stats_logic,
+    invalidate_context_stats_cache,
     # Autonomy (global view)
     get_all_autonomy_status_logic,
 )
@@ -444,6 +445,7 @@ async def start_agent_endpoint(agent_name: AuthorizedAgentByName, request: Reque
     """Start an agent."""
     try:
         result = await start_agent_internal(agent_name)
+        invalidate_context_stats_cache()  # PERF-269
         credentials_status = result.get("credentials_injection", "unknown")
         credentials_result = result.get("credentials_result", {})
 
@@ -479,6 +481,7 @@ async def stop_agent_endpoint(agent_name: AuthorizedAgentByName, request: Reques
 
     try:
         await container_stop(container)
+        invalidate_context_stats_cache()  # PERF-269
 
         event = {
             "event": "agent_stopped",

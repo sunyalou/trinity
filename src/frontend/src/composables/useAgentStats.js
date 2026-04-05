@@ -54,9 +54,12 @@ export function useAgentStats(agentRef, agentsStore) {
   }
 
   const startStatsPolling = () => {
+    if (statsRefreshInterval) clearInterval(statsRefreshInterval)  // PERF-269: guard double-registration
     initHistory() // Reset history on start
     loadStats() // Load immediately
-    statsRefreshInterval = setInterval(loadStats, 10000) // Then every 10 seconds
+    statsRefreshInterval = setInterval(() => {
+      if (!document.hidden) loadStats()  // PERF-269: skip when tab backgrounded
+    }, 10000) // Then every 10 seconds
   }
 
   const stopStatsPolling = () => {

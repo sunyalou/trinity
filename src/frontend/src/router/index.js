@@ -204,10 +204,9 @@ async function checkSetupStatus() {
 router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore()
 
-  // Wait for auth initialization to complete
+  // Wait for auth initialization to complete (PERF-269: replaced blind 100ms sleep)
   if (authStore.isLoading) {
-    // Give it a moment to initialize
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await authStore.waitForInit()
   }
 
   // Check setup status for login and protected routes

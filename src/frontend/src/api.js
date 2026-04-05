@@ -1,10 +1,15 @@
 /**
  * API Client
  *
- * Provides a pre-configured axios instance with authentication headers.
+ * Provides a pre-configured axios instance with authentication headers
+ * and request deduplication for GET requests (PERF-269).
  */
 
 import axios from 'axios'
+
+// PERF-269: In-flight request deduplication map
+// Key: "GET:/api/agents/context-stats" → Value: Promise
+const inflightRequests = new Map()
 
 // Create axios instance
 const api = axios.create({
@@ -38,5 +43,28 @@ api.interceptors.response.use(
     return Promise.reject(error)
   }
 )
+
+/**
+ * Deduplicated GET request — if an identical GET is already in-flight,
+ * returns the existing promise instead of firing a new request.
+ * Non-GET requests pass through normally.
+ */
+const originalGet = api.get.bind(api)
+api.get = function deduplicatedGet(url, config) {
+  // Build a cache key from URL + params
+  const params = config?.params ? JSON.stringify(config.params) : ''
+  const key = `GET:${url}:${params}`
+
+  if (inflightRequests.has(key)) {
+    return inflightRequests.get(key)
+  }
+
+  const promise = originalGet(url, config).finally(() => {
+    inflightRequests.delete(key)
+  })
+
+  inflightRequests.set(key, promise)
+  return promise
+}
 
 export default api

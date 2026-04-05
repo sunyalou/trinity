@@ -288,19 +288,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Error starting log archive service: {e}")
 
-    # Start operator queue sync service (OPS-001)
+    # PERF-269: Stagger background services to reduce SQLite write contention
+    # Start operator queue sync service (OPS-001) — polls every 5s
     try:
         operator_queue_service.start()
         print("Operator queue sync service started")
     except Exception as e:
         print(f"Error starting operator queue sync service: {e}")
 
-    # Start cleanup service for stale executions/activities/slots
-    try:
-        cleanup_service.start()
-        print("Cleanup service started")
-    except Exception as e:
-        print(f"Error starting cleanup service: {e}")
+    # Stagger cleanup service start by 2.5s to offset from operator queue writes
+    async def _start_cleanup_delayed():
+        await asyncio.sleep(2.5)
+        try:
+            cleanup_service.start()
+            print("Cleanup service started (staggered +2.5s)")
+        except Exception as e:
+            print(f"Error starting cleanup service: {e}")
+    asyncio.create_task(_start_cleanup_delayed())
 
     # Recover orphaned regular task executions (Issue #128)
     try:

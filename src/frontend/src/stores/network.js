@@ -1068,7 +1068,12 @@ export const useNetworkStore = defineStore('network', () => {
     }
   }
 
-  // Start polling context and execution stats every 5 seconds
+  // PERF-269: Skip polling when tab is backgrounded
+  function _pollIfVisible(fn) {
+    if (!document.hidden) fn()
+  }
+
+  // Start polling context and execution stats every 15 seconds (PERF-269: was 5s)
   function startContextPolling() {
     if (contextPollingInterval.value) {
       clearInterval(contextPollingInterval.value)
@@ -1079,14 +1084,16 @@ export const useNetworkStore = defineStore('network', () => {
     fetchExecutionStats()
     fetchSlotStats()
 
-    // Then poll every 5 seconds
+    // Then poll every 15 seconds (PERF-269: reduced from 5s)
     contextPollingInterval.value = setInterval(() => {
-      fetchContextStats()
-      fetchExecutionStats()
-      fetchSlotStats()
-    }, 5000)
+      _pollIfVisible(() => {
+        fetchContextStats()
+        fetchExecutionStats()
+        fetchSlotStats()
+      })
+    }, 15000)
 
-    console.log('[Collaboration] Started context polling (every 5s)')
+    console.log('[Collaboration] Started context polling (every 15s)')
   }
 
   // Stop polling context stats
@@ -1098,14 +1105,15 @@ export const useNetworkStore = defineStore('network', () => {
     }
   }
 
-  // Start polling agent list every 10 seconds (for new/deleted agents)
+  // Start polling agent list every 30 seconds (PERF-269: was 10s)
   function startAgentRefresh() {
     if (agentRefreshInterval.value) {
       clearInterval(agentRefreshInterval.value)
     }
 
-    // Poll every 10 seconds
+    // Poll every 30 seconds (PERF-269: reduced from 10s)
     agentRefreshInterval.value = setInterval(async () => {
+      if (document.hidden) return  // PERF-269: skip when tab backgrounded
       try {
         // Respect filter tags when refreshing (ORG-001 fix)
         const params = {}
@@ -1131,9 +1139,9 @@ export const useNetworkStore = defineStore('network', () => {
       } catch (error) {
         console.error('[Collaboration] Failed to refresh agents:', error)
       }
-    }, 10000)
+    }, 30000)
 
-    console.log('[Collaboration] Started agent refresh polling (every 10s)')
+    console.log('[Collaboration] Started agent refresh polling (every 30s)')
   }
 
   // Stop polling agent list
@@ -1153,6 +1161,7 @@ export const useNetworkStore = defineStore('network', () => {
 
     // Poll every 60 seconds as fallback (WebSocket should handle most updates)
     activityRefreshInterval.value = setInterval(() => {
+      if (document.hidden) return  // PERF-269: skip when tab backgrounded
       // Only refresh if we're in timeline mode (to avoid unnecessary API calls)
       if (isTimelineMode.value) {
         console.log('[Collaboration] Activity refresh polling triggered')

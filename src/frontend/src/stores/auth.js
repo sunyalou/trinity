@@ -10,7 +10,10 @@ export const useAuthStore = defineStore('auth', {
     authError: null,
     // Runtime mode detection (from backend)
     emailAuthEnabled: null,  // Email-based authentication
-    modeDetected: false
+    modeDetected: false,
+    // Promise that resolves when initializeAuth() completes (PERF-269)
+    _initResolve: null,
+    _initPromise: null
   }),
 
   getters: {
@@ -56,6 +59,17 @@ export const useAuthStore = defineStore('auth', {
       }
     },
 
+    // Returns a promise that resolves when auth initialization is complete (PERF-269)
+    waitForInit() {
+      if (!this.isLoading) return Promise.resolve()
+      if (!this._initPromise) {
+        this._initPromise = new Promise(resolve => {
+          this._initResolve = resolve
+        })
+      }
+      return this._initPromise
+    },
+
     // Initialize auth - called on app startup
     async initializeAuth() {
       this.isLoading = true
@@ -94,6 +108,12 @@ export const useAuthStore = defineStore('auth', {
       }
 
       this.isLoading = false
+      // Resolve the init promise so router guards can proceed (PERF-269)
+      if (this._initResolve) {
+        this._initResolve()
+        this._initResolve = null
+        this._initPromise = null
+      }
     },
 
     // Parse JWT payload without verification (client-side mode check only)

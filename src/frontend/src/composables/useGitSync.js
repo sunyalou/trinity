@@ -160,8 +160,11 @@ export function useGitSync(agentRef, agentsStore, showNotification) {
 
   const startGitStatusPolling = () => {
     if (!hasGitSync.value) return
+    if (gitStatusInterval) clearInterval(gitStatusInterval)  // PERF-269: guard double-registration
     loadGitStatus() // Load immediately
-    gitStatusInterval = setInterval(loadGitStatus, 60000) // Then every 60 seconds
+    gitStatusInterval = setInterval(() => {
+      if (!document.hidden) loadGitStatus()  // PERF-269: skip when tab backgrounded
+    }, 60000) // Then every 60 seconds
   }
 
   const stopGitStatusPolling = () => {

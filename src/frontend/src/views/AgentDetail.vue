@@ -935,25 +935,23 @@ function stopAllPolling() {
 
 // Initialize on mount
 onMounted(async () => {
+  // Load agent first (other calls may depend on agent data)
   await loadAgent()
-  await loadSessionInfo()
-  await loadApiKeySetting()
-  await loadResourceLimits()
-  // Load tags (ORG-001)
-  await loadTags()
-  await loadAllTags()
-  // Load avatar identity (AVATAR-001)
-  await loadAvatarIdentity()
-  // Load emotion variants and start cycling (AVATAR-002)
-  await loadAvailableEmotions()
+
+  // PERF-269: Parallelize independent mount calls
+  await Promise.allSettled([
+    loadSessionInfo(),
+    loadApiKeySetting(),
+    loadResourceLimits(),
+    loadTags(),
+    loadAllTags(),
+    loadAvatarIdentity(),
+    loadAvailableEmotions(),
+    loadAuthStatus(),
+    loadAvailableSubscriptions(),
+    ...(agent.value?.status === 'running' ? [checkDashboardExists()] : [])
+  ])
   startEmotionCycling()
-  // Load auth status
-  await loadAuthStatus()
-  await loadAvailableSubscriptions()
-  // Check for dashboard if agent is running
-  if (agent.value?.status === 'running') {
-    await checkDashboardExists()
-  }
   startAllPolling()
 
   // Handle tab query param (from Timeline click navigation)
