@@ -61,12 +61,13 @@ class TestPublicEndpoints:
     """Test public (unauthenticated) endpoints."""
 
     def test_get_invalid_link(self):
-        """Test getting info for non-existent link."""
+        """Test getting info for non-existent link returns normalized response (pentest 3.3.2)."""
         response = httpx.get(f"{BASE_URL}/api/public/link/invalid-token-12345")
         assert response.status_code == 200
         data = response.json()
         assert data["valid"] == False
-        assert data["reason"] == "not_found"
+        # Normalized reason — no oracle for valid/invalid/disabled/expired (pentest 3.3.2)
+        assert data["reason"] == "invalid_or_expired"
 
     def test_verify_request_invalid_link(self):
         """Test verification request for invalid link."""
@@ -91,6 +92,146 @@ class TestPublicEndpoints:
             json={"message": "Hello"}
         )
         assert response.status_code == 404
+
+
+class TestPublicLinkBruteForceProtection:
+    """Tests for pentest finding 3.3.2 — brute force protection on public links.
+
+    Verifies:
+    1. Error responses are normalized (no oracle for valid vs invalid tokens)
+    2. Rate limiting is enforced on all public token endpoints
+    """
+
+    @pytest.fixture(autouse=True)
+    def flush_rate_limits(self):
+        """Flush public link rate limit counters before each test."""
+        try:
+            import redis as _redis
+            r = _redis.from_url("redis://localhost:6379", decode_responses=True)
+            for key in r.scan_iter("public_link_lookups:*"):
+                r.delete(key)
+        except Exception:
+            pass
+        yield
+
+    def test_normalized_error_link_info(self):
+        """All invalid tokens return the same reason string (no oracle)."""
+        # Different fake tokens should all get the same response
+        for token in ["nonexistent-aaa", "nonexistent-bbb", "nonexistent-ccc"]:
+            response = httpx.get(f"{BASE_URL}/api/public/link/{token}")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["valid"] == False
+            assert data["reason"] == "invalid_or_expired"
+            # Should NOT contain "not_found", "disabled", or "expired"
+            assert "not_found" not in str(data)
+
+    def test_normalized_error_history(self):
+        """History endpoint returns generic 404 for invalid tokens."""
+        response = httpx.get(f"{BASE_URL}/api/public/history/nonexistent-token-xyz")
+        assert response.status_code == 404
+        data = response.json()
+        assert data["detail"] == "Invalid or expired link"
+
+    def test_normalized_error_session(self):
+        """Session endpoint returns generic 404 for invalid tokens."""
+        response = httpx.delete(
+            f"{BASE_URL}/api/public/session/nonexistent-token-xyz",
+            params={"session_id": "test"}
+        )
+        assert response.status_code == 404
+        data = response.json()
+        assert data["detail"] == "Invalid or expired link"
+
+    def test_normalized_error_chat(self):
+        """Chat endpoint returns generic 404 for invalid tokens."""
+        response = httpx.post(
+            f"{BASE_URL}/api/public/chat/nonexistent-token-xyz",
+            json={"message": "test"}
+        )
+        assert response.status_code == 404
+        data = response.json()
+        assert data["detail"] == "Invalid or expired link"
+
+    def test_normalized_error_intro(self):
+        """Intro endpoint returns generic 404 for invalid tokens."""
+        response = httpx.get(f"{BASE_URL}/api/public/intro/nonexistent-token-xyz")
+        assert response.status_code == 404
+        data = response.json()
+        assert data["detail"] == "Invalid or expired link"
+
+    def test_normalized_error_playbooks(self):
+        """Playbooks endpoint returns generic 404 for invalid tokens."""
+        response = httpx.get(f"{BASE_URL}/api/public/playbooks/nonexistent-token-xyz")
+        assert response.status_code == 404
+        data = response.json()
+        assert data["detail"] == "Invalid or expired link"
+
+    def test_normalized_error_execution_stream(self):
+        """Execution stream returns generic 404 for invalid tokens."""
+        response = httpx.get(f"{BASE_URL}/api/public/executions/nonexistent-token-xyz/fake-exec-id/stream")
+        assert response.status_code == 404
+        data = response.json()
+        assert data["detail"] == "Invalid or expired link"
+
+    def test_normalized_error_execution_status(self):
+        """Execution status returns generic 404 for invalid tokens."""
+        response = httpx.get(f"{BASE_URL}/api/public/executions/nonexistent-token-xyz/fake-exec-id/status")
+        assert response.status_code == 404
+        data = response.json()
+        assert data["detail"] == "Invalid or expired link"
+
+    def test_rate_limiting_enforced(self):
+        """Rate limiting triggers after threshold (60 req/min per IP)."""
+        # Flush rate limit counters first so test is self-contained
+        try:
+            import redis as _redis
+            r = _redis.from_url("redis://localhost:6379", decode_responses=True)
+            for key in r.scan_iter("public_link_lookups:*"):
+                r.delete(key)
+        except Exception:
+            pytest.skip("Redis not reachable for rate limit test")
+
+        # Send 61 rapid requests — the 61st should be rate-limited
+        responses = []
+        for i in range(62):
+            resp = httpx.get(f"{BASE_URL}/api/public/link/ratelimit-test-token-{i}")
+            responses.append(resp.status_code)
+            if resp.status_code == 429:
+                break
+
+        assert 429 in responses, "Rate limiting was not enforced after 60+ requests"
+
+    def test_consistent_error_shape_across_endpoints(self):
+        """All endpoints return identical error shape for invalid tokens."""
+        # Flush rate limit counter from previous tests
+        try:
+            import redis as _redis
+            r = _redis.from_url("redis://localhost:6379", decode_responses=True)
+            for key in r.scan_iter("public_link_lookups:*"):
+                r.delete(key)
+        except Exception:
+            pass  # If Redis not reachable, test may still work if under limit
+
+        token = "consistency-test-token"
+        endpoints = [
+            ("GET", f"/api/public/history/{token}"),
+            ("GET", f"/api/public/intro/{token}"),
+            ("GET", f"/api/public/playbooks/{token}"),
+            ("GET", f"/api/public/executions/{token}/fake-id/stream"),
+            ("GET", f"/api/public/executions/{token}/fake-id/status"),
+        ]
+
+        error_details = set()
+        for method, path in endpoints:
+            if method == "GET":
+                resp = httpx.get(f"{BASE_URL}{path}")
+            assert resp.status_code == 404, f"{path} returned {resp.status_code}: {resp.text}"
+            error_details.add(resp.json()["detail"])
+
+        # All endpoints should return the exact same error message
+        assert len(error_details) == 1, f"Inconsistent error messages: {error_details}"
+        assert error_details.pop() == "Invalid or expired link"
 
 
 class TestOwnerEndpointsNoAuth:
@@ -215,12 +356,12 @@ class TestPublicLinkLifecycle:
             assert updated_link["name"] == "Updated Link Name"
             assert updated_link["enabled"] == False
 
-            # 5. Verify public endpoint shows link as disabled
+            # 5. Verify public endpoint shows link as invalid (normalized reason)
             public_response = httpx.get(f"{BASE_URL}/api/public/link/{token}")
             assert public_response.status_code == 200
             public_info = public_response.json()
             assert public_info["valid"] == False
-            assert public_info["reason"] == "disabled"
+            assert public_info["reason"] == "invalid_or_expired"
 
             # 6. Re-enable the link
             enable_response = httpx.put(
@@ -244,10 +385,10 @@ class TestPublicLinkLifecycle:
             )
             assert delete_response.status_code == 200
 
-            # Verify link is gone
+            # Verify link is gone (normalized reason — no oracle)
             verify_deleted = httpx.get(f"{BASE_URL}/api/public/link/{token}")
             assert verify_deleted.json()["valid"] == False
-            assert verify_deleted.json()["reason"] == "not_found"
+            assert verify_deleted.json()["reason"] == "invalid_or_expired"
 
 
 class TestEmailVerification:

@@ -26,7 +26,7 @@ from database import (
     PublicChatResponse,
     PublicChatMessage
 )
-from routers.auth import check_login_rate_limit, record_login_attempt
+from routers.auth import check_login_rate_limit, record_login_attempt, get_redis_client
 from services.docker_service import get_agent_container
 from services.email_service import email_service
 from services.task_execution_service import get_task_execution_service
@@ -56,6 +56,11 @@ router = APIRouter(prefix="/api/public", tags=["public"])
 MAX_VERIFICATION_REQUESTS_PER_EMAIL = 3  # per 10 minutes
 MAX_CHAT_MESSAGES_PER_IP = 30  # per minute
 MAX_CHAT_MESSAGES_PER_TOKEN = 60  # per minute, per public link token
+PUBLIC_LINK_LOOKUP_RATE_LIMIT = 60  # max lookups per minute per IP (pentest 3.3.2)
+PUBLIC_LINK_LOOKUP_RATE_WINDOW = 60  # 1 minute in seconds
+
+# Generic error message for invalid tokens — prevents oracle-based enumeration (pentest 3.3.2)
+INVALID_LINK_MESSAGE = "Invalid or expired link"
 
 # Trusted proxy networks — only trust X-Forwarded-For / X-Real-IP from these.
 # Default: RFC-1918 private ranges (covers Docker bridge networks).
@@ -124,6 +129,53 @@ def _get_client_ip(request: Request) -> str:
     return direct_ip
 
 
+def check_public_link_rate_limit(client_ip: str) -> None:
+    """
+    Rate limit public link lookups per IP.
+    Shared counter across all public token endpoints.
+
+    Security fix for pentest finding 3.3.2: prevents automated scanning
+    of public link tokens. Defense-in-depth alongside 192-bit token entropy.
+
+    Fails open if Redis is unavailable (logs warning).
+    """
+    r = get_redis_client()
+    if r is None:
+        logger.warning("Public link rate limiting unavailable - Redis not connected")
+        return
+
+    key = f"public_link_lookups:{client_ip}"
+    try:
+        attempts = r.get(key)
+        if attempts and int(attempts) >= PUBLIC_LINK_LOOKUP_RATE_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many requests. Please try again later."
+            )
+        pipe = r.pipeline()
+        pipe.incr(key)
+        pipe.expire(key, PUBLIC_LINK_LOOKUP_RATE_WINDOW)
+        pipe.execute()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Public link rate limit check failed: {e}")
+
+
+def _validate_public_link(token: str) -> dict:
+    """
+    Validate a public link token and return link data.
+    Raises a generic 404 for all failure modes to prevent oracle-based enumeration.
+
+    Security fix for pentest finding 3.3.2: normalizes error responses so
+    valid/invalid/disabled/expired tokens all return the same error.
+    """
+    is_valid, reason, link = db.is_public_link_valid(token)
+    if not is_valid:
+        raise HTTPException(status_code=404, detail=INVALID_LINK_MESSAGE)
+    return link
+
+
 @router.get("/link/{token}", response_model=PublicLinkInfo)
 async def get_public_link_info(token: str, request: Request):
     """
@@ -132,15 +184,21 @@ async def get_public_link_info(token: str, request: Request):
     Returns whether the link is valid and if email verification is required.
     Also includes agent metadata (name, description, status flags).
     Does NOT expose sensitive data like the link ID.
+
+    Security (pentest 3.3.2): rate limited per IP, normalized error responses.
     """
+    client_ip = _get_client_ip(request)
+    check_public_link_rate_limit(client_ip)
+
     is_valid, reason, link = db.is_public_link_valid(token)
 
     if not is_valid:
+        # Normalized response — same shape for all failure modes (pentest 3.3.2)
         return PublicLinkInfo(
             valid=False,
             require_email=False,
             agent_available=False,
-            reason=reason
+            reason="invalid_or_expired"
         )
 
     agent_name = link["agent_name"]
@@ -193,10 +251,9 @@ async def get_public_playbooks(token: str, request: Request):
     Proxies the request to the agent's internal skills endpoint.
     No authentication required — the link token is validated instead.
     """
-    # Validate link token
-    is_valid, reason, link = db.is_public_link_valid(token)
-    if not is_valid:
-        raise HTTPException(status_code=404, detail=f"Invalid link: {reason}")
+    client_ip = _get_client_ip(request)
+    check_public_link_rate_limit(client_ip)
+    link = _validate_public_link(token)
 
     agent_name = link["agent_name"]
 
@@ -237,10 +294,9 @@ async def request_verification_code(
     Sends a 6-digit code to the provided email address.
     Rate limited to 3 requests per email per 10 minutes.
     """
-    # Validate link token
-    is_valid, reason, link = db.is_public_link_valid(verification.token)
-    if not is_valid:
-        raise HTTPException(status_code=404, detail=f"Invalid link: {reason}")
+    client_ip = _get_client_ip(request)
+    check_public_link_rate_limit(client_ip)
+    link = _validate_public_link(verification.token)
 
     if not link["require_email"]:
         raise HTTPException(
@@ -295,13 +351,10 @@ async def confirm_verification_code(
     Rate limited: 5 attempts per 10 minutes per IP (pentest 3.1.5).
     """
     # Check IP-based rate limit (pentest 3.1.5)
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = _get_client_ip(request)
     check_login_rate_limit(client_ip)
-
-    # Validate link token
-    is_valid, reason, link = db.is_public_link_valid(confirmation.token)
-    if not is_valid:
-        raise HTTPException(status_code=404, detail=f"Invalid link: {reason}")
+    check_public_link_rate_limit(client_ip)
+    link = _validate_public_link(confirmation.token)
 
     # Verify the code
     success, error, session_data = db.verify_code(
@@ -340,11 +393,8 @@ async def public_chat(
     Returns session_id for anonymous links to store in localStorage.
     """
     client_ip = _get_client_ip(request)
-
-    # Validate link token
-    is_valid, reason, link = db.is_public_link_valid(token)
-    if not is_valid:
-        raise HTTPException(status_code=404, detail=f"Invalid link: {reason}")
+    check_public_link_rate_limit(client_ip)
+    link = _validate_public_link(token)
 
     # Determine session identifier and type
     session_identifier = None
@@ -559,11 +609,8 @@ async def get_agent_intro(
     For links requiring email verification, a valid session_token query param must be provided.
     """
     client_ip = _get_client_ip(request)
-
-    # Validate link token
-    is_valid, reason, link = db.is_public_link_valid(token)
-    if not is_valid:
-        raise HTTPException(status_code=404, detail=f"Invalid link: {reason}")
+    check_public_link_rate_limit(client_ip)
+    link = _validate_public_link(token)
 
     # Verify session if email required
     if link["require_email"]:
@@ -642,10 +689,9 @@ async def get_public_chat_history(
     For anonymous links, provide session_id query param.
     Returns messages array for current session, or empty if no history.
     """
-    # Validate link token
-    is_valid, reason, link = db.is_public_link_valid(token)
-    if not is_valid:
-        raise HTTPException(status_code=404, detail=f"Invalid link: {reason}")
+    client_ip = _get_client_ip(request)
+    check_public_link_rate_limit(client_ip)
+    link = _validate_public_link(token)
 
     # Determine session identifier
     session_identifier = None
@@ -718,10 +764,9 @@ async def clear_public_session(
     For anonymous links, provide session_id query param.
     Returns new_session_id for anonymous links to update localStorage.
     """
-    # Validate link token
-    is_valid, reason, link = db.is_public_link_valid(token)
-    if not is_valid:
-        raise HTTPException(status_code=404, detail=f"Invalid link: {reason}")
+    client_ip = _get_client_ip(request)
+    check_public_link_rate_limit(client_ip)
+    link = _validate_public_link(token)
 
     # Determine session identifier
     session_identifier = None
@@ -913,10 +958,9 @@ async def public_stream_execution(
     Validates the public link token instead of JWT authentication.
     Proxies the SSE stream from the agent container to the frontend.
     """
-    # Validate link token
-    is_valid, reason, link = db.is_public_link_valid(token)
-    if not is_valid:
-        raise HTTPException(status_code=404, detail="Invalid link")
+    client_ip = _get_client_ip(request)
+    check_public_link_rate_limit(client_ip)
+    link = _validate_public_link(token)
 
     agent_name = link["agent_name"]
     container = get_agent_container(agent_name)
@@ -972,10 +1016,9 @@ async def public_execution_status(
     Used by the frontend to poll for completion after async submission.
     Validates the public link token instead of JWT authentication.
     """
-    # Validate link token
-    is_valid, reason, link = db.is_public_link_valid(token)
-    if not is_valid:
-        raise HTTPException(status_code=404, detail="Invalid link")
+    client_ip = _get_client_ip(request)
+    check_public_link_rate_limit(client_ip)
+    link = _validate_public_link(token)
 
     agent_name = link["agent_name"]
 
