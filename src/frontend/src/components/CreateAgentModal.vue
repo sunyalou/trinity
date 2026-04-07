@@ -350,7 +350,14 @@ const createAgent = async () => {
     emit('created', agent)
     emit('close')
   } catch (err) {
-    error.value = err.response?.data?.detail || 'Failed to create agent'
+    const detail = err.response?.data?.detail
+    if (detail && typeof detail === 'object' && detail.code === 'QUOTA_EXCEEDED') {
+      error.value = `${detail.error}`
+    } else if (typeof detail === 'string') {
+      error.value = detail
+    } else {
+      error.value = detail?.error || 'Failed to create agent'
+    }
   } finally {
     loading.value = false
   }

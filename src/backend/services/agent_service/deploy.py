@@ -26,6 +26,7 @@ from services.template_service import is_trinity_compatible
 from services.docker_service import get_agent_container
 from services.docker_utils import container_stop
 from utils.helpers import sanitize_agent_name
+from services.settings_service import get_agent_quota_for_role
 from .helpers import get_agents_by_prefix, get_next_version_name, get_latest_version
 
 logger = logging.getLogger(__name__)
@@ -277,21 +278,24 @@ async def deploy_local_agent_logic(
 
         base_name = sanitize_agent_name(base_name)
 
-        # 6b. Agent quota enforcement (skip for redeploys of existing agents owned by this user)
+        # 6b. Agent quota enforcement: per-role limits (QUOTA-001)
+        # Skip for redeploys of existing agents owned by this user
         existing_versions = get_agents_by_prefix(base_name)
         owned = db.get_agents_by_owner(current_user.username)
         is_redeploy = any(v.name in owned for v in existing_versions)
         if not is_redeploy:
-            max_agents = int(db.get_setting_value("max_agents_per_user", "3"))
+            max_agents = get_agent_quota_for_role(current_user.role)
             if max_agents > 0:
                 non_system = [a for a in owned if not (db.get_agent_owner(a) or {}).get("is_system")]
                 if len(non_system) >= max_agents:
                     raise HTTPException(
                         status_code=429,
                         detail={
-                            "error": f"Agent quota exceeded. Maximum {max_agents} agents per user. "
+                            "error": f"Agent quota exceeded. You have {len(non_system)}/{max_agents} agents. "
                                      f"Delete an agent to create a new one.",
-                            "code": "QUOTA_EXCEEDED"
+                            "code": "QUOTA_EXCEEDED",
+                            "current": len(non_system),
+                            "limit": max_agents
                         }
                     )
 

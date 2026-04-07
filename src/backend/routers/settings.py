@@ -27,6 +27,8 @@ from services.settings_service import (
     settings_service,
     OPS_SETTINGS_DEFAULTS,
     OPS_SETTINGS_DESCRIPTIONS,
+    AGENT_QUOTA_DEFAULTS,
+    AGENT_QUOTA_DESCRIPTIONS,
 )
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -953,6 +955,85 @@ async def delete_github_templates(
 # Generic Settings CRUD - /{key} catch-all routes
 # NOTE: These must come AFTER specific routes like /api-keys
 # ============================================================================
+
+# ============================================================================
+# Agent Quota Settings (QUOTA-001)
+# ============================================================================
+
+class AgentQuotaUpdate(BaseModel):
+    """Request body for updating per-role agent quotas."""
+    max_agents_creator: Optional[str] = None
+    max_agents_operator: Optional[str] = None
+    max_agents_user: Optional[str] = None
+
+
+@router.get("/agent-quotas")
+async def get_agent_quotas(
+    request: Request,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get per-role agent quota configuration.
+
+    Admin-only. Returns quota limits for each role with defaults.
+    Admin role is always unlimited and not configurable.
+    """
+    require_admin(current_user)
+
+    all_settings = db.get_settings_dict()
+
+    # Check for legacy setting
+    legacy_value = all_settings.get("max_agents_per_user")
+
+    quotas = {}
+    for key, default_value in AGENT_QUOTA_DEFAULTS.items():
+        current_value = all_settings.get(key, default_value)
+        quotas[key] = {
+            "value": current_value,
+            "default": default_value,
+            "description": AGENT_QUOTA_DESCRIPTIONS.get(key, ""),
+            "is_default": key not in all_settings
+        }
+
+    return {
+        "quotas": quotas,
+        "admin_unlimited": True,
+        "legacy_setting": legacy_value
+    }
+
+
+@router.put("/agent-quotas")
+async def update_agent_quotas(
+    body: AgentQuotaUpdate,
+    request: Request,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Update per-role agent quotas.
+
+    Admin-only. Only updates provided fields. Values must be non-negative integers.
+    Set to "0" for unlimited.
+    """
+    require_admin(current_user)
+
+    updated = []
+    for key in AGENT_QUOTA_DEFAULTS:
+        value = getattr(body, key, None)
+        if value is not None:
+            try:
+                int_val = int(value)
+                if int_val < 0:
+                    raise HTTPException(status_code=400, detail=f"Quota value for {key} must be non-negative")
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Quota value for {key} must be an integer")
+            db.set_setting(key, value)
+            updated.append(key)
+
+    return {
+        "success": True,
+        "updated": updated
+    }
+
 
 @router.get("/{key}")
 async def get_setting(

@@ -234,6 +234,54 @@ def get_ops_setting(key: str, as_type: type = str):
     return settings_service.get_ops_setting(key, as_type)
 
 
+# ============================================================================
+# Agent Quota Settings (QUOTA-001)
+# ============================================================================
+
+# Per-role defaults for agent creation limits (0 = unlimited)
+AGENT_QUOTA_DEFAULTS = {
+    "max_agents_creator": "10",
+    "max_agents_operator": "3",
+    "max_agents_user": "1",
+}
+
+AGENT_QUOTA_DESCRIPTIONS = {
+    "max_agents_creator": "Maximum agents a creator can own (0 = unlimited, default: 10)",
+    "max_agents_operator": "Maximum agents an operator can own (0 = unlimited, default: 3)",
+    "max_agents_user": "Maximum agents a regular user can own (0 = unlimited, default: 1)",
+}
+
+
+def get_agent_quota_for_role(role: str) -> int:
+    """
+    Get the agent creation quota for a given user role.
+
+    Admin users are always exempt (returns 0 = unlimited).
+    Other roles check max_agents_{role}, falling back to the legacy
+    max_agents_per_user setting, then to role-specific defaults.
+
+    Returns:
+        int: Maximum agents allowed (0 = unlimited)
+    """
+    if role == "admin":
+        return 0
+
+    # Check per-role setting first
+    role_key = f"max_agents_{role}"
+    value = settings_service.get_setting(role_key)
+    if value is not None:
+        return int(value)
+
+    # Fall back to legacy global setting
+    legacy = settings_service.get_setting("max_agents_per_user")
+    if legacy is not None:
+        return int(legacy)
+
+    # Fall back to role-specific default
+    default = AGENT_QUOTA_DEFAULTS.get(role_key, "3")
+    return int(default)
+
+
 def get_agent_full_capabilities() -> bool:
     """
     Get system-wide agent full capabilities setting.

@@ -1176,6 +1176,95 @@ Example:
             </div>
           </div>
 
+          <!-- Agent Quotas Section (QUOTA-001) -->
+          <div class="bg-white dark:bg-gray-800 shadow dark:shadow-gray-900 rounded-lg">
+            <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+              <h2 class="text-lg font-medium text-gray-900 dark:text-white">Agent Quotas</h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Set the maximum number of agents each role can create. Set to 0 for unlimited.
+              </p>
+            </div>
+
+            <div class="px-6 py-4 space-y-4">
+              <!-- Admin role - always unlimited -->
+              <div class="flex items-center justify-between">
+                <div>
+                  <label class="text-sm font-medium text-gray-700 dark:text-gray-300">Admin</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">Admins can always create unlimited agents</p>
+                </div>
+                <span class="text-sm font-medium text-green-600 dark:text-green-400">Unlimited</span>
+              </div>
+
+              <!-- Creator role -->
+              <div class="flex items-center justify-between">
+                <div>
+                  <label for="quota-creator" class="text-sm font-medium text-gray-700 dark:text-gray-300">Creator</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">{{ agentQuotas.max_agents_creator?.description || 'Maximum agents a creator can own' }}</p>
+                </div>
+                <input
+                  type="number"
+                  id="quota-creator"
+                  v-model="agentQuotaValues.max_agents_creator"
+                  min="0"
+                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm text-center"
+                />
+              </div>
+
+              <!-- Operator role -->
+              <div class="flex items-center justify-between">
+                <div>
+                  <label for="quota-operator" class="text-sm font-medium text-gray-700 dark:text-gray-300">Operator</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">{{ agentQuotas.max_agents_operator?.description || 'Maximum agents an operator can own' }}</p>
+                </div>
+                <input
+                  type="number"
+                  id="quota-operator"
+                  v-model="agentQuotaValues.max_agents_operator"
+                  min="0"
+                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm text-center"
+                />
+              </div>
+
+              <!-- User role -->
+              <div class="flex items-center justify-between">
+                <div>
+                  <label for="quota-user" class="text-sm font-medium text-gray-700 dark:text-gray-300">User</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">{{ agentQuotas.max_agents_user?.description || 'Maximum agents a regular user can own' }}</p>
+                </div>
+                <input
+                  type="number"
+                  id="quota-user"
+                  v-model="agentQuotaValues.max_agents_user"
+                  min="0"
+                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm text-center"
+                />
+              </div>
+
+              <!-- Legacy setting warning -->
+              <div v-if="agentQuotaLegacy" class="rounded-md bg-yellow-50 dark:bg-yellow-900/20 p-3">
+                <p class="text-sm text-yellow-700 dark:text-yellow-400">
+                  Legacy setting <code class="px-1 py-0.5 bg-yellow-100 dark:bg-yellow-900/40 rounded text-xs">max_agents_per_user={{ agentQuotaLegacy }}</code> is active and used as fallback. Save per-role quotas to override it.
+                </p>
+              </div>
+
+              <!-- Save button -->
+              <div class="flex justify-end">
+                <button
+                  type="button"
+                  class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
+                  :disabled="savingQuotas"
+                  @click="saveAgentQuotas"
+                >
+                  <svg v-if="savingQuotas" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Save Quotas
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- Skills Library Section -->
           <div class="bg-white dark:bg-gray-800 shadow dark:shadow-gray-900 rounded-lg">
             <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
@@ -1480,6 +1569,12 @@ const slackInstallSuccess = ref(false)
 // SSH Access state
 const sshAccessEnabled = ref(false)
 const savingSshAccess = ref(false)
+
+// Agent Quotas state (QUOTA-001)
+const agentQuotas = ref({})
+const agentQuotaValues = ref({ max_agents_creator: '10', max_agents_operator: '3', max_agents_user: '1' })
+const agentQuotaLegacy = ref(null)
+const savingQuotas = ref(false)
 
 // Auto-Switch Subscriptions state (SUB-003)
 const autoSwitchEnabled = ref(false)
@@ -2028,6 +2123,50 @@ async function resetGithubTemplates() {
   }
 }
 
+// Agent Quotas methods (QUOTA-001)
+async function loadAgentQuotas() {
+  try {
+    const response = await axios.get('/api/settings/agent-quotas', {
+      headers: authStore.authHeader
+    })
+    agentQuotas.value = response.data.quotas || {}
+    agentQuotaLegacy.value = response.data.legacy_setting || null
+    agentQuotaValues.value = {
+      max_agents_creator: agentQuotas.value.max_agents_creator?.value || '10',
+      max_agents_operator: agentQuotas.value.max_agents_operator?.value || '3',
+      max_agents_user: agentQuotas.value.max_agents_user?.value || '1'
+    }
+  } catch (e) {
+    console.error('Failed to load agent quotas:', e)
+  }
+}
+
+async function saveAgentQuotas() {
+  savingQuotas.value = true
+  error.value = null
+
+  try {
+    await axios.put('/api/settings/agent-quotas', {
+      max_agents_creator: String(agentQuotaValues.value.max_agents_creator),
+      max_agents_operator: String(agentQuotaValues.value.max_agents_operator),
+      max_agents_user: String(agentQuotaValues.value.max_agents_user)
+    }, {
+      headers: authStore.authHeader
+    })
+
+    showSuccess.value = true
+    setTimeout(() => {
+      showSuccess.value = false
+    }, 3000)
+
+    await loadAgentQuotas()
+  } catch (e) {
+    error.value = e.response?.data?.detail || 'Failed to save agent quotas'
+  } finally {
+    savingQuotas.value = false
+  }
+}
+
 // SSH Access methods
 async function loadOpsSettings() {
   try {
@@ -2367,6 +2506,7 @@ onMounted(() => {
   loadUsers()
   loadGithubTemplates()
   loadOpsSettings()
+  loadAgentQuotas()
   loadSkillsLibrarySettings()
   loadSubscriptions()
   loadAutoSwitchSetting()

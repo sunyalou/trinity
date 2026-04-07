@@ -29,7 +29,7 @@ from services.template_service import (
     generate_credential_files,
 )
 from services import git_service
-from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities
+from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities, get_agent_quota_for_role
 from services.github_service import GitHubService, GitHubError
 from utils.helpers import sanitize_agent_name
 from .helpers import validate_base_image
@@ -89,8 +89,8 @@ async def create_agent_internal(
     if get_agent_by_name(config.name) or db.get_agent_owner(config.name):
         raise HTTPException(status_code=409, detail="Agent already exists")
 
-    # Agent quota enforcement: limit agents per user
-    max_agents = int(db.get_setting_value("max_agents_per_user", "3"))
+    # Agent quota enforcement: per-role limits (QUOTA-001)
+    max_agents = get_agent_quota_for_role(current_user.role)
     if max_agents > 0:
         owned = db.get_agents_by_owner(current_user.username)
         # System agents don't count toward user quota
@@ -99,9 +99,11 @@ async def create_agent_internal(
             raise HTTPException(
                 status_code=429,
                 detail={
-                    "error": f"Agent quota exceeded. Maximum {max_agents} agents per user. "
+                    "error": f"Agent quota exceeded. You have {len(non_system)}/{max_agents} agents. "
                              f"Delete an agent to create a new one.",
-                    "code": "QUOTA_EXCEEDED"
+                    "code": "QUOTA_EXCEEDED",
+                    "current": len(non_system),
+                    "limit": max_agents
                 }
             )
 
