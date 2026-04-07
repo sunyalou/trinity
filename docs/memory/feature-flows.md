@@ -11,6 +11,7 @@
 
 | Date | ID | Feature | Flow |
 |------|-----|---------|------|
+| 2026-04-06 | QUOTA-001 | Per-role agent creation quotas with admin exemption | [agent-quotas.md](feature-flows/agent-quotas.md) |
 | 2026-04-04 | DASH-001 | Dashboard reliability: DB-persisted cache, retry backoff, partial YAML tolerance, decoupled tab visibility | [dynamic-dashboards.md](feature-flows/dynamic-dashboards.md) |
 | 2026-04-04 | CLI-001 | CLI UX: URL normalization + retry, table default output, tag-driven auto-versioning | [cli-tool.md](feature-flows/cli-tool.md) |
 | 2026-04-01 | CLI-001 | Trinity CLI tool — Python Click CLI mirroring core MCP tools as shell commands | [cli-tool.md](feature-flows/cli-tool.md) |
@@ -235,6 +236,7 @@
 | Agent Resource Allocation | [agent-resource-allocation.md](feature-flows/agent-resource-allocation.md) | Per-agent memory/CPU limits |
 | Container Capabilities | [container-capabilities.md](feature-flows/container-capabilities.md) | Full capabilities mode |
 | Model Selection | [model-selection.md](feature-flows/model-selection.md) | LLM model selection for terminal, tasks, and schedules |
+| Agent Quotas | [agent-quotas.md](feature-flows/agent-quotas.md) | Per-role agent creation limits (QUOTA-001) |
 | Platform Settings | [platform-settings.md](feature-flows/platform-settings.md) | Admin settings page |
 | SSH Access | [ssh-access.md](feature-flows/ssh-access.md) | Ephemeral SSH credentials |
 | Subscription Management | [subscription-management.md](feature-flows/subscription-management.md) | Claude Max/Pro subscription tokens via env var (SUB-002) |
