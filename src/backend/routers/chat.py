@@ -488,6 +488,16 @@ async def _execute_task_background(
 
         start_time = datetime.utcnow()
 
+        # Issue #279: Mark execution as dispatched BEFORE calling the agent so
+        # the no-session cleanup doesn't falsely mark it as "Silent launch failure".
+        # Without this, claude_session_id stays NULL and cleanup kills the execution
+        # after 60s even though the agent call is still in-flight.
+        if execution_id:
+            try:
+                db.mark_execution_dispatched(execution_id)
+            except Exception as e:
+                logger.warning(f"[Task Async] Failed to mark execution dispatched: {e}")
+
         response = await agent_post_with_retry(
             agent_name,
             "/api/task",
@@ -804,7 +814,15 @@ async def execute_parallel_task(
             db.update_execution_status(execution_id=execution_id, status=TaskExecutionStatus.RUNNING)
 
         # Spawn background task (slot will be released when task completes)
-        asyncio.create_task(
+        # Issue #279: Add done callback to surface any unhandled exceptions
+        # that would otherwise be silently swallowed by asyncio.
+        def _on_task_done(task: asyncio.Task):
+            if task.cancelled():
+                logger.warning(f"[Task Async] Background task cancelled for agent '{name}', execution_id={execution_id}")
+            elif exc := task.exception():
+                logger.error(f"[Task Async] Unhandled exception in background task for agent '{name}', execution_id={execution_id}: {exc}")
+
+        bg_task = asyncio.create_task(
             _execute_task_background(
                 agent_name=name,
                 request=request,
@@ -818,6 +836,7 @@ async def execute_parallel_task(
                 subscription_id=_task_subscription_id,  # SUB-004: Usage tracking
             )
         )
+        bg_task.add_done_callback(_on_task_done)
 
         # Return immediately with execution_id for polling
         logger.info(f"[Task Async] Started background task for agent '{name}', execution_id={execution_id}")
