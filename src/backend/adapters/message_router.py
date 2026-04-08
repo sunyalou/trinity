@@ -14,9 +14,10 @@ Uses the same execution path as web public chat (EXEC-024) for:
 
 import io
 import logging
+import re
 import tarfile
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from collections import defaultdict
 
 from database import db
@@ -24,7 +25,7 @@ from services.docker_service import get_agent_container
 from services.settings_service import settings_service
 from services.task_execution_service import get_task_execution_service
 from services.docker_utils import container_put_archive, container_exec_run
-from adapters.base import ChannelAdapter, ChannelResponse, FileAttachment, NormalizedMessage
+from adapters.base import ChannelAdapter, ChannelResponse, FileAttachment, NormalizedMessage, OutboundFile
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,23 @@ _DEFAULT_CHANNEL_TIMEOUT = 120      # seconds
 _DEFAULT_CHANNEL_ALLOWED_TOOLS = "WebSearch,WebFetch"
 _FILE_UPLOAD_RATE_LIMIT_MAX = 5     # file uploads per window
 _FILE_UPLOAD_RATE_LIMIT_WINDOW = 60 # seconds
+
+# Outbound file extraction from agent responses
+_OUTBOUND_MIN_BLOCK_CHARS = 100
+_OUTBOUND_MAX_FILES = 5
+_OUTBOUND_MAX_FILE_BYTES = 500 * 1024       # 500 KB per block
+_OUTBOUND_MAX_TOTAL_BYTES = 2 * 1024 * 1024 # 2 MB total
+
+_OUTBOUND_LANG_MAP = {
+    "csv": "csv", "json": "json", "html": "html", "xml": "xml",
+    "yaml": "yaml", "yml": "yaml", "sql": "sql",
+    "python": "py", "py": "py",
+    "javascript": "js", "js": "js", "typescript": "ts", "ts": "ts",
+    "txt": "txt", "text": "txt",
+}
+
+# Regex: fenced code block at start of line with language hint
+_CODE_BLOCK_RE = re.compile(r'^```(\w+)\s*\n(.*?)^```', re.DOTALL | re.MULTILINE)
 
 
 def _get_rate_limit_max() -> int:
@@ -288,11 +306,24 @@ class ChannelMessageRouter:
         db.add_public_chat_message(session_id, "user", message.text)
         db.add_public_chat_message(session_id, "assistant", response_text, cost=result.cost)
 
+        # 11b. Extract code blocks as outbound files (after persisting, before sending)
+        outbound_files = []
+        send_text = response_text
+        try:
+            send_text, outbound_files = self._extract_outbound_files(response_text)
+            if outbound_files:
+                logger.info(
+                    f"[ROUTER:{channel}] Extracted {len(outbound_files)} outbound file(s) "
+                    f"({sum(len(f.content) for f in outbound_files)} bytes total)"
+                )
+        except Exception as e:
+            logger.error(f"[ROUTER:{channel}] Outbound file extraction failed: {e}", exc_info=True)
+
         # 12. Send response to channel
         logger.debug(f"[ROUTER:{channel}] Step 12 - sending response")
         await adapter.send_response(
             message.channel_id,
-            ChannelResponse(text=response_text, metadata={"bot_token": bot_token, "agent_name": agent_name}),
+            ChannelResponse(text=send_text, files=outbound_files, metadata={"bot_token": bot_token, "agent_name": agent_name}),
             thread_id=message.thread_id,
         )
 
@@ -307,6 +338,64 @@ class ChannelMessageRouter:
     # =========================================================================
     # Private helpers
     # =========================================================================
+
+    @staticmethod
+    def _extract_outbound_files(response_text: str) -> Tuple[str, List[OutboundFile]]:
+        """
+        Extract large fenced code blocks from agent response text.
+
+        Scans for ```lang ... ``` blocks with recognized language hints.
+        Blocks exceeding the minimum size threshold are extracted as
+        OutboundFile objects and replaced with a placeholder in the text.
+
+        Returns (cleaned_text, files).
+        """
+        files: List[OutboundFile] = []
+        total_bytes = 0
+        file_counter = 0
+
+        def replace_block(match: re.Match) -> str:
+            nonlocal total_bytes, file_counter
+
+            lang_hint = match.group(1).lower()
+            content = match.group(2)
+
+            # Skip unrecognized languages
+            ext = _OUTBOUND_LANG_MAP.get(lang_hint)
+            if not ext:
+                return match.group(0)
+
+            # Skip small blocks
+            if len(content) < _OUTBOUND_MIN_BLOCK_CHARS:
+                return match.group(0)
+
+            # Enforce per-file size limit
+            content_bytes = content.encode("utf-8")
+            if len(content_bytes) > _OUTBOUND_MAX_FILE_BYTES:
+                return match.group(0)
+
+            # Enforce total size limit
+            if total_bytes + len(content_bytes) > _OUTBOUND_MAX_TOTAL_BYTES:
+                return match.group(0)
+
+            # Enforce max file count
+            if file_counter >= _OUTBOUND_MAX_FILES:
+                return match.group(0)
+
+            file_counter += 1
+            total_bytes += len(content_bytes)
+            filename = f"response_{file_counter}.{ext}"
+
+            files.append(OutboundFile(
+                filename=filename,
+                content=content_bytes,
+                language=lang_hint,
+            ))
+
+            return f"(see attached: {filename})"
+
+        cleaned_text = _CODE_BLOCK_RE.sub(replace_block, response_text)
+        return cleaned_text, files
 
     @staticmethod
     async def _cleanup_uploads(container, upload_dir: Optional[str]) -> None:

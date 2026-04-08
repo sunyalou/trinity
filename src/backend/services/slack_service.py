@@ -102,7 +102,7 @@ class SlackService:
 
         params = {
             "client_id": get_slack_client_id(),
-            "scope": "im:history,im:read,im:write,chat:write,chat:write.customize,users:read,users:read.email,app_mentions:read,channels:history,channels:read,channels:join,channels:manage,reactions:write,files:read",
+            "scope": "im:history,im:read,im:write,chat:write,chat:write.customize,users:read,users:read.email,app_mentions:read,channels:history,channels:read,channels:join,channels:manage,reactions:write,files:read,files:write",
             "redirect_uri": redirect_uri,
             "state": state
         }
@@ -474,6 +474,80 @@ class SlackService:
         else:
             return f"{base_url}/agents/{agent_name}?tab=sharing&slack=error&reason={error or 'unknown'}"
 
+
+    async def upload_file(
+        self,
+        bot_token: str,
+        channel: str,
+        filename: str,
+        content: bytes,
+        thread_ts: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Upload a file to Slack using the V2 Upload API.
+
+        Three-step process:
+        1. files.getUploadURLExternal → presigned URL + file_id
+        2. POST content to presigned URL
+        3. files.completeUploadExternal → finalize and share to channel/thread
+
+        Returns (success, error_message).
+        """
+        try:
+            # Step 1: Get upload URL
+            resp = await self.client.get(
+                f"{self.SLACK_API_BASE}/files.getUploadURLExternal",
+                headers={"Authorization": f"Bearer {bot_token}"},
+                params={"filename": filename, "length": len(content)},
+            )
+            data = resp.json()
+            if not data.get("ok"):
+                error = data.get("error", "unknown_error")
+                logger.error(f"Slack files.getUploadURLExternal failed: {error}")
+                return False, error
+
+            upload_url = data["upload_url"]
+            file_id = data["file_id"]
+
+            # Step 2: Upload content to presigned URL
+            upload_resp = await self.client.post(
+                upload_url,
+                content=content,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            if upload_resp.status_code != 200:
+                error = f"Upload PUT failed: HTTP {upload_resp.status_code}"
+                logger.error(f"Slack file upload failed: {error}")
+                return False, error
+
+            # Step 3: Complete upload and share to channel/thread
+            complete_payload = {
+                "files": [{"id": file_id, "title": filename}],
+                "channel_id": channel,
+            }
+            if thread_ts:
+                complete_payload["thread_ts"] = thread_ts
+
+            complete_resp = await self.client.post(
+                f"{self.SLACK_API_BASE}/files.completeUploadExternal",
+                headers={
+                    "Authorization": f"Bearer {bot_token}",
+                    "Content-Type": "application/json",
+                },
+                json=complete_payload,
+            )
+            complete_data = complete_resp.json()
+            if not complete_data.get("ok"):
+                error = complete_data.get("error", "unknown_error")
+                logger.error(f"Slack files.completeUploadExternal failed: {error}")
+                return False, error
+
+            logger.info(f"Uploaded {filename} ({len(content)} bytes) to Slack channel {channel}")
+            return True, None
+
+        except Exception as e:
+            logger.error(f"Failed to upload file to Slack: {e}")
+            return False, str(e)
 
     async def download_file(self, bot_token: str, url: str, max_size: int = 10 * 1024 * 1024) -> Optional[bytes]:
         """

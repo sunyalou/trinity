@@ -119,6 +119,19 @@ class SlackAdapter(ChannelAdapter):
 
         agent_name = response.metadata.get("agent_name")
         avatar_url = response.metadata.get("agent_avatar_url")
+
+        # Upload extracted outbound files before sending text
+        for f in response.files:
+            success, error = await slack_service.upload_file(
+                bot_token=bot_token,
+                channel=channel_id,
+                filename=f.filename,
+                content=f.content,
+                thread_ts=thread_id,
+            )
+            if not success:
+                logger.warning(f"[SLACK] File upload failed for {f.filename}: {error}")
+
         formatted_text = self.format_response(response.text)
 
         await slack_service.send_message(

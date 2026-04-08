@@ -35,9 +35,20 @@ class NormalizedMessage(BaseModel):
     metadata: dict = {}                 # Channel-specific extras (team_id, bot_token, etc.)
 
 
+class OutboundFile(BaseModel):
+    """File extracted from an agent response for outbound delivery."""
+    filename: str                       # e.g., "response_1.csv"
+    content: bytes                      # File bytes (UTF-8 encoded text content)
+    language: str                       # Original code fence hint ("csv", "json", etc.)
+
+    class Config:
+        arbitrary_types_allowed = True
+
+
 class ChannelResponse(BaseModel):
     """Channel-agnostic outgoing response."""
     text: str                           # Response content (may contain markdown)
+    files: List[OutboundFile] = []      # Extracted files for outbound delivery
     metadata: dict = {}                 # Extra context (agent_name, cost, etc.)
 
 
