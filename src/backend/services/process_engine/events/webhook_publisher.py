@@ -8,11 +8,17 @@ Reference: BACKLOG_MVP.md - E15-03
 """
 
 import asyncio
+import hashlib
+import hmac
+import json
 import logging
+import time
 from datetime import datetime
 from typing import Any, Callable, Optional
 
 import httpx
+
+from config import SECRET_KEY
 
 from ..domain.events import (
     DomainEvent,
@@ -97,15 +103,35 @@ class WebhookEventPublisher:
             return_exceptions=True,
         )
 
+    @staticmethod
+    def _compute_signature(payload_bytes: bytes, timestamp: str) -> str:
+        """Compute HMAC-SHA256 signature for a webhook payload."""
+        # Derive a webhook-specific signing key from SECRET_KEY
+        signing_key = hmac.new(
+            SECRET_KEY.encode(), b"webhook-signing", hashlib.sha256
+        ).digest()
+        message = f"{timestamp}.".encode() + payload_bytes
+        return hmac.new(signing_key, message, hashlib.sha256).hexdigest()
+
     async def _send_webhook(self, url: str, payload: dict) -> None:
-        """Send a webhook request."""
+        """Send a webhook request with HMAC-SHA256 signature."""
         try:
+            payload_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+            timestamp = str(int(time.time()))
+            signature = self._compute_signature(payload_bytes, timestamp)
+
+            headers = {
+                "Content-Type": "application/json",
+                "X-Trinity-Signature": f"v1={signature}",
+                "X-Trinity-Timestamp": timestamp,
+            }
+
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     url,
-                    json=payload,
+                    content=payload_bytes,
                     timeout=10.0,
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                 )
                 if response.status_code >= 400:
                     logger.warning(f"Webhook {url} returned {response.status_code}")
