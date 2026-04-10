@@ -674,11 +674,12 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
 - **Flow**: `docs/memory/feature-flows/slack-file-sharing.md`
 
 ### 15.1c Telegram Bot Integration (TGRAM-001)
-- **Status**: 🚧 In Progress (2026-03-31)
+- **Status**: ✅ Complete (2026-04-10)
 - **Requirement ID**: TGRAM-001
 - **Priority**: P2
 - **Description**: Per-agent Telegram bot integration. Each agent gets its own Telegram bot (1:1 via @BotFather), shareable via `t.me/BotUsername` links. Reuses the `ChannelAdapter` abstraction proven by SLACK-002.
 - **Key Features**:
+  - Frontend UI: `TelegramChannelPanel.vue` in Agent Detail → Sharing tab (connect, verify, disconnect, webhook warning)
   - Per-agent bots (one bot per agent, token encrypted via AES-256-GCM)
   - Bidirectional text chat (users message bot → agent responds via HTML formatting)
   - Photo and document support (download, text extraction for plain text files)
