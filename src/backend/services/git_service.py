@@ -367,14 +367,17 @@ async def initialize_git_in_container(
     remote_has_main = check_main.get("exit_code", 1) == 0
 
     if remote_has_main:
-        # Preserve remote history: reset to origin/main, then commit local changes
+        # Preserve remote history: reset index to origin/main, then stage
+        # the current workspace on top of it and fast-forward push.
         commit_commands = [
             'git reset origin/main',
             'git add .',
             'git commit -m "Initial commit from Trinity Agent" || echo "Nothing to commit"',
+            # Always set upstream; no-op when there is nothing new to push.
+            'git push -u origin main',
         ]
     else:
-        # Empty repo: fall back to force push (creates initial history)
+        # Empty repo: force push creates the initial history.
         commit_commands = [
             'git add .',
             'git commit -m "Initial commit from Trinity Agent" || echo "Nothing to commit"',

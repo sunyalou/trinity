@@ -12,6 +12,7 @@ As a **Trinity platform user**, I want to **enable GitHub synchronization for an
 
 | Date | Changes |
 |------|---------|
+| 2026-04-10 | Fix (#256): `initialize_git_in_container` now pushes after commit in the `remote_has_main` code path. Previously the workspace was committed locally inside the container but never reached GitHub when the target repo already had a `main` branch, making the UI report success while no files synced. |
 | 2026-02-11 | Added LEGACY notes for workspace path checks - new agents (2026-02+) use `/home/developer` directly, workspace checks exist for backward compatibility with pre-2026-02 agents |
 | 2026-01-23 | Verified line numbers against current implementation, updated MCP tool lines (530-604), verified git_service.py structure |
 | 2025-12-31 | Refactored to clean architecture with service layer |
