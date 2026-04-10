@@ -310,6 +310,67 @@ The message router restricts public channel users to `WebSearch,WebFetch` by def
    **Expected**: Webhook deleted from Telegram, binding removed from DB
    **Verify**: `GET /api/agents/{agent}/telegram` returns `configured: false`
 
+## Frontend Layer
+
+### Component: `src/frontend/src/components/TelegramChannelPanel.vue`
+
+Self-contained panel rendered in the Agent Detail → Sharing tab via `SharingPanel.vue`. Mirrors the `SlackChannelPanel.vue` pattern.
+
+**Props**: `agentName` (String, required)
+
+**States**: `loading`, `connecting`, `disconnecting`, `verifying`, `accessDenied`
+
+**Data model**:
+```javascript
+binding = {
+  configured: boolean,
+  bot_username: string,
+  bot_id: string,
+  webhook_url: string | null,
+  bot_link: string | null
+}
+```
+
+**UI States**:
+
+| State | Display |
+|-------|---------|
+| Loading | Spinner |
+| Access denied (403) | "Only the agent owner can manage..." |
+| Disconnected | Token input (`type="password"`) + "Connect Bot" button + BotFather link |
+| Connected | Green dot, `@bot_username`, t.me link, Verify + Disconnect buttons |
+| Connected (no webhook) | Yellow warning: "Bot connected but webhook not registered..." |
+
+**API calls** (via `api.js` — Invariant #7):
+- `GET /api/agents/{name}/telegram` → load binding status
+- `PUT /api/agents/{name}/telegram` → connect bot (sends `{ bot_token }`)
+- `DELETE /api/agents/{name}/telegram` → disconnect bot
+- `POST /api/agents/{name}/telegram/test` → verify bot (calls getMe)
+
+**Security**:
+- Token input is `type="password"` (masked in DOM)
+- `botToken` ref cleared to `''` immediately on successful connect
+- No `console.error(e)` that could leak token via axios error object
+- Backend never returns token in GET response
+
+**Error handling**:
+- 409 → "This bot is already bound to agent '{name}'" (surfaces agent name from backend)
+- 400 → Invalid token format or failed getMe validation
+- 502 → Telegram API unreachable
+- Generic fallback for unexpected errors
+
+### Integration: `src/frontend/src/components/SharingPanel.vue`
+
+TelegramChannelPanel is imported and rendered between the Slack and Public Links sections:
+
+```vue
+<SlackChannelPanel :agent-name="agentName" />
+<div class="border-t ..."></div>
+<TelegramChannelPanel :agent-name="agentName" />
+<div class="border-t ..."></div>
+<PublicLinksPanel :agent-name="agentName" />
+```
+
 ## Related Flows
 - [slack-integration.md](slack-integration.md) — Slack equivalent (SLACK-001)
 - [slack-channel-routing.md](slack-channel-routing.md) — Channel adapter abstraction (SLACK-002)
