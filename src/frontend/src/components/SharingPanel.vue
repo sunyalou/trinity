@@ -85,6 +85,12 @@
     <!-- Divider -->
     <div class="border-t border-gray-200 dark:border-gray-700"></div>
 
+    <!-- Telegram Bot Section -->
+    <TelegramChannelPanel :agent-name="agentName" />
+
+    <!-- Divider -->
+    <div class="border-t border-gray-200 dark:border-gray-700"></div>
+
     <!-- Public Links Section -->
     <PublicLinksPanel :agent-name="agentName" />
   </div>
@@ -97,6 +103,7 @@ import { useAgentSharing } from '../composables/useAgentSharing'
 import { useNotification } from '../composables'
 import PublicLinksPanel from './PublicLinksPanel.vue'
 import SlackChannelPanel from './SlackChannelPanel.vue'
+import TelegramChannelPanel from './TelegramChannelPanel.vue'
 
 const props = defineProps({
   agentName: {
