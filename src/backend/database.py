@@ -1381,6 +1381,23 @@ class DatabaseManager:
     def increment_telegram_message_count(self, chat_link_id):
         return self._telegram_channel_ops.increment_message_count(chat_link_id)
 
+    # Telegram Group Configs (TGRAM-GROUP)
+
+    def get_or_create_telegram_group_config(self, binding_id, chat_id, chat_title=None, chat_type="group"):
+        return self._telegram_channel_ops.get_or_create_group_config(binding_id, chat_id, chat_title, chat_type)
+
+    def get_telegram_group_config(self, binding_id, chat_id):
+        return self._telegram_channel_ops.get_group_config(binding_id, chat_id)
+
+    def get_telegram_groups_for_agent(self, agent_name):
+        return self._telegram_channel_ops.get_groups_for_agent(agent_name)
+
+    def update_telegram_group_config(self, group_config_id, trigger_mode=None, welcome_enabled=None, welcome_text=None):
+        return self._telegram_channel_ops.update_group_config(group_config_id, trigger_mode, welcome_enabled, welcome_text)
+
+    def deactivate_telegram_group_config(self, binding_id, chat_id):
+        return self._telegram_channel_ops.deactivate_group_config(binding_id, chat_id)
+
     # =========================================================================
     # Nevermined Payment Integration (delegated to db/nevermined.py) - NVM-001
     # =========================================================================

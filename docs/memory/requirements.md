@@ -711,6 +711,39 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
   - Phase 2: Voice transcription (Whisper API), notification forwarding
   - Phase 3: Inline keyboards for approve/reject, deep links with start parameters
 
+### 15.1e Telegram Group Chat Support (TGRAM-GROUP)
+- **Status**: ✅ Complete (2026-04-11)
+- **Requirement ID**: TGRAM-GROUP
+- **Priority**: P2
+- **Description**: Agents participate in Telegram group chats. Bots respond to @mentions and direct replies in groups. Per-group configuration for trigger mode and welcome messages.
+- **Key Features**:
+  - Group message handling: respond to @mentions of bot username in message entities
+  - Reply-to-bot detection: respond when user replies to bot's own messages
+  - Configurable trigger mode per group: "mention" (default, @mention-only) or "all" (all messages)
+  - New member welcome messages: configurable text with {name} placeholder
+  - Auto-created group configs on first interaction (no manual setup required)
+  - Bot added/removed from group detection via `my_chat_member` update events
+  - User join/leave detection via `chat_member` events (requires bot admin in group)
+  - Fresh context per group message (no prior session history to prevent context bleed)
+  - Silent rate limit drops in groups (no error messages visible to all members)
+  - Mention text stripped from agent input for cleaner prompts
+  - Commands support @botname suffix in groups (e.g., `/help@mybot`)
+  - Uses modern Telegram `reply_parameters` API for threaded replies
+- **Database Tables**:
+  - `telegram_group_configs` — Per-group settings (binding_id, chat_id, trigger_mode, welcome_enabled, welcome_text, is_active)
+- **API Endpoints**:
+  - `GET /api/agents/{name}/telegram/groups` — List group configs
+  - `PUT /api/agents/{name}/telegram/groups/{id}` — Update group config (trigger mode, welcome settings)
+  - `DELETE /api/agents/{name}/telegram/groups/{id}` — Remove group config (deactivates)
+- **Webhook Changes**:
+  - `allowed_updates` now includes `["message", "my_chat_member", "chat_member"]`
+- **Security**:
+  - Same webhook auth (URL secret + header token) — no new attack surface
+  - Group membership not re-verified per message (documented limitation)
+  - Bot loop prevention inherited from TGRAM-001 (`is_bot` check)
+- **Frontend**: TelegramChannelPanel extended with group list, trigger mode radio, welcome message config
+- **Flow**: `docs/memory/feature-flows/telegram-integration.md`
+
 ### 15.1d Public Chat Session Memory (PUB-006)
 - **Status**: ⏳ Not Started
 - **Requirement ID**: PUB-006

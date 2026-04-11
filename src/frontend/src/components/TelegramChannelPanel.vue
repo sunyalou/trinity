@@ -2,7 +2,7 @@
   <div>
     <h3 class="text-lg font-medium text-gray-900 dark:text-white mb-2">Telegram Bot</h3>
     <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-      Connect a Telegram bot so users can chat with this agent via Telegram DMs.
+      Connect a Telegram bot so users can chat with this agent via Telegram DMs and group chats.
     </p>
 
     <!-- Loading -->
@@ -62,6 +62,90 @@
       <!-- Webhook Warning -->
       <div v-if="!binding.webhook_url" class="p-3 rounded-lg text-sm bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300">
         Bot connected but webhook not registered. Set a <router-link to="/settings" class="underline font-medium hover:text-yellow-800 dark:hover:text-yellow-200">Public URL in Settings</router-link> for Telegram messages to reach this agent.
+      </div>
+
+      <!-- Group Chats Section -->
+      <div v-if="groups.length > 0" class="mt-4">
+        <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+          Group Chats ({{ groups.length }})
+        </h4>
+        <div class="space-y-2">
+          <div
+            v-for="group in groups"
+            :key="group.id"
+            class="p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700"
+          >
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2">
+                <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <span class="text-sm font-medium text-gray-900 dark:text-white">
+                  {{ group.chat_title || `Group ${group.chat_id}` }}
+                </span>
+                <span class="text-xs text-gray-400">{{ group.chat_type }}</span>
+              </div>
+              <button
+                @click="removeGroup(group)"
+                class="text-xs text-red-500 hover:text-red-700 dark:hover:text-red-400"
+              >
+                Remove
+              </button>
+            </div>
+
+            <!-- Trigger Mode -->
+            <div class="flex items-center gap-4 text-xs">
+              <label class="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="radio"
+                  :name="`trigger-${group.id}`"
+                  value="mention"
+                  :checked="group.trigger_mode === 'mention'"
+                  @change="updateGroup(group, { trigger_mode: 'mention' })"
+                  class="text-indigo-600 focus:ring-indigo-500"
+                />
+                <span class="text-gray-600 dark:text-gray-400">@mention only</span>
+              </label>
+              <label class="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="radio"
+                  :name="`trigger-${group.id}`"
+                  value="all"
+                  :checked="group.trigger_mode === 'all'"
+                  @change="updateGroup(group, { trigger_mode: 'all' })"
+                  class="text-indigo-600 focus:ring-indigo-500"
+                />
+                <span class="text-gray-600 dark:text-gray-400">All messages</span>
+              </label>
+            </div>
+
+            <!-- Welcome Message Toggle -->
+            <div class="mt-2">
+              <label class="flex items-center gap-1.5 cursor-pointer text-xs">
+                <input
+                  type="checkbox"
+                  :checked="group.welcome_enabled"
+                  @change="updateGroup(group, { welcome_enabled: !group.welcome_enabled })"
+                  class="rounded text-indigo-600 focus:ring-indigo-500"
+                />
+                <span class="text-gray-600 dark:text-gray-400">Welcome new members</span>
+              </label>
+              <div v-if="group.welcome_enabled" class="mt-1.5">
+                <input
+                  type="text"
+                  :value="group.welcome_text || ''"
+                  @blur="updateGroup(group, { welcome_text: $event.target.value })"
+                  placeholder="Welcome, {name}! I'm here to help."
+                  class="w-full text-xs px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
+                <p class="mt-0.5 text-xs text-gray-400">Use {name} for the user's first name</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-else-if="binding.configured && binding.webhook_url" class="mt-3 text-xs text-gray-400 dark:text-gray-500">
+        No group chats yet. Add the bot to a Telegram group to see it here.
       </div>
     </div>
 
@@ -125,6 +209,7 @@ const disconnecting = ref(false)
 const verifying = ref(false)
 const accessDenied = ref(false)
 const binding = ref({ configured: false })
+const groups = ref([])
 const botToken = ref('')
 const message = ref(null)
 
@@ -135,6 +220,9 @@ async function loadBinding() {
   try {
     const response = await api.get(`/api/agents/${props.agentName}/telegram`)
     binding.value = response.data
+    if (response.data.configured) {
+      await loadGroups()
+    }
   } catch (e) {
     if (e.response?.status === 403) {
       accessDenied.value = true
@@ -142,6 +230,15 @@ async function loadBinding() {
     binding.value = { configured: false }
   } finally {
     loading.value = false
+  }
+}
+
+async function loadGroups() {
+  try {
+    const response = await api.get(`/api/agents/${props.agentName}/telegram/groups`)
+    groups.value = response.data
+  } catch (e) {
+    groups.value = []
   }
 }
 
@@ -171,6 +268,7 @@ async function disconnectBot() {
     await api.delete(`/api/agents/${props.agentName}/telegram`)
     message.value = { type: 'success', text: 'Bot disconnected' }
     binding.value = { configured: false }
+    groups.value = []
     setTimeout(() => { message.value = null }, 3000)
   } catch (e) {
     const detail = e.response?.data?.detail || 'Failed to disconnect bot'
@@ -198,6 +296,35 @@ async function verifyBot() {
     message.value = { type: 'error', text: detail }
   } finally {
     verifying.value = false
+  }
+}
+
+async function updateGroup(group, updates) {
+  try {
+    const response = await api.put(
+      `/api/agents/${props.agentName}/telegram/groups/${group.id}`,
+      updates
+    )
+    // Update local state
+    const idx = groups.value.findIndex(g => g.id === group.id)
+    if (idx !== -1) {
+      groups.value[idx] = { ...groups.value[idx], ...response.data }
+    }
+  } catch (e) {
+    const detail = e.response?.data?.detail || 'Failed to update group config'
+    message.value = { type: 'error', text: detail }
+    setTimeout(() => { message.value = null }, 3000)
+  }
+}
+
+async function removeGroup(group) {
+  try {
+    await api.delete(`/api/agents/${props.agentName}/telegram/groups/${group.id}`)
+    groups.value = groups.value.filter(g => g.id !== group.id)
+  } catch (e) {
+    const detail = e.response?.data?.detail || 'Failed to remove group'
+    message.value = { type: 'error', text: detail }
+    setTimeout(() => { message.value = null }, 3000)
   }
 }
 

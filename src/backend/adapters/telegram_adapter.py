@@ -5,10 +5,12 @@ Handles Telegram-specific message parsing, response formatting (HTML),
 agent resolution via bot bindings, and bot commands.
 
 Supports:
-- Text messages → routed to bot-bound agent
+- Private chats (DMs) → routed to bot-bound agent
+- Group chats → @mention or reply-to-bot triggers (TGRAM-GROUP)
 - Photos, documents → downloaded and passed as context
 - /start, /help, /reset commands
 - Typing indicator via sendChatAction
+- Member events (bot added/removed, user join/leave)
 """
 
 import logging
@@ -28,6 +30,9 @@ TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 # Telegram Bot API base URL
 TELEGRAM_API_BASE = "https://api.telegram.org"
 
+# Group chat types
+_GROUP_CHAT_TYPES = {"group", "supergroup"}
+
 
 class TelegramAdapter(ChannelAdapter):
     """Telegram implementation of ChannelAdapter with per-agent bot routing."""
@@ -42,6 +47,9 @@ class TelegramAdapter(ChannelAdapter):
 
     def get_rate_key(self, message: NormalizedMessage) -> str:
         bot_id = message.metadata.get("bot_id", "unknown")
+        # In groups, add a per-group rate key component
+        if message.metadata.get("is_group"):
+            return f"telegram:{bot_id}:group:{message.channel_id}"
         return f"telegram:{bot_id}:{message.sender_id}"
 
     def get_session_identifier(self, message: NormalizedMessage) -> str:
@@ -68,29 +76,56 @@ class TelegramAdapter(ChannelAdapter):
         Parse a Telegram Update into a NormalizedMessage.
 
         Handles:
-        - Text messages
+        - Private chat text messages
+        - Group chat messages (filtered by @mention or reply-to-bot)
         - Photo messages (caption + photo indicator)
         - Document messages (caption + document indicator)
-        - /start, /help, /reset commands
         """
         message = raw_event.get("message")
         if not message:
             return None
 
-        # Skip messages from bots
+        # Skip messages from bots (prevents bot loops)
         from_user = message.get("from", {})
         if from_user.get("is_bot", False):
             return None
 
         user_id = str(from_user.get("id", ""))
-        chat_id = str(message.get("chat", {}).get("id", ""))
+        chat = message.get("chat", {})
+        chat_id = str(chat.get("id", ""))
+        chat_type = chat.get("type", "private")
         username = from_user.get("username")
 
         if not user_id or not chat_id:
             return None
 
+        # Resolve bot → agent via the binding stored in metadata by transport
+        bot_id = raw_event.get("_bot_id", "")
+        bot_username = raw_event.get("_bot_username", "")
+        agent_name = raw_event.get("_agent_name", "")
+        is_group = chat_type in _GROUP_CHAT_TYPES
+
+        # Group chat filtering: only process @mentions or replies to bot
+        if is_group:
+            is_mentioned = self._is_bot_mentioned(message, bot_username)
+            is_reply = self._is_reply_to_bot(message, bot_id)
+
+            if not is_mentioned and not is_reply:
+                # Check trigger mode — if "all", process anyway
+                binding = db.get_telegram_binding(agent_name)
+                if binding:
+                    group_config = db.get_telegram_group_config(binding["id"], chat_id)
+                    if not group_config or group_config.get("trigger_mode") != "all":
+                        return None
+                else:
+                    return None
+
         # Extract text content
         text = message.get("text", "").strip()
+
+        # Strip @mention from text in groups for cleaner agent input
+        if is_group and bot_username and text:
+            text = re.sub(rf'@{re.escape(bot_username)}\b', '', text).strip()
 
         # Handle media messages — extract caption or description
         media_context = self._extract_media_context(message)
@@ -100,10 +135,6 @@ class TelegramAdapter(ChannelAdapter):
         if not text:
             return None
 
-        # Resolve bot → agent via the binding stored in metadata by transport
-        bot_id = raw_event.get("_bot_id", "")
-        agent_name = raw_event.get("_agent_name", "")
-
         return NormalizedMessage(
             sender_id=user_id,
             text=text,
@@ -112,8 +143,12 @@ class TelegramAdapter(ChannelAdapter):
             timestamp=str(message.get("date", "")),
             metadata={
                 "bot_id": bot_id,
+                "bot_username": bot_username,
                 "agent_name": agent_name,
                 "username": username,
+                "is_group": is_group,
+                "chat_type": chat_type,
+                "chat_title": chat.get("title"),
                 "has_photo": "photo" in message,
                 "has_document": "document" in message,
                 "raw_message": message,
@@ -142,24 +177,167 @@ class TelegramAdapter(ChannelAdapter):
         # Split long messages at paragraph boundaries
         chunks = self._split_message(html_text)
 
+        # In groups, always reply to the triggering message for threaded context
+        reply_to = thread_id if response.metadata.get("is_group") else None
+
         for chunk in chunks:
             await self._send_message(
                 bot_token=bot_token,
                 chat_id=channel_id,
                 text=chunk,
-                reply_to_message_id=thread_id,
+                reply_to_message_id=reply_to,
                 parse_mode="HTML",
             )
 
     async def get_agent_name(self, message: NormalizedMessage) -> Optional[str]:
         """Resolve which agent handles this message (set by transport layer)."""
-        return message.metadata.get("agent_name")
+        agent_name = message.metadata.get("agent_name")
+
+        # For group chats, auto-create group config on first interaction
+        if message.metadata.get("is_group") and agent_name:
+            binding = db.get_telegram_binding(agent_name)
+            if binding:
+                db.get_or_create_telegram_group_config(
+                    binding_id=binding["id"],
+                    chat_id=message.channel_id,
+                    chat_title=message.metadata.get("chat_title"),
+                    chat_type=message.metadata.get("chat_type", "group"),
+                )
+
+        return agent_name
 
     async def indicate_processing(self, message: NormalizedMessage) -> None:
         """Send typing indicator to Telegram chat."""
         bot_token = db.get_telegram_bot_token(message.metadata.get("agent_name", ""))
         if bot_token:
             await self._send_chat_action(bot_token, message.channel_id, "typing")
+
+    # =========================================================================
+    # Group chat helpers (TGRAM-GROUP)
+    # =========================================================================
+
+    @staticmethod
+    def _is_bot_mentioned(message: dict, bot_username: str) -> bool:
+        """Check if the bot is @mentioned in message entities."""
+        if not bot_username:
+            return False
+        entities = message.get("entities", [])
+        text = message.get("text", "")
+        for entity in entities:
+            if entity.get("type") == "mention":
+                offset = entity.get("offset", 0)
+                length = entity.get("length", 0)
+                mention_text = text[offset:offset + length]
+                # Mention text is "@username"
+                if mention_text.lower() == f"@{bot_username.lower()}":
+                    return True
+        return False
+
+    @staticmethod
+    def _is_reply_to_bot(message: dict, bot_id: str) -> bool:
+        """Check if this message is a reply to one of the bot's own messages."""
+        reply_to = message.get("reply_to_message")
+        if not reply_to:
+            return False
+        reply_from = reply_to.get("from", {})
+        # Compare as strings — bot_id is stored as TEXT in DB,
+        # Telegram sends integer IDs
+        return str(reply_from.get("id", "")) == str(bot_id)
+
+    # =========================================================================
+    # Member event handling (TGRAM-GROUP)
+    # =========================================================================
+
+    async def handle_member_event(
+        self,
+        update: dict,
+        binding: dict,
+    ) -> None:
+        """
+        Handle chat member updates (bot added/removed, user join/leave).
+
+        Events:
+        - my_chat_member: bot's own status changed in a chat
+        - chat_member: another user's status changed (requires bot admin)
+        """
+        my_member = update.get("my_chat_member")
+        other_member = update.get("chat_member")
+
+        if my_member:
+            await self._handle_bot_member_change(my_member, binding)
+        elif other_member:
+            await self._handle_user_member_change(other_member, binding)
+
+    async def _handle_bot_member_change(self, event: dict, binding: dict) -> None:
+        """Handle the bot being added to or removed from a group."""
+        chat = event.get("chat", {})
+        chat_id = str(chat.get("id", ""))
+        chat_type = chat.get("type", "")
+        chat_title = chat.get("title", "")
+
+        if chat_type not in _GROUP_CHAT_TYPES:
+            return
+
+        new_status = event.get("new_chat_member", {}).get("status", "")
+        old_status = event.get("old_chat_member", {}).get("status", "")
+
+        if new_status in ("member", "administrator") and old_status in ("left", "kicked"):
+            # Bot was added to group — create config
+            logger.info(f"Bot added to group '{chat_title}' (chat_id={chat_id}) for agent={binding['agent_name']}")
+            db.get_or_create_telegram_group_config(
+                binding_id=binding["id"],
+                chat_id=chat_id,
+                chat_title=chat_title,
+                chat_type=chat_type,
+            )
+        elif new_status in ("left", "kicked") and old_status in ("member", "administrator"):
+            # Bot was removed from group — deactivate config
+            logger.info(f"Bot removed from group '{chat_title}' (chat_id={chat_id}) for agent={binding['agent_name']}")
+            db.deactivate_telegram_group_config(binding["id"], chat_id)
+
+    async def _handle_user_member_change(self, event: dict, binding: dict) -> None:
+        """Handle a user joining or leaving a group (welcome messages)."""
+        chat = event.get("chat", {})
+        chat_id = str(chat.get("id", ""))
+        chat_type = chat.get("type", "")
+
+        if chat_type not in _GROUP_CHAT_TYPES:
+            return
+
+        new_status = event.get("new_chat_member", {}).get("status", "")
+        old_status = event.get("old_chat_member", {}).get("status", "")
+        user = event.get("new_chat_member", {}).get("user", {})
+
+        # Skip bot users
+        if user.get("is_bot", False):
+            return
+
+        # Only handle user joins
+        if new_status != "member" or old_status not in ("left", "kicked"):
+            return
+
+        # Check if welcome messages are enabled for this group
+        group_config = db.get_telegram_group_config(binding["id"], chat_id)
+        if not group_config or not group_config.get("welcome_enabled"):
+            return
+
+        welcome_text = group_config.get("welcome_text")
+        if not welcome_text:
+            return
+
+        # Personalize welcome message
+        user_name = user.get("first_name", "there")
+        personalized = welcome_text.replace("{name}", user_name)
+
+        bot_token = db.get_telegram_bot_token(binding["agent_name"])
+        if bot_token:
+            await self._send_message(
+                bot_token=bot_token,
+                chat_id=chat_id,
+                text=personalized,
+                parse_mode="HTML",
+            )
+            logger.info(f"Sent welcome message to {user_name} in group {chat_id}")
 
     # =========================================================================
     # Bot commands
@@ -176,6 +354,11 @@ class TelegramAdapter(ChannelAdapter):
         """
         text = message.text.strip()
         agent_name = message.metadata.get("agent_name", "Agent")
+
+        # In groups, commands may have @botname suffix (e.g., /help@mybot)
+        bot_username = message.metadata.get("bot_username", "")
+        if bot_username:
+            text = re.sub(rf'@{re.escape(bot_username)}$', '', text)
 
         if text == "/start" or text.startswith("/start "):
             return (
@@ -225,7 +408,10 @@ class TelegramAdapter(ChannelAdapter):
             "parse_mode": parse_mode,
         }
         if reply_to_message_id:
-            payload["reply_to_message_id"] = reply_to_message_id
+            payload["reply_parameters"] = {
+                "message_id": int(reply_to_message_id),
+                "allow_sending_without_reply": True,
+            }
 
         try:
             async with httpx.AsyncClient(timeout=30) as client:

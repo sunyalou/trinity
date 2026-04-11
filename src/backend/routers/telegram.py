@@ -1,5 +1,5 @@
 """
-Telegram bot integration router (TELEGRAM-001).
+Telegram bot integration router (TELEGRAM-001, TGRAM-GROUP).
 
 Thin HTTP layer that delegates to the channel adapter abstraction.
 
@@ -7,14 +7,17 @@ Public Endpoints (no auth — validated by webhook secret + header token):
 - POST /api/telegram/webhook/{webhook_secret} — Receive Telegram updates
 
 Authenticated Endpoints:
-- GET    /api/agents/{name}/telegram       — Bot binding status
-- PUT    /api/agents/{name}/telegram       — Configure bot token
-- DELETE /api/agents/{name}/telegram       — Remove bot binding
-- POST   /api/agents/{name}/telegram/test  — Send test message
+- GET    /api/agents/{name}/telegram              — Bot binding status
+- PUT    /api/agents/{name}/telegram              — Configure bot token
+- DELETE /api/agents/{name}/telegram              — Remove bot binding
+- POST   /api/agents/{name}/telegram/test         — Send test message
+- GET    /api/agents/{name}/telegram/groups        — List group configs (TGRAM-GROUP)
+- PUT    /api/agents/{name}/telegram/groups/{id}   — Update group config
+- DELETE /api/agents/{name}/telegram/groups/{id}   — Remove group config
 """
 
 import logging
-from typing import Optional
+from typing import Optional, List
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Depends
@@ -68,7 +71,7 @@ async def handle_telegram_webhook(webhook_secret: str, request: Request):
 
 
 # =========================================================================
-# Authenticated Router (bot configuration)
+# Authenticated Router (bot configuration + group config)
 # =========================================================================
 
 auth_router = APIRouter(prefix="/api/agents", tags=["telegram"])
@@ -81,6 +84,7 @@ class TelegramBindingResponse(BaseModel):
     webhook_url: Optional[str] = None
     bot_link: Optional[str] = None
     configured: bool = False
+    group_count: int = 0
 
 
 class TelegramConfigureRequest(BaseModel):
@@ -90,6 +94,23 @@ class TelegramConfigureRequest(BaseModel):
 class TelegramTestRequest(BaseModel):
     chat_id: Optional[str] = None
     message: str = "Hello from Trinity! Your Telegram bot is configured correctly."
+
+
+class TelegramGroupConfigResponse(BaseModel):
+    id: int
+    chat_id: str
+    chat_title: Optional[str] = None
+    chat_type: str = "group"
+    trigger_mode: str = "mention"
+    welcome_enabled: bool = False
+    welcome_text: Optional[str] = None
+    is_active: bool = True
+
+
+class TelegramGroupConfigUpdateRequest(BaseModel):
+    trigger_mode: Optional[str] = None
+    welcome_enabled: Optional[bool] = None
+    welcome_text: Optional[str] = None
 
 
 @auth_router.get("/{agent_name}/telegram", response_model=TelegramBindingResponse)
@@ -103,6 +124,7 @@ async def get_telegram_binding(
         return TelegramBindingResponse(agent_name=agent_name, configured=False)
 
     bot_username = binding.get("bot_username")
+    groups = db.get_telegram_groups_for_agent(agent_name)
     return TelegramBindingResponse(
         agent_name=agent_name,
         bot_username=bot_username,
@@ -110,6 +132,7 @@ async def get_telegram_binding(
         webhook_url=binding.get("webhook_url"),
         bot_link=f"https://t.me/{bot_username}" if bot_username else None,
         configured=True,
+        group_count=len(groups),
     )
 
 
@@ -183,6 +206,7 @@ async def configure_telegram_bot(
         webhook_url=binding.get("webhook_url") if binding else None,
         bot_link=f"https://t.me/{bot_username}" if bot_username else None,
         configured=True,
+        group_count=0,
     )
 
 
@@ -199,7 +223,7 @@ async def delete_telegram_binding(
     from adapters.transports.telegram_webhook import delete_webhook
     await delete_webhook(agent_name)
 
-    # Delete from DB
+    # Delete from DB (cascades to group configs and chat links)
     db.delete_telegram_binding(agent_name)
 
     logger.info(f"Telegram bot removed for agent={agent_name}")
@@ -252,3 +276,78 @@ async def test_telegram_bot(
                 return {"ok": False, "message": result.get("description", "Failed to send")}
     except Exception as e:
         return {"ok": False, "message": str(e)}
+
+
+# =========================================================================
+# Group Config Endpoints (TGRAM-GROUP)
+# =========================================================================
+
+
+@auth_router.get(
+    "/{agent_name}/telegram/groups",
+    response_model=List[TelegramGroupConfigResponse],
+)
+async def list_telegram_groups(
+    agent_name: str,
+    current_user: User = Depends(get_current_user),
+):
+    """List all Telegram groups this agent's bot is in."""
+    groups = db.get_telegram_groups_for_agent(agent_name)
+    return [TelegramGroupConfigResponse(**g) for g in groups]
+
+
+@auth_router.put("/{agent_name}/telegram/groups/{group_config_id}")
+async def update_telegram_group(
+    agent_name: OwnedAgentByName,
+    group_config_id: int,
+    config: TelegramGroupConfigUpdateRequest,
+):
+    """Update a group's trigger mode or welcome message settings."""
+    # Validate trigger_mode if provided
+    if config.trigger_mode is not None and config.trigger_mode not in ("mention", "all"):
+        raise HTTPException(status_code=400, detail="trigger_mode must be 'mention' or 'all'")
+
+    # Validate welcome_text length
+    if config.welcome_text is not None and len(config.welcome_text) > 4096:
+        raise HTTPException(status_code=400, detail="welcome_text must be 4096 characters or less")
+
+    # Verify the group config belongs to this agent's binding
+    binding = db.get_telegram_binding(agent_name)
+    if not binding:
+        raise HTTPException(status_code=404, detail="No Telegram binding found")
+
+    # Check ownership: group config must belong to this agent's binding
+    groups = db.get_telegram_groups_for_agent(agent_name)
+    if not any(g["id"] == group_config_id for g in groups):
+        raise HTTPException(status_code=404, detail="Group config not found for this agent")
+
+    updated = db.update_telegram_group_config(
+        group_config_id=group_config_id,
+        trigger_mode=config.trigger_mode,
+        welcome_enabled=config.welcome_enabled,
+        welcome_text=config.welcome_text,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Group config not found")
+
+    return updated
+
+
+@auth_router.delete("/{agent_name}/telegram/groups/{group_config_id}")
+async def delete_telegram_group(
+    agent_name: OwnedAgentByName,
+    group_config_id: int,
+):
+    """Remove a group config (bot will ignore messages from this group)."""
+    binding = db.get_telegram_binding(agent_name)
+    if not binding:
+        raise HTTPException(status_code=404, detail="No Telegram binding found")
+
+    # Deactivate rather than delete — preserves history
+    groups = db.get_telegram_groups_for_agent(agent_name)
+    target = next((g for g in groups if g["id"] == group_config_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="Group config not found")
+
+    db.deactivate_telegram_group_config(binding["id"], target["chat_id"])
+    return {"ok": True, "message": "Group config removed"}

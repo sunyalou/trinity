@@ -174,10 +174,17 @@ class TelegramChannelOperations:
             conn.commit()
 
     def delete_binding(self, agent_name: str) -> bool:
-        """Delete a Telegram binding and associated chat links."""
+        """Delete a Telegram binding and associated chat links and group configs."""
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # Delete chat links first
+            # Delete group configs first
+            cursor.execute("""
+                DELETE FROM telegram_group_configs
+                WHERE binding_id IN (
+                    SELECT id FROM telegram_bindings WHERE agent_name = ?
+                )
+            """, (agent_name,))
+            # Delete chat links
             cursor.execute("""
                 DELETE FROM telegram_chat_links
                 WHERE binding_id IN (
@@ -245,8 +252,188 @@ class TelegramChannelOperations:
             conn.commit()
 
     # =========================================================================
+    # Group Config Operations (TGRAM-GROUP)
+    # =========================================================================
+
+    def get_or_create_group_config(
+        self,
+        binding_id: int,
+        chat_id: str,
+        chat_title: Optional[str] = None,
+        chat_type: str = "group",
+    ) -> dict:
+        """Get or create a group config. Auto-creates on first interaction."""
+        now = datetime.utcnow().isoformat()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, binding_id, chat_id, chat_title, chat_type,
+                       trigger_mode, welcome_enabled, welcome_text,
+                       is_active, created_at, updated_at
+                FROM telegram_group_configs
+                WHERE binding_id = ? AND chat_id = ?
+            """, (binding_id, chat_id))
+            row = cursor.fetchone()
+
+            if row:
+                # Re-activate if inactive (bot removed then re-added) and update title
+                needs_update = False
+                if chat_title and chat_title != row[3]:
+                    needs_update = True
+                if not row[8]:  # is_active == 0
+                    needs_update = True
+
+                if needs_update:
+                    cursor.execute("""
+                        UPDATE telegram_group_configs
+                        SET chat_title = ?, is_active = 1, updated_at = ?
+                        WHERE id = ?
+                    """, (chat_title or row[3], now, row[0]))
+                    conn.commit()
+                    return {**self._row_to_group_config(row),
+                            "chat_title": chat_title or row[3],
+                            "is_active": True}
+                return self._row_to_group_config(row)
+
+            cursor.execute("""
+                INSERT INTO telegram_group_configs
+                (binding_id, chat_id, chat_title, chat_type,
+                 trigger_mode, welcome_enabled, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'mention', 0, 1, ?, ?)
+            """, (binding_id, chat_id, chat_title, chat_type, now, now))
+            conn.commit()
+
+            cursor.execute("""
+                SELECT id, binding_id, chat_id, chat_title, chat_type,
+                       trigger_mode, welcome_enabled, welcome_text,
+                       is_active, created_at, updated_at
+                FROM telegram_group_configs
+                WHERE binding_id = ? AND chat_id = ?
+            """, (binding_id, chat_id))
+            return self._row_to_group_config(cursor.fetchone())
+
+    def get_group_config(self, binding_id: int, chat_id: str) -> Optional[dict]:
+        """Get group config for a specific chat."""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, binding_id, chat_id, chat_title, chat_type,
+                       trigger_mode, welcome_enabled, welcome_text,
+                       is_active, created_at, updated_at
+                FROM telegram_group_configs
+                WHERE binding_id = ? AND chat_id = ?
+            """, (binding_id, chat_id))
+            row = cursor.fetchone()
+        return self._row_to_group_config(row) if row else None
+
+    def get_groups_for_binding(self, binding_id: int) -> List[dict]:
+        """Get all group configs for a bot binding."""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, binding_id, chat_id, chat_title, chat_type,
+                       trigger_mode, welcome_enabled, welcome_text,
+                       is_active, created_at, updated_at
+                FROM telegram_group_configs
+                WHERE binding_id = ? AND is_active = 1
+                ORDER BY chat_title
+            """, (binding_id,))
+            rows = cursor.fetchall()
+        return [self._row_to_group_config(row) for row in rows]
+
+    def get_groups_for_agent(self, agent_name: str) -> List[dict]:
+        """Get all group configs for an agent (via binding lookup)."""
+        binding = self.get_binding_by_agent(agent_name)
+        if not binding:
+            return []
+        return self.get_groups_for_binding(binding["id"])
+
+    def update_group_config(
+        self,
+        group_config_id: int,
+        trigger_mode: Optional[str] = None,
+        welcome_enabled: Optional[bool] = None,
+        welcome_text: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Update group config settings."""
+        now = datetime.utcnow().isoformat()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            updates = ["updated_at = ?"]
+            values = [now]
+
+            if trigger_mode is not None:
+                updates.append("trigger_mode = ?")
+                values.append(trigger_mode)
+            if welcome_enabled is not None:
+                updates.append("welcome_enabled = ?")
+                values.append(1 if welcome_enabled else 0)
+            if welcome_text is not None:
+                updates.append("welcome_text = ?")
+                values.append(welcome_text)
+
+            values.append(group_config_id)
+            cursor.execute(f"""
+                UPDATE telegram_group_configs
+                SET {', '.join(updates)}
+                WHERE id = ?
+            """, values)
+            conn.commit()
+
+            cursor.execute("""
+                SELECT id, binding_id, chat_id, chat_title, chat_type,
+                       trigger_mode, welcome_enabled, welcome_text,
+                       is_active, created_at, updated_at
+                FROM telegram_group_configs
+                WHERE id = ?
+            """, (group_config_id,))
+            row = cursor.fetchone()
+        return self._row_to_group_config(row) if row else None
+
+    def deactivate_group_config(self, binding_id: int, chat_id: str) -> bool:
+        """Mark a group config as inactive (bot removed from group)."""
+        now = datetime.utcnow().isoformat()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE telegram_group_configs
+                SET is_active = 0, updated_at = ?
+                WHERE binding_id = ? AND chat_id = ?
+            """, (now, binding_id, chat_id))
+            deleted = cursor.rowcount > 0
+            conn.commit()
+        return deleted
+
+    def delete_groups_for_binding(self, binding_id: int) -> int:
+        """Delete all group configs for a binding (when bot is disconnected)."""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM telegram_group_configs WHERE binding_id = ?",
+                (binding_id,)
+            )
+            count = cursor.rowcount
+            conn.commit()
+        return count
+
+    # =========================================================================
     # Row converters
     # =========================================================================
+
+    def _row_to_group_config(self, row) -> dict:
+        return {
+            "id": row[0],
+            "binding_id": row[1],
+            "chat_id": row[2],
+            "chat_title": row[3],
+            "chat_type": row[4],
+            "trigger_mode": row[5],
+            "welcome_enabled": bool(row[6]),
+            "welcome_text": row[7],
+            "is_active": bool(row[8]),
+            "created_at": row[9],
+            "updated_at": row[10],
+        }
 
     def _row_to_binding(self, row) -> dict:
         return {

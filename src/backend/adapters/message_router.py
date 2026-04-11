@@ -155,8 +155,12 @@ class ChannelMessageRouter:
 
         # 3. Rate limiting per channel user
         rate_key = adapter.get_rate_key(message)
+        is_group = message.metadata.get("is_group", False)
         if not _check_rate_limit(rate_key):
             logger.warning(f"[ROUTER:{channel}] Rate limited: {rate_key}")
+            # In groups, silently drop to avoid spamming the group with error messages
+            if is_group:
+                return
             await adapter.send_response(
                 message.channel_id,
                 ChannelResponse(
@@ -169,7 +173,7 @@ class ChannelMessageRouter:
 
         # 3b. File upload rate limiting (stricter than message rate limit)
         if message.files:
-            file_rate_key = f"slack-files:{message.metadata.get('team_id')}:{message.sender_id}"
+            file_rate_key = f"{channel}-files:{message.channel_id}:{message.sender_id}"
             if not _check_rate_limit(file_rate_key, max_msgs=_FILE_UPLOAD_RATE_LIMIT_MAX, window=_FILE_UPLOAD_RATE_LIMIT_WINDOW):
                 logger.warning(f"[ROUTER] File upload rate limited: {file_rate_key}")
                 await adapter.send_response(
@@ -213,8 +217,13 @@ class ChannelMessageRouter:
         logger.debug(f"[ROUTER:{channel}] Step 6 - session_id: {session_id}")
 
         # 7. Build context prompt (same as web public chat)
-        context_prompt = db.build_public_chat_context(session_id, message.text)
-        logger.debug(f"[ROUTER:{channel}] Step 7 - context built ({len(context_prompt)} chars)")
+        # In group chats, use fresh context (no prior history) to prevent
+        # leaking prior private conversation context into public group replies.
+        if is_group:
+            context_prompt = message.text
+        else:
+            context_prompt = db.build_public_chat_context(session_id, message.text)
+        logger.debug(f"[ROUTER:{channel}] Step 7 - context built ({len(context_prompt)} chars, group={is_group})")
 
         # 7b. Handle file uploads — download from Slack, copy into agent container
         upload_dir = None  # Track for cleanup
@@ -321,9 +330,12 @@ class ChannelMessageRouter:
 
         # 12. Send response to channel
         logger.debug(f"[ROUTER:{channel}] Step 12 - sending response")
+        response_metadata = {"bot_token": bot_token, "agent_name": agent_name}
+        if is_group:
+            response_metadata["is_group"] = True
         await adapter.send_response(
             message.channel_id,
-            ChannelResponse(text=send_text, files=outbound_files, metadata={"bot_token": bot_token, "agent_name": agent_name}),
+            ChannelResponse(text=send_text, files=outbound_files, metadata=response_metadata),
             thread_id=message.thread_id,
         )
 

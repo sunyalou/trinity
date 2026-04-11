@@ -1004,6 +1004,37 @@ def _migrate_telegram_bindings(cursor, conn):
     conn.commit()
 
 
+def _migrate_telegram_group_configs(cursor, conn):
+    """Create Telegram group configuration table (TGRAM-GROUP)."""
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS telegram_group_configs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            binding_id INTEGER NOT NULL REFERENCES telegram_bindings(id),
+            chat_id TEXT NOT NULL,
+            chat_title TEXT,
+            chat_type TEXT DEFAULT 'group',
+            trigger_mode TEXT DEFAULT 'mention',
+            welcome_enabled INTEGER DEFAULT 0,
+            welcome_text TEXT,
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        )
+    """)
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_tg_group_binding_chat ON telegram_group_configs(binding_id, chat_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tg_group_chat_id ON telegram_group_configs(chat_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tg_group_active ON telegram_group_configs(is_active)"
+    )
+
+    conn.commit()
+
+
 # Ordered list of all migrations. Defined at module level (after all _migrate_* functions)
 # so run_all_migrations and the health check can both reference it.
 # IMPORTANT: append-only — never reorder or remove entries.
@@ -1043,4 +1074,5 @@ MIGRATIONS = [
     ("execution_fan_out_id", _migrate_execution_fan_out_id),
     ("telegram_bindings", _migrate_telegram_bindings),
     ("subscription_usage_tracking", _migrate_subscription_usage_tracking),
+    ("telegram_group_configs", _migrate_telegram_group_configs),
 ]

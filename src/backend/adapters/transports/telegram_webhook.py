@@ -4,6 +4,11 @@ Telegram webhook transport — inbound POST from Telegram Bot API.
 Receives updates at POST /api/telegram/webhook/{webhook_secret}.
 Validates via X-Telegram-Bot-Api-Secret-Token header.
 Processes asynchronously — returns 200 immediately.
+
+Supports:
+- message: text, media, commands
+- my_chat_member: bot added/removed from groups (TGRAM-GROUP)
+- chat_member: user join/leave for welcome messages (TGRAM-GROUP)
 """
 
 import asyncio
@@ -69,6 +74,7 @@ class TelegramWebhookTransport(ChannelTransport):
 
         # 5. Inject routing metadata for the adapter
         update["_bot_id"] = binding.get("bot_id", "")
+        update["_bot_username"] = binding.get("bot_username", "")
         update["_agent_name"] = binding["agent_name"]
 
         # 6. Process asynchronously — return 200 immediately
@@ -79,23 +85,26 @@ class TelegramWebhookTransport(ChannelTransport):
     async def _process_update(self, update: dict, binding: dict) -> None:
         """Process a Telegram update through the adapter → router pipeline."""
         try:
+            # Handle member events (bot added/removed, user join/leave)
+            if update.get("my_chat_member") or update.get("chat_member"):
+                await self.adapter.handle_member_event(update, binding)
+                return
+
             # Check for bot commands first
             message = update.get("message", {})
             text = message.get("text", "")
 
             if text.startswith("/"):
                 # Handle commands directly in the adapter
-                from adapters.telegram_adapter import TelegramAdapter
-                adapter = self.adapter
-                normalized = adapter.parse_message(update)
+                normalized = self.adapter.parse_message(update)
                 if normalized:
-                    command_response = await adapter.handle_command(normalized)
+                    command_response = await self.adapter.handle_command(normalized)
                     if command_response:
                         bot_token = db.get_telegram_bot_token(binding["agent_name"])
                         if bot_token:
                             # Handle /reset by clearing the session
-                            if text.strip() == "/reset":
-                                session_id = adapter.get_session_identifier(normalized)
+                            if text.strip().split("@")[0] == "/reset":
+                                session_id = self.adapter.get_session_identifier(normalized)
                                 session = db.get_or_create_public_chat_session(
                                     binding["agent_name"], session_id, "telegram"
                                 )
@@ -103,7 +112,7 @@ class TelegramWebhookTransport(ChannelTransport):
                                 if sid:
                                     db.clear_public_chat_session(sid)
 
-                            await adapter._send_message(
+                            await self.adapter._send_message(
                                 bot_token=bot_token,
                                 chat_id=str(message.get("chat", {}).get("id", "")),
                                 text=command_response,
@@ -122,6 +131,7 @@ async def register_webhook(agent_name: str, public_url: str) -> bool:
     Register a Telegram webhook URL for an agent's bot.
 
     Called on bot configuration and on backend startup (reconciliation).
+    Requests message and member update types for group support.
     """
     import httpx
 
@@ -142,7 +152,7 @@ async def register_webhook(agent_name: str, public_url: str) -> bool:
     payload = {
         "url": webhook_url,
         "secret_token": secret_token,
-        "allowed_updates": ["message"],
+        "allowed_updates": ["message", "my_chat_member", "chat_member"],
     }
 
     try:
