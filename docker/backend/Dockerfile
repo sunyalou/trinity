@@ -28,7 +28,8 @@ RUN pip install --no-cache-dir \
     google-genai==1.12.1 \
     "slack_sdk[socket-mode]==3.41.0" \
     aiohttp \
-    slackify-markdown
+    slackify-markdown \
+    tenacity==9.0.0
 
 # Copy all backend source files
 COPY ../../src/backend/main.py /app/

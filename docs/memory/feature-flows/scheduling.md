@@ -575,19 +575,20 @@ self.db.update_execution_status(
 
 **Location**: `src/backend/services/agent_client.py`
 
-| Method | Purpose | Timeout |
-|--------|---------|---------|
-| `task(message)` | Execute stateless task (raw log format) | 900s (15 min) |
-| `chat(message, stream)` | Send chat message (simplified log format) | 900s (15 min) |
-| `get_session()` | Get context info | 5s |
-| `health_check()` | Check agent health | 5s |
-| `inject_trinity_prompt()` | Inject meta-prompt | 10s |
+| Method | Purpose | Timeout | Retry | Circuit Breaker |
+|--------|---------|---------|-------|-----------------|
+| `task(message)` | Execute stateless task (raw log format) | 900s (15 min) | No | Yes |
+| `chat(message, stream)` | Send chat message (simplified log format) | 900s (15 min) | No | Yes |
+| `get_session()` | Get context info | 5s | Yes (3x) | Yes |
+| `health_check()` | Check agent health | 5s | Yes (3x) | Yes |
 
 **Important**: The scheduler uses `task()` not `chat()`. The `task()` method calls `/api/task` which returns raw Claude Code `stream-json` format required by the log viewer. The `chat()` method calls `/api/chat` which returns a simplified format that is not compatible with `parseExecutionLog()`.
 
+**Reliability (RELIABILITY-001)**: All calls go through a per-agent circuit breaker. After 3 consecutive failures, the circuit opens and subsequent calls fail immediately with `AgentCircuitOpenError` (30s cooldown). Only idempotent calls (`health_check`, `get_session`) have automatic retries (3 attempts, exponential backoff). `task()` and `chat()` are NOT retried to prevent double-execution. Connection pooling reuses persistent `httpx.AsyncClient` instances per agent.
+
 ### Response Models
 
-**AgentChatResponse** (`agent_client.py:34-39`):
+**AgentChatResponse** (`agent_client.py:138-142`):
 ```python
 @dataclass
 class AgentChatResponse:
@@ -596,7 +597,7 @@ class AgentChatResponse:
     raw_response: Dict[str, Any] # Original JSON from agent
 ```
 
-**AgentChatMetrics** (`agent_client.py:23-31`):
+**AgentChatMetrics** (`agent_client.py:127-134`):
 ```python
 @dataclass
 class AgentChatMetrics:
@@ -610,11 +611,12 @@ class AgentChatMetrics:
 
 ### Error Handling
 
-**Exceptions** (`agent_client.py:54-69`):
+**Exceptions** (`agent_client.py:158-177`):
 
 | Exception | Meaning | HTTP Equivalent |
 |-----------|---------|-----------------|
 | `AgentNotReachableError` | Connection failed or timeout | 503 Service Unavailable |
+| `AgentCircuitOpenError` | Circuit breaker open (agent known unhealthy) | 503 fast-fail |
 | `AgentRequestError` | Agent returned error status | 4xx/5xx from agent |
 | `AgentClientError` | Base exception | General failure |
 

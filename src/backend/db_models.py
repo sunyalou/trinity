@@ -7,7 +7,7 @@ For API request/response models, see models.py.
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from pydantic import BaseModel, field_validator
 
 
@@ -784,6 +784,7 @@ class FleetHealthStatus(BaseModel):
     last_check_at: Optional[str] = None
     summary: FleetHealthSummary
     agents: List[AgentHealthSummary] = []
+    circuit_breakers: Optional[Dict[str, Any]] = None
 
 
 class MonitoringConfig(BaseModel):

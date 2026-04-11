@@ -484,7 +484,7 @@ task_response.raw_response           # Original response dict
 
 **Note**: The `task()` method was added on 2025-01-02 to fix execution log viewer compatibility. It calls `/api/task` which returns raw Claude Code `stream-json` format, unlike `chat()` which calls `/api/chat` and returns a simplified format.
 
-#### Response Data Classes (`src/backend/services/agent_client.py:22-48`)
+#### Response Data Classes (`src/backend/services/agent_client.py:126-152`)
 
 ```python
 @dataclass
@@ -506,7 +506,7 @@ class AgentChatResponse:
     raw_response: Dict[str, Any]
 ```
 
-#### Response Parsing Logic (`src/backend/services/agent_client.py:190-241`)
+#### Response Parsing Logic (`src/backend/services/agent_client.py:435-484`)
 
 The `_parse_chat_response()` method centralizes response parsing:
 
@@ -680,7 +680,7 @@ The queue management endpoints use a **thin router + service layer** architectur
 | File | Lines | Purpose |
 |------|-------|---------|
 | `src/backend/services/execution_queue.py` | 244 | Redis-backed queue implementation |
-| `src/backend/services/agent_client.py` | 379 | **NEW** Centralized agent HTTP client |
+| `src/backend/services/agent_client.py` | 662 | Centralized agent HTTP client (circuit breaker, retry, connection pool — RELIABILITY-001) |
 | `src/scheduler/service.py` | - | Dedicated scheduler (APScheduler, activity tracking) |
 | `src/scheduler/agent_client.py` | - | Scheduler's agent HTTP client |
 | `src/backend/routers/chat.py` | 1004 | Chat endpoint (uses raw httpx with retry) |
@@ -1177,6 +1177,7 @@ See [execution-termination.md](execution-termination.md) for full documentation.
 | 2026-02-16 | **Security Fix (Credential Leakage Prevention)**: Backend now sanitizes execution logs, tool calls, and responses before database persistence. Uses `sanitize_execution_log()` and `sanitize_response()` from `src/backend/utils/credential_sanitizer.py`. Both `/chat` (lines 283-286) and `/task` (lines 468-470, 699-712) endpoints sanitize data before calling `db.update_execution_status()`. This is a defense-in-depth layer that catches any credentials that may have bypassed agent-side sanitization. |
 | 2026-02-15 | **Claude Max subscription support**: Documented that Claude Code now uses whatever authentication is available (OAuth session from `/login` or `ANTHROPIC_API_KEY`). The mandatory API key check was removed from `execute_claude_code()` and `execute_headless_task()`. This allows headless executions to use Claude Max subscription billing if user logged in via web terminal. |
 | 2026-02-12 | **Test fix**: `test_parallel_task_does_not_show_in_queue` now uses `async_mode: True` to return immediately instead of waiting for task completion (was timing out after 30s). |
+| 2026-04-11 | **RELIABILITY-001**: `AgentClient` now includes per-agent circuit breaker (3 failures → 30s cooldown), tenacity retry on idempotent calls (health, session), and persistent connection pooling. New `AgentCircuitOpenError` exception (subclass of `AgentClientError`). Updated line numbers for response data classes and parsing logic. |
 | 2026-02-11 | **Scheduler Consolidation**: Updated Section 2 to reflect removal of embedded scheduler. Schedule execution now handled by dedicated scheduler (`src/scheduler/`). Updated Key Files Summary table. |
 | 2026-01-29 | **MCP Schedule Management (MCP-SCHED-001)**: Added `trigger_agent_schedule` MCP tool to Entry Points. Updated Related Flows to note that MCP schedule tools go through the queue. |
 | 2026-01-14 | **Race Condition Bug Fixes (HIGH)**: Fixed three race conditions in execution queue. (1) `submit()` now uses atomic `SET NX EX` instead of separate EXISTS/SET - prevents two concurrent requests from acquiring the same execution slot. (2) `complete()` now uses Lua script for atomic pop-and-set - prevents queue entries from being lost or processed twice. (3) `get_all_busy_agents()` replaced `KEYS` with `SCAN` - avoids blocking Redis on large datasets. Added Thread Safety section with Lua script documentation. Updated all method line numbers. |

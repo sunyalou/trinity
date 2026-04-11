@@ -457,6 +457,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Error stopping operator queue sync service: {e}")
 
+    # Close pooled HTTP clients (RELIABILITY-001)
+    try:
+        from services.agent_client import close_all_clients
+        await close_all_clients()
+        print("Agent HTTP client pool closed")
+    except Exception as e:
+        print(f"Error closing agent HTTP client pool: {e}")
+
 
 # Create FastAPI app
 app = FastAPI(

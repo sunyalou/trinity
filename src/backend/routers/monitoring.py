@@ -144,6 +144,16 @@ async def get_fleet_status(
     status_order = {"critical": 0, "unhealthy": 1, "degraded": 2, "unknown": 3, "healthy": 4}
     agents.sort(key=lambda a: status_order.get(a.status, 3))
 
+    # Include circuit breaker states for admin users
+    cb_data = None
+    if current_user.role == "admin":
+        from services.agent_client import get_all_circuit_states
+        all_states = get_all_circuit_states()
+        cb_data = {
+            name: state for name, state in all_states.items()
+            if name in agent_names
+        } or None
+
     return FleetHealthStatus(
         enabled=get_monitoring_service().is_running,
         last_check_at=agents[0].last_check_at if agents else None,
@@ -155,7 +165,8 @@ async def get_fleet_status(
             critical=summary.get("critical", 0),
             unknown=summary.get("unknown", 0)
         ),
-        agents=agents
+        agents=agents,
+        circuit_breakers=cb_data,
     )
 
 

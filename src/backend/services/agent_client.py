@@ -2,17 +2,128 @@
 Agent HTTP Client Service.
 
 Provides a clean interface for communicating with agent containers.
-Centralizes URL construction, timeout handling, and error handling.
+Centralizes URL construction, timeout handling, error handling,
+circuit breaking, and retry logic (RELIABILITY-001).
 """
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Optional, Any, Dict
 
 import httpx
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Circuit Breaker (per-agent, hand-rolled for async compatibility)
+# ============================================================================
+
+@dataclass
+class CircuitState:
+    """Per-agent circuit breaker state."""
+    failure_count: int = 0
+    last_failure_time: float = 0.0
+    state: str = "closed"  # closed, open, half-open
+
+    # Thresholds
+    failure_threshold: int = 3
+    cooldown_seconds: float = 30.0
+
+    # Set by _get_circuit after creation
+    agent_name: str = ""
+
+    def record_failure(self):
+        self.failure_count += 1
+        self.last_failure_time = time.monotonic()
+        if self.failure_count >= self.failure_threshold:
+            if self.state != "open":
+                logger.warning(
+                    "Circuit OPENED for agent %s after %d failures",
+                    self.agent_name, self.failure_count,
+                )
+            self.state = "open"
+
+    def record_success(self):
+        if self.state != "closed":
+            logger.info(
+                "Circuit CLOSED for agent %s (recovered)",
+                self.agent_name,
+            )
+        self.failure_count = 0
+        self.state = "closed"
+
+    def allow_request(self) -> bool:
+        if self.state == "closed":
+            return True
+        elapsed = time.monotonic() - self.last_failure_time
+        if elapsed >= self.cooldown_seconds:
+            self.state = "half-open"
+            return True
+        return False
+
+    def to_dict(self) -> dict:
+        return {
+            "state": self.state,
+            "failure_count": self.failure_count,
+            "cooldown_remaining": max(
+                0.0,
+                self.cooldown_seconds - (time.monotonic() - self.last_failure_time)
+            ) if self.state == "open" else 0.0,
+        }
+
+
+# Module-level registry: agent_name → CircuitState
+_circuit_registry: Dict[str, CircuitState] = {}
+
+
+def _get_circuit(agent_name: str) -> CircuitState:
+    """Get or create circuit breaker for an agent (TOCTOU-safe via setdefault)."""
+    circuit = _circuit_registry.setdefault(agent_name, CircuitState(agent_name=agent_name))
+    return circuit
+
+
+def get_all_circuit_states() -> Dict[str, dict]:
+    """Return circuit breaker states for all tracked agents."""
+    return {name: state.to_dict() for name, state in _circuit_registry.items()}
+
+
+# ============================================================================
+# Connection Pool (shared httpx.AsyncClient per agent)
+# ============================================================================
+
+_client_pool: Dict[str, httpx.AsyncClient] = {}
+
+
+def _get_http_client(base_url: str) -> httpx.AsyncClient:
+    """Get or create a persistent HTTP client for a base URL."""
+    client = _client_pool.get(base_url)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(
+            base_url=base_url,
+            limits=httpx.Limits(
+                max_connections=10,
+                max_keepalive_connections=5,
+                keepalive_expiry=30.0,
+            ),
+        )
+        _client_pool[base_url] = client
+    return client
+
+
+async def close_all_clients():
+    """Close all pooled HTTP clients. Call on app shutdown."""
+    for client in _client_pool.values():
+        await client.aclose()
+    _client_pool.clear()
 
 
 # ============================================================================
@@ -61,6 +172,11 @@ class AgentNotReachableError(AgentClientError):
     pass
 
 
+class AgentCircuitOpenError(AgentClientError):
+    """Circuit breaker is open — agent is known to be unhealthy."""
+    pass
+
+
 class AgentRequestError(AgentClientError):
     """Agent returned an error response."""
     def __init__(self, message: str, status_code: int = None):
@@ -97,6 +213,7 @@ class AgentClient:
         """
         self.agent_name = agent_name
         self.base_url = f"http://agent-{agent_name}:8000"
+        self._circuit = _get_circuit(agent_name)
 
     # ========================================================================
     # Core HTTP Methods
@@ -112,6 +229,9 @@ class AgentClient:
         """
         Make an HTTP request to the agent.
 
+        Checks circuit breaker before sending. Records success/failure
+        to the per-agent circuit state.
+
         Args:
             method: HTTP method (GET, POST, etc.)
             path: URL path (e.g., "/api/chat")
@@ -122,21 +242,32 @@ class AgentClient:
             httpx.Response
 
         Raises:
+            AgentCircuitOpenError: If circuit breaker is open
             AgentNotReachableError: If connection fails
             AgentRequestError: If request fails with error status
         """
-        url = f"{self.base_url}{path}"
+        if not self._circuit.allow_request():
+            raise AgentCircuitOpenError(
+                f"Circuit open for agent {self.agent_name} "
+                f"(failures={self._circuit.failure_count})"
+            )
+
         timeout = timeout or self.DEFAULT_TIMEOUT
+        client = _get_http_client(self.base_url)
 
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.request(method, url, **kwargs)
-                return response
+            response = await client.request(
+                method, path, timeout=timeout, **kwargs
+            )
+            self._circuit.record_success()
+            return response
         except httpx.ConnectError as e:
+            self._circuit.record_failure()
             raise AgentNotReachableError(
                 f"Cannot connect to agent {self.agent_name}: {e}"
             )
         except httpx.TimeoutException as e:
+            self._circuit.record_failure()
             raise AgentNotReachableError(
                 f"Request to agent {self.agent_name} timed out after {timeout}s"
             )
@@ -363,9 +494,16 @@ class AgentClient:
     # Session / Context Operations
     # ========================================================================
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        retry=retry_if_exception_type(AgentNotReachableError),
+        reraise=True,
+    )
     async def get_session(self, timeout: float = None) -> Optional[AgentSessionInfo]:
         """
         Get current session/context information.
+        Retries up to 3x with exponential backoff on transient errors.
 
         Returns:
             AgentSessionInfo or None if request fails
@@ -484,9 +622,16 @@ class AgentClient:
     # Health Check
     # ========================================================================
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        retry=retry_if_exception_type(AgentNotReachableError),
+        reraise=True,
+    )
     async def health_check(self, timeout: float = 5.0) -> bool:
         """
         Check if agent is healthy and responding.
+        Retries up to 3x with exponential backoff on transient errors.
 
         Returns:
             True if agent responds to health check
@@ -494,6 +639,8 @@ class AgentClient:
         try:
             response = await self.get("/api/health", timeout=timeout)
             return response.status_code == 200
+        except AgentCircuitOpenError:
+            return False
         except AgentClientError:
             return False
 
