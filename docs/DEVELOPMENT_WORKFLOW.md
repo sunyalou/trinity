@@ -373,6 +373,8 @@ Agents are invoked automatically by Claude Code when appropriate, or you can req
 | `/add-testing` | Add tests for a feature | In Progress |
 | `/validate-pr <number>` | Validate PR against methodology | Review |
 | `/validate-architecture` | Validate codebase against 16 architectural invariants | Weekly / Review |
+| `/validate-schema` | Check schema.py vs migrations.py vs architecture.md for drift | Weekly |
+| `/validate-config` | Check env vars across docker-compose, .env.example, and code | Weekly |
 | `/groom` | Backlog grooming — audit board, rank issues, review priorities | Todo |
 | `/sprint [issue-number]` | Full dev cycle (orchestrates all above) | All |
 
@@ -452,4 +454,6 @@ Skills in `.claude/skills/` define HOW to approach specific tasks:
 **Weekly maintenance:**
 
 - [ ] `/validate-architecture` — check codebase against architectural invariants
+- [ ] `/validate-schema` — check schema.py vs migrations.py vs architecture.md for drift
+- [ ] `/validate-config` — check env vars across docker-compose, .env.example, and code
 - [ ] `/groom` — audit backlog, rank issues, review priorities

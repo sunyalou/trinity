@@ -619,6 +619,19 @@ docker compose build backend
 docker compose up -d backend
 ```
 
+### Codebase Hygiene
+
+Weekly maintenance skills to keep the codebase clean and consistent:
+
+| Skill | What it checks |
+|-------|---------------|
+| `/validate-architecture` | 16 architectural invariants (layer separation, auth patterns, etc.) |
+| `/validate-schema` | Schema drift between `db/schema.py`, `db/migrations.py`, and `architecture.md` |
+| `/validate-config` | Env var consistency across `docker-compose.yml`, `.env.example`, and code |
+| `/refactor-audit` | Dead code, complexity hotspots, large files/functions |
+| `/cso --supply-chain` | Dependency freshness and known CVEs |
+| `/tidy` | Orphan files, misplaced configs, test artifacts |
+
 ### Releasing the CLI
 
 The CLI auto-publishes to PyPI and Homebrew on every push to `main` that changes `src/cli/`. The patch version auto-increments from the latest `cli-v*` tag.

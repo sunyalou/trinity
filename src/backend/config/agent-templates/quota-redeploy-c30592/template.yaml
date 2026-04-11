@@ -1,0 +1,6 @@
+
+name: quota-redeploy-c30592
+display_name: Quota Test Agent
+resources:
+  cpu: "1"
+  memory: "2g"
