@@ -88,7 +88,7 @@ Two routers are registered in `main.py:523-524`:
 
 **Authenticated router** (`/api/agents`):
 - `GET /{agent_name}/telegram` (line 95) — Returns binding status (bot_username, bot_id, webhook_url, bot_link, configured flag). No token decryption.
-- `PUT /{agent_name}/telegram` (line 116) — Configure bot. Validates token format (`id:secret`), calls `getMe` API, checks bot_id uniqueness across agents, creates encrypted binding, registers webhook if `public_chat_url` is set.
+- `PUT /{agent_name}/telegram` (line 116) — Configure bot. Validates token format (`id:secret`), calls `getMe` API, checks bot_id uniqueness across agents, creates encrypted binding, registers webhook if `public_chat_url` is set. If `public_chat_url` is unset, the binding is still created (the UI "Connected (no webhook)" state handles this), and the response includes a `warning` field explaining that delivery will start automatically once the URL is saved. Back-fill is triggered by saving the setting — see "Back-fill on setting save" below.
 - `DELETE /{agent_name}/telegram` (line 190) — Calls Telegram `deleteWebhook`, then deletes binding + chat links from DB.
 - `POST /{agent_name}/telegram/test` (line 211) — Without `chat_id`: verifies bot via `getMe`. With `chat_id`: sends test message.
 
@@ -170,6 +170,12 @@ On backend startup:
 5. **Webhook reconciliation**: If `public_chat_url` is set, iterate all bindings and call `register_webhook()` for each. This ensures webhooks are re-registered after backend restarts or URL changes.
 
 On shutdown (`main.py:432-437`): calls `transport.stop()`.
+
+### Back-fill on `public_chat_url` save (`routers/settings.py`)
+
+When an admin saves `public_chat_url` via `PUT /api/settings/{key}`, the handler calls `_backfill_telegram_webhooks(new_url)` after the setting write succeeds. The helper iterates `db.get_all_telegram_bindings()` and invokes `register_webhook(agent_name, new_url)` for each. This is idempotent (Telegram's `setWebhook` replaces any existing registration) and self-healing — bindings created before a public URL was configured automatically start receiving messages as soon as the URL is saved, without requiring the admin to remove and re-add the bot.
+
+Failures during back-fill are logged (`logger.warning`) but not raised: the setting write has already succeeded, and a single bad binding (network blip, expired token) must not block others or the API response. The reconciliation loop in `main.py` startup re-runs on the next backend restart and catches any stragglers.
 
 ## Data Layer
 

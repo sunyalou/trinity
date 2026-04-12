@@ -1087,9 +1087,39 @@ async def update_setting(
     try:
         setting = db.set_setting(key, body.value)
 
+        # Back-fill Telegram webhooks when public_chat_url becomes available.
+        # Why: bindings created before public_chat_url was set have webhook_url IS NULL
+        # and receive no messages. Re-registering is idempotent (setWebhook on Telegram).
+        if key == "public_chat_url" and body.value:
+            await _backfill_telegram_webhooks(body.value)
+
         return setting
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update setting: {str(e)}")
+
+
+async def _backfill_telegram_webhooks(public_url: str) -> None:
+    """Re-register Telegram webhooks for all bindings after public_chat_url changes.
+
+    Idempotent: Telegram's setWebhook replaces any existing registration.
+    Failures are logged but not raised — the setting write has already succeeded
+    and a single bad binding must not block others or the response.
+    """
+    try:
+        from adapters.transports.telegram_webhook import register_webhook
+        bindings = db.get_all_telegram_bindings()
+    except Exception as e:
+        logger.warning(f"Telegram webhook back-fill skipped: {e}")
+        return
+
+    for binding in bindings:
+        agent_name = binding.get("agent_name", "<unknown>")
+        try:
+            await register_webhook(agent_name, public_url)
+        except Exception as e:
+            logger.warning(
+                f"Telegram webhook back-fill failed for agent={agent_name}: {e}"
+            )
 
 
 @router.delete("/{key}")

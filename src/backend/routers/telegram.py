@@ -85,6 +85,7 @@ class TelegramBindingResponse(BaseModel):
     bot_link: Optional[str] = None
     configured: bool = False
     group_count: int = 0
+    warning: Optional[str] = None
 
 
 class TelegramConfigureRequest(BaseModel):
@@ -191,11 +192,22 @@ async def configure_telegram_bot(
     # Register webhook if public URL is available
     from services.settings_service import settings_service
     public_url = settings_service.get_setting("public_chat_url", "")
+    warning: Optional[str] = None
     if public_url:
         from adapters.transports.telegram_webhook import register_webhook
         await register_webhook(agent_name, public_url)
         # Refresh binding to get updated webhook_url
         binding = db.get_telegram_binding(agent_name)
+    else:
+        warning = (
+            "Bot connected, but webhook not registered: 'public_chat_url' is not "
+            "set in Settings. The bot will start receiving messages automatically "
+            "once a public URL is saved."
+        )
+        logger.warning(
+            f"Telegram bot configured for agent={agent_name} without public_chat_url — "
+            "webhook registration deferred until the setting is saved"
+        )
 
     logger.info(f"Telegram bot configured for agent={agent_name} bot=@{bot_username}")
 
@@ -207,6 +219,7 @@ async def configure_telegram_bot(
         bot_link=f"https://t.me/{bot_username}" if bot_username else None,
         configured=True,
         group_count=0,
+        warning=warning,
     )
 
 
