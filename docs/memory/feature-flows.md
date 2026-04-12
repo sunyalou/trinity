@@ -11,6 +11,7 @@
 
 | Date | ID | Feature | Flow |
 |------|-----|---------|------|
+| 2026-04-12 | #309 | Telegram webhook back-fill when `public_chat_url` is saved (self-healing config order) | [telegram-integration.md](feature-flows/telegram-integration.md) |
 | 2026-04-11 | #297 | Telegram group chat support — @mention triggers, welcome messages, per-group config | [telegram-integration.md](feature-flows/telegram-integration.md) |
 | 2026-04-10 | #296 | Telegram bot connection UI — TelegramChannelPanel in Agent Detail Sharing page | [telegram-integration.md](feature-flows/telegram-integration.md) |
 | 2026-04-08 | #69 | Owner filter dropdown on Dashboard and Agents pages | [agents-page-ui-improvements.md](feature-flows/agents-page-ui-improvements.md), [agent-network.md](feature-flows/agent-network.md) |
