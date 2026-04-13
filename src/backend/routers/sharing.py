@@ -2,7 +2,10 @@
 Agent sharing routes for the Trinity backend.
 """
 import json
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 
 from models import User
 from database import db, AgentShare, AgentShareRequest
@@ -10,6 +13,33 @@ from dependencies import get_current_user, OwnedAgentByName, CurrentUser
 from services.docker_service import get_agent_container
 
 router = APIRouter(prefix="/api/agents", tags=["sharing"])
+
+
+# ---------------------------------------------------------------------------
+# Models for unified access control (Issue #311)
+# ---------------------------------------------------------------------------
+
+class AccessPolicy(BaseModel):
+    require_email: bool
+    open_access: bool
+
+
+class AccessPolicyUpdate(BaseModel):
+    require_email: bool
+    open_access: bool
+
+
+class AccessRequest(BaseModel):
+    id: str
+    agent_name: str
+    email: str
+    channel: str | None = None
+    requested_at: str
+    status: str
+
+
+class AccessRequestDecision(BaseModel):
+    approve: bool
 
 # WebSocket manager will be injected from main.py
 manager = None
@@ -101,3 +131,91 @@ async def get_agent_shares_endpoint(
 
     shares = db.get_agent_shares(agent_name)
     return shares
+
+
+# ---------------------------------------------------------------------------
+# Unified channel access control (Issue #311)
+# ---------------------------------------------------------------------------
+
+@router.get("/{agent_name}/access-policy", response_model=AccessPolicy)
+async def get_access_policy_endpoint(
+    agent_name: OwnedAgentByName,
+    current_user: CurrentUser,
+):
+    """Get the per-agent channel access policy."""
+    return AccessPolicy(**db.get_access_policy(agent_name))
+
+
+@router.put("/{agent_name}/access-policy", response_model=AccessPolicy)
+async def update_access_policy_endpoint(
+    agent_name: OwnedAgentByName,
+    update: AccessPolicyUpdate,
+    current_user: CurrentUser,
+):
+    """Update the per-agent channel access policy (owner-only)."""
+    db.set_access_policy(agent_name, update.require_email, update.open_access)
+    return AccessPolicy(**db.get_access_policy(agent_name))
+
+
+@router.get("/{agent_name}/access-requests", response_model=List[AccessRequest])
+async def list_access_requests_endpoint(
+    agent_name: OwnedAgentByName,
+    current_user: CurrentUser,
+    status: str = "pending",
+):
+    """List access requests for this agent (owner-only)."""
+    rows = db.list_access_requests(agent_name, status)
+    return [AccessRequest(**r) for r in rows]
+
+
+@router.post("/{agent_name}/access-requests/{request_id}/decide", response_model=AccessRequest)
+async def decide_access_request_endpoint(
+    agent_name: OwnedAgentByName,
+    request_id: str,
+    decision: AccessRequestDecision,
+    current_user: CurrentUser,
+):
+    """Approve or deny a pending access request (owner-only).
+
+    Approval inserts the email into agent_sharing so future messages from
+    that user across any channel are admitted automatically.
+    """
+    existing = db.get_access_request(request_id)
+    if not existing or existing["agent_name"] != agent_name:
+        raise HTTPException(status_code=404, detail="Access request not found")
+
+    user = db.get_user_by_username(current_user.username)
+    if not user:
+        raise HTTPException(status_code=403, detail="User not found")
+
+    updated = db.decide_access_request(request_id, decision.approve, user["id"])
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to update request")
+
+    if decision.approve:
+        # Insert into agent_sharing so the email is admitted on future messages.
+        # share_agent is idempotent (returns None if already shared).
+        db.share_agent(agent_name, current_user.username, existing["email"])
+
+        # Auto-add to whitelist if email auth is enabled (parity with /share endpoint)
+        from config import EMAIL_AUTH_ENABLED
+        email_auth_setting = db.get_setting_value(
+            "email_auth_enabled", str(EMAIL_AUTH_ENABLED).lower()
+        )
+        if email_auth_setting.lower() == "true":
+            try:
+                db.add_to_whitelist(
+                    existing["email"],
+                    current_user.username,
+                    source="access_request",
+                )
+            except Exception:
+                pass
+
+        if manager:
+            await manager.broadcast(json.dumps({
+                "event": "agent_shared",
+                "data": {"name": agent_name, "shared_with": existing["email"]},
+            }))
+
+    return AccessRequest(**updated)

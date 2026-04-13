@@ -1,16 +1,22 @@
 # Feature: Agent Sharing
 
 ## Overview
-Collaboration feature enabling agent owners to share agents with team members via email. Supports three access levels: Owner (full control), Shared (limited access), and Admin (full control over all agents). The Sharing tab now includes both Team Sharing and Public Links in a unified interface.
+Collaboration feature enabling agent owners to share agents with team members via email. Supports three access levels: Owner (full control), Shared (limited access), and Admin (full control over all agents). The Sharing tab now includes Team Sharing, Channel Access Policy, Pending Access Requests, Slack/Telegram channel bindings, and Public Links in a unified interface.
+
+> **Cross-channel allow-list (Issue #311)**: As of 2026-04-12, `agent_sharing` is the **unified cross-channel allow-list**, not a web-only construct. The same email shared on this page admits that user across Telegram, Slack, and web public links whenever the agent's access policy requires a verified email. See [unified-channel-access-control.md](unified-channel-access-control.md) for the gate semantics and channel adapter details.
 
 ## User Story
-As an agent owner, I want to share my agents with team members so that they can use the agents without having full ownership permissions.
+As an agent owner, I want to share my agents with team members so that they can use the agents from any channel (web, Slack, Telegram) without having full ownership permissions.
 
 ## Entry Points
 - **UI**: `src/frontend/src/views/AgentDetail.vue:429-432` - Sharing tab (owners only, hidden for system agents)
 - **API**: `POST /api/agents/{name}/share` - Share agent
 - **API**: `DELETE /api/agents/{name}/share/{email}` - Remove share
 - **API**: `GET /api/agents/{name}/shares` - List shares
+- **API**: `GET /api/agents/{name}/access-policy` - Get channel access policy (Issue #311)
+- **API**: `PUT /api/agents/{name}/access-policy` - Update channel access policy
+- **API**: `GET /api/agents/{name}/access-requests?status=pending` - List pending access requests
+- **API**: `POST /api/agents/{name}/access-requests/{id}/decide` - Approve/deny request
 
 ---
 
@@ -18,13 +24,15 @@ As an agent owner, I want to share my agents with team members so that they can 
 
 ### SharingPanel.vue (`src/frontend/src/components/SharingPanel.vue`)
 
-The sharing UI is implemented as a dedicated component with two sections: Team Sharing and Public Links.
+The sharing UI is implemented as a dedicated component with multiple stacked sections.
 
-**Component Structure** (132 lines total):
-- Lines 3-77: Team Sharing section (header, form, user list)
-- Lines 79-80: Divider between sections
-- Lines 82-83: Embedded `PublicLinksPanel` component
-- Line 92: Import of `PublicLinksPanel`
+**Component Structure** (~310 lines total):
+- Lines 3-74: **Channel Access Policy** section (Issue #311) — `require_email`, `open_access` checkboxes + Pending Access Requests list with Approve/Deny buttons
+- Lines 78-152: **Team Sharing** section (header, form, shared users list — the unified allow-list)
+- Lines 157-158: Embedded `SlackChannelPanel`
+- Lines 163-164: Embedded `TelegramChannelPanel`
+- Lines 169-170: Embedded `PublicLinksPanel`
+- Lines 181-183: Imports for the embedded channel panels
 
 **Team Sharing Section** (lines 3-77):
 ```vue
@@ -35,22 +43,36 @@ The sharing UI is implemented as a dedicated component with two sections: Team S
 </div>
 ```
 
-**Public Links Integration** (lines 79-83):
-```vue
-<!-- Divider -->
-<div class="border-t border-gray-200 dark:border-gray-700"></div>
-
-<!-- Public Links Section -->
-<PublicLinksPanel :agent-name="agentName" />
-```
-
-**Component Props** (lines 94-103):
+**Component Props** (lines 185-194):
 ```javascript
 const props = defineProps({
   agentName: { type: String, required: true },
   shares: { type: Array, default: () => [] }
 })
 ```
+
+**Channel Access Policy & Access Requests (Issue #311)** — wired via direct axios calls in `<script setup>` (no composable):
+```javascript
+// State (lines 226-230)
+const policy = ref({ require_email: false, open_access: false })
+const policyLoading = ref(false)
+const pendingRequests = ref([])
+const decisionLoading = ref(null)
+
+// loadPolicy        — GET  /api/agents/{name}/access-policy
+// updatePolicy      — PUT  /api/agents/{name}/access-policy   (merges partial change)
+// loadAccessRequests — GET  /api/agents/{name}/access-requests?status=pending
+// decideRequest      — POST /api/agents/{name}/access-requests/{id}/decide  { approve }
+// formatRequestedAt  — local date formatting helper
+
+// Refresh both on agent change (lines 305-308)
+watch(() => props.agentName, async (name) => {
+  if (!name) return
+  await Promise.all([loadPolicy(), loadAccessRequests()])
+}, { immediate: true })
+```
+
+After `decideRequest(req, true)` succeeds, `loadAccessRequests()` is re-run and `loadAgent()` is emitted so the Team Sharing list reflects the newly-added email.
 
 ### Composable (`src/frontend/src/composables/useAgentSharing.js`)
 
@@ -120,11 +142,17 @@ if (agent.value?.can_share && !isSystem) {
 
 ### Endpoints (`src/backend/routers/sharing.py`)
 
+All endpoints are gated by `OwnedAgentByName` (owner or admin).
+
 | Line | Endpoint | Method | Purpose |
 |------|----------|--------|---------|
-| 23-64 | `/api/agents/{agent_name}/share` | POST | Share agent with email |
-| 67-89 | `/api/agents/{agent_name}/share/{email}` | DELETE | Remove share |
-| 92-103 | `/api/agents/{agent_name}/shares` | GET | List shares |
+| 53-94 | `/api/agents/{agent_name}/share` | POST | Share agent with email |
+| 97-119 | `/api/agents/{agent_name}/share/{email}` | DELETE | Remove share |
+| 122-133 | `/api/agents/{agent_name}/shares` | GET | List shares |
+| 140-146 | `/api/agents/{agent_name}/access-policy` | GET | Get `{require_email, open_access}` (Issue #311) |
+| 149-157 | `/api/agents/{agent_name}/access-policy` | PUT | Update policy (delegates to `db.set_access_policy`) |
+| 160-168 | `/api/agents/{agent_name}/access-requests` | GET | List requests, defaults `status=pending` |
+| 171-221 | `/api/agents/{agent_name}/access-requests/{request_id}/decide` | POST | `{approve: bool}` — on approve, idempotently inserts into `agent_sharing` via `db.share_agent`, auto-whitelists email when email auth is enabled, and broadcasts `agent_shared` over WebSocket |
 
 ### Authorization via Dependencies (`src/backend/dependencies.py:258-285`)
 
@@ -269,18 +297,23 @@ CREATE TABLE IF NOT EXISTS agent_sharing (
 )
 ```
 
-### Operations (`db/agents.py`)
+### Operations (`db/agent_settings/sharing.py` — `SharingMixin`, composed into `AgentOperations`)
 
 | Method | Line | Purpose |
 |--------|------|---------|
-| `share_agent()` | 169-212 | Create share record |
-| `unshare_agent()` | 214-227 | Remove share record |
-| `get_agent_shares()` | 229-241 | List shares for agent |
-| `get_shared_agents()` | 243-258 | Get agents shared with user |
-| `is_agent_shared_with_user()` | 260-276 | Access check by email |
-| `can_user_share_agent()` | 278-288 | Authorization check |
-| `delete_agent_shares()` | 290-296 | Cascade delete shares |
-| `get_all_agent_metadata()` | 467-529 | Batch metadata query (N+1 fix) |
+| `share_agent()` | 30-73 | Create share record |
+| `unshare_agent()` | 75-88 | Remove share record |
+| `get_agent_shares()` | 90-102 | List shares for agent |
+| `get_shared_agents()` | 104-119 | Get agents shared with user |
+| `is_agent_shared_with_email()` | 121-131 | Direct email lookup, no user record needed (Issue #311) |
+| `email_has_agent_access()` | 133-148 | Composite gate: owner / admin / `agent_sharing` (used by channel router gate, Issue #311) |
+| `is_agent_shared_with_user()` | 150-166 | Access check by username |
+| `can_user_share_agent()` | 168-178 | Authorization check |
+| `delete_agent_shares()` | 180-186 | Cascade delete shares |
+
+Both `is_agent_shared_with_email` and `email_has_agent_access` are exposed on the `db` facade.
+
+Access-policy storage lives on `agent_ownership` via `AccessPolicyMixin` (`db/agent_settings/access_policy.py`); access requests live in their own table via `db/access_requests.py`.
 
 ### Share Agent (`db/agents.py:169-212`)
 ```python
@@ -311,15 +344,17 @@ def share_agent(self, agent_name: str, owner_username: str, share_with_email: st
             return None  # Already shared
 ```
 
-### Cascade Delete (`db/agents.py:290-296`)
-When an agent is deleted, all sharing records are removed via `delete_agent_ownership()` (line 103-112):
+### Cascade Delete (`db/agents.py:117-128`)
+When an agent is deleted, sharing records AND pending access requests are removed via `delete_agent_ownership()`:
 ```python
 def delete_agent_ownership(self, agent_name: str) -> bool:
-    """Remove agent ownership record and all sharing records."""
+    """Remove agent ownership record, all sharing records, and pending access requests."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         # Delete sharing records first (cascade)
         cursor.execute("DELETE FROM agent_sharing WHERE agent_name = ?", (agent_name,))
+        # Delete access requests (issue #311)
+        cursor.execute("DELETE FROM access_requests WHERE agent_name = ?", (agent_name,))
         # Delete ownership record
         cursor.execute("DELETE FROM agent_ownership WHERE agent_name = ?", (agent_name,))
 ```
@@ -415,6 +450,7 @@ Working - Agent sharing fully functional with email-based collaboration
 
 | Date | Changes |
 |------|---------|
+| 2026-04-12 | **Issue #311 — unified cross-channel access control**: `agent_sharing` is now the cross-channel allow-list (web + Telegram + Slack). Added 4 endpoints to `routers/sharing.py` for access policy (`require_email`, `open_access`) and pending access requests (approve/deny). `SharingPanel.vue` gained a Channel Access Policy section + Pending Access Requests list (direct axios, no composable). New `SharingMixin` helpers: `is_agent_shared_with_email`, `email_has_agent_access`. `delete_agent_ownership` now also cascades `access_requests`. Canonical primitive lives in [unified-channel-access-control.md](unified-channel-access-control.md). |
 | 2026-02-18 | **Public Links tab consolidated**: Public Links tab removed from AgentDetail.vue. SharingPanel.vue now includes PublicLinksPanel as embedded component (lines 79-83, 92). Updated tab visibility line numbers (506-509). Single "Sharing" tab now contains both Team Sharing and Public Links sections. |
 | 2026-01-30 | **Git Pull permission update**: Added Git Pull and Git Sync/Init columns to Access Levels table. Shared users can now pull from GitHub (was owner-only). |
 | 2026-01-23 | **Full verification**: Updated to use SharingPanel.vue component (not inline in AgentDetail.vue). Updated line numbers for routers/sharing.py (23-64, 67-89, 92-103). Added useAgentSharing.js composable documentation. Updated db/agents.py line numbers for sharing methods. Added OwnedAgentByName dependency documentation from dependencies.py. Documented tab visibility logic at AgentDetail.vue:428-432. Updated helpers.py reference for batch metadata query. |
@@ -422,8 +458,12 @@ Working - Agent sharing fully functional with email-based collaboration
 
 ---
 
+## See Also
+
+- **[unified-channel-access-control.md](unified-channel-access-control.md)** — Canonical reference for the cross-channel gate, `email_has_agent_access` semantics, and how Telegram/Slack/web public links resolve a verified email and consult `agent_sharing`. This flow only documents the sharing UX and API surface; gate implementation lives there.
+
 ## Related Flows
 
 - **Upstream**: Authentication (user identity)
-- **Downstream**: Public Agent Links (embedded in same tab via PublicLinksPanel)
-- **Related**: Agent Lifecycle (delete cascades shares), MCP Orchestration (agent-to-agent access control), Email Authentication (auto-whitelist)
+- **Downstream**: Public Agent Links (embedded in same tab via PublicLinksPanel), Telegram Integration, Slack Integration (all consume the unified allow-list)
+- **Related**: Agent Lifecycle (delete cascades shares + access requests), MCP Orchestration (agent-to-agent access control), Email Authentication (auto-whitelist)

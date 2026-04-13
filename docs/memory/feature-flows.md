@@ -11,6 +11,7 @@
 
 | Date | ID | Feature | Flow |
 |------|-----|---------|------|
+| 2026-04-12 | #311 | Unified cross-channel access control — verified email as identity, per-agent policy, access requests | [unified-channel-access-control.md](feature-flows/unified-channel-access-control.md) |
 | 2026-04-12 | #309 | Telegram webhook back-fill when `public_chat_url` is saved (self-healing config order) | [telegram-integration.md](feature-flows/telegram-integration.md) |
 | 2026-04-11 | #297 | Telegram group chat support — @mention triggers, welcome messages, per-group config | [telegram-integration.md](feature-flows/telegram-integration.md) |
 | 2026-04-10 | #296 | Telegram bot connection UI — TelegramChannelPanel in Agent Detail Sharing page | [telegram-integration.md](feature-flows/telegram-integration.md) |
@@ -157,7 +158,7 @@
 | Agent-to-Agent Collaboration | [agent-to-agent-collaboration.md](feature-flows/agent-to-agent-collaboration.md) | Inter-agent communication via MCP |
 | Agent Event Subscriptions | [agent-event-subscriptions.md](feature-flows/agent-event-subscriptions.md) | Lightweight pub/sub for inter-agent event pipelines |
 | Agent Permissions | [agent-permissions.md](feature-flows/agent-permissions.md) | Agent communication permissions |
-| Agent Sharing | [agent-sharing.md](feature-flows/agent-sharing.md) | Email-based sharing with access levels |
+| Agent Sharing | [agent-sharing.md](feature-flows/agent-sharing.md) | Cross-channel email allow-list (web/Slack/Telegram) with access policy and pending requests |
 | Agent Shared Folders | [agent-shared-folders.md](feature-flows/agent-shared-folders.md) | File collaboration via shared volumes |
 | Agent Tags & System Views | [agent-tags.md](feature-flows/agent-tags.md) | Tagging and saved filters (ORG-001) |
 | Tag Clouds | [tag-clouds.md](feature-flows/tag-clouds.md) | Visual grouping on Dashboard |
@@ -180,7 +181,8 @@
 | Slack Integration | [slack-integration.md](feature-flows/slack-integration.md) | Slack as delivery channel for public links (SLACK-001) |
 | Slack Channel Routing | [slack-channel-routing.md](feature-flows/slack-channel-routing.md) | Channel adapter abstraction + multi-agent Slack routing (SLACK-002) |
 | Slack File Sharing | [slack-file-sharing.md](feature-flows/slack-file-sharing.md) | Inbound file uploads: images via vision, text via container (SLACK-FILES) |
-| Telegram Integration | [telegram-integration.md](feature-flows/telegram-integration.md) | Per-agent Telegram bots with webhook transport, group chat support (TELEGRAM-001, TGRAM-GROUP) |
+| Telegram Integration | [telegram-integration.md](feature-flows/telegram-integration.md) | Per-agent Telegram bots with webhook transport, group chat support, and `/login` email verification (TELEGRAM-001, TGRAM-GROUP) |
+| Unified Channel Access Control | [unified-channel-access-control.md](feature-flows/unified-channel-access-control.md) | Cross-channel access gate keyed on verified email — policy, /login, access requests (#311) |
 | Nevermined x402 Payments | [nevermined-payments.md](feature-flows/nevermined-payments.md) | Per-agent paid API via x402 payment protocol (NVM-001) |
 
 ### Mobile & PWA

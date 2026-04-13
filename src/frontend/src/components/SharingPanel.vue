@@ -1,5 +1,80 @@
 <template>
   <div class="p-6 space-y-8">
+    <!-- Channel Access Policy (Issue #311) -->
+    <div>
+      <h3 class="text-lg font-medium text-gray-900 dark:text-white mb-2">Channel Access Policy</h3>
+      <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+        Controls who can chat with this agent across web, Telegram, and Slack.
+        The team-sharing list below is the unified allow-list.
+      </p>
+
+      <div class="space-y-3">
+        <label class="flex items-start gap-3">
+          <input
+            type="checkbox"
+            class="mt-1"
+            :checked="policy.require_email"
+            :disabled="policyLoading"
+            @change="updatePolicy({ require_email: $event.target.checked })"
+          />
+          <div>
+            <div class="text-sm font-medium text-gray-900 dark:text-gray-100">Require verified email</div>
+            <div class="text-xs text-gray-500 dark:text-gray-400">
+              Telegram users must <code>/login</code>; Slack uses workspace email; web requires email verification.
+            </div>
+          </div>
+        </label>
+
+        <label class="flex items-start gap-3">
+          <input
+            type="checkbox"
+            class="mt-1"
+            :checked="policy.open_access"
+            :disabled="policyLoading"
+            @change="updatePolicy({ open_access: $event.target.checked })"
+          />
+          <div>
+            <div class="text-sm font-medium text-gray-900 dark:text-gray-100">Open access</div>
+            <div class="text-xs text-gray-500 dark:text-gray-400">
+              Anyone with a verified email may chat without owner approval.
+              Off = pending requests must be approved.
+            </div>
+          </div>
+        </label>
+      </div>
+
+      <!-- Pending access requests -->
+      <div v-if="pendingRequests.length > 0" class="mt-6">
+        <h4 class="text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
+          Pending access requests ({{ pendingRequests.length }})
+        </h4>
+        <ul class="divide-y divide-gray-200 dark:divide-gray-700 border border-gray-200 dark:border-gray-700 rounded-lg">
+          <li v-for="req in pendingRequests" :key="req.id" class="px-4 py-3 flex items-center justify-between">
+            <div>
+              <p class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ req.email }}</p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                via {{ req.channel || 'unknown' }} · {{ formatRequestedAt(req.requested_at) }}
+              </p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                @click="decideRequest(req, true)"
+                :disabled="decisionLoading === req.id"
+                class="px-3 py-1 text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 disabled:opacity-50"
+              >Approve</button>
+              <button
+                @click="decideRequest(req, false)"
+                :disabled="decisionLoading === req.id"
+                class="px-3 py-1 text-sm font-medium rounded-md text-gray-700 dark:text-gray-200 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50"
+              >Deny</button>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="border-t border-gray-200 dark:border-gray-700"></div>
+
     <!-- Team Sharing Section -->
     <div>
       <h3 class="text-lg font-medium text-gray-900 dark:text-white mb-2">Team Sharing</h3>
@@ -97,8 +172,10 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, onMounted } from 'vue'
+import axios from 'axios'
 import { useAgentsStore } from '../stores/agents'
+import { useAuthStore } from '../stores/auth'
 import { useAgentSharing } from '../composables/useAgentSharing'
 import { useNotification } from '../composables'
 import PublicLinksPanel from './PublicLinksPanel.vue'
@@ -142,4 +219,91 @@ const {
   shareWithUser,
   removeShare
 } = useAgentSharing(agent, agentsStore, loadAgent, showNotification)
+
+// ---------------------------------------------------------------------------
+// Access policy + access requests (Issue #311)
+// ---------------------------------------------------------------------------
+const authStore = useAuthStore()
+const policy = ref({ require_email: false, open_access: false })
+const policyLoading = ref(false)
+const pendingRequests = ref([])
+const decisionLoading = ref(null)
+
+const loadPolicy = async () => {
+  try {
+    const { data } = await axios.get(
+      `/api/agents/${props.agentName}/access-policy`,
+      { headers: authStore.authHeader }
+    )
+    policy.value = data
+  } catch (err) {
+    console.error('Failed to load access policy:', err)
+  }
+}
+
+const updatePolicy = async (changes) => {
+  policyLoading.value = true
+  try {
+    const next = { ...policy.value, ...changes }
+    const { data } = await axios.put(
+      `/api/agents/${props.agentName}/access-policy`,
+      next,
+      { headers: authStore.authHeader }
+    )
+    policy.value = data
+    showNotification('Access policy updated', 'success')
+  } catch (err) {
+    console.error('Failed to update access policy:', err)
+    showNotification(err.response?.data?.detail || 'Failed to update policy', 'error')
+  } finally {
+    policyLoading.value = false
+  }
+}
+
+const loadAccessRequests = async () => {
+  try {
+    const { data } = await axios.get(
+      `/api/agents/${props.agentName}/access-requests`,
+      { headers: authStore.authHeader, params: { status: 'pending' } }
+    )
+    pendingRequests.value = data
+  } catch (err) {
+    console.error('Failed to load access requests:', err)
+  }
+}
+
+const decideRequest = async (req, approve) => {
+  decisionLoading.value = req.id
+  try {
+    await axios.post(
+      `/api/agents/${props.agentName}/access-requests/${req.id}/decide`,
+      { approve },
+      { headers: authStore.authHeader }
+    )
+    showNotification(
+      approve ? `Approved ${req.email}` : `Denied ${req.email}`,
+      'success'
+    )
+    await loadAccessRequests()
+    if (approve) await loadAgent()
+  } catch (err) {
+    console.error('Failed to decide request:', err)
+    showNotification(err.response?.data?.detail || 'Failed to update request', 'error')
+  } finally {
+    decisionLoading.value = null
+  }
+}
+
+const formatRequestedAt = (iso) => {
+  try {
+    return new Date(iso).toLocaleString()
+  } catch {
+    return iso
+  }
+}
+
+watch(() => props.agentName, async (name) => {
+  if (!name) return
+  await Promise.all([loadPolicy(), loadAccessRequests()])
+}, { immediate: true })
 </script>

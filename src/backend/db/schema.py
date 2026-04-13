@@ -66,6 +66,8 @@ TABLES = {
             avatar_identity_prompt TEXT,
             avatar_updated_at TEXT,
             is_default_avatar INTEGER DEFAULT 0,
+            require_email INTEGER DEFAULT 0,
+            open_access INTEGER DEFAULT 0,
             FOREIGN KEY (owner_id) REFERENCES users(id),
             FOREIGN KEY (subscription_id) REFERENCES subscription_credentials(id)
         )
@@ -642,6 +644,23 @@ TABLES = {
             created_at TEXT NOT NULL
         )
     """,
+
+    # -------------------------------------------------------------------------
+    # Access Requests (Issue #311 - Unified Channel Access Control)
+    # -------------------------------------------------------------------------
+    "access_requests": """
+        CREATE TABLE IF NOT EXISTS access_requests (
+            id TEXT PRIMARY KEY,
+            agent_name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            channel TEXT,
+            requested_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            decided_by INTEGER,
+            decided_at TEXT,
+            UNIQUE(agent_name, email)
+        )
+    """,
 }
 
 # =============================================================================
@@ -780,6 +799,10 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_event_subs_source_type ON agent_event_subscriptions(source_agent, event_type)",
     "CREATE INDEX IF NOT EXISTS idx_events_source ON agent_events(source_agent, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_events_type ON agent_events(event_type)",
+
+    # Access requests indexes (Issue #311)
+    "CREATE INDEX IF NOT EXISTS idx_access_requests_agent ON access_requests(agent_name, status)",
+    "CREATE INDEX IF NOT EXISTS idx_access_requests_email ON access_requests(email)",
 ]
 
 

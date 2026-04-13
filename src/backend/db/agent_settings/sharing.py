@@ -118,6 +118,35 @@ class SharingMixin:
             """, (user_email.lower(),))
             return [row["agent_name"] for row in cursor.fetchall()]
 
+    def is_agent_shared_with_email(self, agent_name: str, email: str) -> bool:
+        """Check if an agent is shared with the given email directly."""
+        if not email:
+            return False
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 1 FROM agent_sharing
+                WHERE agent_name = ? AND shared_with_email = ?
+            """, (agent_name, email.lower()))
+            return cursor.fetchone() is not None
+
+    def email_has_agent_access(self, agent_name: str, email: str) -> bool:
+        """Cross-channel access check (Issue #311).
+
+        Returns True when the email is owner, admin, or in agent_sharing for
+        the given agent. Used by the channel router gate.
+        """
+        if not email:
+            return False
+        user = self._user_ops.get_user_by_email(email)
+        if user:
+            if user.get("role") == "admin":
+                return True
+            owner = self.get_agent_owner(agent_name)
+            if owner and owner["owner_username"] == user["username"]:
+                return True
+        return self.is_agent_shared_with_email(agent_name, email)
+
     def is_agent_shared_with_user(self, agent_name: str, username: str) -> bool:
         """Check if an agent is shared with a specific user (by their email)."""
         user = self._user_ops.get_user_by_username(username)

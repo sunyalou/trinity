@@ -700,6 +700,62 @@ db.set_setting() for each provided field
 Reload status (refresh UI)
 ```
 
+## Unified Cross-Channel Access Control (#311)
+
+> **Canonical reference**: [unified-channel-access-control.md](unified-channel-access-control.md). This section only describes the Slack-specific pieces — the policy model, `access_requests` table, router gate, and approval UI live in that flow.
+
+Issue #311 introduced a single per-agent access policy shared across all channels (web public links, Slack, Telegram). Slack's role in that flow is minimal: the workspace OAuth token already proves user identity, so the adapter just looks up the sender's email via Slack's `users.info` API. No 6-digit verification round-trip is needed (unlike Telegram's `/login`), which makes Slack the simplest channel to wire in.
+
+### New adapter method: `resolve_verified_email`
+
+Added to `SlackAdapter` at `src/backend/adapters/slack_adapter.py:51-67`:
+
+```python
+async def resolve_verified_email(self, message: NormalizedMessage) -> Optional[str]:
+    bot_token = self.get_bot_token(message)
+    if not bot_token:
+        return None
+    try:
+        email = await slack_service.get_user_email(bot_token, message.sender_id)
+    except Exception as e:
+        logger.warning(f"Slack resolve_verified_email failed: {e}")
+        return None
+    return email.lower() if email else None
+```
+
+- `get_bot_token(message)` resolves the workspace token via `slack_workspaces` (new path) with `slack_link_connections` as a legacy fallback (see lines 69-81 in the same file).
+- `slack_service.get_user_email(bot_token, user_id)` calls Slack's `users.info` API (`services/slack_service.py:239-268`).
+- Emails are returned lowercased for case-insensitive matching against `agent_sharing.shared_with_email`.
+- No persistence — the adapter re-resolves live on every message. The workspace OAuth token is already durable state.
+
+### Router gate integration
+
+`ChannelMessageRouter._handle_message_inner` (`src/backend/adapters/message_router.py:210-264`) calls `adapter.resolve_verified_email` in step 5b of the gate. The returned email is used for:
+
+1. **Access check** — `db.email_has_agent_access(agent_name, email)` (owner / admin / `agent_sharing` row).
+2. **Open-access bypass** — admitted if the agent has `open_access=true`.
+3. **Access request path** — if neither of the above, `db.upsert_access_request(agent_name, email, "slack")` queues the request for owner approval; user gets "🔒 Your access request is pending approval".
+
+Channel-wide (non-DM) group messages bypass the gate entirely — see the "Group chat bypass" section of [unified-channel-access-control.md](unified-channel-access-control.md). Full gate semantics (require_email flag, legacy passthrough fallback) are documented there.
+
+### OAuth scope requirement
+
+For `resolve_verified_email` to return a value, the Slack app must be installed with the **`users:read.email`** OAuth scope (already present in the scope list at `slack_service.py:92-106` — `im:history,chat:write,users:read.email`).
+
+If the scope is missing, or the user has hidden their profile email, `users.info` returns `null` and `resolve_verified_email` returns `None`. When the agent's policy has `require_email=true`, the router then falls back to `adapter.prompt_auth` — the default text reply from the ABC — since `SlackAdapter` does not override `prompt_auth` (there's no Slack-native "send a verification code" flow the way Telegram has `/login`).
+
+### Relation to `slack_user_verifications`
+
+The existing `slack_user_verifications` + `slack_pending_verifications` tables (see Database Schema above) power the **per-public-link** email verification flow from SLACK-001 (used when a link has `require_email=true` but the workspace can't auto-resolve email).
+
+The #311 gate — for **workspace-connected agents** routed via the channel adapter (SLACK-002) — does not use these tables. It reads directly from the Slack API on each message. The tables remain in place for the legacy public-link path; no new per-message persistence is added.
+
+### See also
+
+- **[Unified Channel Access Control](unified-channel-access-control.md)** — canonical reference for policy columns, `access_requests` table, the router gate, `AccessPolicyMixin`, and approval UI.
+- **[Agent Sharing](agent-sharing.md)** — `agent_sharing` is the cross-channel allow-list; approving an access request inserts a row here.
+- **[Slack Channel Routing](slack-channel-routing.md)** (SLACK-002) — the `SlackAdapter` + channel binding model that #311 plugs into.
+
 ## Related
 
 - **[Public Agent Links](public-agent-links.md)** (15.1) - Base infrastructure, session persistence (PUB-005)
@@ -715,3 +771,4 @@ Reload status (refresh UI)
 | 2026-02-25 | Claude | Added Settings Configuration flow (admin UI for Slack credentials) |
 | 2026-03-01 | Claude | Fixed access checks to use `can_user_access_agent()`/`can_user_share_agent()` (Issue #48) |
 | 2026-03-12 | Claude | Fixed `initiate_slack_oauth()` to use `get_slack_signing_secret()` from settings_service instead of importing from config.py |
+| 2026-04-12 | Claude | Added `SlackAdapter.resolve_verified_email` for unified cross-channel access control (#311) — see [unified-channel-access-control.md](unified-channel-access-control.md) |

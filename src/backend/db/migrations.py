@@ -1004,6 +1004,49 @@ def _migrate_telegram_bindings(cursor, conn):
     conn.commit()
 
 
+def _migrate_access_control(cursor, conn):
+    """Add unified channel access control (issue #311).
+
+    - agent_ownership: require_email (INTEGER), open_access (INTEGER)
+    - telegram_chat_links: verified_email (TEXT), verified_at (TEXT)
+    - access_requests: new table for pending per-agent access requests
+    """
+    # 1. agent_ownership columns
+    cursor.execute("PRAGMA table_info(agent_ownership)")
+    ao_cols = {row[1] for row in cursor.fetchall()}
+    if "require_email" not in ao_cols:
+        cursor.execute("ALTER TABLE agent_ownership ADD COLUMN require_email INTEGER DEFAULT 0")
+    if "open_access" not in ao_cols:
+        cursor.execute("ALTER TABLE agent_ownership ADD COLUMN open_access INTEGER DEFAULT 0")
+
+    # 2. telegram_chat_links columns
+    cursor.execute("PRAGMA table_info(telegram_chat_links)")
+    tcl_cols = {row[1] for row in cursor.fetchall()}
+    if "verified_email" not in tcl_cols:
+        cursor.execute("ALTER TABLE telegram_chat_links ADD COLUMN verified_email TEXT")
+    if "verified_at" not in tcl_cols:
+        cursor.execute("ALTER TABLE telegram_chat_links ADD COLUMN verified_at TEXT")
+
+    # 3. access_requests table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS access_requests (
+            id TEXT PRIMARY KEY,
+            agent_name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            channel TEXT,
+            requested_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            decided_by INTEGER,
+            decided_at TEXT,
+            UNIQUE(agent_name, email)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_access_requests_agent ON access_requests(agent_name, status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_access_requests_email ON access_requests(email)")
+
+    conn.commit()
+
+
 def _migrate_telegram_group_configs(cursor, conn):
     """Create Telegram group configuration table (TGRAM-GROUP)."""
 
@@ -1075,4 +1118,5 @@ MIGRATIONS = [
     ("telegram_bindings", _migrate_telegram_bindings),
     ("subscription_usage_tracking", _migrate_subscription_usage_tracking),
     ("telegram_group_configs", _migrate_telegram_group_configs),
+    ("access_control", _migrate_access_control),
 ]

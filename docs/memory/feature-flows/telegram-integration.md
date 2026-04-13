@@ -487,7 +487,112 @@ The `TelegramChannelPanel.vue` component shows group configurations when the bot
 - **`chat_member` events require bot admin**: Welcome messages for user joins only work if the bot has admin rights in the group AND `chat_member` is in `allowed_updates`. If the bot isn't admin, events simply don't arrive — graceful degradation.
 - **No `edited_message` handling**: Edited messages in groups are not processed. In mention-only mode this is rare.
 
+## Access Control & `/login` Email Verification (#311)
+
+Part of the unified cross-channel access control primitive. Full design (policy columns on `agent_ownership`, router gate logic, access-request inbox, Slack/public parity) lives in [unified-channel-access-control.md](unified-channel-access-control.md) — this section documents the Telegram-specific pieces only.
+
+### Schema additions
+
+Migration `access_control` adds two columns to `telegram_chat_links`:
+
+| Column | Type | Notes |
+|--------|------|-------|
+| verified_email | TEXT | The email bound to this Telegram user within this bot, or NULL if unverified |
+| verified_at | TEXT | ISO timestamp set when `set_verified_email` runs |
+
+The unique index remains `UNIQUE(binding_id, telegram_user_id)`.
+
+### New DB methods (`src/backend/db/telegram_channels.py`)
+
+Added to `TelegramChannelOperations`:
+
+- `get_chat_link(binding_id, telegram_user_id)` — lookup without auto-create (the existing `get_or_create_chat_link` upserts, which is wrong for a pure "is this user verified?" read)
+- `get_verified_email(binding_id, telegram_user_id) -> str | None`
+- `set_verified_email(binding_id, telegram_user_id, email)` — `INSERT OR IGNORE` to ensure the row exists, then `UPDATE` to set `verified_email` + `verified_at`
+- `clear_verified_email(binding_id, telegram_user_id)` — nulls both columns
+
+Exposed on the `Database` facade (`src/backend/database.py`):
+- `db.get_telegram_verified_email(...)`
+- `db.set_telegram_verified_email(...)`
+- `db.clear_telegram_verified_email(...)`
+
+### Adapter additions (`src/backend/adapters/telegram_adapter.py`)
+
+**`async resolve_verified_email(message) -> str | None`**
+Reads `db.get_telegram_verified_email(binding_id, telegram_user_id)` from the normalized message metadata. Used by the router gate before dispatching to an agent.
+
+**`async prompt_auth(message, agent_name, bot_token=None)`**
+Sends a Telegram-native HTML prompt instructing the user to verify with `/login your@email.com`. Called by the router gate when `require_email=True` and no verified email is bound.
+
+**`handle_command` — new commands**
+
+| Command | Behavior |
+|---------|----------|
+| `/login` (no args) | Sends usage instructions |
+| `/login <email>` | `db.create_login_code(email, 10)` → `EmailService.send_verification_code(email, code)` → stores `_PENDING_LOGINS[(binding_id, telegram_user_id)] = email` → replies "📧 Sent a 6-digit code" |
+| `/login <6-digit-code>` | Looks up pending email → `db.verify_login_code(email, code)` → on success `db.set_telegram_verified_email(binding_id, telegram_user_id, email)` + `_PENDING_LOGINS.pop(...)` → replies "✅ Verified" |
+| `/logout` | `db.clear_telegram_verified_email(...)` + `_PENDING_LOGINS.pop(...)` |
+| `/whoami` | Displays current verified email (or "not verified") |
+
+**`_PENDING_LOGINS`** is a module-level in-memory `dict[(binding_id, telegram_user_id) -> email]`. Login codes have a 10-minute TTL in `email_login_codes` (same table used by email authentication), so a backend restart mid-verification simply forces the user to re-issue `/login <email>` — no migration required, no persistent state to corrupt.
+
+### Router gate integration
+
+The unified gate lives in `adapters/message_router.py` at step 5b of `_handle_message_inner` (see [unified-channel-access-control.md](unified-channel-access-control.md) for the full policy matrix). For Telegram:
+
+- **1:1 DMs**: Gate calls `adapter.resolve_verified_email(message)` before step 9 (execution). If `None` and policy `require_email=True`, it invokes `adapter.prompt_auth(...)` and short-circuits — the message is not sent to the agent.
+- **Group chats**: The gate is **bypassed** for group messages. Groups are gated by bot membership (the group admin who added the bot is trusted), not per-user email verification. Trying to verify every group member via DM would be a poor UX and, for large groups, impractical.
+
+### `/login` state machine (DM)
+
+```
+stranger sends "hi"
+    |
+    v
+router step 5b: resolve_verified_email() → None
+    |
+    v
+policy.require_email=True → adapter.prompt_auth()
+    |
+    v
+user sends "/login user@example.com"
+    |
+    v
+handle_command:
+    db.create_login_code(email, ttl=10min)
+    EmailService.send_verification_code(email, code)
+    _PENDING_LOGINS[(binding_id, user_id)] = email
+    reply: "📧 Sent a 6-digit code to user@example.com"
+    |
+    v
+user sends "/login 123456"
+    |
+    v
+handle_command:
+    email = _PENDING_LOGINS[(binding_id, user_id)]
+    db.verify_login_code(email, "123456") → OK
+    db.set_telegram_verified_email(binding_id, user_id, email)
+    _PENDING_LOGINS.pop(...)
+    reply: "✅ Verified as user@example.com"
+    |
+    v
+user sends "what's the weather?"
+    |
+    v
+router step 5b: resolve_verified_email() → "user@example.com"
+    |
+    v
+gate admits (or issues access-request, per policy) → agent executes
+```
+
+### Transport
+
+No changes to `src/backend/adapters/transports/telegram_webhook.py`. The transport already dispatches `/`-prefixed messages to `adapter.handle_command` before the router pipeline, so `/login`, `/logout`, and `/whoami` are picked up for free.
+
 ## Related Flows
+- [unified-channel-access-control.md](unified-channel-access-control.md) — Cross-channel access primitive (policy, router gate, access requests) (#311)
+- [agent-sharing.md](agent-sharing.md) — Allow-list / ownership model the gate consults
+- [email-authentication.md](email-authentication.md) — Shared `email_login_codes` infrastructure and `EmailService.send_verification_code`
 - [slack-integration.md](slack-integration.md) — Slack equivalent (SLACK-001)
 - [slack-channel-routing.md](slack-channel-routing.md) — Channel adapter abstraction (SLACK-002)
 - [public-agent-links.md](public-agent-links.md) — Web-based public chat (shares session/execution infrastructure)

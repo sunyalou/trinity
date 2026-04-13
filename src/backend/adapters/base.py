@@ -166,6 +166,51 @@ class ChannelAdapter(ABC):
         """
         return True
 
+    async def resolve_verified_email(
+        self, message: NormalizedMessage
+    ) -> Optional[str]:
+        """
+        Translate the channel-native identity into a verified email, if known.
+
+        Unified cross-channel access control (Issue #311). Each channel is
+        responsible only for producing a verified email — everything else
+        (sharing checks, access requests, memory injection) runs off that key.
+
+        Returns the email as a lowercase string, or None when the sender has
+        not yet proven an email (the router will then prompt via
+        ``prompt_auth`` if the agent requires email).
+
+        Default: None. Override in concrete adapters.
+        """
+        return None
+
+    async def prompt_auth(
+        self,
+        message: NormalizedMessage,
+        agent_name: str,
+        bot_token: Optional[str] = None,
+    ) -> None:
+        """
+        Ask the sender to prove an email (channel-specific).
+
+        Called by the router when the agent requires a verified email and
+        the adapter couldn't resolve one. Default sends a generic text reply
+        with instructions; channels can override for richer UX (e.g. Telegram
+        ``/login`` hint, Slack DM, etc.).
+        """
+        text = (
+            "This agent requires a verified email to chat.\n"
+            "Send `/login your@email.com` to start verification."
+        )
+        await self.send_response(
+            message.channel_id,
+            ChannelResponse(
+                text=text,
+                metadata={"bot_token": bot_token, "agent_name": agent_name},
+            ),
+            thread_id=message.thread_id,
+        )
+
     async def download_file(self, file: "FileAttachment", message: NormalizedMessage) -> Optional[bytes]:
         """
         Download a file attachment's bytes.

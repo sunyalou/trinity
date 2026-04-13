@@ -16,6 +16,7 @@ from .security import SecurityMixin
 from .autonomy import AutonomyMixin
 from .avatar import AvatarMixin
 from .metadata import MetadataMixin
+from .access_policy import AccessPolicyMixin
 
 __all__ = [
     'SharingMixin',
@@ -24,4 +25,5 @@ __all__ = [
     'AutonomyMixin',
     'AvatarMixin',
     'MetadataMixin',
+    'AccessPolicyMixin',
 ]

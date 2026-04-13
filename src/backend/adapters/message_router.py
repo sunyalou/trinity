@@ -207,6 +207,62 @@ class ChannelMessageRouter:
         if not verified:
             return
 
+        # 5b. Unified cross-channel access gate (Issue #311).
+        # Resolve a verified email via the adapter, then apply the agent's
+        # access policy. Group chats bypass — group context is gated by the
+        # bot being added to the group, not by per-user email.
+        verified_email: Optional[str] = None
+        if not is_group:
+            try:
+                verified_email = await adapter.resolve_verified_email(message)
+            except Exception as e:
+                logger.warning(f"[ROUTER:{channel}] resolve_verified_email error: {e}")
+                verified_email = None
+
+            policy = db.get_access_policy(agent_name)
+            require_email = policy.get("require_email", False)
+            open_access = policy.get("open_access", False)
+
+            if require_email and not verified_email:
+                logger.info(
+                    f"[ROUTER:{channel}] Access denied: agent={agent_name} requires email "
+                    f"and sender={message.sender_id} not verified"
+                )
+                await adapter.prompt_auth(message, agent_name, bot_token)
+                return
+
+            if verified_email and db.email_has_agent_access(agent_name, verified_email):
+                logger.debug(f"[ROUTER:{channel}] Access granted via owner/admin/sharing: {verified_email}")
+            elif open_access:
+                logger.debug(
+                    f"[ROUTER:{channel}] Access granted via open_access "
+                    f"(email={verified_email or 'none'})"
+                )
+            elif verified_email:
+                # Verified email + restrictive policy → record access request
+                try:
+                    db.upsert_access_request(agent_name, verified_email, channel)
+                except Exception as e:
+                    logger.error(f"[ROUTER:{channel}] Failed to upsert access_request: {e}")
+                logger.info(
+                    f"[ROUTER:{channel}] Pending access request: "
+                    f"agent={agent_name}, email={verified_email}"
+                )
+                await adapter.send_response(
+                    message.channel_id,
+                    ChannelResponse(
+                        text=(
+                            "🔒 Your access request is pending approval. "
+                            "I'll let you know once the agent owner responds."
+                        ),
+                        metadata={"bot_token": bot_token, "agent_name": agent_name},
+                    ),
+                    thread_id=message.thread_id,
+                )
+                return
+            # else: no verified email and policy not set → legacy permissive
+            # (preserves backward compat for agents that haven't opted in).
+
         # 6. Get/create session
         logger.debug(f"[ROUTER:{channel}] Step 6 - creating session")
         session_identifier = adapter.get_session_identifier(message)
@@ -241,7 +297,9 @@ class ChannelMessageRouter:
 
         # 9. Execute via TaskExecutionService (same path as web public chat)
         logger.debug(f"[ROUTER:{channel}] Step 9 - executing via TaskExecutionService")
-        source_email = adapter.get_source_identifier(message)
+        # Prefer the verified email (Issue #311) so MEM-001 keys cross-channel
+        # off the same identity. Fall back to the channel-native source id.
+        source_email = verified_email or adapter.get_source_identifier(message)
 
         # Security: restrict tools for public channel users
         # No file access (Read exposes .env/credentials), no Bash, no Write/Edit

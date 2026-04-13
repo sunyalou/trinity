@@ -48,6 +48,24 @@ class SlackAdapter(ChannelAdapter):
     def get_source_identifier(self, message: NormalizedMessage) -> str:
         return f"slack:{message.metadata.get('team_id')}:{message.sender_id}"
 
+    async def resolve_verified_email(
+        self, message: NormalizedMessage
+    ) -> Optional[str]:
+        """Slack workspace email is already verified — fetch via users.info.
+
+        Issue #311. Cached per process for the lifetime of the message
+        (no persistence needed: the workspace OAuth token already proves identity).
+        """
+        bot_token = self.get_bot_token(message)
+        if not bot_token:
+            return None
+        try:
+            email = await slack_service.get_user_email(bot_token, message.sender_id)
+        except Exception as e:
+            logger.warning(f"Slack resolve_verified_email failed: {e}")
+            return None
+        return email.lower() if email else None
+
     def get_bot_token(self, message: NormalizedMessage) -> Optional[str]:
         team_id = message.metadata.get("team_id")
         if not team_id:

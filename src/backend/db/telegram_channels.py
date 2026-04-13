@@ -239,6 +239,75 @@ class TelegramChannelOperations:
             """, (binding_id, telegram_user_id))
             return self._row_to_chat_link(cursor.fetchone())
 
+    def get_chat_link(self, binding_id: int, telegram_user_id: str) -> Optional[dict]:
+        """Look up a chat link without creating it."""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, binding_id, telegram_user_id, telegram_username,
+                       session_id, message_count, created_at, last_active,
+                       verified_email, verified_at
+                FROM telegram_chat_links
+                WHERE binding_id = ? AND telegram_user_id = ?
+            """, (binding_id, telegram_user_id))
+            row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "binding_id": row[1],
+            "telegram_user_id": row[2],
+            "telegram_username": row[3],
+            "session_id": row[4],
+            "message_count": row[5],
+            "created_at": row[6],
+            "last_active": row[7],
+            "verified_email": row[8],
+            "verified_at": row[9],
+        }
+
+    def get_verified_email(self, binding_id: int, telegram_user_id: str) -> Optional[str]:
+        """Return the verified email for this Telegram user, or None."""
+        link = self.get_chat_link(binding_id, telegram_user_id)
+        return link["verified_email"] if link else None
+
+    def set_verified_email(
+        self,
+        binding_id: int,
+        telegram_user_id: str,
+        email: str,
+    ) -> bool:
+        """Persist a verified email onto the chat link (auto-creates the row)."""
+        now = datetime.utcnow().isoformat()
+        email = email.lower()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # Ensure row exists
+            cursor.execute("""
+                INSERT OR IGNORE INTO telegram_chat_links
+                (binding_id, telegram_user_id, message_count, created_at, last_active)
+                VALUES (?, ?, 0, ?, ?)
+            """, (binding_id, telegram_user_id, now, now))
+            cursor.execute("""
+                UPDATE telegram_chat_links
+                SET verified_email = ?, verified_at = ?
+                WHERE binding_id = ? AND telegram_user_id = ?
+            """, (email, now, binding_id, telegram_user_id))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def clear_verified_email(self, binding_id: int, telegram_user_id: str) -> bool:
+        """Unbind a verified email (logout)."""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE telegram_chat_links
+                SET verified_email = NULL, verified_at = NULL
+                WHERE binding_id = ? AND telegram_user_id = ?
+            """, (binding_id, telegram_user_id))
+            conn.commit()
+            return cursor.rowcount > 0
+
     def increment_message_count(self, chat_link_id: int) -> None:
         """Increment message count and update last_active."""
         now = datetime.utcnow().isoformat()

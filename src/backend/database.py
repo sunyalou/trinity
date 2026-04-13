@@ -127,6 +127,7 @@ from db.nevermined import NeverminedOperations
 from db.operator_queue import OperatorQueueOperations
 from db.event_subscriptions import EventSubscriptionOperations
 from db.telegram_channels import TelegramChannelOperations
+from db.access_requests import AccessRequestOperations
 
 
 def init_database():
@@ -277,6 +278,7 @@ class DatabaseManager:
         self._operator_queue_ops = OperatorQueueOperations()
         self._event_subscription_ops = EventSubscriptionOperations()
         self._telegram_channel_ops = TelegramChannelOperations()
+        self._access_request_ops = AccessRequestOperations()
 
     # =========================================================================
     # User Management (delegated to db/users.py)
@@ -346,6 +348,16 @@ class DatabaseManager:
 
     def is_system_agent(self, agent_name: str):
         return self._agent_ops.is_system_agent(agent_name)
+
+    # Access policy (issue #311)
+    def get_access_policy(self, agent_name: str):
+        return self._agent_ops.get_access_policy(agent_name)
+
+    def set_access_policy(self, agent_name: str, require_email: bool, open_access: bool):
+        return self._agent_ops.set_access_policy(agent_name, require_email, open_access)
+
+    def email_has_agent_access(self, agent_name: str, email: str):
+        return self._agent_ops.email_has_agent_access(agent_name, email)
 
     # =========================================================================
     # Agent Sharing Management (delegated to db/agents.py)
@@ -1381,6 +1393,15 @@ class DatabaseManager:
     def increment_telegram_message_count(self, chat_link_id):
         return self._telegram_channel_ops.increment_message_count(chat_link_id)
 
+    def get_telegram_verified_email(self, binding_id, telegram_user_id):
+        return self._telegram_channel_ops.get_verified_email(binding_id, telegram_user_id)
+
+    def set_telegram_verified_email(self, binding_id, telegram_user_id, email):
+        return self._telegram_channel_ops.set_verified_email(binding_id, telegram_user_id, email)
+
+    def clear_telegram_verified_email(self, binding_id, telegram_user_id):
+        return self._telegram_channel_ops.clear_verified_email(binding_id, telegram_user_id)
+
     # Telegram Group Configs (TGRAM-GROUP)
 
     def get_or_create_telegram_group_config(self, binding_id, chat_id, chat_title=None, chat_type="group"):
@@ -1502,6 +1523,25 @@ class DatabaseManager:
 
     def list_agent_events(self, source_agent=None, event_type=None, limit=50):
         return self._event_subscription_ops.list_events(source_agent, event_type, limit)
+
+    # =========================================================================
+    # Access Requests (Issue #311)
+    # =========================================================================
+
+    def upsert_access_request(self, agent_name: str, email: str, channel: str = None):
+        return self._access_request_ops.upsert_pending(agent_name, email, channel)
+
+    def list_access_requests(self, agent_name: str, status: str = "pending"):
+        return self._access_request_ops.list_for_agent(agent_name, status)
+
+    def get_access_request(self, request_id: str):
+        return self._access_request_ops.get(request_id)
+
+    def decide_access_request(self, request_id: str, approve: bool, decided_by_user_id: int):
+        return self._access_request_ops.decide(request_id, approve, decided_by_user_id)
+
+    def delete_access_requests_for_agent(self, agent_name: str):
+        return self._access_request_ops.delete_for_agent(agent_name)
 
 
 # Global database manager instance

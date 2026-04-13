@@ -23,6 +23,7 @@ from .agent_settings import (
     AutonomyMixin,
     AvatarMixin,
     MetadataMixin,
+    AccessPolicyMixin,
 )
 
 # System agent name constant
@@ -36,6 +37,7 @@ class AgentOperations(
     AutonomyMixin,
     AvatarMixin,
     MetadataMixin,
+    AccessPolicyMixin,
 ):
     """Agent ownership, access control, and settings database operations.
 
@@ -113,11 +115,13 @@ class AgentOperations(
             return [row["agent_name"] for row in cursor.fetchall()]
 
     def delete_agent_ownership(self, agent_name: str) -> bool:
-        """Remove agent ownership record and all sharing records (when agent is deleted)."""
+        """Remove agent ownership record, all sharing records, and pending access requests."""
         with get_db_connection() as conn:
             cursor = conn.cursor()
             # Delete sharing records first (cascade)
             cursor.execute("DELETE FROM agent_sharing WHERE agent_name = ?", (agent_name,))
+            # Delete access requests (issue #311)
+            cursor.execute("DELETE FROM access_requests WHERE agent_name = ?", (agent_name,))
             # Delete ownership record
             cursor.execute("DELETE FROM agent_ownership WHERE agent_name = ?", (agent_name,))
             conn.commit()

@@ -124,6 +124,13 @@
       "added": "2026-03-20",
       "categories": ["backend", "api", "auth", "roles"],
       "description": "Tests for 4-tier role model: list users, update roles, admin-only access, role validation"
+    },
+    {
+      "file": "test_channel_access_control.py",
+      "feature": "Issue #311",
+      "added": "2026-04-13",
+      "categories": ["backend", "api", "sharing", "channels"],
+      "description": "Tests for unified channel access control: access-policy GET/PUT, access-requests GET/decide, approve-inserts-share side-effect, deny-without-share side-effect"
     }
   ]
 }

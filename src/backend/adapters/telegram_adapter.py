@@ -21,6 +21,7 @@ import httpx
 
 from database import db
 from adapters.base import ChannelAdapter, NormalizedMessage, ChannelResponse
+from services.email_service import EmailService
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,11 @@ TELEGRAM_API_BASE = "https://api.telegram.org"
 
 # Group chat types
 _GROUP_CHAT_TYPES = {"group", "supergroup"}
+
+# Pending /login email per (binding_id, telegram_user_id) — cleared on verify/logout.
+# In-memory: codes are short-lived (10 min) and a backend restart simply forces
+# the user to re-issue /login.
+_PENDING_LOGINS: dict = {}
 
 
 class TelegramAdapter(ChannelAdapter):
@@ -188,6 +194,46 @@ class TelegramAdapter(ChannelAdapter):
                 reply_to_message_id=reply_to,
                 parse_mode="HTML",
             )
+
+    # =========================================================================
+    # Unified access control (Issue #311)
+    # =========================================================================
+
+    async def resolve_verified_email(
+        self, message: NormalizedMessage
+    ) -> Optional[str]:
+        """Look up the verified email bound to this Telegram user, if any."""
+        agent_name = message.metadata.get("agent_name")
+        if not agent_name:
+            return None
+        binding = db.get_telegram_binding(agent_name)
+        if not binding:
+            return None
+        return db.get_telegram_verified_email(binding["id"], message.sender_id)
+
+    async def prompt_auth(
+        self,
+        message: NormalizedMessage,
+        agent_name: str,
+        bot_token: Optional[str] = None,
+    ) -> None:
+        """Send a Telegram-native auth prompt with /login instructions."""
+        if not bot_token:
+            bot_token = db.get_telegram_bot_token(agent_name)
+        if not bot_token:
+            return
+        text = (
+            "🔒 This agent requires a verified email.\n\n"
+            "Send <code>/login your@email.com</code> and I'll email you a 6-digit code. "
+            "Then reply with <code>/login 123456</code> to complete verification."
+        )
+        await self._send_message(
+            bot_token=bot_token,
+            chat_id=message.channel_id,
+            text=text,
+            reply_to_message_id=message.thread_id,
+            parse_mode="HTML",
+        )
 
     async def get_agent_name(self, message: NormalizedMessage) -> Optional[str]:
         """Resolve which agent handles this message (set by transport layer)."""
@@ -386,7 +432,102 @@ class TelegramAdapter(ChannelAdapter):
             # Clear session — the transport/router will handle this
             return "Conversation history cleared. Let's start fresh!"
 
+        # /login state machine (Issue #311)
+        if text == "/login" or text.startswith("/login "):
+            return await self._handle_login_command(message, text)
+
+        if text == "/logout":
+            return await self._handle_logout_command(message)
+
+        if text == "/whoami":
+            email = await self.resolve_verified_email(message)
+            if email:
+                return f"You are verified as <code>{email}</code>."
+            return "You are not verified. Send <code>/login your@email.com</code> to verify."
+
         return None
+
+    async def _handle_login_command(
+        self, message: NormalizedMessage, text: str
+    ) -> Optional[str]:
+        """Handle /login {email} (request code) and /login {code} (verify)."""
+        agent_name = message.metadata.get("agent_name")
+        if not agent_name:
+            return "Login is unavailable for this chat."
+
+        binding = db.get_telegram_binding(agent_name)
+        if not binding:
+            return "Login is unavailable for this chat."
+
+        # /login with no argument
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            return (
+                "Usage:\n"
+                "<code>/login your@email.com</code> — request a verification code\n"
+                "<code>/login 123456</code> — confirm the code I emailed you"
+            )
+
+        arg = parts[1].strip()
+
+        # 6-digit code path
+        if arg.isdigit() and len(arg) == 6:
+            pending_email = _PENDING_LOGINS.get((binding["id"], message.sender_id))
+            if not pending_email:
+                return (
+                    "I don't have a pending login for you. Send "
+                    "<code>/login your@email.com</code> first."
+                )
+            result = db.verify_login_code(pending_email, arg)
+            if not result:
+                return "❌ Invalid or expired code. Try again or request a new one."
+            db.set_telegram_verified_email(binding["id"], message.sender_id, pending_email)
+            _PENDING_LOGINS.pop((binding["id"], message.sender_id), None)
+            return (
+                f"✅ Verified! You're now signed in as <code>{pending_email}</code>.\n"
+                "You can chat normally now."
+            )
+
+        # Email path
+        email = arg.lower()
+        if "@" not in email or " " in email or len(email) > 254:
+            return "That doesn't look like an email address. Try <code>/login you@example.com</code>."
+
+        try:
+            code_data = db.create_login_code(email, expiry_minutes=10)
+        except Exception as e:
+            logger.error(f"Failed to create login code for {email}: {e}")
+            return "Couldn't create a verification code. Please try again later."
+
+        try:
+            email_service = EmailService()
+            sent = await email_service.send_verification_code(email, code_data["code"])
+        except Exception as e:
+            logger.error(f"Failed to send verification email to {email}: {e}")
+            sent = False
+
+        _PENDING_LOGINS[(binding["id"], message.sender_id)] = email
+
+        if not sent:
+            return (
+                f"⚠️ I couldn't send the email to <code>{email}</code>. "
+                "Ask the agent owner to check email delivery."
+            )
+        return (
+            f"📧 Sent a 6-digit code to <code>{email}</code>.\n"
+            "Reply with <code>/login 123456</code> to finish verification."
+        )
+
+    async def _handle_logout_command(self, message: NormalizedMessage) -> str:
+        agent_name = message.metadata.get("agent_name")
+        if not agent_name:
+            return "Logout is unavailable for this chat."
+        binding = db.get_telegram_binding(agent_name)
+        if not binding:
+            return "Logout is unavailable for this chat."
+        db.clear_telegram_verified_email(binding["id"], message.sender_id)
+        _PENDING_LOGINS.pop((binding["id"], message.sender_id), None)
+        return "👋 Logged out. Send <code>/login your@email.com</code> to sign in again."
 
     # =========================================================================
     # Telegram API helpers
