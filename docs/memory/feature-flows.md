@@ -11,6 +11,7 @@
 
 | Date | ID | Feature | Flow |
 |------|-----|---------|------|
+| 2026-04-13 | #314 | Whitelist-driven role on first email login — fixes silent promotion to `creator` for cross-channel access grants | [email-authentication.md](feature-flows/email-authentication.md), [agent-sharing.md](feature-flows/agent-sharing.md), [cli-tool.md](feature-flows/cli-tool.md) |
 | 2026-04-12 | #311 | Unified cross-channel access control — verified email as identity, per-agent policy, access requests | [unified-channel-access-control.md](feature-flows/unified-channel-access-control.md) |
 | 2026-04-12 | #309 | Telegram webhook back-fill when `public_chat_url` is saved (self-healing config order) | [telegram-integration.md](feature-flows/telegram-integration.md) |
 | 2026-04-11 | #297 | Telegram group chat support — @mention triggers, welcome messages, per-group config | [telegram-integration.md](feature-flows/telegram-integration.md) |
