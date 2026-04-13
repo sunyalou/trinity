@@ -409,6 +409,13 @@ class TaskExecutionService:
                 except Exception as switch_err:
                     logger.error(f"[SUB-003] Auto-switch check failed for '{agent_name}': {switch_err}")
 
+            # Issue #285: Detect auth failures (HTTP 503 from agent server)
+            # Return structured error code so callers can handle appropriately
+            error_code = None
+            if agent_status_code == 503:
+                logger.warning(f"[TaskExecService] Auth failure detected on {agent_name}: {error_msg[:200]}")
+                error_code = TaskExecutionErrorCode.AUTH
+
             if execution_id:
                 existing = db.get_execution(execution_id)
                 if not existing or existing.status != TaskExecutionStatus.CANCELLED:
@@ -428,6 +435,7 @@ class TaskExecutionService:
                 status=TaskExecutionStatus.FAILED,
                 response="",
                 error=error_msg,
+                error_code=error_code,  # Issue #285: Include auth error code
             )
 
         except Exception as e:

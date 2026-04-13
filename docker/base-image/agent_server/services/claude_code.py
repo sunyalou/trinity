@@ -9,6 +9,7 @@ import uuid
 import asyncio
 import subprocess
 import logging
+import threading
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
@@ -671,6 +672,35 @@ def _is_model_access_error(text: str) -> bool:
     ])
 
 
+def _is_auth_failure_message(text: str) -> bool:
+    """Check if a message indicates an authentication/token failure.
+
+    These patterns indicate the subscription token is expired, revoked,
+    or otherwise invalid. When detected during execution, we should
+    abort immediately rather than waiting for the full timeout.
+
+    Issue #285: Expired tokens can cause Claude Code to hang instead of
+    failing fast. Real-time detection in stderr allows early abort.
+    """
+    if not text:
+        return False
+    lower = text.lower()
+    return any(pattern in lower for pattern in [
+        "subscription token may be expired",
+        "token may be expired",
+        "token expired",
+        "token revoked",
+        "invalid token",
+        "authentication failed",
+        "auth failed",
+        "setup-token",  # "Generate a new one with 'claude setup-token'"
+        "oauth token",
+        "unauthorized",
+        "invalid credentials",
+        "credentials expired",
+    ])
+
+
 def _format_rate_limit_error(metadata: 'ExecutionMetadata') -> str:
     """Format a clear, actionable rate limit error message."""
     base_msg = metadata.error_message or "Subscription usage limit reached"
@@ -858,18 +888,39 @@ async def execute_headless_task(
         process.stdin.write(prompt)
         process.stdin.close()
 
+        # Issue #285: Event to signal auth failure detected in stderr
+        # When set, stdout loop should stop and process should be killed
+        auth_abort_event = threading.Event()
+        auth_abort_reason: List[str] = []  # Capture the auth failure message
+
         # Helper function that reads subprocess output (runs in thread pool)
         def read_subprocess_output_with_timeout():
             """Blocking function to read subprocess output line by line with timeout"""
-            import threading
 
             # Read stderr in separate thread (verbose output with thinking/tool calls)
+            # Issue #285: Also scan for auth failure patterns and abort early
             def read_stderr():
                 try:
                     for line in iter(process.stderr.readline, ''):
                         if not line:
                             break
-                        verbose_output_lines.append(line.rstrip('\n'))
+                        stripped = line.rstrip('\n')
+                        verbose_output_lines.append(stripped)
+
+                        # Issue #285: Check for auth failure patterns in real-time
+                        # If detected, signal abort immediately instead of waiting for timeout
+                        if _is_auth_failure_message(stripped):
+                            logger.warning(
+                                f"[Headless Task] Auth failure detected in stderr: {stripped[:200]}"
+                            )
+                            auth_abort_reason.append(stripped)
+                            auth_abort_event.set()
+                            # Kill the process immediately
+                            try:
+                                process.kill()
+                            except Exception as kill_err:
+                                logger.error(f"[Headless Task] Failed to kill process on auth abort: {kill_err}")
+                            break
                 except Exception as e:
                     logger.error(f"[Headless Task] Error reading stderr: {e}")
 
@@ -880,6 +931,10 @@ async def execute_headless_task(
             try:
                 for line in iter(process.stdout.readline, ''):
                     if not line:
+                        break
+                    # Issue #285: Check if stderr thread detected auth failure
+                    if auth_abort_event.is_set():
+                        logger.info(f"[Headless Task] Stdout loop exiting due to auth abort")
                         break
                     # Capture raw JSON for full execution log
                     try:
@@ -972,12 +1027,46 @@ async def execute_headless_task(
                     detail=error_detail
                 )
 
+            # Issue #285: Check for auth failure detected in stderr
+            # Return 503 (Service Unavailable) so backend can classify as AUTH error
+            if auth_abort_event.is_set():
+                auth_msg = auth_abort_reason[0] if auth_abort_reason else "Authentication failure detected"
+                # SECURITY: Sanitize before logging/returning (auth_abort_reason is captured pre-sanitization)
+                auth_msg = sanitize_text(auth_msg)
+                logger.error(f"[Headless Task] Auth abort: {auth_msg}")
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Authentication failure: {auth_msg[:300]}. Check subscription token or API key configuration."
+                )
+
             # Check for errors
             if return_code != 0:
                 error_preview = verbose_transcript[:500] if verbose_transcript else ""
                 if not error_preview:
                     # Try to provide a meaningful fallback based on common failure patterns
                     error_preview = _diagnose_exit_failure(return_code, metadata)
+
+                # Issue #285: Check for auth failure patterns in stderr (fallback for cases
+                # where real-time detection didn't trigger, e.g., pattern in later lines)
+                if _is_auth_failure_message(error_preview) or _is_auth_failure_message(verbose_transcript):
+                    logger.error(f"[Headless Task] Auth failure (fallback detection): {error_preview[:200]}")
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Authentication failure: {error_preview[:300]}. Check subscription token or API key configuration."
+                    )
+
+                # Issue #285: Heuristic fallback — if exit code != 0 AND zero tokens processed,
+                # likely an auth failure even if we didn't see the exact pattern
+                if metadata.input_tokens == 0 and metadata.output_tokens == 0:
+                    logger.warning(
+                        f"[Headless Task] Zero tokens processed with exit code {return_code} — "
+                        f"likely auth failure. Stderr: {error_preview[:200]}"
+                    )
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Execution failed with no output (possible authentication issue): {error_preview[:300]}"
+                    )
+
                 # Also check if stderr contains a rate limit message
                 if _is_rate_limit_message(error_preview) or _is_rate_limit_message(verbose_transcript):
                     raise HTTPException(
