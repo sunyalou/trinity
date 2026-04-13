@@ -60,7 +60,7 @@ The frontend displays slot usage as a vertical capacity meter bar on the Agents 
 │  │  1. Create execution record in database (chat.py:602-613)       │     │
 │  │  2. Router acquires slot directly (chat.py:644-651)             │     │
 │  │  3. If full → 429 response (chat.py:653-663)                   │     │
-│  │  4. Spawn _execute_task_background() with release_slot=True     │     │
+│  │  4. Spawn _run_async_task_with_persistence() with release_slot=True     │     │
 │  │  5. Background task releases slot in finally (chat.py:554-557)  │     │
 │  │                                                                  │     │
 │  │  PUBLIC path (public.py:315-322 → task_execution_service.py):   │     │
@@ -171,7 +171,7 @@ Task completes (success or failure)
        │   task_execution_service.py:370-375 (finally block)
        │
        └── Async path:
-           _execute_task_background() → chat.py:554-557 (finally block)
+           _run_async_task_with_persistence() → chat.py:554-557 (finally block)
        │
        v
 ┌─────────────────────────────────────────────────┐
@@ -266,7 +266,7 @@ Every 5 seconds (agents store / network store):
 | `src/backend/routers/chat.py` | 642-663 | Async mode: router acquires slot directly |
 | `src/backend/routers/chat.py` | 653-663 | Async mode: 429 response when at capacity |
 | `src/backend/routers/chat.py` | 697 | Async mode: `release_slot=True` flag |
-| `src/backend/routers/chat.py` | 370-558 | `_execute_task_background()` with slot release in finally |
+| `src/backend/routers/chat.py` | 370-558 | `_run_async_task_with_persistence()` with slot release in finally |
 | `src/backend/routers/chat.py` | 554-557 | Async mode: slot release in `finally` block |
 | `src/backend/routers/chat.py` | 714-730 | Sync mode: delegates to TaskExecutionService |
 | `src/backend/routers/chat.py` | 746-750 | Sync mode: translates "at capacity" result to 429 |
@@ -540,7 +540,7 @@ As of EXEC-024, slot acquisition/release is handled by different code paths depe
 | Execution Mode | Slot Acquire | Slot Release |
 |----------------|-------------|--------------|
 | **Sync** (authenticated `/task`) | `TaskExecutionService.execute_task()` (line 164) | `TaskExecutionService` finally block (line 372) |
-| **Async** (authenticated `/task`, `async_mode=true`) | `chat.py` router directly (line 646) | `_execute_task_background()` finally (line 557) |
+| **Async** (authenticated `/task`, `async_mode=true`) | `chat.py` router directly (line 646) | `_run_async_task_with_persistence()` finally (line 557) |
 | **Public** (`/api/public/chat/{token}`) | `TaskExecutionService.execute_task()` (line 164) | `TaskExecutionService` finally block (line 372) |
 | **Scheduled** (cron/manual via scheduler) | `TaskExecutionService.execute_task()` via `POST /api/internal/execute-task` | `TaskExecutionService` finally block (line 372) |
 

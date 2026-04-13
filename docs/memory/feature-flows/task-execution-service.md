@@ -13,7 +13,7 @@ As the platform, I want task execution paths (authenticated sync tasks, public l
 | Path | Entry Point | Uses TaskExecutionService? | Notes |
 |------|------------|---------------------------|-------|
 | Sync parallel task | `POST /api/agents/{name}/task` (sync) | **Yes** | EXEC-024 delegation |
-| Async parallel task | `POST /api/agents/{name}/task` (async) | **No** | Inline `_execute_task_background()` in `chat.py:438` |
+| Async parallel task | `POST /api/agents/{name}/task` (async) | **Yes** | Issue #95: thin wrapper `_run_async_task_with_persistence` in `chat.py`. Router pre-acquires slot (preserves 429-upfront contract) then calls `execute_task(slot_already_held=True, ...)` |
 | Public link chat | `POST /api/public/chat/{token}` | **Yes** | Full lifecycle |
 | Scheduled execution | `POST /api/internal/execute-task` | **Yes** | Background coroutine wraps service call |
 | Interactive chat | `POST /api/agents/{name}/chat` | **No** | Direct agent HTTP call with inline retry in `chat.py` |
@@ -114,8 +114,18 @@ async def execute_task(
     allowed_tools: Optional[list] = None,
     system_prompt: Optional[str] = None,
     execution_id: Optional[str] = None,
+    fan_out_id: Optional[str] = None,
+    subscription_id: Optional[str] = None,
+    parent_activity_id: Optional[str] = None,       # Issue #95: CHAT_START parent linkage
+    extra_activity_details: Optional[dict] = None,  # Issue #95: merged into CHAT_START details
+    slot_already_held: bool = False,                # Issue #95: async path pre-acquires slot upfront
 ) -> TaskExecutionResult:
 ```
+
+**Issue #95 params** (added 2026-04-13):
+- `parent_activity_id`: set by the async `/task` router to the collaboration activity id so the CHAT_START is parented for agent-to-agent call graphs.
+- `extra_activity_details`: merged into the CHAT_START `details` dict. The async `/task` router passes `{parallel_mode: True, async_mode: True, model, timeout_seconds}` to keep the frontend Network view filter at `src/frontend/src/stores/network.js:255` working.
+- `slot_already_held`: when `True`, the service skips slot acquisition (but still releases in finally). The async `/task` router pre-acquires the slot synchronously so at-capacity returns HTTP 429 upfront, preserving the client contract. Other callers leave this `False` and the service both acquires and releases.
 
 **TIMEOUT-001**: When `timeout_seconds` is `None`, the service reads the agent's configured timeout via `db.get_execution_timeout(agent_name)`. Default agent timeout is 900 seconds (15 minutes).
 

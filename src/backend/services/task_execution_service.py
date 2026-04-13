@@ -145,6 +145,9 @@ class TaskExecutionService:
         execution_id: Optional[str] = None,
         fan_out_id: Optional[str] = None,
         subscription_id: Optional[str] = None,
+        parent_activity_id: Optional[str] = None,
+        extra_activity_details: Optional[dict] = None,
+        slot_already_held: bool = False,
     ) -> TaskExecutionResult:
         """
         Execute a task on an agent container with full lifecycle management.
@@ -167,7 +170,9 @@ class TaskExecutionService:
         """
         slot_service = get_slot_service()
         activity_id: Optional[str] = None
-        slot_acquired = False  # Track whether slot was acquired for proper cleanup
+        # If caller already acquired the slot (async /task path preserves 429-upfront
+        # contract by pre-flighting capacity), we still own releasing it in finally.
+        slot_acquired = slot_already_held
 
         # TIMEOUT-001: Use agent's configured timeout if not explicitly provided
         if timeout_seconds is None:
@@ -204,44 +209,49 @@ class TaskExecutionService:
         # stuck in 'running' status with NULL session_id and duration_ms.
         try:
             # ---- 2. Acquire capacity slot ------------------------------------
-            max_parallel_tasks = db.get_max_parallel_tasks(agent_name)
-            slot_acquired = await slot_service.acquire_slot(
-                agent_name=agent_name,
-                execution_id=execution_id or f"temp-{datetime.utcnow().timestamp()}",
-                max_parallel_tasks=max_parallel_tasks,
-                message_preview=message[:100] if message else "",
-                timeout_seconds=timeout_seconds,  # TIMEOUT-001: Pass for dynamic slot TTL
-            )
-
-            if not slot_acquired:
-                error_msg = f"Agent at capacity ({max_parallel_tasks}/{max_parallel_tasks} parallel tasks running)"
-                if execution_id:
-                    db.update_execution_status(
-                        execution_id=execution_id,
-                        status=TaskExecutionStatus.FAILED,
-                        error=error_msg,
-                    )
-                return TaskExecutionResult(
-                    execution_id=execution_id or "",
-                    status=TaskExecutionStatus.FAILED,
-                    response="",
-                    error=error_msg,
+            if not slot_already_held:
+                max_parallel_tasks = db.get_max_parallel_tasks(agent_name)
+                slot_acquired = await slot_service.acquire_slot(
+                    agent_name=agent_name,
+                    execution_id=execution_id or f"temp-{datetime.utcnow().timestamp()}",
+                    max_parallel_tasks=max_parallel_tasks,
+                    message_preview=message[:100] if message else "",
+                    timeout_seconds=timeout_seconds,  # TIMEOUT-001: Pass for dynamic slot TTL
                 )
 
+                if not slot_acquired:
+                    error_msg = f"Agent at capacity ({max_parallel_tasks}/{max_parallel_tasks} parallel tasks running)"
+                    if execution_id:
+                        db.update_execution_status(
+                            execution_id=execution_id,
+                            status=TaskExecutionStatus.FAILED,
+                            error=error_msg,
+                        )
+                    return TaskExecutionResult(
+                        execution_id=execution_id or "",
+                        status=TaskExecutionStatus.FAILED,
+                        response="",
+                        error=error_msg,
+                    )
+
             # ---- 3. Track activity start -------------------------------------
+            activity_details = {
+                "message_preview": message[:100] if message else "",
+                "source_agent": source_agent_name,
+                "execution_id": execution_id,
+                "triggered_by": triggered_by,
+            }
+            if extra_activity_details:
+                activity_details.update(extra_activity_details)
             try:
                 activity_id = await activity_service.track_activity(
                     agent_name=agent_name,
                     activity_type=ActivityType.CHAT_START,
                     user_id=source_user_id,
                     triggered_by=triggered_by,
+                    parent_activity_id=parent_activity_id,
                     related_execution_id=execution_id,
-                    details={
-                        "message_preview": message[:100] if message else "",
-                        "source_agent": source_agent_name,
-                        "execution_id": execution_id,
-                        "triggered_by": triggered_by,
-                    },
+                    details=activity_details,
                 )
             except Exception as e:
                 logger.warning(f"[TaskExecService] Failed to track activity start: {e}")

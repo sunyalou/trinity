@@ -173,7 +173,7 @@ When `async_mode: true` is set on the `/task` endpoint:
 
 1. Backend creates execution record, acquires capacity slot
 2. Sets execution status to `"running"` in database
-3. Spawns `_execute_task_background()` via `asyncio.create_task()`
+3. Spawns `_run_async_task_with_persistence()` via `asyncio.create_task()`
 4. Returns immediately with `{ status: "accepted", execution_id: "..." }`
 5. Background task runs headless Claude Code and updates execution record on completion
 6. Background task persists to `chat_sessions` when `save_to_session=true` (passes `user_id` + `user_email`)
@@ -184,7 +184,7 @@ When `async_mode: true` is set on the `/task` endpoint:
 if request.async_mode:
     db.update_execution_status(execution_id=execution_id, status="running")
     asyncio.create_task(
-        _execute_task_background(
+        _run_async_task_with_persistence(
             agent_name=name,
             request=request,
             execution_id=execution_id,
@@ -441,7 +441,7 @@ POST /api/agents/{name}/task (async_mode=true, save_to_session=true, chat_sessio
     |
     +---> Backend creates execution record (status: "running")
     +---> Backend acquires capacity slot (CAPACITY-001)
-    +---> Backend spawns _execute_task_background()
+    +---> Backend spawns _run_async_task_with_persistence()
     +---> Returns immediately: { status: "accepted", execution_id }
     |
     v
@@ -629,7 +629,7 @@ Tasks | Chat | Dashboard | Schedules | Credentials | Skills | ...
 ### Modified
 - `src/frontend/src/views/AgentDetail.vue` - Added Chat tab
 - `src/frontend/src/views/PublicChat.vue` - Refactored to use shared components
-- `src/backend/routers/chat.py` - `_execute_task_background` now supports `save_to_session` + `user_id`/`user_email` args; SSE stream proxy endpoint; both async and sync paths use explicit `chat_session_id` when provided
+- `src/backend/routers/chat.py` - `_run_async_task_with_persistence` now supports `save_to_session` + `user_id`/`user_email` args; SSE stream proxy endpoint; both async and sync paths use explicit `chat_session_id` when provided
 - `src/backend/models.py` - `ParallelTaskRequest.async_mode` and `chat_session_id` fields
 - `src/backend/db/chat.py` - `get_chat_messages()` uses subquery for correct ASC ordering
 
@@ -724,10 +724,10 @@ When detected (lines 147-150):
 |------|--------|
 | 2026-03-14 | **Model selector in Chat tab**. Added `ModelSelector` component (compact mode) above the chat input area in `ChatPanel.vue`. Users can now select a model (e.g., Opus, Sonnet, Haiku) before sending messages. Selection is persisted to `localStorage` (`trinity_chat_model`) and passed as the `model` parameter in the `/task` payload. Empty selection uses the agent's default model. Reuses the existing `ModelSelector.vue` component already used by Tasks and Schedules panels. |
 | 2026-03-14 | **Message timestamps**. ChatBubble now accepts optional `timestamp` prop (line 41-44) with `formattedTime` computed (line 51-59). Today's messages show time only ("3:42 PM"), older messages show date + time ("Mar 14, 3:42 PM"). ChatMessages passes `msg.timestamp` to ChatBubble (line 24). ChatPanel includes `timestamp: new Date().toISOString()` when pushing local user/assistant messages (lines 515, 570). Backend-loaded messages include `timestamp` from `msg.timestamp` in `selectSession()` (line 306). |
-| 2026-03-14 | **Bug Fix: Messages saved to wrong session**. Frontend was not passing `currentSessionId` to backend. When continuing in an existing (possibly closed) session, backend's `get_or_create_chat_session()` found a different active session or created a new one. Fix: Added `chat_session_id` field to `ParallelTaskRequest` (models.py:95). Frontend now sends `chat_session_id: currentSessionId.value` in payload (ChatPanel.vue:534). Both async (`_execute_task_background`, chat.py:462-471) and sync (chat.py:803-810) backend paths use explicit session ID via `db.get_chat_session()`, falling back to `get_or_create_chat_session()` if not found. |
+| 2026-03-14 | **Bug Fix: Messages saved to wrong session**. Frontend was not passing `currentSessionId` to backend. When continuing in an existing (possibly closed) session, backend's `get_or_create_chat_session()` found a different active session or created a new one. Fix: Added `chat_session_id` field to `ParallelTaskRequest` (models.py:95). Frontend now sends `chat_session_id: currentSessionId.value` in payload (ChatPanel.vue:534). Both async (`_run_async_task_with_persistence`, chat.py:462-471) and sync (chat.py:803-810) backend paths use explicit session ID via `db.get_chat_session()`, falling back to `get_or_create_chat_session()` if not found. |
 | 2026-03-14 | **Bug Fix: Message ordering wrong after switching sessions**. `get_chat_messages()` in `db/chat.py` returned `ORDER BY timestamp DESC` but frontend displayed messages as-is. New messages pushed locally appeared at the end, but after switching sessions and back, loaded messages were reversed. Fix: Changed SQL to subquery `SELECT * FROM (... ORDER BY timestamp DESC LIMIT ?) sub ORDER BY timestamp ASC` (db/chat.py:157-164) so the most recent N messages are returned in chronological order. |
 | 2026-03-07 | **Rate limit error styling**. Added `isRateLimitError` computed property (line 193) that detects subscription/rate limit errors by keyword matching. Error display (lines 140-143) now uses amber styling (`bg-amber-100`, `text-amber-700`) with a "Subscription Usage Limit" header for these errors, distinguishing them from red generic errors. |
-| 2026-03-03 | **THINK-001: Dynamic Thinking Status**. Refactored `sendMessage()` from synchronous POST to async mode (`async_mode=true`). Added SSE stream subscription via `fetch` + `ReadableStream` for real-time status labels. New utility `execution-status.js` maps Claude Code `stream-json` events to human-readable labels ("Reading file...", "Searching code...", etc.). Added 500ms minimum display time per label to prevent flicker. Added 10s heartbeat timeout fallback to "Working...". Added polling loop (5s intervals) for execution completion. Updated `ChatLoadingIndicator.vue` with CSS fade transition animation (`:key` binding for re-render). Backend `_execute_task_background` now accepts `user_id`/`user_email` for session persistence in async mode. |
+| 2026-03-03 | **THINK-001: Dynamic Thinking Status**. Refactored `sendMessage()` from synchronous POST to async mode (`async_mode=true`). Added SSE stream subscription via `fetch` + `ReadableStream` for real-time status labels. New utility `execution-status.js` maps Claude Code `stream-json` events to human-readable labels ("Reading file...", "Searching code...", etc.). Added 500ms minimum display time per label to prevent flicker. Added 10s heartbeat timeout fallback to "Working...". Added polling loop (5s intervals) for execution completion. Updated `ChatLoadingIndicator.vue` with CSS fade transition animation (`:key` binding for re-render). Backend `_run_async_task_with_persistence` now accepts `user_id`/`user_email` for session persistence in async mode. |
 | 2026-02-27 | **Bug Fix (CHAT-002)**: Fixed chat message ordering issue. Replaced fragile flex spacer technique (`<div class="flex-1">` pushing content down) with `min-h-full flex flex-col justify-end` pattern in `ChatMessages.vue`. This provides reliable bottom-alignment without race conditions between spacer resizing and message rendering. |
 | 2026-02-21 | **Bug Fix (EXEC-023)**: Fixed resume mode context lost after first message. Since `/task` is stateless (no `--continue`), clearing `resumeSessionIdLocal` after first message caused subsequent messages to lose context. Fix: (1) Added `resumeBannerDismissed` flag for banner-only dismissal, (2) Keep `resumeSessionIdLocal` for ALL messages, (3) `dismissResumeMode()` only hides banner (session ID persists), (4) Clear resume mode only on "New Chat" or session switch. See lines 291-296, 416-418, 625-629. |
 | 2026-02-21 | **Bug Fix (EXEC-023)**: Fixed session auto-select overriding resume mode. Added `!isResumeMode.value` condition at line 345 in `loadSessions()`. Without this fix, `onMounted` -> `loadSessions()` would select an existing session even when ChatPanel was entered via "Continue as Chat" button, breaking the resume flow. |
