@@ -127,7 +127,7 @@ The test suite covers:
 
 ### Smoke Tests (Fast, No Agent Required)
 - **Authentication** (test_auth.py) - Login, token validation, auth modes [SMOKE]
-- **Email Authentication** (test_email_auth.py) - Email-based login, OTP codes [SMOKE]
+- **Email Authentication** (test_email_auth.py) - Email-based login, OTP codes, whitelist CRUD, `default_role` plumbing (#314) [SMOKE]
 - **Templates** (test_templates.py) - Template listing [SMOKE]
 - **MCP Keys** (test_mcp_keys.py) - API key management [SMOKE]
 - **First-Time Setup** (test_setup.py) - Setup status, admin password validation [SMOKE]
@@ -138,7 +138,7 @@ The test suite covers:
 - **Agent Lifecycle** (test_agent_lifecycle.py) - CRUD, start/stop, logs
 - **Agent Chat** (test_agent_chat.py) - Message sending, history, sessions, in-memory activity, model selection
 - **Agent Files** (test_agent_files.py) - File browser, downloads
-- **Agent Sharing** (test_agent_sharing.py) - Share/unshare agents
+- **Agent Sharing** (test_agent_sharing.py) - Share/unshare agents, whitelist auto-add with `default_role="user"` (#314)
 - **Agent Permissions** (test_agent_permissions.py) - Agent-to-agent permission CRUD, defaults, cascade delete (Req 9.10)
 - **Agent Git** (test_agent_git.py) - Git sync operations
 - **Agent Metrics** (test_agent_metrics.py) - Custom metrics endpoint (Req 9.9)
@@ -251,7 +251,18 @@ Use these thresholds to assess test health (based on **executed** tests, not inc
 
 | Test File | Description | Tests Added |
 |-----------|-------------|-------------|
+| `test_email_auth.py`, `test_agent_sharing.py` | `TestEmailWhitelistDefaultRole` + `TestShareWhitelistDefaultRole` — whitelist `default_role` plumbing; first-login role no longer hardcoded to `creator` (#314) | 5 tests (all smoke) |
 | `test_public_links.py` | `TestUnifiedAccessPolicy` class — public web chat now honors agent-level `require_email` / `open_access` (unified with Slack/Telegram, #311 follow-up) | 6 tests (all smoke) |
+
+**Whitelist default_role** (`test_email_auth.py::TestEmailWhitelistDefaultRole`, `test_agent_sharing.py::TestShareWhitelistDefaultRole`):
+
+- `test_whitelist_entry_exposes_default_role` — list response includes `default_role` field on every row
+- `test_add_whitelist_defaults_to_user_role` — POST without `default_role` lands `"user"` (safer default)
+- `test_add_whitelist_admin_can_grant_creator` — admin passing `default_role="creator"` is honored
+- `test_add_whitelist_rejects_invalid_role` — unknown role returns 4xx, row is not persisted
+- `test_share_adds_whitelist_entry_with_user_role` — `POST /api/agents/{name}/share` auto-whitelists the recipient with `default_role="user"` (prevents silent promotion to `creator`)
+
+
 
 **Unified public-chat access policy** (`test_public_links.py::TestUnifiedAccessPolicy`):
 
