@@ -10,6 +10,7 @@
 
 | Date | Changes |
 |------|---------|
+| 2026-04-13 | BACKLOG-001 (#260): Async `/task` no longer returns 429 when slots are full — requests spill into a persistent SQLite backlog and drain via a new `SlotService.register_on_release` callback. True 429 only when the per-agent `max_backlog_depth` is also exceeded. See [persistent-task-backlog.md](persistent-task-backlog.md). |
 | 2026-03-21 | Issue #98: Chat executions (`/api/chat`) now acquire capacity slots, making SlotService the single source of truth for agent load across all execution types |
 | 2026-03-12 | TIMEOUT-001: Slot TTL now dynamic (agent timeout + 5 min buffer), not fixed 30 min. Aligns with per-agent configurable execution timeout. |
 | 2026-03-09 | Scheduled tasks now route through TaskExecutionService via internal API — capacity meter shows slot usage for cron/manual schedule executions |

@@ -379,6 +379,22 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
   - Validation: 60-7200s (1 min to 2 hours)
 - **Flow**: `docs/memory/feature-flows/parallel-capacity.md` (updated), `docs/memory/feature-flows/task-execution-service.md` (updated)
 
+### 10.8 Persistent Task Backlog (BACKLOG-001)
+- **Status**: ✅ Implemented (2026-04-13)
+- **Requirement ID**: BACKLOG-001
+- **GitHub Issue**: #260
+- **Description**: Async `/task` requests that arrive at full parallel capacity now spill into a durable SQLite-backed FIFO backlog instead of returning HTTP 429. Queued items drain automatically when slots free via a `SlotService` release callback; 60s maintenance task expires stale rows and drains orphans after restart.
+- **Key Features**:
+  - New `QUEUED` value on `TaskExecutionStatus`; reuses `schedule_executions` with `queued_at` + `backlog_metadata` columns
+  - Partial index `idx_executions_queued` for cheap O(log n) FIFO claim via atomic `UPDATE ... RETURNING`
+  - Per-agent `max_backlog_depth` setting (default 50, validated 1-200)
+  - True HTTP 429 only when the backlog is also full
+  - Terminate-while-queued short-circuit (no container interaction)
+  - Agent delete cascades to cancel queued rows
+  - Frontend: amber `queued` badge in Tasks tab and Execution Detail
+  - Identity captured at enqueue and replayed at drain (no re-auth, matches scheduler pattern)
+- **Flow**: `docs/memory/feature-flows/persistent-task-backlog.md`
+
 ---
 
 ## 11. GitHub Integration

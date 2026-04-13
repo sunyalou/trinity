@@ -170,6 +170,9 @@ class ScheduleExecution(BaseModel):
     fan_out_id: Optional[str] = None           # Parent fan-out operation ID
     # Subscription usage tracking (SUB-004)
     subscription_id: Optional[str] = None      # Subscription active at record time
+    # Persistent backlog (BACKLOG-001)
+    queued_at: Optional[datetime] = None       # ISO timestamp for FIFO ordering when status=queued
+    backlog_metadata: Optional[str] = None     # JSON blob of the full ParallelTaskRequest context
 
 
 # =========================================================================

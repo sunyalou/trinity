@@ -185,6 +185,7 @@ class TaskExecutionStatus(str, Enum):
     Used across: TaskExecutionService, db/schedules.py, scheduler/database.py, chat.py, cleanup_service.py.
     NOT used by: process_engine (has its own ExecutionStatus), ExecutionQueue (uses QueueItemStatus).
     """
+    QUEUED = "queued"  # BACKLOG-001: Persisted async task waiting for a free slot
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"

@@ -15,10 +15,11 @@ Slot Rules:
 - Slots auto-expire after 30 minutes (safety net)
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime
-from typing import Optional, Dict, List, Any, Tuple
+from typing import Awaitable, Callable, Optional, Dict, List, Any, Tuple
 import redis
 import time
 
@@ -65,6 +66,24 @@ class SlotService:
         self.redis = redis.from_url(redis_url, decode_responses=True)
         self.slots_prefix = "agent:slots:"
         self.metadata_prefix = "agent:slot:"
+        # BACKLOG-001: callbacks fired when a slot is released, typed as
+        # async (agent_name) -> None. BacklogService registers drain_next here
+        # on startup. Callbacks run via asyncio.create_task so they never block
+        # the release path and exceptions are isolated per callback.
+        self._on_release_callbacks: List[Callable[[str], Awaitable[None]]] = []
+
+    def register_on_release(
+        self, callback: Callable[[str], Awaitable[None]]
+    ) -> None:
+        """Register an async callback fired after a slot is released.
+
+        Callbacks receive the agent name. They are scheduled via
+        asyncio.create_task so the release call returns immediately and a
+        failure in one callback does not affect others. The caller is
+        responsible for catching and logging its own exceptions — a wrapper
+        here logs anything that escapes.
+        """
+        self._on_release_callbacks.append(callback)
 
     def _slots_key(self, agent_name: str) -> str:
         """Redis key for agent's slot set."""
@@ -155,6 +174,34 @@ class SlotService:
             logger.info(
                 f"[Slots] Agent '{agent_name}' released slot for execution {execution_id}, "
                 f"{remaining} slots still active"
+            )
+
+        # BACKLOG-001: Notify registered drain listeners. Fire-and-forget via
+        # create_task so release_slot stays cheap. Wrap in a guard so a crash
+        # in one callback doesn't cancel the others.
+        if self._on_release_callbacks:
+            for cb in self._on_release_callbacks:
+                try:
+                    asyncio.create_task(self._safe_invoke(cb, agent_name))
+                except RuntimeError:
+                    # No running loop (e.g. called from sync cleanup context).
+                    # Skipping the callback is safe — the 60s maintenance task
+                    # will drain orphans on the next tick.
+                    logger.debug(
+                        "[Slots] release callback skipped: no running event loop"
+                    )
+
+    @staticmethod
+    async def _safe_invoke(
+        cb: Callable[[str], Awaitable[None]], agent_name: str
+    ) -> None:
+        """Run a release callback with its exceptions isolated."""
+        try:
+            await cb(agent_name)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error(
+                f"[Slots] release callback failed for agent '{agent_name}': {e}",
+                exc_info=True,
             )
 
     async def get_slot_state(self, agent_name: str, max_parallel_tasks: int) -> SlotState:

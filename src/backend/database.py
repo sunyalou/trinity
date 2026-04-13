@@ -462,6 +462,44 @@ class DatabaseManager:
         return self._agent_ops.set_execution_timeout(agent_name, timeout_seconds)
 
     # =========================================================================
+    # Backlog Depth (delegated to db/agent_settings/resources.py) - BACKLOG-001
+    # =========================================================================
+
+    def get_max_backlog_depth(self, agent_name: str) -> int:
+        return self._agent_ops.get_max_backlog_depth(agent_name)
+
+    def set_max_backlog_depth(self, agent_name: str, depth: int) -> bool:
+        return self._agent_ops.set_max_backlog_depth(agent_name, depth)
+
+    # =========================================================================
+    # Backlog Execution Queries (delegated to db/schedules.py) - BACKLOG-001
+    # =========================================================================
+
+    def update_execution_to_queued(self, execution_id: str, backlog_metadata: str, queued_at: str) -> bool:
+        return self._schedule_ops.update_execution_to_queued(execution_id, backlog_metadata, queued_at)
+
+    def claim_next_queued(self, agent_name: str):
+        return self._schedule_ops.claim_next_queued(agent_name)
+
+    def release_claim_to_queued(self, execution_id: str) -> bool:
+        return self._schedule_ops.release_claim_to_queued(execution_id)
+
+    def get_queued_count(self, agent_name: str) -> int:
+        return self._schedule_ops.get_queued_count(agent_name)
+
+    def cancel_queued_execution(self, execution_id: str, reason: str = "cancelled") -> bool:
+        return self._schedule_ops.cancel_queued_execution(execution_id, reason)
+
+    def cancel_queued_for_agent(self, agent_name: str, reason: str = "agent_deleted") -> int:
+        return self._schedule_ops.cancel_queued_for_agent(agent_name, reason)
+
+    def expire_stale_queued(self, max_age_hours: float = 24) -> int:
+        return self._schedule_ops.expire_stale_queued(max_age_hours)
+
+    def list_agents_with_queued(self):
+        return self._schedule_ops.list_agents_with_queued()
+
+    # =========================================================================
     # Avatar Identity (delegated to db/agents.py) - AVATAR-001
     # =========================================================================
 

@@ -779,15 +779,53 @@ async def execute_parallel_task(
         )
 
         if not slot_acquired:
+            # BACKLOG-001: Spill to persistent backlog instead of returning 429.
+            # True 429 only if the backlog is also at its configured depth.
+            from services.backlog_service import get_backlog_service
+            backlog = get_backlog_service()
+            enqueued = await backlog.enqueue(
+                agent_name=name,
+                execution_id=execution_id,
+                request=request,
+                effective_timeout=effective_timeout,
+                user_id=current_user.id,
+                user_email=current_user.email or current_user.username,
+                subscription_id=_task_subscription_id,
+                x_source_agent=x_source_agent,
+                x_mcp_key_id=x_mcp_key_id,
+                x_mcp_key_name=x_mcp_key_name,
+                triggered_by=triggered_by,
+                collaboration_activity_id=collaboration_activity_id,
+                task_activity_id=None,  # chat_start tracked on drain to keep stream clean
+            )
+            if enqueued:
+                logger.info(
+                    f"[Task Async] Agent '{name}' at capacity — execution {execution_id} queued to backlog"
+                )
+                return {
+                    "status": "queued",
+                    "execution_id": execution_id,
+                    "agent_name": name,
+                    "message": (
+                        f"Agent at capacity; task queued. Poll GET "
+                        f"/api/agents/{name}/executions/{execution_id} for results."
+                    ),
+                    "async_mode": True,
+                }
+
+            # Backlog also full: surface true 429.
             if execution_id:
                 db.update_execution_status(
                     execution_id=execution_id,
                     status=TaskExecutionStatus.FAILED,
-                    error=f"Agent at capacity ({max_parallel_tasks}/{max_parallel_tasks} parallel tasks running)"
+                    error=f"Agent at capacity ({max_parallel_tasks}/{max_parallel_tasks} parallel tasks running) and backlog is full"
                 )
             raise HTTPException(
                 status_code=429,
-                detail=f"Agent '{name}' is at capacity ({max_parallel_tasks} parallel tasks). Try again later."
+                detail=(
+                    f"Agent '{name}' is at capacity ({max_parallel_tasks} parallel tasks) "
+                    f"and its backlog is full. Try again later."
+                ),
             )
 
         # Track parallel task activity (belongs to target agent)
@@ -1424,6 +1462,33 @@ async def terminate_agent_execution(
     # Fall back to using execution_id for DB update if task_execution_id not separately provided
     if not task_execution_id:
         task_execution_id = execution_id
+
+    # BACKLOG-001: If the execution is still queued in the backlog, cancel it
+    # directly — no container interaction needed, no slot to release.
+    try:
+        _exec_row = db.get_execution(task_execution_id)
+    except Exception:
+        _exec_row = None
+    if _exec_row and _exec_row.status == TaskExecutionStatus.QUEUED:
+        cancelled = db.cancel_queued_execution(
+            task_execution_id, reason="Cancelled by user while queued"
+        )
+        if cancelled:
+            await activity_service.track_activity(
+                agent_name=name,
+                activity_type=ActivityType.EXECUTION_CANCELLED,
+                user_id=current_user.id,
+                triggered_by="user",
+                related_execution_id=task_execution_id,
+                details={
+                    "execution_id": execution_id,
+                    "task_execution_id": task_execution_id,
+                    "status": "cancelled_while_queued",
+                },
+            )
+            return {"status": "cancelled_while_queued", "execution_id": execution_id}
+        # Else it transitioned out of queued between our read and update;
+        # fall through to the normal terminate path.
 
     container = get_agent_container(name)
     if not container:

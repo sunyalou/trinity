@@ -1104,6 +1104,42 @@ def _migrate_telegram_group_configs(cursor, conn):
     conn.commit()
 
 
+def _migrate_backlog_support(cursor, conn):
+    """BACKLOG-001: Persistent async task backlog.
+
+    Adds:
+    - schedule_executions.queued_at: ISO timestamp for FIFO ordering when status='queued'.
+    - schedule_executions.backlog_metadata: JSON blob capturing full ParallelTaskRequest
+      context (model, system_prompt, allowed_tools, timeout, identity, subscription, etc)
+      so the drain path can reconstitute the request without re-reading auth.
+    - agent_ownership.max_backlog_depth: per-agent cap on queued items (default 50, cap 200).
+    - Partial index on (agent_name, queued_at) WHERE status='queued' for cheap FIFO claim.
+    """
+    # schedule_executions columns
+    cursor.execute("PRAGMA table_info(schedule_executions)")
+    se_cols = {row[1] for row in cursor.fetchall()}
+    if "queued_at" not in se_cols:
+        cursor.execute("ALTER TABLE schedule_executions ADD COLUMN queued_at TEXT")
+    if "backlog_metadata" not in se_cols:
+        cursor.execute("ALTER TABLE schedule_executions ADD COLUMN backlog_metadata TEXT")
+
+    # agent_ownership column
+    cursor.execute("PRAGMA table_info(agent_ownership)")
+    ao_cols = {row[1] for row in cursor.fetchall()}
+    if "max_backlog_depth" not in ao_cols:
+        cursor.execute(
+            "ALTER TABLE agent_ownership ADD COLUMN max_backlog_depth INTEGER DEFAULT 50"
+        )
+
+    # Partial index for efficient FIFO claim of queued rows
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_executions_queued "
+        "ON schedule_executions(agent_name, queued_at) "
+        "WHERE status = 'queued'"
+    )
+    conn.commit()
+
+
 # Ordered list of all migrations. Defined at module level (after all _migrate_* functions)
 # so run_all_migrations and the health check can both reference it.
 # IMPORTANT: append-only — never reorder or remove entries.
@@ -1146,4 +1182,5 @@ MIGRATIONS = [
     ("telegram_group_configs", _migrate_telegram_group_configs),
     ("access_control", _migrate_access_control),
     ("public_link_require_email_unified", _migrate_public_link_require_email_unified),
+    ("backlog_support", _migrate_backlog_support),
 ]

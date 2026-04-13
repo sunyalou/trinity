@@ -11,6 +11,7 @@
 
 | Date | ID | Feature | Flow |
 |------|-----|---------|------|
+| 2026-04-13 | BACKLOG-001 (#260) | Persistent async task backlog — async `/task` spills to SQLite FIFO at capacity, drains on slot release, restart-durable | [persistent-task-backlog.md](feature-flows/persistent-task-backlog.md) |
 | 2026-04-12 | #311 | Unified cross-channel access control — verified email as identity, per-agent policy, access requests | [unified-channel-access-control.md](feature-flows/unified-channel-access-control.md) |
 | 2026-04-12 | #309 | Telegram webhook back-fill when `public_chat_url` is saved (self-healing config order) | [telegram-integration.md](feature-flows/telegram-integration.md) |
 | 2026-04-11 | #297 | Telegram group chat support — @mention triggers, welcome messages, per-group config | [telegram-integration.md](feature-flows/telegram-integration.md) |
@@ -115,6 +116,7 @@
 | Execution Termination | [execution-termination.md](feature-flows/execution-termination.md) | Stop running executions via process registry |
 | Parallel Headless Execution | [parallel-headless-execution.md](feature-flows/parallel-headless-execution.md) | Stateless parallel task execution via POST /task |
 | Parallel Capacity | [parallel-capacity.md](feature-flows/parallel-capacity.md) | Per-agent parallel execution slot tracking |
+| Persistent Task Backlog | [persistent-task-backlog.md](feature-flows/persistent-task-backlog.md) | SQLite-backed FIFO backlog for async tasks at capacity (BACKLOG-001) |
 | Task Execution Service | [task-execution-service.md](feature-flows/task-execution-service.md) | Unified execution lifecycle for all task callers (EXEC-024) |
 | Fan-Out | [fan-out.md](feature-flows/fan-out.md) | Parallel task dispatch and result collection via semaphore (FANOUT-001) |
 

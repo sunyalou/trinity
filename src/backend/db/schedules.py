@@ -128,6 +128,10 @@ class ScheduleOperations:
             fan_out_id=row["fan_out_id"] if "fan_out_id" in row_keys else None,
             # Subscription usage tracking (SUB-004)
             subscription_id=row["subscription_id"] if "subscription_id" in row_keys else None,
+            # Persistent backlog (BACKLOG-001)
+            queued_at=parse_iso_timestamp(row["queued_at"])
+                if "queued_at" in row_keys and row["queued_at"] else None,
+            backlog_metadata=row["backlog_metadata"] if "backlog_metadata" in row_keys else None,
         )
 
     @staticmethod
@@ -603,6 +607,233 @@ class ScheduleOperations:
             """, (execution_id, TaskExecutionStatus.RUNNING))
             conn.commit()
             return cursor.rowcount > 0
+
+    # =========================================================================
+    # Persistent Backlog (BACKLOG-001)
+    # =========================================================================
+
+    def update_execution_to_queued(
+        self, execution_id: str, backlog_metadata: str, queued_at: str
+    ) -> bool:
+        """Transition an execution row to QUEUED state and attach its backlog metadata.
+
+        Called by BacklogService.enqueue(). The row is already created by
+        create_task_execution in RUNNING state, so we flip it back to queued and
+        stamp queued_at for FIFO ordering.
+
+        Args:
+            execution_id: Execution row to transition.
+            backlog_metadata: JSON string capturing the full request context.
+            queued_at: ISO timestamp (used as the FIFO ordering key).
+
+        Returns:
+            True if the row was updated, False if not found.
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE schedule_executions
+                SET status = ?,
+                    queued_at = ?,
+                    backlog_metadata = ?,
+                    started_at = ?
+                WHERE id = ?
+                """,
+                (
+                    TaskExecutionStatus.QUEUED,
+                    queued_at,
+                    backlog_metadata,
+                    queued_at,  # reset started_at so drain records a clean run window
+                    execution_id,
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def claim_next_queued(self, agent_name: str) -> Optional[Dict]:
+        """Atomically claim the oldest QUEUED execution for an agent.
+
+        Uses a single SQL UPDATE with a subquery that selects the oldest row
+        by queued_at, filtered WHERE status='queued'. RETURNING gives us the
+        full row so the caller can reconstruct the request. This is race-safe
+        under concurrent drain callbacks — only one caller wins the update.
+
+        Returns:
+            Dict of the claimed row (id, agent_name, message, backlog_metadata, ...)
+            or None if the backlog is empty for this agent.
+        """
+        now = utc_now_iso()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE schedule_executions
+                SET status = ?,
+                    started_at = ?,
+                    queued_at = NULL
+                WHERE id = (
+                    SELECT id FROM schedule_executions
+                    WHERE status = ? AND agent_name = ?
+                    ORDER BY queued_at ASC
+                    LIMIT 1
+                )
+                RETURNING id, agent_name, message, backlog_metadata,
+                          source_user_id, source_user_email, source_agent_name,
+                          source_mcp_key_id, source_mcp_key_name, subscription_id
+                """,
+                (TaskExecutionStatus.RUNNING, now, TaskExecutionStatus.QUEUED, agent_name),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return dict(row) if row else None
+
+    def release_claim_to_queued(self, execution_id: str) -> bool:
+        """Release a claimed row back to QUEUED state.
+
+        Used when drain_next() acquired a slot, claimed a row, but then something
+        downstream failed (e.g. slot released concurrently, spawn failed) and we
+        need to put the row back in the backlog.
+
+        Returns:
+            True if the row transitioned back to queued, False otherwise.
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE schedule_executions
+                SET status = ?,
+                    queued_at = started_at
+                WHERE id = ? AND status = ?
+                """,
+                (TaskExecutionStatus.QUEUED, execution_id, TaskExecutionStatus.RUNNING),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_queued_count(self, agent_name: str) -> int:
+        """Count queued backlog items for an agent."""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT COUNT(*) as c FROM schedule_executions
+                WHERE agent_name = ? AND status = ?
+                """,
+                (agent_name, TaskExecutionStatus.QUEUED),
+            )
+            row = cursor.fetchone()
+            return int(row["c"]) if row else 0
+
+    def cancel_queued_execution(self, execution_id: str, reason: str = "cancelled") -> bool:
+        """Cancel a single queued execution. No container interaction.
+
+        Returns:
+            True if the row was still queued and is now cancelled, False otherwise.
+        """
+        now = utc_now_iso()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE schedule_executions
+                SET status = ?,
+                    completed_at = ?,
+                    error = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    TaskExecutionStatus.CANCELLED,
+                    now,
+                    reason,
+                    execution_id,
+                    TaskExecutionStatus.QUEUED,
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def cancel_queued_for_agent(self, agent_name: str, reason: str = "agent_deleted") -> int:
+        """Bulk-cancel all queued executions for an agent.
+
+        Used on agent deletion so orphan queued rows don't linger.
+
+        Returns:
+            Count of rows moved from QUEUED to CANCELLED.
+        """
+        now = utc_now_iso()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE schedule_executions
+                SET status = ?,
+                    completed_at = ?,
+                    error = ?
+                WHERE agent_name = ? AND status = ?
+                """,
+                (
+                    TaskExecutionStatus.CANCELLED,
+                    now,
+                    reason,
+                    agent_name,
+                    TaskExecutionStatus.QUEUED,
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    def expire_stale_queued(self, max_age_hours: float = 24) -> int:
+        """Mark queued executions older than max_age_hours as FAILED.
+
+        Runs from the 60s maintenance task. Uses ISO-8601 string comparison on
+        queued_at, matching how stale running executions are handled elsewhere.
+
+        Returns:
+            Count of queued rows expired.
+        """
+        now = utc_now_iso()
+        threshold = (
+            datetime.now(timezone.utc) - timedelta(hours=float(max_age_hours))
+        ).strftime('%Y-%m-%dT%H:%M:%S')
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE schedule_executions
+                SET status = ?,
+                    completed_at = ?,
+                    error = 'Backlog expired: queued longer than ' || ? || ' hours'
+                WHERE status = ? AND queued_at IS NOT NULL AND queued_at < ?
+                """,
+                (
+                    TaskExecutionStatus.FAILED,
+                    now,
+                    str(max_age_hours),
+                    TaskExecutionStatus.QUEUED,
+                    threshold,
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    def list_agents_with_queued(self) -> List[str]:
+        """Return the list of agent names that currently have queued backlog items.
+
+        Used by the 60s maintenance task to drain orphans after a restart
+        (backend crashed between enqueue and drain, or drain callback was lost).
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT DISTINCT agent_name FROM schedule_executions
+                WHERE status = ?
+                """,
+                (TaskExecutionStatus.QUEUED,),
+            )
+            return [row["agent_name"] for row in cursor.fetchall()]
 
     def update_execution_status(
         self,

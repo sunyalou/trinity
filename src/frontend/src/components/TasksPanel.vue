@@ -176,6 +176,7 @@
                     task.status === 'failed' ? 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300' :
                     task.status === 'cancelled' ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-300' :
                     task.status === 'running' ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300' :
+                    task.status === 'queued' ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300' :
                     task.status === 'skipped' ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300' :
                     'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-300'
                   ]"
@@ -187,6 +188,7 @@
                       task.status === 'failed' ? 'bg-red-500' :
                       task.status === 'cancelled' ? 'bg-orange-500' :
                       task.status === 'running' ? 'bg-yellow-500 animate-pulse' :
+                      task.status === 'queued' ? 'bg-amber-500' :
                       task.status === 'skipped' ? 'bg-purple-500' :
                       'bg-gray-500'
                     ]"

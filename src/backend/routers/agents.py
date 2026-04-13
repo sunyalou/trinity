@@ -363,6 +363,16 @@ async def delete_agent_endpoint(agent_name: str, request: Request, current_user:
     # Dedicated scheduler syncs from database automatically
     db.delete_agent_schedules(agent_name)
 
+    # BACKLOG-001: Cancel any queued backlog items before deleting the agent
+    # so they don't sit around in schedule_executions pointing at a dead agent.
+    try:
+        from services.backlog_service import get_backlog_service
+        await get_backlog_service().cancel_all_backlog(
+            agent_name, reason="agent_deleted"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to cancel backlog for agent {agent_name}: {e}")
+
     # Delete git config if exists
     git_service.delete_agent_git_config(agent_name)
 
