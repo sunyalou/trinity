@@ -227,6 +227,14 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 **Logging (`logging_config.py`):**
 - Structured JSON logging for production
 - Captured by Vector via Docker stdout/stderr
+- OpenTelemetry trace ID included in log entries for log-trace correlation (RELIABILITY-002)
+
+**OpenTelemetry Tracing (`main.py`):**
+- Auto-instrumentation for FastAPI, httpx, and Redis (RELIABILITY-002)
+- `traceparent` header propagated through inter-agent calls
+- Traces exported to OTel Collector via OTLP/gRPC (`trinity-otel-collector:4317`)
+- Configurable sampling via `OTEL_SAMPLE_RATE` (default 10%)
+- Enabled via `OTEL_ENABLED=1` environment variable
 
 **Utilities (`utils/`):**
 - `helpers.py` - Shared helper functions

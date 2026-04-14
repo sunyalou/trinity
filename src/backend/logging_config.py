@@ -1,10 +1,14 @@
 """
 Structured logging configuration for Trinity.
 Logs go to stdout and are captured by Vector.
+
+Includes OpenTelemetry trace ID for log-trace correlation (RELIABILITY-002).
 """
 import logging
 import json
 from datetime import datetime
+
+from opentelemetry import trace
 
 
 class JsonFormatter(logging.Formatter):
@@ -17,6 +21,13 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
+
+        # Add OpenTelemetry trace context for log-trace correlation
+        span = trace.get_current_span()
+        span_context = span.get_span_context()
+        if span_context.is_valid:
+            log_entry["trace_id"] = format(span_context.trace_id, "032x")
+            log_entry["span_id"] = format(span_context.span_id, "016x")
 
         # Add extra fields if present
         if hasattr(record, "event_type"):
