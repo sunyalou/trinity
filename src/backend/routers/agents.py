@@ -32,6 +32,10 @@ from services.docker_utils import (
 )
 from services import git_service
 from services.image_generation_prompts import AVATAR_EMOTIONS
+from services.platform_audit_service import (
+    platform_audit_service,
+    AuditEventType,
+)
 
 # Import service layer functions
 from services.agent_service import (
@@ -308,7 +312,24 @@ async def get_agent_endpoint(agent_name: AuthorizedAgentByName, request: Request
 @router.post("")
 async def create_agent_endpoint(config: AgentConfig, request: Request, current_user: User = Depends(require_role("creator"))):
     """Create a new agent. Requires creator role or above."""
-    return await create_agent_internal(config, current_user, request, skip_name_sanitization=False)
+    result = await create_agent_internal(config, current_user, request, skip_name_sanitization=False)
+    # SEC-001: audit after successful creation. Failures here swallowed by the service.
+    await platform_audit_service.log(
+        event_type=AuditEventType.AGENT_LIFECYCLE,
+        event_action="create",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="agent",
+        target_id=config.name,
+        endpoint=str(request.url.path),
+        details={
+            "template": getattr(config, "template", None),
+            "base_image": getattr(config, "base_image", None),
+            "agent_type": getattr(config, "agent_type", None),
+        },
+    )
+    return result
 
 
 @router.post("/deploy-local")
@@ -437,6 +458,18 @@ async def delete_agent_endpoint(agent_name: str, request: Request, current_user:
 
     db.delete_agent_ownership(agent_name)
 
+    # SEC-001: audit delete after all cleanup and ownership removal committed.
+    await platform_audit_service.log(
+        event_type=AuditEventType.AGENT_LIFECYCLE,
+        event_action="delete",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="agent",
+        target_id=agent_name,
+        endpoint=str(request.url.path),
+    )
+
     if manager:
         await manager.broadcast(json.dumps({
             "event": "agent_deleted",
@@ -458,6 +491,19 @@ async def start_agent_endpoint(agent_name: AuthorizedAgentByName, request: Reque
         invalidate_context_stats_cache()  # PERF-269
         credentials_status = result.get("credentials_injection", "unknown")
         credentials_result = result.get("credentials_result", {})
+
+        # SEC-001: audit after container reports running and credentials are injected.
+        await platform_audit_service.log(
+            event_type=AuditEventType.AGENT_LIFECYCLE,
+            event_action="start",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            target_type="agent",
+            target_id=agent_name,
+            endpoint=str(request.url.path),
+            details={"credentials_injection": credentials_status},
+        )
 
         event = {
             "event": "agent_started",
@@ -492,6 +538,18 @@ async def stop_agent_endpoint(agent_name: AuthorizedAgentByName, request: Reques
     try:
         await container_stop(container)
         invalidate_context_stats_cache()  # PERF-269
+
+        # SEC-001: audit after container_stop returns cleanly.
+        await platform_audit_service.log(
+            event_type=AuditEventType.AGENT_LIFECYCLE,
+            event_action="stop",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            target_type="agent",
+            target_id=agent_name,
+            endpoint=str(request.url.path),
+        )
 
         event = {
             "event": "agent_stopped",

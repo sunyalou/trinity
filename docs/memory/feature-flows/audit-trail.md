@@ -12,7 +12,8 @@ PRs (issue #20 stays open until all phases ship).
 | Phase | Scope | Status |
 |---|---|---|
 | **Phase 1** | Schema, immutability triggers, `PlatformAuditService`, `db/audit.py`, admin query API, unit tests | ✅ This PR |
-| Phase 2 | Wire `platform_audit_service.log(...)` into existing routers (lifecycle, auth, sharing, settings, credentials) | ⏳ Follow-up |
+| **Phase 2a** | Agent lifecycle integration (create / start / stop / delete) as working smoke test | ✅ This PR |
+| Phase 2b | Remaining integrations (auth, sharing, settings, credentials, request_id middleware) | ⏳ Follow-up |
 | Phase 3 | MCP server integration — TypeScript audit logging for MCP tool calls | ⏳ Follow-up |
 | Phase 4 | Hash chain verification, CSV/JSON export, retention automation | ⏳ Follow-up |
 
@@ -198,21 +199,57 @@ not propagate audit errors.
   `audit_entries` table) is unchanged and continues to serve Process Engine
   workflow audit. The two systems coexist intentionally per the spec.
 
-## Out of Scope (Phase 2–4 follow-ups)
+## Phase 2a — Agent Lifecycle Integration (shipped in this PR)
 
-- **Phase 2** — write integration:
-  - Agent lifecycle (`routers/agents.py`, `services/agent_service/lifecycle.py`)
+The first write-side integration lives in `routers/agents.py`. Four handlers
+emit audit rows after a successful state transition:
+
+| Handler | Event action | Details payload |
+|---|---|---|
+| `create_agent_endpoint` | `create` | `{template, base_image, agent_type}` |
+| `start_agent_endpoint` | `start` | `{credentials_injection}` |
+| `stop_agent_endpoint` | `stop` | `null` |
+| `delete_agent_endpoint` | `delete` | `null` |
+
+All four use the same kwargs shape:
+
+```python
+await platform_audit_service.log(
+    event_type=AuditEventType.AGENT_LIFECYCLE,
+    event_action="create",          # or start / stop / delete
+    source="api",
+    actor_user=current_user,
+    actor_ip=request.client.host if request.client else None,
+    target_type="agent",
+    target_id=agent_name,
+    endpoint=str(request.url.path),
+    details={...},                  # action-specific
+)
+```
+
+Log call lives in the **router**, not the service, so `current_user` stays in
+scope without threading through service signatures. Placement is always
+**after the state transition has committed** (container running, DB rows
+deleted, etc.) — if the action fails partway, no audit row appears.
+
+Audit failures are swallowed by the service layer and never fail the caller's
+primary operation (verified by `test_service_never_raises_on_db_failure`).
+
+## Out of Scope (Phase 2b–4 follow-ups)
+
+- **Phase 2b** — remaining write integrations:
   - Authentication (`routers/auth.py` — login success/failure)
   - Authorization (`routers/sharing.py`, permission grant/revoke)
   - Settings changes (`routers/settings.py`)
   - Credential operations (`routers/credentials.py`)
+  - Agent rename / recreate
   - Request-ID middleware for correlation
 - **Phase 3** — MCP server integration (TypeScript) for tool-call audit
 - **Phase 4** — hash chain verification, CSV/JSON export, retention automation, frontend admin UI, unified `/api/audit?system=platform|process`
 
 ## Testing
 
-`tests/test_audit_log_unit.py` — 24 unit tests covering:
+`tests/test_audit_log_unit.py` — 29 unit tests covering:
 
 | Area | Tests |
 |---|---|
@@ -225,6 +262,7 @@ not propagate audit errors.
 | Service actor resolution | user, agent, mcp_client, system mcp_scope |
 | Service serialization | JSON details encoding, request metadata (ip / request_id / endpoint) |
 | Error contract | DB failure must return None and never raise; unique event_ids across rapid calls |
+| Lifecycle integration | create / start / stop / delete produce correctly-shaped rows; full create→start→stop→delete flow produces 4 rows in temporal order |
 
 Run: `.venv/bin/python -m pytest tests/test_audit_log_unit.py -v`
 

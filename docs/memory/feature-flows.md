@@ -11,7 +11,7 @@
 
 | Date | ID | Feature | Flow |
 |------|-----|---------|------|
-| 2026-04-14 | #20 | Platform audit trail (SEC-001) Phase 1 — append-only `audit_log` table + `PlatformAuditService` + admin query API at `/api/audit-log`. Phases 2–4 to follow. | [audit-trail.md](feature-flows/audit-trail.md) |
+| 2026-04-14 | #20 | Platform audit trail (SEC-001) Phase 1 + agent lifecycle smoke test — append-only `audit_log` table, `PlatformAuditService`, admin query API at `/api/audit-log`, and create/start/stop/delete audit rows from `routers/agents.py`. Phase 2b–4 to follow. | [audit-trail.md](feature-flows/audit-trail.md) |
 | 2026-04-14 | VALIDATE-001 (#294) | Business task validation — post-execution clean-context auditor verifies task completion | [business-validation.md](feature-flows/business-validation.md) |
 | 2026-04-14 | SELF-EXEC-001 (#264) | Agent self-execute — background task on itself during chat, optional result injection | [self-execute.md](feature-flows/self-execute.md) |
 | 2026-04-13 | BACKLOG-001 (#260) | Persistent async task backlog — async `/task` spills to SQLite FIFO at capacity, drains on slot release, restart-durable | [persistent-task-backlog.md](feature-flows/persistent-task-backlog.md) |

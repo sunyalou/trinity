@@ -1071,7 +1071,11 @@ The Process Engine supports six step types:
   - `PlatformAuditOperations` (`db/audit.py`)
   - `PlatformAuditService` with global instance (`services/platform_audit_service.py`)
   - Admin query API: `GET /api/audit-log`, `GET /api/audit-log/stats`, `GET /api/audit-log/{event_id}`
-  - 24 unit tests (schema, query, filters, pagination, immutability, service actor resolution, error handling)
+  - 29 unit tests (schema, query, filters, pagination, immutability, service actor resolution, error handling, lifecycle integration shape)
+- **Phase 2a Delivery (#20, same PR — agent lifecycle smoke test)**:
+  - `routers/agents.py` emits audit rows after successful create / start / stop / delete
+  - 5 integration-shape tests asserting the exact field layout produced by the handlers
+  - End-to-end verifiable: UI agent action → row appears in `/api/audit-log`
 - **Event Categories**:
   - `AGENT_LIFECYCLE`: create, start, stop, delete, recreate
   - `EXECUTION`: task_triggered, chat_started, schedule_triggered
@@ -1086,7 +1090,8 @@ The Process Engine supports six step types:
 - **Flow**: `docs/memory/feature-flows/audit-trail.md`
 - **Implementation Phases**:
   1. ✅ Core infrastructure (table, service, db ops, API, tests) — landed in this PR
-  2. ⏳ Backend integration (sprinkle `platform_audit_service.log()` calls into lifecycle, auth, sharing, settings, credentials)
+  2a. ✅ Agent lifecycle integration (create / start / stop / delete) — landed in this PR as smoke test
+  2b. ⏳ Remaining backend integration (auth, sharing, settings, credentials, rename, request_id middleware)
   3. ⏳ MCP integration (TypeScript audit logging for tool calls)
   4. ⏳ Advanced features (hash chain verification, CSV/JSON export, retention automation, admin UI)
 

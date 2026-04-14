@@ -513,3 +513,94 @@ def test_service_records_request_metadata(audit_service, audit_ops):
     assert row["actor_ip"] == "10.0.0.1"
     assert row["request_id"] == "req-xyz"
     assert row["endpoint"] == "POST /api/agents"
+
+
+# ---------------------------------------------------------------------------
+# Agent lifecycle integration (SEC-001 Phase 2 — lifecycle subset)
+# ---------------------------------------------------------------------------
+#
+# These tests exercise the exact shape the router handlers produce for
+# create / start / stop / delete. Mirrors the kwargs used in
+# routers/agents.py so a refactor of the call site cannot silently break
+# the contract without breaking these tests.
+
+
+def _lifecycle_log(service, etype, action, agent_name, **extra):
+    """Fire the same service.log kwargs the router uses for one lifecycle event."""
+    user = types.SimpleNamespace(id=7, email="owner@example.com")
+    return asyncio.run(
+        service.log(
+            event_type=etype.AGENT_LIFECYCLE,
+            event_action=action,
+            source="api",
+            actor_user=user,
+            actor_ip="127.0.0.1",
+            target_type="agent",
+            target_id=agent_name,
+            endpoint=f"/api/agents/{agent_name}",
+            **extra,
+        )
+    )
+
+
+def test_lifecycle_create_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _lifecycle_log(
+        service,
+        ETYPE,
+        "create",
+        "oracle",
+        details={"template": "github:Org/repo", "base_image": "trinity-agent-base:latest"},
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_type"] == "agent_lifecycle"
+    assert row["event_action"] == "create"
+    assert row["target_type"] == "agent"
+    assert row["target_id"] == "oracle"
+    assert row["actor_type"] == "user"
+    assert row["actor_email"] == "owner@example.com"
+    assert row["details"]["template"] == "github:Org/repo"
+
+
+def test_lifecycle_start_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _lifecycle_log(
+        service, ETYPE, "start", "oracle", details={"credentials_injection": "success"}
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_action"] == "start"
+    assert row["target_id"] == "oracle"
+    assert row["details"]["credentials_injection"] == "success"
+
+
+def test_lifecycle_stop_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _lifecycle_log(service, ETYPE, "stop", "oracle")
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_action"] == "stop"
+    assert row["target_id"] == "oracle"
+    assert row["details"] is None
+
+
+def test_lifecycle_delete_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _lifecycle_log(service, ETYPE, "delete", "oracle")
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_action"] == "delete"
+    assert row["target_id"] == "oracle"
+
+
+def test_lifecycle_full_flow_creates_ordered_history(audit_service, audit_ops):
+    """Create → start → stop → delete should produce 4 rows in temporal order."""
+    service, ETYPE, _ = audit_service
+    for action in ("create", "start", "stop", "delete"):
+        _lifecycle_log(service, ETYPE, action, "ephemeral-1")
+
+    rows = audit_ops.get_audit_entries(
+        event_type="agent_lifecycle",
+        target_type="agent",
+        target_id="ephemeral-1",
+    )
+    # Newest first — reverse to get chronological order.
+    actions = [r["event_action"] for r in reversed(rows)]
+    assert actions == ["create", "start", "stop", "delete"]

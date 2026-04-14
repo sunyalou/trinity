@@ -692,9 +692,12 @@ covers cross-cutting platform events (lifecycle, auth, MCP, credentials, etc.)
 via the new `audit_log` table. Both are intentionally separate per the SEC-001
 architecture; a unified surface can be added later.
 
-**Phase 1 ships infrastructure only.** Write integration into existing routers
-(Phase 2), MCP TypeScript audit (Phase 3), and hash-chain verification + export
-(Phase 4) follow as separate PRs against issue #20.
+**Phase 1 + agent lifecycle smoke test.** Phase 1 ships the infrastructure;
+Phase 2a ships agent lifecycle audit (`routers/agents.py` emits rows after
+create / start / stop / delete) as a working end-to-end demonstration.
+Remaining write integrations (auth, sharing, settings, credentials — Phase 2b),
+MCP TypeScript audit (Phase 3), and hash-chain verification + export (Phase 4)
+follow as separate PRs against issue #20.
 
 ### Nevermined Payments (NVM-001)
 
