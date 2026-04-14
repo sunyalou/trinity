@@ -409,7 +409,7 @@ class TaskExecutionService:
                     except Exception as e:
                         logger.error(f"[TaskExecService] Failed to serialize execution_log for {execution_id}: {e}")
 
-            context_used = metadata.get("input_tokens", 0) + metadata.get("output_tokens", 0)
+            context_used = metadata.get("input_tokens", 0)
             sanitized_resp = sanitize_response(response_data.get("response"))
             claude_session_id = response_data.get("session_id") or metadata.get("session_id")
 
