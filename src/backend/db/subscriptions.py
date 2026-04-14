@@ -542,7 +542,7 @@ class SubscriptionOperations:
         Get subscription with fewest assigned agents (round-robin).
 
         Tie-break: alphabetical by name.
-        Skips subscriptions that are currently rate-limited.
+        Skips subscriptions that are currently rate-limited or have invalid tokens.
         Used for auto-assignment on agent creation (#74).
 
         Returns:
@@ -559,8 +559,14 @@ class SubscriptionOperations:
             """)
             for row in cursor.fetchall():
                 sub = self._row_to_subscription(row)
-                if not self.is_subscription_rate_limited(sub.id):
-                    return sub
+                # Skip rate-limited subscriptions
+                if self.is_subscription_rate_limited(sub.id):
+                    continue
+                # Skip subscriptions with invalid/legacy tokens (#340)
+                token = self.get_subscription_token(sub.id)
+                if not token:
+                    continue
+                return sub
             return None
 
     def select_best_alternative_subscription(

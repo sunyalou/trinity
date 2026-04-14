@@ -257,6 +257,7 @@ async def assign_subscription_to_agent(
 
         container = get_agent_container(agent_name)
         restart_result = None
+        injection_result = None
 
         if container:
             agent_status = get_agent_status_from_container(container)
@@ -265,12 +266,18 @@ async def assign_subscription_to_agent(
                     await container_stop(container)
                     await start_agent_internal(agent_name)
                     restart_result = "success"
+                    injection_result = {"status": "success"}
                     logger.info(
                         f"Restarted agent '{agent_name}' to apply subscription token"
                     )
                 except Exception as e:
                     logger.error(f"Failed to restart agent '{agent_name}' for subscription: {e}")
                     restart_result = f"failed: {e}"
+                    injection_result = {"status": "failed", "error": str(e)}
+            else:
+                injection_result = {"status": "agent_not_running"}
+        else:
+            injection_result = {"status": "agent_not_running"}
 
         return {
             "success": True,
@@ -278,6 +285,7 @@ async def assign_subscription_to_agent(
             "agent_name": agent_name,
             "subscription_name": subscription_name,
             "restart_result": restart_result,
+            "injection_result": injection_result,
         }
 
     except ValueError as e:

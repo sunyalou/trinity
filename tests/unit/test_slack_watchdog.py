@@ -59,10 +59,18 @@ _transports.base = _base
 
 # Import via importlib to load the .py file directly
 import importlib.util
+import os
+
+# Use __file__-relative path to work regardless of cwd (#341)
+_slack_socket_path = os.path.join(
+    os.path.dirname(__file__),
+    "..", "..",  # from tests/unit to project root
+    "src", "backend", "adapters", "transports", "slack_socket.py"
+)
 
 _spec = importlib.util.spec_from_file_location(
     "adapters.transports.slack_socket",
-    "src/backend/adapters/transports/slack_socket.py",
+    _slack_socket_path,
 )
 _mod = importlib.util.module_from_spec(_spec)
 sys.modules["adapters.transports.slack_socket"] = _mod

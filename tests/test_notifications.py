@@ -342,10 +342,10 @@ class TestAgentNotifications:
     def test_get_agent_notifications_success(
         self,
         api_client: TrinityApiClient,
-        created_agent: str
+        created_agent: dict
     ):
         """Get notifications for existing agent returns 200."""
-        response = api_client.get(f"/api/agents/{created_agent}/notifications")
+        response = api_client.get(f"/api/agents/{created_agent['name']}/notifications")
         assert_status(response, 200)
         data = assert_json_response(response)
         assert_has_fields(data, ["count", "notifications"])
@@ -358,14 +358,14 @@ class TestAgentNotifications:
     def test_count_agent_notifications_success(
         self,
         api_client: TrinityApiClient,
-        created_agent: str
+        created_agent: dict
     ):
         """Count pending notifications for existing agent returns 200."""
-        response = api_client.get(f"/api/agents/{created_agent}/notifications/count")
+        response = api_client.get(f"/api/agents/{created_agent['name']}/notifications/count")
         assert_status(response, 200)
         data = response.json()
         assert_has_fields(data, ["agent_name", "pending_count"])
-        assert data["agent_name"] == created_agent
+        assert data["agent_name"] == created_agent["name"]
         assert isinstance(data["pending_count"], int)
 
     def test_count_agent_notifications_not_found(self, api_client: TrinityApiClient):

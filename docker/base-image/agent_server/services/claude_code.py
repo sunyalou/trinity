@@ -718,6 +718,15 @@ def _diagnose_exit_failure(return_code: int, metadata: Optional['ExecutionMetada
     if metadata and metadata.error_type == "rate_limit":
         return _format_rate_limit_error(metadata)
 
+    # Check for billing errors (e.g., credit balance too low)
+    if metadata and metadata.error_type == "billing_error":
+        error_msg = metadata.error_message or "Billing error"
+        return (
+            f"{error_msg}. "
+            f"To resolve: (1) add credits to your Anthropic account at console.anthropic.com, "
+            f"or (2) assign a subscription token with available usage in Settings → Subscriptions."
+        )
+
     # Check for model access errors detected during stream parsing
     if metadata and metadata.error_message and _is_model_access_error(metadata.error_message):
         return (

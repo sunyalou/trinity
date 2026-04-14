@@ -741,12 +741,12 @@ class TestAsyncModeUnifiedExecutor:
       - save_to_session guarded on SUCCESS (E1 fix)
     """
 
-    def test_async_mode_at_capacity_returns_429_upfront(
+    def test_async_mode_at_capacity_queues_task(
         self,
         api_client: TrinityApiClient,
         created_agent,
     ):
-        """Issue #95 T1: async-at-capacity returns 429 synchronously, not 202+FAILED on poll."""
+        """BACKLOG-001: async-at-capacity queues task instead of returning 429."""
         agent_name = created_agent["name"]
 
         # Prior tests may still hold slots. Raise capacity briefly so any
@@ -785,18 +785,20 @@ class TestAsyncModeUnifiedExecutor:
                 pytest.skip("Slots still occupied from prior tests — rerun isolated")
             assert_status(first, 200)
 
-            # Second async task should be rejected with 429 *synchronously*
+            # BACKLOG-001: Second async task should be queued (not rejected 429)
             second = api_client.post(
                 f"/api/agents/{agent_name}/task",
-                json={"message": "Should be rejected.", "async_mode": True},
+                json={"message": "Should be queued.", "async_mode": True},
                 timeout=10.0,
             )
-            assert_status(second, 429), (
-                "async-at-capacity must return 429 upfront (not 202 with FAILED-on-poll) — "
-                "preserves existing client retry contract through issue #95 refactor"
+            assert_status(second, 200), (
+                "BACKLOG-001: async-at-capacity should queue task with status 200"
             )
-            detail = (second.json() or {}).get("detail", "")
-            assert "capacity" in detail.lower()
+            data = second.json() or {}
+            # Task should be queued, not rejected
+            assert data.get("status") == "queued" or "execution_id" in data, (
+                f"Expected 'queued' status or execution_id, got: {data}"
+            )
         finally:
             # Restore default capacity
             api_client.put(

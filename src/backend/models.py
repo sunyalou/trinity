@@ -322,6 +322,11 @@ class DeployLocalRequest(BaseModel):
     """Request to deploy a local agent."""
     archive: str  # Base64-encoded tar.gz
     name: Optional[str] = None  # Override name from template.yaml
+    credentials: Optional[Dict[str, str]] = None  # Optional credentials to inject {KEY: value}
+
+
+# Maximum credentials allowed per deploy-local request
+MAX_DEPLOY_CREDENTIALS = 100
 
 
 class DeployLocalResponse(BaseModel):
@@ -329,6 +334,8 @@ class DeployLocalResponse(BaseModel):
     status: str  # "success" or "error"
     agent: Optional[AgentStatus] = None
     versioning: Optional[VersioningInfo] = None
+    credentials_imported: Optional[Dict[str, str]] = None  # Files found in archive
+    credentials_injected: Optional[int] = None  # Count of credentials injected
     error: Optional[str] = None
     code: Optional[str] = None  # Error code for machine-readable errors
 

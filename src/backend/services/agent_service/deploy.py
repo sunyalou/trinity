@@ -20,6 +20,7 @@ from models import (
     DeployLocalRequest,
     DeployLocalResponse,
     VersioningInfo,
+    MAX_DEPLOY_CREDENTIALS,
 )
 from database import db
 from services.template_service import is_trinity_compatible
@@ -229,6 +230,16 @@ async def deploy_local_agent_logic(
                 }
             )
 
+        # 1b. Validate credential count limit
+        if body.credentials and len(body.credentials) > MAX_DEPLOY_CREDENTIALS:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": f"Too many credentials: {len(body.credentials)} exceeds limit of {MAX_DEPLOY_CREDENTIALS}",
+                    "code": "TOO_MANY_CREDENTIALS"
+                }
+            )
+
         # 2. Extract archive to temp directory
         temp_dir = Path(tempfile.mkdtemp(prefix="trinity-deploy-"))
         try:
@@ -359,6 +370,35 @@ async def deploy_local_agent_logic(
             runtime_model=runtime_model
         )
 
+        # 9b. Process credentials before agent creation
+        credentials_imported = {}
+        credentials_injected = 0
+
+        # Check for credential files in archive
+        env_file = dest_path / ".env"
+        if env_file.exists():
+            credentials_imported[".env"] = "from_archive"
+
+        mcp_file = dest_path / ".mcp.json"
+        if mcp_file.exists():
+            credentials_imported[".mcp.json"] = "from_archive"
+
+        # Write credentials from request to template directory
+        # These will be copied to the agent workspace during creation
+        if body.credentials:
+            env_content = "\n".join(f"{k}={v}" for k, v in body.credentials.items())
+            # Append to existing .env or create new one
+            if env_file.exists():
+                existing = env_file.read_text()
+                # Append with newline separator
+                env_file.write_text(existing.rstrip() + "\n" + env_content + "\n")
+                credentials_imported[".env"] = "merged"
+            else:
+                env_file.write_text(env_content + "\n")
+                credentials_imported[".env"] = "created"
+            credentials_injected = len(body.credentials)
+            logger.info(f"Wrote {credentials_injected} credentials to template for agent {version_name}")
+
         agent_status = await create_agent_fn(
             agent_config,
             current_user,
@@ -376,6 +416,8 @@ async def deploy_local_agent_logic(
                 previous_version_stopped=previous_stopped,
                 new_version=version_name
             ),
+            credentials_imported=credentials_imported,
+            credentials_injected=credentials_injected,
         )
 
     except HTTPException:
