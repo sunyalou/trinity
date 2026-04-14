@@ -175,6 +175,9 @@ The test suite covers:
 - **Parallel Tasks** (test_parallel_task.py) - Parallel headless execution (Req 12.1)
 - **Log Archive** (test_log_archive.py) - Log archival service (requires docker package in test env)
 - **Agent Notifications** (test_notifications.py) - Notification CRUD, acknowledge, dismiss, agent-specific queries (NOTIF-001) [SMOKE + Agent]
+- **Cleanup Service** (test_cleanup_service.py) - Cleanup status/trigger endpoints, report structure (CLEANUP-001, #106, #219) [SMOKE]
+- **Watchdog Integration** (test_watchdog.py) - Watchdog report fields in cleanup status/trigger [SMOKE]
+- **Watchdog Unit Tests** (test_watchdog_unit.py) - Reconciliation logic, orphan recovery, auto-terminate, per-agent TTL (#129, #226) [UNIT]
 
 ### Avatars & Image Generation
 - **Avatars** (test_avatars.py) - Avatar serving, generation, regeneration, deletion, emotions, identity prompts, default generation (AVATAR-001/002/003) [SMOKE + Agent]
@@ -215,10 +218,10 @@ The test suite covers:
 
 ## Test Suite Statistics
 
-**Total Tests**: ~2,143 tests across 112 test files
-**Smoke Tests**: ~553 tests (fast, no agent creation)
-**Unit Tests**: ~22 tests (no backend needed, rate limit detection/formatting)
-**Core Tests (not slow)**: ~2,040 tests
+**Total Tests**: ~2,172 tests across 115 test files
+**Smoke Tests**: ~564 tests (fast, no agent creation)
+**Unit Tests**: ~40 tests (no backend needed, rate limit detection, watchdog logic)
+**Core Tests (not slow)**: ~2,069 tests
 **Slow Tests**: ~89 tests (chat execution, fleet ops, system agent ops, execution termination)
 **WebSocket Tests**: ~10 tests (web terminal, execution streaming)
 
@@ -246,6 +249,16 @@ Use these thresholds to assess test health (based on **executed** tests, not inc
 - **Healthy**: >90% pass rate, 0 critical failures
 - **Warning**: 75-90% pass rate, <5 failures
 - **Critical**: <75% pass rate or >5 failures
+
+## Recent Test Additions (2026-04-14)
+
+| Test File | Description | Tests Added |
+|-----------|-------------|-------------|
+| `test_watchdog_unit.py` | Updated `_reconcile_orphaned_executions()` tests for 3-tuple return (now returns `confirmed_running_ids` set, #226) | 7 tests updated |
+
+**Per-Agent Slot TTL (#226)**: Updated unit tests in `test_watchdog_unit.py::TestReconcileOrphanedExecutions` to expect `(orphaned, terminated, confirmed_running)` return signature. Added assertions verifying `confirmed_running` set contains execution IDs verified as still running on agents within their timeout. No new tests needed — existing cleanup API tests (`test_cleanup_service.py`) cover behavior; the change is internal optimization.
+
+---
 
 ## Recent Test Additions (2026-04-13)
 
