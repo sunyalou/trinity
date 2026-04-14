@@ -26,6 +26,8 @@ EXECUTION_STALE_TIMEOUT_MINUTES = 120  # SCHED-ASYNC-001: increased from 30 to s
 ACTIVITY_STALE_TIMEOUT_MINUTES = 120   # SCHED-ASYNC-001: increased from 30 to support long-running tasks
 NO_SESSION_TIMEOUT_SECONDS = 60       # Issue #106: fast-fail executions without Claude session
 WATCHDOG_HTTP_TIMEOUT = 5.0           # Issue #129: timeout for agent HTTP calls during reconciliation
+ERROR_FETCH_TIMEOUT = 2.0             # Issue #286: timeout for fetching error context from agent
+MAX_ERROR_MESSAGE_LENGTH = 2000       # Issue #286: truncate combined error messages
 ```
 
 #### WebSocket Manager Injection (Issue #129)
@@ -134,12 +136,23 @@ Active reconciliation of DB execution state against agent process registries. Re
 8. **Concurrency guard**: `asyncio.Lock` prevents overlapping cleanup cycles from background loop + manual trigger
 9. **Returns third element** (#226): `confirmed_running` set — execution IDs verified as still running on agent within their timeout. Slot cleanup uses this to avoid falsely failing executions that are legitimately running.
 
-#### `_recover_execution(execution_id, agent_name, error_msg, action)` → `bool`
+#### `_get_execution_error(client, agent_name, execution_id)` → `Optional[str]` (Issue #286)
+Fetches original error context from agent before marking execution failed:
+1. `GET http://agent-{name}:8000/api/executions/{id}/last-error` — queries agent's log buffer for error info
+2. Returns formatted error string (`[error_type] error_message`) or None if unavailable
+3. Sanitizes error message via `sanitize_text()` to remove credential patterns
+4. Uses short timeout (`ERROR_FETCH_TIMEOUT = 2.0s`) to avoid blocking cleanup
+5. Gracefully handles agent unreachability — returns None on ConnectError/TimeoutException
+
+#### `_recover_execution(execution_id, agent_name, error_msg, action, client=None)` → `bool`
 Shared DRY helper for both orphan recovery and auto-terminate:
-1. `db.mark_execution_failed_by_watchdog()` — conditional UPDATE with `WHERE status='running'` race guard. Returns False if execution already completed (no-op).
-2. `slot_service.release_slot()` — idempotent Redis ZREM
-3. `queue.force_release_if_matches()` — atomic Lua script: GET running key, compare execution ID, conditional DELETE. Prevents TOCTOU race where a new execution could start between check and release.
-4. `_broadcast_watchdog_event()` — WebSocket JSON event: `{"type": "watchdog_recovery", "agent_name", "execution_id", "action", "reason", "timestamp"}`
+1. **Issue #286**: If `client` provided, calls `_get_execution_error()` to fetch original error context
+2. Combines original error with cleanup reason: `"{original_error}. Cleanup: {cleanup_reason}"`
+3. Truncates combined message to `MAX_ERROR_MESSAGE_LENGTH = 2000` to prevent DB bloat
+4. `db.mark_execution_failed_by_watchdog()` — conditional UPDATE with `WHERE status='running'` race guard. Returns False if execution already completed (no-op).
+5. `slot_service.release_slot()` — idempotent Redis ZREM
+6. `queue.force_release_if_matches()` — atomic Lua script: GET running key, compare execution ID, conditional DELETE. Prevents TOCTOU race where a new execution could start between check and release.
+7. `_broadcast_watchdog_event()` — WebSocket JSON event with combined error: `{"type": "watchdog_recovery", "agent_name", "execution_id", "action", "reason", "timestamp"}`
 
 #### `_terminate_on_agent(client, agent_name, execution_id)` → `bool`
 `POST http://agent-{name}:8000/api/executions/{id}/terminate`. Returns True if HTTP 2xx (agent confirmed termination), False otherwise. Callers only proceed with DB/resource cleanup on success — failed terminations are deferred to the 120-min stale cleanup safety net.
@@ -468,6 +481,8 @@ This is a purely backend service. The only "UI" is the two admin API endpoints u
 | `src/backend/services/execution_queue.py` | `force_release()` used by watchdog for queue state cleanup |
 | `src/backend/main.py` | Import, start in lifespan, stop on shutdown, wire WS manager |
 | `src/backend/routers/monitoring.py` | `/cleanup-status` and `/cleanup-trigger` endpoints |
+| `docker/base-image/agent_server/routers/chat.py` | `/api/executions/{id}/last-error` endpoint for error context retrieval (Issue #286) |
+| `docker/base-image/agent_server/services/process_registry.py` | `get_last_error()` method scans log buffer for errors (Issue #286) |
 | `tests/test_cleanup_service.py` | API integration tests for cleanup (Issue #106) |
 | `tests/test_watchdog.py` | API integration tests for watchdog fields (Issue #129) |
-| `tests/test_watchdog_unit.py` | Unit tests for watchdog reconciliation logic (Issue #129) |
+| `tests/test_watchdog_unit.py` | Unit tests for watchdog reconciliation logic (Issue #129), error context tests (Issue #286) |

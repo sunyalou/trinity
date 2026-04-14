@@ -25,6 +25,7 @@ from models import TaskExecutionStatus
 from services.slot_service import get_slot_service
 from services.execution_queue import get_execution_queue
 from utils.helpers import utc_now, utc_now_iso, parse_iso_timestamp
+from utils.credential_sanitizer import sanitize_text
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,8 @@ ACTIVITY_STALE_TIMEOUT_MINUTES = 120  # SCHED-ASYNC-001: increased from 30 to su
 NO_SESSION_TIMEOUT_SECONDS = 60  # Issue #106: fast-fail executions that never got a Claude session
 WATCHDOG_HTTP_TIMEOUT = 5.0  # Timeout for agent HTTP calls during reconciliation
 WATCHDOG_MIN_AGE_SECONDS = 60  # Don't orphan-recover executions younger than this (dispatch window)
+ERROR_FETCH_TIMEOUT = 2.0  # Issue #286: short timeout for fetching error context from agent
+MAX_ERROR_MESSAGE_LENGTH = 2000  # Issue #286: truncate combined error messages
 
 # WebSocket manager (injected from main.py)
 _ws_manager = None
@@ -295,7 +298,7 @@ class CleanupService:
                                 "— recovered by watchdog"
                             )
                             recovered = await self._recover_execution(
-                                execution_id, agent_name, error_msg, "orphan_recovered"
+                                execution_id, agent_name, error_msg, "orphan_recovered", client
                             )
                             if recovered:
                                 orphaned_count += 1
@@ -327,7 +330,7 @@ class CleanupService:
                                 f"by watchdog (exceeded timeout of {timeout_seconds}s)"
                             )
                             recovered = await self._recover_execution(
-                                execution_id, agent_name, error_msg, "auto_terminated"
+                                execution_id, agent_name, error_msg, "auto_terminated", client
                             )
                             if recovered:
                                 terminated_count += 1
@@ -381,27 +384,97 @@ class CleanupService:
             logger.warning(f"[Watchdog] Error checking agent '{agent_name}': {e}")
             return None
 
+    async def _get_execution_error(
+        self, client: httpx.AsyncClient, agent_name: str, execution_id: str
+    ) -> Optional[str]:
+        """Fetch the last error from an agent's execution log buffer.
+
+        Issue #286: Preserves original error context when cleanup recovers
+        stale executions. Queries the agent's /api/executions/{id}/last-error
+        endpoint to retrieve error details before they're lost.
+
+        Args:
+            client: Shared httpx client for the reconciliation cycle.
+            agent_name: The agent to query.
+            execution_id: The execution to get error for.
+
+        Returns:
+            Error message string if found, None otherwise.
+        """
+        try:
+            response = await client.get(
+                f"http://agent-{agent_name}:8000/api/executions/{execution_id}/last-error",
+                timeout=ERROR_FETCH_TIMEOUT,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                error_type = data.get("error_type")
+                error_message = data.get("error_message")
+
+                if error_type or error_message:
+                    # Sanitize to remove any credential patterns
+                    parts = []
+                    if error_type:
+                        parts.append(f"[{error_type}]")
+                    if error_message:
+                        sanitized = sanitize_text(error_message)
+                        parts.append(sanitized)
+                    return " ".join(parts) if parts else None
+
+            return None
+        except (httpx.ConnectError, httpx.TimeoutException):
+            logger.debug(
+                f"[Watchdog] Could not fetch error context for {execution_id} "
+                f"from agent '{agent_name}' (unreachable)"
+            )
+            return None
+        except Exception as e:
+            logger.debug(
+                f"[Watchdog] Error fetching error context for {execution_id}: {e}"
+            )
+            return None
+
     async def _recover_execution(
         self,
         execution_id: str,
         agent_name: str,
         error_msg: str,
         action: str,
+        client: Optional[httpx.AsyncClient] = None,
     ) -> bool:
         """Mark execution as failed and release all associated resources.
 
         Shared helper for both orphan recovery and auto-terminate paths (DRY).
 
+        Issue #286: Now attempts to fetch original error context from the agent
+        before marking the execution as failed, preserving diagnostic info.
+
         Args:
             execution_id: The execution to recover.
             agent_name: The agent the execution belongs to.
-            error_msg: Descriptive error message.
+            error_msg: Descriptive error message (cleanup reason).
             action: Event action type ("orphan_recovered" or "auto_terminated").
+            client: Optional httpx client for fetching error context from agent.
 
         Returns:
             True if recovery succeeded, False if execution already transitioned.
         """
-        updated = db.mark_execution_failed_by_watchdog(execution_id, error_msg)
+        # Issue #286: Try to fetch original error context from agent before marking failed
+        original_error = None
+        if client:
+            original_error = await self._get_execution_error(client, agent_name, execution_id)
+
+        # Combine original error with cleanup reason
+        if original_error:
+            combined_error = f"{original_error}. Cleanup: {error_msg}"
+        else:
+            combined_error = error_msg
+
+        # Truncate to prevent DB bloat
+        if len(combined_error) > MAX_ERROR_MESSAGE_LENGTH:
+            combined_error = combined_error[:MAX_ERROR_MESSAGE_LENGTH - 3] + "..."
+
+        updated = db.mark_execution_failed_by_watchdog(execution_id, combined_error)
         if not updated:
             # Race condition: execution completed normally between check and update
             return False
@@ -422,8 +495,8 @@ class CleanupService:
         except Exception as e:
             logger.warning(f"[Watchdog] Error releasing queue for agent '{agent_name}': {e}")
 
-        # Broadcast WebSocket event
-        await self._broadcast_watchdog_event(action, agent_name, execution_id, error_msg)
+        # Broadcast WebSocket event with combined error (includes original context)
+        await self._broadcast_watchdog_event(action, agent_name, execution_id, combined_error)
 
         logger.info(
             f"[Watchdog] {action}: execution {execution_id} on agent '{agent_name}'"

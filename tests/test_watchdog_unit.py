@@ -53,6 +53,11 @@ _helpers_mod.parse_iso_timestamp = _parse_iso_timestamp
 _helpers_mod.to_utc_iso = _MagicMock(return_value="2025-01-01T00:00:00Z")
 sys.modules["utils.helpers"] = _helpers_mod
 
+# Issue #286: Mock credential_sanitizer for cleanup_service import
+_sanitizer_mod = _types.ModuleType("utils.credential_sanitizer")
+_sanitizer_mod.sanitize_text = lambda x: x  # Pass-through for tests
+sys.modules["utils.credential_sanitizer"] = _sanitizer_mod
+
 sys.modules.setdefault("database", _MagicMock())
 
 
@@ -662,3 +667,223 @@ class TestBroadcastWatchdogEvent:
             assert "timestamp" in event
         finally:
             cs_module._ws_manager = original
+
+
+# ---------------------------------------------------------------------------
+# Error Context Preservation tests (Issue #286)
+# ---------------------------------------------------------------------------
+
+class TestGetExecutionError:
+    """Tests for _get_execution_error() — Issue #286."""
+
+    pytestmark = pytest.mark.unit
+
+    def _make_service(self):
+        from services.cleanup_service import CleanupService
+        return CleanupService()
+
+    def test_returns_error_from_agent(self):
+        """Returns formatted error when agent responds with error info."""
+        service = self._make_service()
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "error_type": "auth_failure",
+            "error_message": "Invalid API key"
+        }
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        result = asyncio.run(
+            service._get_execution_error(mock_client, "agent-a", "exec-1")
+        )
+
+        assert result == "[auth_failure] Invalid API key"
+        mock_client.get.assert_called_once()
+        assert "/api/executions/exec-1/last-error" in mock_client.get.call_args[0][0]
+
+    def test_returns_none_when_no_error(self):
+        """Returns None when agent has no error to report."""
+        service = self._make_service()
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "error_type": None,
+            "error_message": None
+        }
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        result = asyncio.run(
+            service._get_execution_error(mock_client, "agent-a", "exec-1")
+        )
+
+        assert result is None
+
+    def test_returns_none_on_connect_error(self):
+        """Returns None when agent is unreachable."""
+        import httpx
+        service = self._make_service()
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
+
+        result = asyncio.run(
+            service._get_execution_error(mock_client, "agent-down", "exec-1")
+        )
+
+        assert result is None
+
+    def test_returns_none_on_timeout(self):
+        """Returns None when agent request times out."""
+        import httpx
+        service = self._make_service()
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=httpx.TimeoutException("Request timed out"))
+
+        result = asyncio.run(
+            service._get_execution_error(mock_client, "agent-slow", "exec-1")
+        )
+
+        assert result is None
+
+    def test_handles_error_type_only(self):
+        """Handles case where error_type is set but error_message is None."""
+        service = self._make_service()
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "error_type": "rate_limit",
+            "error_message": None
+        }
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        result = asyncio.run(
+            service._get_execution_error(mock_client, "agent-a", "exec-1")
+        )
+
+        assert result == "[rate_limit]"
+
+
+class TestRecoverExecutionWithErrorContext:
+    """Tests for _recover_execution() with error context — Issue #286."""
+
+    pytestmark = pytest.mark.unit
+
+    def _make_service(self):
+        from services.cleanup_service import CleanupService
+        return CleanupService()
+
+    @patch("services.cleanup_service.db")
+    @patch("services.cleanup_service.get_slot_service")
+    @patch("services.cleanup_service.get_execution_queue")
+    def test_combines_original_error_with_cleanup_reason(self, mock_queue_fn, mock_slot_fn, mock_db):
+        """Combines original error context with cleanup reason."""
+        mock_db.mark_execution_failed_by_watchdog.return_value = True
+        mock_slot = AsyncMock()
+        mock_slot_fn.return_value = mock_slot
+        mock_q = AsyncMock()
+        mock_queue_fn.return_value = mock_q
+
+        service = self._make_service()
+        service._get_execution_error = AsyncMock(return_value="[auth_failure] Token expired")
+        service._broadcast_watchdog_event = AsyncMock()
+
+        mock_client = AsyncMock()
+
+        result = asyncio.run(
+            service._recover_execution(
+                "exec-1", "agent-a", "recovered by watchdog", "orphan_recovered", mock_client
+            )
+        )
+
+        assert result is True
+        # Verify combined error message was passed to DB
+        mock_db.mark_execution_failed_by_watchdog.assert_called_once()
+        error_arg = mock_db.mark_execution_failed_by_watchdog.call_args[0][1]
+        assert "[auth_failure] Token expired" in error_arg
+        assert "recovered by watchdog" in error_arg
+
+    @patch("services.cleanup_service.db")
+    @patch("services.cleanup_service.get_slot_service")
+    @patch("services.cleanup_service.get_execution_queue")
+    def test_uses_cleanup_reason_when_no_original_error(self, mock_queue_fn, mock_slot_fn, mock_db):
+        """Uses cleanup reason alone when no original error is available."""
+        mock_db.mark_execution_failed_by_watchdog.return_value = True
+        mock_slot = AsyncMock()
+        mock_slot_fn.return_value = mock_slot
+        mock_q = AsyncMock()
+        mock_queue_fn.return_value = mock_q
+
+        service = self._make_service()
+        service._get_execution_error = AsyncMock(return_value=None)
+        service._broadcast_watchdog_event = AsyncMock()
+
+        mock_client = AsyncMock()
+
+        result = asyncio.run(
+            service._recover_execution(
+                "exec-1", "agent-a", "recovered by watchdog", "orphan_recovered", mock_client
+            )
+        )
+
+        assert result is True
+        error_arg = mock_db.mark_execution_failed_by_watchdog.call_args[0][1]
+        assert error_arg == "recovered by watchdog"
+
+    @patch("services.cleanup_service.db")
+    @patch("services.cleanup_service.get_slot_service")
+    @patch("services.cleanup_service.get_execution_queue")
+    def test_truncates_long_error_messages(self, mock_queue_fn, mock_slot_fn, mock_db):
+        """Truncates combined error message to prevent DB bloat."""
+        mock_db.mark_execution_failed_by_watchdog.return_value = True
+        mock_slot = AsyncMock()
+        mock_slot_fn.return_value = mock_slot
+        mock_q = AsyncMock()
+        mock_queue_fn.return_value = mock_q
+
+        service = self._make_service()
+        # Create a very long error message
+        long_error = "x" * 3000
+        service._get_execution_error = AsyncMock(return_value=long_error)
+        service._broadcast_watchdog_event = AsyncMock()
+
+        mock_client = AsyncMock()
+
+        asyncio.run(
+            service._recover_execution(
+                "exec-1", "agent-a", "cleanup reason", "orphan_recovered", mock_client
+            )
+        )
+
+        error_arg = mock_db.mark_execution_failed_by_watchdog.call_args[0][1]
+        # Should be truncated to MAX_ERROR_MESSAGE_LENGTH (2000) + "..."
+        assert len(error_arg) <= 2003
+        assert error_arg.endswith("...")
+
+    @patch("services.cleanup_service.db")
+    @patch("services.cleanup_service.get_slot_service")
+    @patch("services.cleanup_service.get_execution_queue")
+    def test_works_without_client(self, mock_queue_fn, mock_slot_fn, mock_db):
+        """Works correctly when no client is provided (fallback path)."""
+        mock_db.mark_execution_failed_by_watchdog.return_value = True
+        mock_slot = AsyncMock()
+        mock_slot_fn.return_value = mock_slot
+        mock_q = AsyncMock()
+        mock_queue_fn.return_value = mock_q
+
+        service = self._make_service()
+        service._get_execution_error = AsyncMock()
+        service._broadcast_watchdog_event = AsyncMock()
+
+        result = asyncio.run(
+            service._recover_execution(
+                "exec-1", "agent-a", "cleanup reason only", "orphan_recovered", None
+            )
+        )
+
+        assert result is True
+        # _get_execution_error should NOT be called when client is None
+        service._get_execution_error.assert_not_called()
+        error_arg = mock_db.mark_execution_failed_by_watchdog.call_args[0][1]
+        assert error_arg == "cleanup reason only"

@@ -303,6 +303,79 @@ class ProcessRegistry:
         with self._lock:
             return execution_id in self._processes
 
+    def get_last_error(self, execution_id: str) -> Optional[dict]:
+        """
+        Extract the last error from an execution's log buffer.
+
+        Scans the log buffer for error indicators:
+        - Messages with is_error=True
+        - Messages with error_type set
+        - Result messages indicating failure
+
+        Args:
+            execution_id: The execution ID
+
+        Returns:
+            Dict with error_type and error_message, or None if no error found
+        """
+        with self._lock:
+            if execution_id not in self._log_buffers:
+                return None
+
+            buffer = self._log_buffers[execution_id]
+            if not buffer:
+                return None
+
+            # Scan buffer in reverse (most recent first) for error indicators
+            last_error_type = None
+            last_error_message = None
+
+            for entry in reversed(buffer):
+                if not isinstance(entry, dict):
+                    continue
+
+                # Check for is_error flag on result messages
+                if entry.get("is_error"):
+                    last_error_type = "execution_error"
+                    last_error_message = entry.get("result", "")
+                    break
+
+                # Check for error field on assistant messages
+                if entry.get("error"):
+                    last_error_type = entry.get("error")
+                    # Try to extract error text from message content
+                    message = entry.get("message", {})
+                    content = message.get("content", [])
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            last_error_message = block.get("text", "")
+                            break
+                    if last_error_type:
+                        break
+
+                # Check for tool_result with is_error
+                if entry.get("type") == "assistant" or entry.get("type") == "user":
+                    message = entry.get("message", {})
+                    content = message.get("content", [])
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "tool_result":
+                            if block.get("is_error"):
+                                last_error_type = "tool_error"
+                                result_content = block.get("content", [])
+                                for item in result_content:
+                                    if isinstance(item, dict) and item.get("type") == "text":
+                                        last_error_message = item.get("text", "")
+                                        break
+                                break
+
+            if last_error_type or last_error_message:
+                return {
+                    "error_type": last_error_type,
+                    "error_message": last_error_message[:2000] if last_error_message else None
+                }
+
+            return None
+
 
 # Global instance
 _process_registry: Optional[ProcessRegistry] = None
