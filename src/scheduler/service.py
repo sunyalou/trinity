@@ -1019,6 +1019,12 @@ class SchedulerService:
                     "execution_id": execution_id,
                     "status": "success"
                 })
+
+                # VALIDATE-001: Check if validation is enabled and trigger it
+                await self._maybe_trigger_validation(
+                    execution=execution,
+                    agent_name=agent_name,
+                )
             else:
                 # Log auth failures specially for diagnostics
                 if error_msg:
@@ -1290,6 +1296,135 @@ class SchedulerService:
                 retry_at=retry_at,
                 next_attempt_number=(execution.attempt_number or 1) + 1
             )
+
+    # =========================================================================
+    # Validation Management (VALIDATE-001)
+    # =========================================================================
+
+    async def _maybe_trigger_validation(
+        self,
+        execution: ScheduleExecution,
+        agent_name: str,
+    ):
+        """Check if a successful execution should be validated and trigger it.
+
+        Called after _poll_and_finalize detects a success.
+
+        Args:
+            execution: The completed execution record.
+            agent_name: The agent name for logging.
+        """
+        if not execution:
+            return
+
+        # Skip validation for validation executions (prevent infinite loop)
+        if execution.triggered_by == "validation":
+            logger.debug(f"Execution {execution.id} is a validation execution, skipping validation")
+            return
+
+        # Skip if execution already has a validation (duplicate prevention)
+        if execution.validation_execution_id:
+            logger.debug(f"Execution {execution.id} already has validation {execution.validation_execution_id}")
+            return
+
+        # Get the schedule to check validation configuration
+        schedule = self.db.get_schedule(execution.schedule_id)
+        if not schedule:
+            logger.debug(f"Schedule {execution.schedule_id} not found, skipping validation")
+            return
+
+        # Check if validation is enabled
+        if not schedule.validation_enabled:
+            logger.debug(f"Schedule {schedule.id} has validation_enabled=False, skipping validation")
+            # Mark as skipped for visibility
+            self._update_business_status(execution.id, "skipped")
+            return
+
+        logger.info(
+            f"Triggering validation for execution {execution.id} "
+            f"(schedule {schedule.id}, agent {agent_name})"
+        )
+
+        # Trigger validation via backend API
+        try:
+            await self._call_backend_trigger_validation(
+                execution_id=execution.id,
+                agent_name=agent_name,
+                schedule_id=schedule.id,
+                original_message=execution.message,
+                execution_response=execution.response or "",
+                custom_prompt=schedule.validation_prompt,
+                timeout_seconds=schedule.validation_timeout_seconds,
+            )
+        except Exception as e:
+            logger.error(f"Failed to trigger validation for execution {execution.id}: {e}")
+            # Mark as failed validation if trigger fails
+            self._update_business_status(execution.id, "failed_validation")
+
+    async def _call_backend_trigger_validation(
+        self,
+        execution_id: str,
+        agent_name: str,
+        schedule_id: str,
+        original_message: str,
+        execution_response: str,
+        custom_prompt: str = None,
+        timeout_seconds: int = 120,
+    ) -> dict:
+        """Call the backend API to trigger validation.
+
+        Args:
+            execution_id: The execution to validate.
+            agent_name: The agent to run validation on.
+            schedule_id: The schedule ID.
+            original_message: The original task message.
+            execution_response: The response from the original execution.
+            custom_prompt: Optional custom auditor prompt.
+            timeout_seconds: Timeout for validation task.
+
+        Returns:
+            dict with validation result.
+        """
+        url = f"{config.backend_url}/api/internal/validate-execution"
+
+        payload = {
+            "execution_id": execution_id,
+            "agent_name": agent_name,
+            "schedule_id": schedule_id,
+            "original_message": original_message,
+            "execution_response": execution_response,
+            "custom_prompt": custom_prompt,
+            "timeout_seconds": timeout_seconds,
+        }
+
+        headers = {"X-Internal-Secret": config.internal_api_secret}
+
+        async with httpx.AsyncClient(timeout=float(timeout_seconds) + 30) as client:
+            response = await client.post(url, json=payload, headers=headers)
+
+            if response.status_code >= 400:
+                logger.error(
+                    f"Backend validation trigger failed: {response.status_code} - {response.text}"
+                )
+                response.raise_for_status()
+
+            return response.json()
+
+    def _update_business_status(self, execution_id: str, business_status: str):
+        """Update the business status of an execution in the database.
+
+        Args:
+            execution_id: The execution to update.
+            business_status: The new business status.
+        """
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE schedule_executions
+                SET business_status = ?, validated_at = ?
+                WHERE id = ?
+            """, (business_status, datetime.utcnow().isoformat(), execution_id))
+            conn.commit()
 
     # =========================================================================
     # Schedule Management (for runtime updates)

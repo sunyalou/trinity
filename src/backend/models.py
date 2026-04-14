@@ -197,6 +197,19 @@ class TaskExecutionStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+class BusinessStatus(str, Enum):
+    """
+    Business validation status for task executions (VALIDATE-001).
+
+    Separate from technical TaskExecutionStatus — an execution can complete
+    successfully (technical status) but fail business validation.
+    """
+    PENDING_VALIDATION = "pending_validation"  # Execution completed, awaiting validation
+    VALIDATED = "validated"                     # Validation passed
+    FAILED_VALIDATION = "failed_validation"    # Validation found incomplete/incorrect work
+    SKIPPED = "skipped"                        # Validation not configured for this schedule
+
+
 class QueueItemStatus(str, Enum):
     """Status of an execution request in the in-memory/Redis execution queue."""
     QUEUED = "queued"

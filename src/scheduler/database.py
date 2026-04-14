@@ -78,7 +78,11 @@ class SchedulerDatabase:
             model=row["model"] if "model" in row_keys else None,
             # Retry configuration (RETRY-001)
             max_retries=row["max_retries"] if "max_retries" in row_keys and row["max_retries"] is not None else 1,
-            retry_delay_seconds=row["retry_delay_seconds"] if "retry_delay_seconds" in row_keys and row["retry_delay_seconds"] is not None else 60
+            retry_delay_seconds=row["retry_delay_seconds"] if "retry_delay_seconds" in row_keys and row["retry_delay_seconds"] is not None else 60,
+            # Validation configuration (VALIDATE-001)
+            validation_enabled=bool(row["validation_enabled"]) if "validation_enabled" in row_keys and row["validation_enabled"] is not None else False,
+            validation_prompt=row["validation_prompt"] if "validation_prompt" in row_keys else None,
+            validation_timeout_seconds=row["validation_timeout_seconds"] if "validation_timeout_seconds" in row_keys and row["validation_timeout_seconds"] is not None else 120
         )
 
     @staticmethod
@@ -112,7 +116,13 @@ class SchedulerDatabase:
             attempt_number=row["attempt_number"] if "attempt_number" in row_keys and row["attempt_number"] else 1,
             retry_of_execution_id=row["retry_of_execution_id"] if "retry_of_execution_id" in row_keys else None,
             retry_scheduled_at=datetime.fromisoformat(row["retry_scheduled_at"])
-                if "retry_scheduled_at" in row_keys and row["retry_scheduled_at"] else None
+                if "retry_scheduled_at" in row_keys and row["retry_scheduled_at"] else None,
+            # Validation tracking (VALIDATE-001)
+            business_status=row["business_status"] if "business_status" in row_keys else None,
+            validated_at=datetime.fromisoformat(row["validated_at"])
+                if "validated_at" in row_keys and row["validated_at"] else None,
+            validation_execution_id=row["validation_execution_id"] if "validation_execution_id" in row_keys else None,
+            validates_execution_id=row["validates_execution_id"] if "validates_execution_id" in row_keys else None
         )
 
     # =========================================================================

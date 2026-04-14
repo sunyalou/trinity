@@ -138,6 +138,13 @@
       "added": "2026-04-13",
       "categories": ["backend", "unit", "backlog", "async", "executions"],
       "description": "Unit tests for persistent async task backlog (#260): TaskExecutionStatus.QUEUED enum, migration (queued_at/backlog_metadata/max_backlog_depth/partial index), ScheduleOperations claim FIFO atomicity, cancel paths, stale expiry, BacklogService enqueue depth-cap, drain slot-first acquire + corrupt metadata failure, SlotService release callback fan-out."
+    },
+    {
+      "file": "test_validation.py",
+      "feature": "VALIDATE-001",
+      "added": "2026-04-14",
+      "categories": ["backend", "api", "scheduler", "validation"],
+      "description": "Tests for business task validation (#294): prompt building (placeholders, truncation, custom prompts), response parsing (JSON, markdown blocks, text fallback, failure indicators), business status mapping, schedule/execution model validation fields, API integration tests"
     }
   ]
 }

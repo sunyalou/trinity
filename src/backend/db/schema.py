@@ -153,6 +153,9 @@ TABLES = {
             model TEXT,
             max_retries INTEGER DEFAULT 1,
             retry_delay_seconds INTEGER DEFAULT 60,
+            validation_enabled INTEGER DEFAULT 0,
+            validation_prompt TEXT,
+            validation_timeout_seconds INTEGER DEFAULT 120,
             FOREIGN KEY (owner_id) REFERENCES users(id)
         )
     """,
@@ -180,6 +183,10 @@ TABLES = {
             attempt_number INTEGER DEFAULT 1,
             retry_of_execution_id TEXT,
             retry_scheduled_at TEXT,
+            business_status TEXT,
+            validated_at TEXT,
+            validation_execution_id TEXT,
+            validates_execution_id TEXT,
             FOREIGN KEY (schedule_id) REFERENCES agent_schedules(id)
         )
     """,
@@ -699,6 +706,9 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_executions_status ON schedule_executions(status)",
     # PERF-001: Composite index for Tasks list queries
     "CREATE INDEX IF NOT EXISTS idx_executions_agent_started ON schedule_executions(agent_name, started_at DESC)",
+    # VALIDATE-001: Business status for validation results
+    "CREATE INDEX IF NOT EXISTS idx_executions_business_status ON schedule_executions(business_status)",
+    "CREATE INDEX IF NOT EXISTS idx_executions_validates ON schedule_executions(validates_execution_id)",
 
     # Git config indexes
     "CREATE INDEX IF NOT EXISTS idx_git_config_agent ON agent_git_config(agent_name)",

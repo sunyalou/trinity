@@ -11,6 +11,7 @@
 
 | Date | ID | Feature | Flow |
 |------|-----|---------|------|
+| 2026-04-14 | VALIDATE-001 (#294) | Business task validation — post-execution clean-context auditor verifies task completion | [business-validation.md](feature-flows/business-validation.md) |
 | 2026-04-14 | SELF-EXEC-001 (#264) | Agent self-execute — background task on itself during chat, optional result injection | [self-execute.md](feature-flows/self-execute.md) |
 | 2026-04-13 | BACKLOG-001 (#260) | Persistent async task backlog — async `/task` spills to SQLite FIFO at capacity, drains on slot release, restart-durable | [persistent-task-backlog.md](feature-flows/persistent-task-backlog.md) |
 | 2026-04-13 | #314 | Whitelist-driven role on first email login — fixes silent promotion to `creator` for cross-channel access grants | [email-authentication.md](feature-flows/email-authentication.md), [agent-sharing.md](feature-flows/agent-sharing.md), [cli-tool.md](feature-flows/cli-tool.md) |
@@ -120,6 +121,7 @@
 | Parallel Capacity | [parallel-capacity.md](feature-flows/parallel-capacity.md) | Per-agent parallel execution slot tracking |
 | Persistent Task Backlog | [persistent-task-backlog.md](feature-flows/persistent-task-backlog.md) | SQLite-backed FIFO backlog for async tasks at capacity (BACKLOG-001) |
 | Task Execution Service | [task-execution-service.md](feature-flows/task-execution-service.md) | Unified execution lifecycle for all task callers (EXEC-024) |
+| Business Validation | [business-validation.md](feature-flows/business-validation.md) | Post-execution auditor verifies task completion (VALIDATE-001) |
 | Fan-Out | [fan-out.md](feature-flows/fan-out.md) | Parallel task dispatch and result collection via semaphore (FANOUT-001) |
 
 ### Dashboard & Monitoring

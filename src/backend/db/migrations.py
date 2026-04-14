@@ -36,6 +36,7 @@ Migration Order (as of 2026-02-28):
 29. subscription_rate_limit_tracking - SUB-003 rate-limit event tracking for auto-switch
 30. execution_fan_out_id - FANOUT-001 fan-out operation linkage
 31. scheduler_retry_support - RETRY-001 scheduler retry mechanism
+32. validation_support - VALIDATE-001 post-execution business validation
 """
 import logging
 import sqlite3
@@ -1208,6 +1209,54 @@ def _migrate_scheduler_retry_support(cursor, conn):
     conn.commit()
 
 
+def _migrate_validation_support(cursor, conn):
+    """VALIDATE-001: Post-execution business validation.
+
+    Adds:
+    - agent_schedules.validation_enabled: enable validation for this schedule (default 0)
+    - agent_schedules.validation_prompt: custom auditor instructions
+    - agent_schedules.validation_timeout_seconds: timeout for validation task (default 120)
+    - schedule_executions.business_status: validation result (pending_validation, validated, failed_validation, skipped)
+    - schedule_executions.validated_at: when validation completed
+    - schedule_executions.validation_execution_id: FK to the validation execution
+    - schedule_executions.validates_execution_id: FK to execution being validated (for validation records)
+    """
+    # agent_schedules columns
+    cursor.execute("PRAGMA table_info(agent_schedules)")
+    as_cols = {row[1] for row in cursor.fetchall()}
+
+    if "validation_enabled" not in as_cols:
+        cursor.execute("ALTER TABLE agent_schedules ADD COLUMN validation_enabled INTEGER DEFAULT 0")
+    if "validation_prompt" not in as_cols:
+        cursor.execute("ALTER TABLE agent_schedules ADD COLUMN validation_prompt TEXT")
+    if "validation_timeout_seconds" not in as_cols:
+        cursor.execute("ALTER TABLE agent_schedules ADD COLUMN validation_timeout_seconds INTEGER DEFAULT 120")
+
+    # schedule_executions columns
+    cursor.execute("PRAGMA table_info(schedule_executions)")
+    se_cols = {row[1] for row in cursor.fetchall()}
+
+    if "business_status" not in se_cols:
+        cursor.execute("ALTER TABLE schedule_executions ADD COLUMN business_status TEXT")
+    if "validated_at" not in se_cols:
+        cursor.execute("ALTER TABLE schedule_executions ADD COLUMN validated_at TEXT")
+    if "validation_execution_id" not in se_cols:
+        cursor.execute("ALTER TABLE schedule_executions ADD COLUMN validation_execution_id TEXT")
+    if "validates_execution_id" not in se_cols:
+        cursor.execute("ALTER TABLE schedule_executions ADD COLUMN validates_execution_id TEXT")
+
+    # Indexes for validation queries
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_executions_business_status "
+        "ON schedule_executions(business_status)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_executions_validates "
+        "ON schedule_executions(validates_execution_id)"
+    )
+    conn.commit()
+
+
 # Ordered list of all migrations. Defined at module level (after all _migrate_* functions)
 # so run_all_migrations and the health check can both reference it.
 # IMPORTANT: append-only — never reorder or remove entries.
@@ -1253,4 +1302,5 @@ MIGRATIONS = [
     ("email_whitelist_default_role", _migrate_email_whitelist_default_role),
     ("backlog_support", _migrate_backlog_support),
     ("scheduler_retry_support", _migrate_scheduler_retry_support),
+    ("validation_support", _migrate_validation_support),
 ]

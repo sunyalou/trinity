@@ -92,7 +92,11 @@ class ScheduleOperations:
             model=row["model"] if "model" in row_keys else None,
             # Retry configuration (RETRY-001)
             max_retries=row["max_retries"] if "max_retries" in row_keys and row["max_retries"] is not None else 1,
-            retry_delay_seconds=row["retry_delay_seconds"] if "retry_delay_seconds" in row_keys and row["retry_delay_seconds"] is not None else 60
+            retry_delay_seconds=row["retry_delay_seconds"] if "retry_delay_seconds" in row_keys and row["retry_delay_seconds"] is not None else 60,
+            # Validation configuration (VALIDATE-001)
+            validation_enabled=bool(row["validation_enabled"]) if "validation_enabled" in row_keys and row["validation_enabled"] is not None else False,
+            validation_prompt=row["validation_prompt"] if "validation_prompt" in row_keys else None,
+            validation_timeout_seconds=row["validation_timeout_seconds"] if "validation_timeout_seconds" in row_keys and row["validation_timeout_seconds"] is not None else 120
         )
 
     @staticmethod
@@ -140,6 +144,12 @@ class ScheduleOperations:
             retry_of_execution_id=row["retry_of_execution_id"] if "retry_of_execution_id" in row_keys else None,
             retry_scheduled_at=parse_iso_timestamp(row["retry_scheduled_at"])
                 if "retry_scheduled_at" in row_keys and row["retry_scheduled_at"] else None,
+            # Validation tracking (VALIDATE-001)
+            business_status=row["business_status"] if "business_status" in row_keys else None,
+            validated_at=parse_iso_timestamp(row["validated_at"])
+                if "validated_at" in row_keys and row["validated_at"] else None,
+            validation_execution_id=row["validation_execution_id"] if "validation_execution_id" in row_keys else None,
+            validates_execution_id=row["validates_execution_id"] if "validates_execution_id" in row_keys else None,
         )
 
     @staticmethod
@@ -202,12 +212,16 @@ class ScheduleOperations:
                 max_retries = max(0, min(5, schedule_data.max_retries))
                 retry_delay_seconds = max(30, min(600, schedule_data.retry_delay_seconds))
 
+                # Clamp validation timeout to valid range (VALIDATE-001)
+                validation_timeout_seconds = max(30, min(600, schedule_data.validation_timeout_seconds))
+
                 cursor.execute("""
                     INSERT INTO agent_schedules (
                         id, agent_name, name, cron_expression, message, enabled,
                         timezone, description, owner_id, created_at, updated_at, next_run_at,
-                        timeout_seconds, allowed_tools, model, max_retries, retry_delay_seconds
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        timeout_seconds, allowed_tools, model, max_retries, retry_delay_seconds,
+                        validation_enabled, validation_prompt, validation_timeout_seconds
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     schedule_id,
                     agent_name,
@@ -225,7 +239,10 @@ class ScheduleOperations:
                     allowed_tools_json,
                     schedule_data.model,
                     max_retries,
-                    retry_delay_seconds
+                    retry_delay_seconds,
+                    1 if schedule_data.validation_enabled else 0,
+                    schedule_data.validation_prompt,
+                    validation_timeout_seconds
                 ))
                 conn.commit()
 
@@ -246,7 +263,10 @@ class ScheduleOperations:
                     allowed_tools=schedule_data.allowed_tools,
                     model=schedule_data.model,
                     max_retries=max_retries,
-                    retry_delay_seconds=retry_delay_seconds
+                    retry_delay_seconds=retry_delay_seconds,
+                    validation_enabled=schedule_data.validation_enabled,
+                    validation_prompt=schedule_data.validation_prompt,
+                    validation_timeout_seconds=validation_timeout_seconds
                 )
             except sqlite3.IntegrityError:
                 return None
@@ -321,7 +341,8 @@ class ScheduleOperations:
             allowed_fields = [
                 "name", "cron_expression", "message", "enabled", "timezone",
                 "description", "timeout_seconds", "allowed_tools", "model",
-                "max_retries", "retry_delay_seconds"  # RETRY-001
+                "max_retries", "retry_delay_seconds",  # RETRY-001
+                "validation_enabled", "validation_prompt", "validation_timeout_seconds"  # VALIDATE-001
             ]
 
             for key, value in updates.items():
@@ -336,6 +357,12 @@ class ScheduleOperations:
                         value = max(0, min(5, int(value)))
                     elif key == "retry_delay_seconds":
                         # Clamp to valid range (RETRY-001)
+                        value = max(30, min(600, int(value)))
+                    elif key == "validation_enabled":
+                        # Convert to integer for SQLite (VALIDATE-001)
+                        value = 1 if value else 0
+                    elif key == "validation_timeout_seconds":
+                        # Clamp to valid range (VALIDATE-001)
                         value = max(30, min(600, int(value)))
                     set_clauses.append(f"{key} = ?")
                     params.append(value)
@@ -962,7 +989,7 @@ class ScheduleOperations:
                     duration_ms, message, triggered_by, context_used, context_max, cost,
                     source_user_id, source_user_email, source_agent_name,
                     source_mcp_key_id, source_mcp_key_name, claude_session_id, model_used,
-                    fan_out_id
+                    fan_out_id, business_status, validation_execution_id
                 FROM schedule_executions
                 WHERE agent_name = ?
                 ORDER BY started_at DESC
@@ -1529,3 +1556,146 @@ class ScheduleOperations:
                 ORDER BY agent_name
             """)
             return [self._row_to_git_config(row) for row in cursor.fetchall()]
+
+    # =========================================================================
+    # Business Validation (VALIDATE-001)
+    # =========================================================================
+
+    def create_validation_execution(
+        self,
+        validates_execution_id: str,
+        agent_name: str,
+        schedule_id: str,
+        message: str,
+        timeout_seconds: int = 120,
+    ) -> Optional[ScheduleExecution]:
+        """Create a validation execution record linked to the original execution.
+
+        Args:
+            validates_execution_id: The execution being validated.
+            agent_name: The agent running validation.
+            schedule_id: The schedule that triggered the original execution.
+            message: The validation prompt message.
+            timeout_seconds: Timeout for validation task.
+
+        Returns:
+            The created validation execution record.
+        """
+        execution_id = self._generate_id()
+        now = utc_now_iso()
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO schedule_executions (
+                    id, schedule_id, agent_name, status, started_at, message, triggered_by,
+                    validates_execution_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                execution_id,
+                schedule_id,
+                agent_name,
+                TaskExecutionStatus.RUNNING,
+                now,
+                message,
+                "validation",  # New trigger type for validation
+                validates_execution_id,
+            ))
+            conn.commit()
+
+            return ScheduleExecution(
+                id=execution_id,
+                schedule_id=schedule_id,
+                agent_name=agent_name,
+                status=TaskExecutionStatus.RUNNING,
+                started_at=datetime.fromisoformat(now),
+                message=message,
+                triggered_by="validation",
+                validates_execution_id=validates_execution_id,
+            )
+
+    def update_business_status(
+        self,
+        execution_id: str,
+        business_status: str,
+        validation_execution_id: Optional[str] = None,
+    ) -> bool:
+        """Update the business validation status of an execution.
+
+        Args:
+            execution_id: The execution to update.
+            business_status: The new business status (pending_validation, validated, failed_validation, skipped).
+            validation_execution_id: Optional FK to the validation execution record.
+
+        Returns:
+            True if the row was updated.
+        """
+        now = utc_now_iso()
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+
+            if validation_execution_id:
+                cursor.execute("""
+                    UPDATE schedule_executions
+                    SET business_status = ?, validated_at = ?, validation_execution_id = ?
+                    WHERE id = ?
+                """, (business_status, now, validation_execution_id, execution_id))
+            else:
+                cursor.execute("""
+                    UPDATE schedule_executions
+                    SET business_status = ?, validated_at = ?
+                    WHERE id = ?
+                """, (business_status, now, execution_id))
+
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_executions_pending_validation(self, agent_name: str = None) -> List[ScheduleExecution]:
+        """Get executions that are pending validation.
+
+        Used for startup recovery to retry failed validation attempts.
+
+        Args:
+            agent_name: Optional filter by agent name.
+
+        Returns:
+            List of executions with business_status = 'pending_validation'.
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+
+            if agent_name:
+                cursor.execute("""
+                    SELECT * FROM schedule_executions
+                    WHERE business_status = 'pending_validation' AND agent_name = ?
+                    ORDER BY started_at ASC
+                """, (agent_name,))
+            else:
+                cursor.execute("""
+                    SELECT * FROM schedule_executions
+                    WHERE business_status = 'pending_validation'
+                    ORDER BY started_at ASC
+                """)
+
+            return [self._row_to_schedule_execution(row) for row in cursor.fetchall()]
+
+    def get_validation_execution(self, validates_execution_id: str) -> Optional[ScheduleExecution]:
+        """Get the validation execution record for a given original execution.
+
+        Args:
+            validates_execution_id: The original execution ID.
+
+        Returns:
+            The validation execution record, or None if not found.
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM schedule_executions
+                WHERE validates_execution_id = ?
+                ORDER BY started_at DESC
+                LIMIT 1
+            """, (validates_execution_id,))
+            row = cursor.fetchone()
+            return self._row_to_schedule_execution(row) if row else None

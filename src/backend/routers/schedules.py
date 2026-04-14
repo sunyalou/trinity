@@ -84,6 +84,10 @@ class ScheduleUpdateRequest(BaseModel):
     timeout_seconds: Optional[int] = None
     allowed_tools: Optional[List[str]] = None
     model: Optional[str] = None  # Model override (MODEL-001)
+    # Validation configuration (VALIDATE-001)
+    validation_enabled: Optional[bool] = None
+    validation_prompt: Optional[str] = None
+    validation_timeout_seconds: Optional[int] = None
 
 
 class ScheduleResponse(BaseModel):
@@ -103,6 +107,10 @@ class ScheduleResponse(BaseModel):
     timeout_seconds: int = 900
     allowed_tools: Optional[List[str]] = None
     model: Optional[str] = None  # Model override (MODEL-001)
+    # Validation configuration (VALIDATE-001)
+    validation_enabled: bool = False
+    validation_prompt: Optional[str] = None
+    validation_timeout_seconds: int = 120
 
     class Config:
         from_attributes = True
@@ -139,6 +147,9 @@ class ExecutionSummary(BaseModel):
     model_used: Optional[str] = None
     # Fan-out linkage (small) - FANOUT-001
     fan_out_id: Optional[str] = None
+    # Validation tracking (small) - VALIDATE-001
+    business_status: Optional[str] = None  # pending_validation, validated, failed_validation, skipped
+    validation_execution_id: Optional[str] = None
 
     # EXCLUDED (large fields - fetch via /executions/{id}):
     # - response: Optional[str]      # Full response text
@@ -184,6 +195,11 @@ class ExecutionResponse(BaseModel):
     model_used: Optional[str] = None
     # Fan-out linkage - FANOUT-001
     fan_out_id: Optional[str] = None
+    # Validation tracking - VALIDATE-001
+    business_status: Optional[str] = None
+    validated_at: Optional[datetime] = None
+    validation_execution_id: Optional[str] = None
+    validates_execution_id: Optional[str] = None
 
     class Config:
         from_attributes = True

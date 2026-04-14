@@ -290,3 +290,90 @@ async def _execute_task_internal_background(task_service, request: InternalTaskE
                     logger.info(f"Updated execution {request.execution_id} to FAILED")
             except Exception as db_err:
                 logger.error(f"Failed to update execution status: {db_err}")
+
+
+# =============================================================================
+# Validation Endpoints (VALIDATE-001)
+# =============================================================================
+
+class ValidateExecutionRequest(BaseModel):
+    """Request model for triggering execution validation."""
+    execution_id: str
+    agent_name: str
+    schedule_id: str
+    original_message: str
+    execution_response: str
+    custom_prompt: Optional[str] = None
+    timeout_seconds: int = 120
+
+
+@router.post("/validate-execution")
+async def validate_execution(request: ValidateExecutionRequest):
+    """Trigger validation for a completed execution.
+
+    Called by the scheduler service after a successful execution
+    when validation is enabled for the schedule.
+
+    Returns:
+        dict with validation status and result.
+    """
+    from services.validation_service import get_validation_service
+
+    logger.info(
+        f"Received validation request for execution {request.execution_id} "
+        f"on agent '{request.agent_name}'"
+    )
+
+    validation_service = get_validation_service()
+
+    # Run validation in background to not block the scheduler
+    asyncio.create_task(
+        _run_validation_background(
+            validation_service=validation_service,
+            execution_id=request.execution_id,
+            agent_name=request.agent_name,
+            schedule_id=request.schedule_id,
+            original_message=request.original_message,
+            execution_response=request.execution_response,
+            custom_prompt=request.custom_prompt,
+            timeout_seconds=request.timeout_seconds,
+        )
+    )
+
+    return {
+        "status": "accepted",
+        "message": f"Validation triggered for execution {request.execution_id}",
+    }
+
+
+async def _run_validation_background(
+    validation_service,
+    execution_id: str,
+    agent_name: str,
+    schedule_id: str,
+    original_message: str,
+    execution_response: str,
+    custom_prompt: str = None,
+    timeout_seconds: int = 120,
+):
+    """Run validation in background.
+
+    This allows the internal endpoint to return immediately while
+    validation runs asynchronously.
+    """
+    try:
+        result = await validation_service.validate_execution(
+            execution_id=execution_id,
+            agent_name=agent_name,
+            schedule_id=schedule_id,
+            original_message=original_message,
+            execution_response=execution_response,
+            custom_prompt=custom_prompt,
+            timeout_seconds=timeout_seconds,
+        )
+        logger.info(
+            f"Validation completed for execution {execution_id}: "
+            f"status={result.status.value}, summary={result.summary}"
+        )
+    except Exception as e:
+        logger.error(f"Validation failed for execution {execution_id}: {e}")

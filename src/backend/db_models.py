@@ -118,6 +118,10 @@ class ScheduleCreate(BaseModel):
     # Retry configuration (RETRY-001)
     max_retries: int = 1  # 0 = disabled, 1-5 range. Default 1 for resilience.
     retry_delay_seconds: int = 60  # Seconds between retries (30-600 range)
+    # Validation configuration (VALIDATE-001)
+    validation_enabled: bool = False  # Enable post-execution validation
+    validation_prompt: Optional[str] = None  # Custom auditor instructions (None = default prompt)
+    validation_timeout_seconds: int = 120  # Timeout for validation task (30-600 range)
 
 
 class Schedule(BaseModel):
@@ -141,6 +145,10 @@ class Schedule(BaseModel):
     # Retry configuration (RETRY-001)
     max_retries: int = 1  # 0 = disabled, 1-5 range
     retry_delay_seconds: int = 60  # Seconds between retries (30-600 range)
+    # Validation configuration (VALIDATE-001)
+    validation_enabled: bool = False  # Enable post-execution validation
+    validation_prompt: Optional[str] = None  # Custom auditor instructions (None = default prompt)
+    validation_timeout_seconds: int = 120  # Timeout for validation task (30-600 range)
 
 
 class ScheduleExecution(BaseModel):
@@ -183,6 +191,11 @@ class ScheduleExecution(BaseModel):
     attempt_number: int = 1                    # Which attempt this is (1 = first try)
     retry_of_execution_id: Optional[str] = None  # Links retry to original execution
     retry_scheduled_at: Optional[datetime] = None  # When retry is scheduled (for restart recovery)
+    # Validation tracking (VALIDATE-001)
+    business_status: Optional[str] = None       # pending_validation, validated, failed_validation, skipped
+    validated_at: Optional[datetime] = None     # When validation completed
+    validation_execution_id: Optional[str] = None  # FK to the validation execution record
+    validates_execution_id: Optional[str] = None   # FK to execution being validated (for validation records)
 
 
 # =========================================================================
