@@ -178,6 +178,7 @@ The test suite covers:
 - **Cleanup Service** (test_cleanup_service.py) - Cleanup status/trigger endpoints, report structure (CLEANUP-001, #106, #219) [SMOKE]
 - **Watchdog Integration** (test_watchdog.py) - Watchdog report fields in cleanup status/trigger [SMOKE]
 - **Watchdog Unit Tests** (test_watchdog_unit.py) - Reconciliation logic, orphan recovery, auto-terminate, per-agent TTL (#129, #226) [UNIT]
+- **Context Used Formula** (unit/test_context_used_formula.py) - Verify context_used = input_tokens only, not input+output (#56) [UNIT]
 
 ### Avatars & Image Generation
 - **Avatars** (test_avatars.py) - Avatar serving, generation, regeneration, deletion, emotions, identity prompts, default generation (AVATAR-001/002/003) [SMOKE + Agent]
@@ -220,7 +221,7 @@ The test suite covers:
 
 **Total Tests**: ~2,172 tests across 115 test files
 **Smoke Tests**: ~564 tests (fast, no agent creation)
-**Unit Tests**: ~40 tests (no backend needed, rate limit detection, watchdog logic)
+**Unit Tests**: ~43 tests (no backend needed, rate limit detection, watchdog logic, context formula)
 **Core Tests (not slow)**: ~2,069 tests
 **Slow Tests**: ~89 tests (chat execution, fleet ops, system agent ops, execution termination)
 **WebSocket Tests**: ~10 tests (web terminal, execution streaming)
@@ -254,7 +255,10 @@ Use these thresholds to assess test health (based on **executed** tests, not inc
 
 | Test File | Description | Tests Added |
 |-----------|-------------|-------------|
+| `unit/test_context_used_formula.py` | Verify context_used equals input_tokens only (#56) | 3 tests |
 | `test_watchdog_unit.py` | Updated `_reconcile_orphaned_executions()` tests for 3-tuple return (now returns `confirmed_running_ids` set, #226) | 7 tests updated |
+
+**Context Used Formula (#56)**: Added `tests/unit/test_context_used_formula.py` to verify `context_used` equals `input_tokens` only, not `input_tokens + output_tokens`. Per Claude Code SDK, `input_tokens` represents the full context window fill at final turn. Tests verify the formula, edge cases (missing tokens), and percentage calculation sanity.
 
 **Per-Agent Slot TTL (#226)**: Updated unit tests in `test_watchdog_unit.py::TestReconcileOrphanedExecutions` to expect `(orphaned, terminated, confirmed_running)` return signature. Added assertions verifying `confirmed_running` set contains execution IDs verified as still running on agents within their timeout. No new tests needed — existing cleanup API tests (`test_cleanup_service.py`) cover behavior; the change is internal optimization.
 
