@@ -3,7 +3,7 @@
 **Date:** 2026-04-13
 **Status:** Proposed sequencing for execution-time orchestration, event subscriptions, and multi-agent reliability.
 
-**Progress:** Sprint A — **7/7 complete**: #95 (PR #320), #285 (PR #322), #226 (PR #323), #286 (PR #324), #61 (PR #326), #132 (PR #328), #56 (PR #329). **Sprint B next: #305.**
+**Progress:** Sprint A — **7/7 complete**. Sprint B — **1/1 complete**: #305 (PR #330). **Sprint C next: #260.**
 
 ---
 
@@ -23,7 +23,7 @@ Shipping #260 on top of today's foundation would produce a *persistent* backlog 
 
 ```
 Sprint A (unblock):     #95 ✅, #285 ✅, #226 ✅, #286 ✅, #61 ✅, #132 ✅, #56 ✅  ← COMPLETE
-Sprint B (trace):       #305
+Sprint B (trace):       #305 ✅  ← COMPLETE
 Sprint C (orchestrate): #260 → #271 → #294 → #264 → #291
 Sprint D (push telemetry): #306, #307
 Sprint E (scale):       #24, #18
@@ -81,7 +81,7 @@ Sprint E (scale):       #24, #18
 
 | # | Title | Why it's here |
 |---|-------|---------------|
-| #305 | OpenTelemetry distributed tracing (RELIABILITY-002) | OTel Collector already in `docker-compose.yml`. ~30 lines + 3 packages. Enables single trace ID across Agent A → B → C. Pairs with #286 so `cleanup_reason` carries the trace ID. |
+| ~~#305~~ ✅ | ~~OpenTelemetry distributed tracing (RELIABILITY-002)~~ | **Shipped** in PR #330. Auto-instrumentation for FastAPI/httpx/Redis. Trace ID in logs. 10% default sampling. Enabled via `OTEL_ENABLED=1`. |
 
 ### Considerations
 
