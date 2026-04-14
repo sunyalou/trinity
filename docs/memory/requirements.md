@@ -395,6 +395,20 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
   - Identity captured at enqueue and replayed at drain (no re-auth, matches scheduler pattern)
 - **Flow**: `docs/memory/feature-flows/persistent-task-backlog.md`
 
+### 10.9 Business Task Validation (VALIDATE-001)
+- **Status**: ✅ Implemented (2026-04-14)
+- **Requirement ID**: VALIDATE-001
+- **GitHub Issue**: #294
+- **Description**: Post-execution validation phase that runs a clean-context Claude session with auditor framing to verify business task completion. Separates technical success (Claude ran without errors) from business success (intended work was done).
+- **Key Features**:
+  - Per-schedule `validation_enabled`, `validation_prompt`, `validation_timeout_seconds` config
+  - `business_status` field on executions: `pending_validation`, `validated`, `failed_validation`, `skipped`
+  - Linked validation execution records via `validates_execution_id` / `validation_execution_id`
+  - Default auditor prompt with explicit framing and JSON response format
+  - Fallback text inference when JSON parsing fails
+  - Operator queue notification on validation failure
+- **Flow**: `docs/memory/feature-flows/business-validation.md`
+
 ---
 
 ## 11. GitHub Integration
