@@ -423,9 +423,9 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
 - **Flow**: `docs/memory/feature-flows/system-agent-ui.md`
 
 ### 12.5 OpenTelemetry Integration
-- **Status**: ✅ Implemented (2025-12-20)
-- **Description**: OTel metrics export from Claude Code agents
-- **Key Features**: Cost, tokens, productivity metrics in Dashboard
+- **Status**: ✅ Implemented (2025-12-20, extended 2026-04-14)
+- **Description**: OTel metrics export from Claude Code agents + backend distributed tracing
+- **Key Features**: Cost, tokens, productivity metrics in Dashboard; trace_id in logs for multi-agent request correlation (RELIABILITY-002)
 - **Flow**: `docs/memory/feature-flows/opentelemetry-integration.md`
 
 ### 12.6 System-Wide Trinity Prompt
