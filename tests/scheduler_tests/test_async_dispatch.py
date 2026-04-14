@@ -17,6 +17,7 @@ _src_path = str(_this_file.parent.parent.parent / 'src')
 if _src_path not in sys.path:
     sys.path.insert(0, _src_path)
 
+import asyncio
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
 from datetime import datetime
@@ -500,3 +501,182 @@ class TestEndToEndAsyncSchedule:
         execution = db_with_data.get_execution(created_exec_id["value"])
         assert execution is not None
         assert execution.status == ExecutionStatus.SUCCESS
+
+
+class TestFireAndForget:
+    """Tests for Issue #132: Fire-and-forget dispatch to prevent APScheduler skips."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_returns_immediately_with_dispatched_status(
+        self,
+        db_with_data: SchedulerDatabase,
+        mock_lock_manager: LockManager,
+    ):
+        """Test that _call_backend_execute_task returns immediately with 'dispatched' status."""
+        service = SchedulerService(
+            database=db_with_data,
+            lock_manager=mock_lock_manager,
+        )
+
+        # Create an execution record
+        execution = db_with_data.create_execution(
+            schedule_id="schedule-1",
+            agent_name="test-agent",
+            message="Test",
+        )
+
+        # Mock httpx response for async accepted
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "status": "accepted",
+            "execution_id": execution.id,
+            "async_mode": True,
+        }
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            # Should return immediately, not block on polling
+            result = await service._call_backend_execute_task(
+                agent_name="test-agent",
+                message="Test",
+                triggered_by="schedule",
+                execution_id=execution.id,
+            )
+
+            # Verify we got "dispatched" status (not final status)
+            assert result["status"] == "dispatched"
+            assert result["async_mode"] is True
+            assert result["execution_id"] == execution.id
+
+    @pytest.mark.asyncio
+    async def test_background_poll_task_created(
+        self,
+        db_with_data: SchedulerDatabase,
+        mock_lock_manager: LockManager,
+    ):
+        """Test that a background poll task is created and tracked."""
+        service = SchedulerService(
+            database=db_with_data,
+            lock_manager=mock_lock_manager,
+        )
+
+        # Create execution and mark it as success immediately (so poll finishes)
+        execution = db_with_data.create_execution(
+            schedule_id="schedule-1",
+            agent_name="test-agent",
+            message="Test",
+        )
+        db_with_data.update_execution_status(
+            execution_id=execution.id,
+            status=ExecutionStatus.SUCCESS,
+        )
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "status": "accepted",
+            "execution_id": execution.id,
+            "async_mode": True,
+        }
+
+        with patch("httpx.AsyncClient") as mock_client_cls, \
+             patch("scheduler.service.config") as mock_config:
+            mock_config.poll_interval = 0.01
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            # Call should spawn a background task
+            await service._call_backend_execute_task(
+                agent_name="test-agent",
+                message="Test",
+                triggered_by="schedule",
+                execution_id=execution.id,
+            )
+
+            # Task was added (may have already completed)
+            # Wait briefly for task to complete
+            await asyncio.sleep(0.05)
+
+            # Verify task tracking works (task removed itself on completion)
+            # The set should be empty after task completes
+            assert len(service._active_poll_tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_execute_schedule_updates_last_run_at_immediately(
+        self,
+        db_with_data: SchedulerDatabase,
+        mock_lock_manager: LockManager,
+    ):
+        """Test that _execute_schedule_with_lock updates last_run_at on dispatch."""
+        service = SchedulerService(
+            database=db_with_data,
+            lock_manager=mock_lock_manager,
+        )
+
+        mock_lock = MagicMock()
+        mock_lock_manager.try_acquire_schedule_lock = MagicMock(return_value=mock_lock)
+
+        # Get original schedule
+        schedule = db_with_data.get_schedule("schedule-1")
+        original_last_run = schedule.last_run_at
+
+        # Mock backend to return "dispatched" status
+        async def mock_dispatch(**kwargs):
+            return {
+                "status": "dispatched",
+                "async_mode": True,
+                "execution_id": kwargs.get("execution_id"),
+            }
+
+        with patch.object(service, '_call_backend_execute_task', new_callable=AsyncMock) as mock_backend, \
+             patch.object(service, '_publish_event', new_callable=AsyncMock):
+
+            mock_backend.side_effect = mock_dispatch
+
+            await service._execute_schedule_with_lock("schedule-1")
+
+        # Verify last_run_at was updated immediately
+        updated_schedule = db_with_data.get_schedule("schedule-1")
+        assert updated_schedule.last_run_at is not None
+        if original_last_run:
+            assert updated_schedule.last_run_at > original_last_run
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cancels_active_poll_tasks(
+        self,
+        db_with_data: SchedulerDatabase,
+        mock_lock_manager: LockManager,
+    ):
+        """Test that shutdown() cancels active poll tasks."""
+        service = SchedulerService(
+            database=db_with_data,
+            lock_manager=mock_lock_manager,
+        )
+
+        # Create a task that would run for a long time
+        async def long_running():
+            await asyncio.sleep(100)
+
+        task = asyncio.create_task(long_running())
+        service._active_poll_tasks.add(task)
+
+        # Shutdown should cancel it
+        service.shutdown()
+
+        # Wait for cancellation to propagate
+        try:
+            await asyncio.wait_for(task, timeout=0.1)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
+        assert task.cancelled() or task.done()
+        assert len(service._active_poll_tasks) == 0

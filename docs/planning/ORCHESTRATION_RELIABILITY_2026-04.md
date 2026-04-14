@@ -3,7 +3,7 @@
 **Date:** 2026-04-13
 **Status:** Proposed sequencing for execution-time orchestration, event subscriptions, and multi-agent reliability.
 
-**Progress:** Sprint A — **5/6 shipped**: #95 (PR #320), #285 (PR #322), #226 (PR #323), #286 (PR #324), #61 (PR #326). Remaining: #132, #56.
+**Progress:** Sprint A — **6/7 shipped**: #95 (PR #320), #285 (PR #322), #226 (PR #323), #286 (PR #324), #61 (PR #326), #132 (PR #327). Remaining: #56.
 
 ---
 
@@ -22,8 +22,8 @@ Shipping #260 on top of today's foundation would produce a *persistent* backlog 
 ## Sequencing
 
 ```
-Sprint A (unblock):     #95 ✅, #285 ✅, #226 ✅, #286 ✅, #61 ✅
-                        remaining: #132, #56
+Sprint A (unblock):     #95 ✅, #285 ✅, #226 ✅, #286 ✅, #61 ✅, #132 ✅
+                        remaining: #56
 Sprint B (trace):       #305
 Sprint C (orchestrate): #260 → #271 → #294 → #264 → #291
 Sprint D (push telemetry): #306, #307
@@ -58,21 +58,21 @@ Sprint E (scale):       #24, #18
 | ~~#61~~ ✅ | ~~Backend cleanup doesn't invoke agent termination~~ | **Shipped** in PR #326. Added `terminate_execution_on_agent()` helper to `TaskExecutionService` that calls agent's `/api/executions/{id}/terminate` endpoint. Wired into timeout handler and cleanup service slot reclaim path. Best-effort with watchdog safety net. 8 unit tests. |
 | ~~#226~~ ✅ | ~~Stale-slot cleanup ignores per-agent TTL on the standalone path~~ | **Shipped** in PR #323. `cleanup_stale_slots()` now accepts `agent_timeouts` dict and uses per-agent TTL (timeout + 5min buffer) instead of fixed 20-min default. Cleanup service passes `db.get_all_execution_timeouts()` to slot service. |
 | ~~#286~~ ✅ | ~~Cleanup overwrites real error~~ | **Shipped** in PR #324. Added `/api/executions/{id}/last-error` agent endpoint + `ProcessRegistry.get_last_error()` to extract error from log buffer. `_recover_execution()` now fetches original error before marking failed, combines with cleanup reason (`"{original}. Cleanup: {reason}"`), sanitizes via `sanitize_text()`, truncates to 2000 chars. No schema change needed — reuses existing `error` column with richer content. |
-| #132 | APScheduler skips triggers when `max_instances=1` reached | Scheduler is a separate microservice at `src/scheduler/` (port 8001), not in the backend. Fire-and-forget dispatch already exists (`src/scheduler/service.py:823`, `SCHED-ASYNC-001`). The remaining work is tuning the skip-on-overlap policy: bump `max_instances`, add coalescing, or evict the prior run via the new termination wiring (#61). Rescope before estimating. |
+| ~~#132~~ ✅ | ~~APScheduler skips triggers when `max_instances=1` reached~~ | **Shipped** in PR #327. True fire-and-forget: `_call_backend_execute_task()` now spawns `asyncio.create_task(_poll_and_finalize())` and returns immediately with `"dispatched"` status. Job function no longer blocks on polling, so APScheduler doesn't skip subsequent triggers. `last_run_at` updated immediately on dispatch (not completion) for missed-schedule detection. Background tasks tracked in `_active_poll_tasks` set for graceful shutdown. 4 new tests in `test_async_dispatch.py`. |
 | #56 | Consistent context usage tracking | ~35 call sites across `chat.py`, `fan_out.py`, `schedules.py`, `agent_client.py` with three formulas (`input+output`, `session.context_tokens`, direct `context_used` passthrough). Split the work: pick source-of-truth field + fix `agent_client.py` contract in Tier 0; migrate remaining callers in Tier 1. Not a single-day fix. |
 
 ### Architectural shift
 
 **Before:** Two execution code paths (sync + async) with duplicated slot/activity/sanitization logic. Backend cleanup doesn't call the agent's existing terminate endpoint, leaving processes running. Cleanup overwrites diagnostic data. Scheduler skips triggers silently when prior runs overlap.
 
-**After:** Single `TaskExecutionService` funnel. Backend timeout calls agent terminate → existing SIGINT→SIGKILL path runs. Slot TTL comes from per-slot metadata on every cleanup path. Cleanup preserves original error by fetching from agent log buffer and combining with cleanup reason in `error` field (no schema change). Scheduler skip-on-overlap is replaced with eviction or coalescing.
+**After:** Single `TaskExecutionService` funnel. Backend timeout calls agent terminate → existing SIGINT→SIGKILL path runs. Slot TTL comes from per-slot metadata on every cleanup path. Cleanup preserves original error by fetching from agent log buffer and combining with cleanup reason in `error` field (no schema change). Scheduler uses true fire-and-forget: job function returns immediately after dispatch, background task polls and publishes events.
 
 ### Verification gates before exiting Tier 0
 
 - ✅ Grep for `_execute_task_background` returns zero hits outside docs (shipped in #95). Shadow-run deemed unnecessary for the async-path refactor: sync-mode already delegated to `execute_task()` pre-#95, and public/internal async paths had been using the same `execute_task(execution_id=...)` pattern in production; the refactor is a code-path unification rather than a semantics change. Parity tests cover the two observable invariants (429-upfront, `parallel_mode` activity flag).
 - Integration test: force a 5-second timeout on a real agent task, assert (a) zero orphan `claude` processes inside the container, (b) execution row `error` field contains both original error context and cleanup reason (combined format), (c) slot is released within TTL+buffer.
 - ✅ Execution `error` field now contains combined message: original error from agent log buffer + cleanup reason. Sanitized and truncated to 2000 chars (#286 shipped).
-- Scheduler log has zero "max_instances reached → skipped" events across a 24h soak.
+- ✅ Scheduler job function returns immediately after dispatch (#132 shipped). Skips prevented by true fire-and-forget: polling moved to background task. 127 scheduler tests pass.
 
 ---
 

@@ -213,15 +213,22 @@ CronTrigger fires   -->         _execute_schedule()   -->       try_acquire_sche
                                                                 (backend TaskExecutionService)
                                                                 |
                                                                 v
-                                                                _poll_execution_completion()
-                                                                (polls DB every 10s)
+                                                                If async accepted:
+                                                                  spawn _poll_and_finalize() task
+                                                                  return "dispatched" immediately
+                                                                  (Issue #132: fire-and-forget)
                                                                 |
                                                                 v
-                                                                Update schedule run times
-                                                                Publish "completed" event
+                                                                Update last_run_at immediately
+                                                                (for missed-schedule detection)
                                                                 |
                                                                 v
                                                                 lock.release()
+                                                                Job function returns
+                                                                |
+                                                                v (background)
+                                                                _poll_and_finalize() polls DB
+                                                                Publish "completed" event
 ```
 
 **Lock Acquisition** (`service.py:597-613`):
