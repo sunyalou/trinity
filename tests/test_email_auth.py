@@ -370,6 +370,125 @@ class TestEmailWhitelistCRUD:
             api_client.delete(f"/api/settings/email-whitelist/{test_email}")
 
 
+class TestEmailWhitelistDefaultRole:
+    """Tests for #314: whitelist rows carry a `default_role` that drives
+    the role assigned on first email login.
+
+    Critical invariants:
+    - Whitelist entries have a `default_role` field (defaults to `"user"`).
+    - Admin can override by passing `default_role` in POST body.
+    - Invalid role values are rejected.
+    - Public self-signup via `/api/access/request` defaults to `"user"`
+      (prevents privilege escalation).
+    """
+
+    def test_whitelist_entry_exposes_default_role(self, api_client: TrinityApiClient):
+        """Entries listed via GET /api/settings/email-whitelist include default_role."""
+        list_response = api_client.get("/api/settings/email-whitelist")
+        if list_response.status_code == 403:
+            pytest.skip("User is not admin - cannot inspect whitelist")
+
+        assert_status(list_response, 200)
+        whitelist = list_response.json()["whitelist"]
+
+        if not whitelist:
+            pytest.skip("Whitelist is empty; nothing to inspect")
+
+        for entry in whitelist:
+            assert "default_role" in entry, (
+                f"entry missing default_role: {entry}"
+            )
+            assert entry["default_role"] in {"user", "operator", "creator", "admin"}
+
+    def test_add_whitelist_defaults_to_user_role(self, api_client: TrinityApiClient):
+        """POST with no default_role assigns 'user' (safer default, #314)."""
+        test_email = "test-default-role-user@example.com"
+
+        list_response = api_client.get("/api/settings/email-whitelist")
+        if list_response.status_code == 403:
+            pytest.skip("User is not admin")
+
+        try:
+            # Ensure clean slate
+            api_client.delete(f"/api/settings/email-whitelist/{test_email}")
+
+            response = api_client.post(
+                "/api/settings/email-whitelist",
+                json={"email": test_email, "source": "manual"},
+            )
+            assert_status(response, 200)
+
+            listed = api_client.get("/api/settings/email-whitelist").json()["whitelist"]
+            entry = next((e for e in listed if e["email"] == test_email), None)
+            assert entry is not None, "Added email not found in list"
+            assert entry["default_role"] == "user"
+        finally:
+            api_client.delete(f"/api/settings/email-whitelist/{test_email}")
+
+    def test_add_whitelist_admin_can_grant_creator(self, api_client: TrinityApiClient):
+        """Admin explicitly whitelisting with default_role='creator' is honored."""
+        test_email = "test-default-role-creator@example.com"
+
+        list_response = api_client.get("/api/settings/email-whitelist")
+        if list_response.status_code == 403:
+            pytest.skip("User is not admin")
+
+        try:
+            api_client.delete(f"/api/settings/email-whitelist/{test_email}")
+
+            response = api_client.post(
+                "/api/settings/email-whitelist",
+                json={
+                    "email": test_email,
+                    "source": "manual",
+                    "default_role": "creator",
+                },
+            )
+            assert_status(response, 200)
+
+            listed = api_client.get("/api/settings/email-whitelist").json()["whitelist"]
+            entry = next((e for e in listed if e["email"] == test_email), None)
+            assert entry is not None
+            assert entry["default_role"] == "creator"
+        finally:
+            api_client.delete(f"/api/settings/email-whitelist/{test_email}")
+
+    def test_add_whitelist_rejects_invalid_role(self, api_client: TrinityApiClient):
+        """POST with an unknown default_role is rejected (400-class error)."""
+        test_email = "test-default-role-invalid@example.com"
+
+        list_response = api_client.get("/api/settings/email-whitelist")
+        if list_response.status_code == 403:
+            pytest.skip("User is not admin")
+
+        try:
+            api_client.delete(f"/api/settings/email-whitelist/{test_email}")
+
+            response = api_client.post(
+                "/api/settings/email-whitelist",
+                json={
+                    "email": test_email,
+                    "source": "manual",
+                    "default_role": "superuser",
+                },
+            )
+            # Service raises ValueError → router translates to 400; FastAPI may
+            # also surface it as 422 or 500 depending on handler. All non-2xx
+            # is acceptable — we just must not silently accept the row.
+            assert response.status_code >= 400, (
+                f"Expected rejection of invalid role, got {response.status_code}: "
+                f"{response.text}"
+            )
+
+            # Belt-and-suspenders: confirm nothing landed in the whitelist.
+            listed = api_client.get("/api/settings/email-whitelist").json()["whitelist"]
+            assert not any(e["email"] == test_email for e in listed), (
+                "Invalid role should not have been persisted"
+            )
+        finally:
+            api_client.delete(f"/api/settings/email-whitelist/{test_email}")
+
+
 class TestEmailAuthDisabled:
     """Tests for behavior when email auth is disabled."""
 

@@ -70,6 +70,9 @@ class SchedulerService:
         self._schedule_snapshot: Dict[str, tuple] = {}
         self._process_schedule_snapshot: Dict[str, tuple] = {}
 
+        # Issue #132: Track active background polling tasks for graceful shutdown
+        self._active_poll_tasks: set = set()
+
     @property
     def redis(self) -> redis.Redis:
         """Get or create Redis connection for events."""
@@ -199,6 +202,13 @@ class SchedulerService:
             self.scheduler.shutdown(wait=False)
             self._initialized = False
             logger.info("Scheduler shutdown")
+
+        # Issue #132: Cancel active poll tasks on shutdown
+        if self._active_poll_tasks:
+            logger.info(f"Cancelling {len(self._active_poll_tasks)} active poll tasks")
+            for task in self._active_poll_tasks:
+                task.cancel()
+            self._active_poll_tasks.clear()
 
         if self._redis:
             self._redis.close()
@@ -726,6 +736,21 @@ class SchedulerService:
             status = result.get("status", ExecutionStatus.FAILED)
             error_msg = result.get("error")
 
+            # Issue #132: Handle fire-and-forget dispatch mode.
+            # When status == "dispatched", the backend accepted the task and a
+            # background poll task is running. Update last_run_at immediately
+            # (to ensure missed schedule detection works on restart) and return.
+            # The background task will handle completion events.
+            if status == "dispatched":
+                now = datetime.utcnow()
+                next_run = self._get_next_run_time(schedule.cron_expression, schedule.timezone)
+                self.db.update_schedule_run_times(schedule.id, last_run_at=now, next_run_at=next_run)
+                logger.info(
+                    f"Schedule {schedule.name} dispatched (fire-and-forget), "
+                    f"execution_id={execution.id}, background poll running"
+                )
+                return  # Background task handles completion events
+
             if status == ExecutionStatus.SUCCESS:
                 # Update schedule last run time
                 now = datetime.utcnow()
@@ -868,15 +893,30 @@ class SchedulerService:
 
         # Step 2: Check if backend accepted async mode
         if result.get("status") == "accepted" and result.get("async_mode"):
-            # Async accepted — poll DB for completion
+            # Issue #132: Fire-and-forget — spawn background task for polling,
+            # return immediately so APScheduler job function doesn't block.
+            # This prevents max_instances=1 from skipping subsequent triggers.
             logger.info(
                 f"Backend accepted async execution for {agent_name}, "
-                f"execution_id={execution_id}, polling every {config.poll_interval}s"
+                f"execution_id={execution_id}, spawning background poll task"
             )
-            return await self._poll_execution_completion(
-                execution_id=execution_id,
-                timeout_seconds=timeout_seconds,
+            task = asyncio.create_task(
+                self._poll_and_finalize(
+                    execution_id=execution_id,
+                    timeout_seconds=timeout_seconds,
+                    agent_name=agent_name,
+                )
             )
+            # Track task for graceful shutdown
+            self._active_poll_tasks.add(task)
+            task.add_done_callback(self._active_poll_tasks.discard)
+
+            # Return immediately with "dispatched" status
+            return {
+                "status": "dispatched",
+                "async_mode": True,
+                "execution_id": execution_id,
+            }
 
         # Backward compatibility: backend returned a sync result (old backend
         # without async_mode support). Use the result directly.
@@ -935,6 +975,95 @@ class SchedulerService:
             f"Polling deadline exceeded for execution {execution_id} "
             f"(timeout_seconds={timeout_seconds}, polls={poll_count})"
         )
+
+    async def _poll_and_finalize(
+        self,
+        execution_id: str,
+        timeout_seconds: int,
+        agent_name: str,
+    ):
+        """
+        Background task that polls for execution completion and publishes events.
+
+        Issue #132: This runs as a fire-and-forget background task so the
+        APScheduler job function can return immediately, preventing
+        max_instances=1 from skipping subsequent triggers.
+
+        Args:
+            execution_id: The execution ID to poll
+            timeout_seconds: Task timeout for polling deadline
+            agent_name: Agent name for logging and events
+        """
+        try:
+            result = await self._poll_execution_completion(
+                execution_id=execution_id,
+                timeout_seconds=timeout_seconds,
+            )
+
+            status = result.get("status", ExecutionStatus.FAILED)
+            error_msg = result.get("error")
+
+            # Look up schedule_id from execution record for WebSocket event
+            execution = self.db.get_execution(execution_id)
+            schedule_id = execution.schedule_id if execution else None
+
+            if status == ExecutionStatus.SUCCESS:
+                logger.info(f"Background poll: execution {execution_id} succeeded")
+                await self._publish_event({
+                    "type": "schedule_execution_completed",
+                    "agent": agent_name,
+                    "schedule_id": schedule_id,
+                    "execution_id": execution_id,
+                    "status": "success"
+                })
+            else:
+                # Log auth failures specially for diagnostics
+                if error_msg:
+                    auth_indicators = [
+                        "credit balance", "unauthorized", "authentication",
+                        "credentials", "forbidden", "401", "403",
+                        "oauth", "token expired", "not authenticated"
+                    ]
+                    error_lower = error_msg.lower()
+                    is_auth_failure = any(ind in error_lower for ind in auth_indicators)
+
+                    if is_auth_failure:
+                        logger.error(
+                            f"Background poll: execution {execution_id} failed due to auth error: {error_msg}"
+                        )
+                    else:
+                        logger.error(f"Background poll: execution {execution_id} failed: {error_msg}")
+                else:
+                    logger.error(f"Background poll: execution {execution_id} failed (no error detail)")
+
+                await self._publish_event({
+                    "type": "schedule_execution_completed",
+                    "agent": agent_name,
+                    "schedule_id": schedule_id,
+                    "execution_id": execution_id,
+                    "status": "failed",
+                    "error": error_msg
+                })
+
+        except asyncio.CancelledError:
+            logger.info(f"Background poll for execution {execution_id} cancelled (shutdown)")
+            raise
+        except Exception as e:
+            # Log but don't propagate - this is a background task
+            logger.error(f"Background poll for execution {execution_id} failed: {e}")
+            # Check if backend already finalized the execution
+            current = self.db.get_execution(execution_id)
+            if current and current.status != ExecutionStatus.RUNNING:
+                logger.info(
+                    f"Execution {execution_id} already finalized as '{current.status}' "
+                    "— background poll error is benign"
+                )
+            else:
+                # Execution stuck in running state - cleanup service will recover
+                logger.warning(
+                    f"Execution {execution_id} may be stuck in 'running' state — "
+                    "cleanup service will recover within 5 minutes"
+                )
 
     # =========================================================================
     # Schedule Management (for runtime updates)

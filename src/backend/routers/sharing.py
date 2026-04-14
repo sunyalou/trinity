@@ -79,7 +79,8 @@ async def share_agent_endpoint(
             db.add_to_whitelist(
                 share_request.email,
                 current_user.username,
-                source="agent_sharing"
+                source="agent_sharing",
+                default_role="user",  # chat-only grant; don't promote to creator (#314)
             )
         except Exception:
             # Already whitelisted or error - continue anyway
@@ -208,6 +209,7 @@ async def decide_access_request_endpoint(
                     existing["email"],
                     current_user.username,
                     source="access_request",
+                    default_role="user",  # chat-only grant; don't promote to creator (#314)
                 )
             except Exception:
                 pass

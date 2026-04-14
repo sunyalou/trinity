@@ -15,12 +15,12 @@
 | 2026-03-07 | **ExecutionMetadata Error Fields**: Added `error_type` and `error_message` fields to `ExecutionMetadata` model (`models.py:91-92`). Populated during stream parsing in `claude_code.py` from two sources: `result` messages with `is_error=true` (line 304-311, classifies as `rate_limit` or `execution_error`) and `assistant` messages with `error` field (line 341-349, uses Claude Code's classification directly). Enables the platform to distinguish rate limits from other failures for better error handling (429 vs 503). |
 | 2026-03-08 | **Session ID UUID Fix**: Fixed `--session-id` validation failure. Claude Code requires `--session-id` to be a valid UUID but `execution_id` (from `secrets.token_urlsafe(16)`) is a base64url string. Changed `claude_code.py:799` to always generate `uuid.uuid4()` for `--session-id` instead of reusing `execution_id`. The `execution_id` still tracks the task internally. |
 | 2026-03-06 | **Session Isolation + Permission Validation**: Fixed bug where headless tasks could run with `permissionMode: "default"` instead of `bypassPermissions`, causing all tool calls to be silently denied. Added `--no-session-persistence` and unique `--session-id` per headless task to prevent session file collision with interactive `/api/chat` sessions. Added `permissionMode` validation on the `init` stream-json message — kills process immediately and returns HTTP 503 if bypass not active. Flags skipped when `resume_session_id` is provided (EXEC-023 needs persistence). |
-| 2026-03-04 | **EXEC-024 Service Extraction**: Sync path of `POST /api/agents/{name}/task` refactored. The ~250 lines of inline execution logic (slot acquisition, activity tracking, agent call with retry, sanitization, execution record updates, error handling, slot release) extracted into `TaskExecutionService.execute_task()` in `src/backend/services/task_execution_service.py`. Sync path in `chat.py:810-827` now delegates to the service. `agent_post_with_retry()` moved to the service module and imported back into `chat.py` for use by `/chat` and `_execute_task_background`. Async mode path unchanged (still uses `_execute_task_background` inline). |
+| 2026-03-04 | **EXEC-024 Service Extraction**: Sync path of `POST /api/agents/{name}/task` refactored. The ~250 lines of inline execution logic (slot acquisition, activity tracking, agent call with retry, sanitization, execution record updates, error handling, slot release) extracted into `TaskExecutionService.execute_task()` in `src/backend/services/task_execution_service.py`. Sync path in `chat.py:810-827` now delegates to the service. `agent_post_with_retry()` moved to the service module and imported back into `chat.py` for use by `/chat` and `_run_async_task_with_persistence`. Async mode path unchanged (still uses `_run_async_task_with_persistence` inline). |
 | 2026-03-02 | **MODEL-001 Model Selection**: `model_used` field now recorded on every execution record via `db.create_task_execution(model_used=request.model)`. Backend `chat.py` passes model to execution record. TasksPanel sends `model` in POST body. See [model-selection.md](model-selection.md). |
 | 2026-02-17 | **Added PUB-003 use case**: Public Chat Agent Introduction uses `/api/task` to fetch agent intro. Cross-reference to public-agent-links.md added. |
 | 2026-02-21 | **Bug Fix (EXEC-023)**: Fixed `DatabaseManager.update_execution_status()` wrapper in `src/backend/database.py:1295-1299` - was missing `claude_session_id` parameter, causing task executions to fail storing session IDs for the "Continue Execution as Chat" feature. The underlying `db/schedules.py:update_execution_status()` (lines 559-610) already supported the parameter. |
 | 2026-02-20 | **Chat Session Persistence (CHAT-001)**: `/task` endpoint now supports `save_to_session`, `user_message`, `create_new_session` parameters for authenticated Chat tab. When `save_to_session=true`, messages persist to `chat_sessions` and `chat_messages` tables. Response includes `chat_session_id`. New `db.create_new_chat_session()` method closes existing sessions before creating new one. |
-| 2026-02-16 | **Security Fix (Credential Leakage Prevention)**: Agent-side and backend-side credential sanitization now prevents secrets from appearing in execution logs. Agent sanitizes subprocess output via `sanitize_subprocess_line()` and response text via `sanitize_text()` (claude_code.py:563, 611, 922, 996). Backend provides defense-in-depth via `sanitize_execution_log()` and `sanitize_response()` (now called from `TaskExecutionService` in `services/task_execution_service.py:272-278` for sync path, and from `_execute_task_background` in `chat.py:489-499` for async path). |
+| 2026-02-16 | **Security Fix (Credential Leakage Prevention)**: Agent-side and backend-side credential sanitization now prevents secrets from appearing in execution logs. Agent sanitizes subprocess output via `sanitize_subprocess_line()` and response text via `sanitize_text()` (claude_code.py:563, 611, 922, 996). Backend provides defense-in-depth via `sanitize_execution_log()` and `sanitize_response()` (now called from `TaskExecutionService` in `services/task_execution_service.py:272-278` for sync path, and from `_run_async_task_with_persistence` in `chat.py:489-499` for async path). |
 | 2026-02-15 | **Claude Max subscription support**: Headless task execution now supports Claude Max subscription authentication. If user ran `/login` in web terminal, the OAuth session stored in `~/.claude.json` is used instead of requiring `ANTHROPIC_API_KEY`. The mandatory API key check was removed from `execute_headless_task()` in `docker/base-image/agent_server/services/claude_code.py`. |
 | 2026-02-12 | **Test fix**: `test_parallel_task_does_not_show_in_queue` (in `tests/test_execution_queue.py`) now uses `async_mode: True` to avoid 30s timeout. The test verifies that parallel tasks bypass the execution queue. |
 | 2026-02-05 | **SSE streaming fix**: Documented nginx configuration required for live execution streaming. Added `proxy_buffering off`, `proxy_cache off`, `chunked_transfer_encoding on` directives. Added frontend implementation details using fetch with ReadableStream. |
@@ -107,7 +107,7 @@ POST /api/agents/{name}/task
 | 3. Broadcast collaboration event (if        |
 |    agent-to-agent)                          |
 | 4. If async_mode: spawn background task     |
-|    via _execute_task_background(), return    |
+|    via _run_async_task_with_persistence(), return    |
 |    immediately                              |
 | 5. If sync: delegate to                     |
 |    TaskExecutionService.execute_task()      |
@@ -196,7 +196,7 @@ POST /api/task
 | `services/task_execution_service.py` | 61-97 | `agent_post_with_retry()` HTTP helper with exponential backoff |
 | `services/task_execution_service.py` | 104-417 | `TaskExecutionService.execute_task()` — full sync execution lifecycle |
 | `routers/chat.py` | 21-24 | Imports `get_task_execution_service` and `agent_post_with_retry` from service |
-| `routers/chat.py` | 438-650 | `_execute_task_background()` helper for async mode (still inline) |
+| `routers/chat.py` | 438-650 | `_run_async_task_with_persistence()` helper for async mode (still inline) |
 | `routers/chat.py` | 652-917 | POST /api/agents/{name}/task endpoint |
 | `routers/chat.py` | 810-827 | Sync path delegation to `TaskExecutionService.execute_task()` |
 | `routers/chat.py` | 842-857 | Translates `TaskExecutionResult.status == "failed"` to HTTP errors |
@@ -218,7 +218,7 @@ As of EXEC-024, the sync and async execution paths diverge:
 
 | Aspect | Sync (`async_mode=false`) | Async (`async_mode=true`) |
 |--------|---------------------------|---------------------------|
-| Execution logic | `TaskExecutionService.execute_task()` in `services/task_execution_service.py` | `_execute_task_background()` inline in `routers/chat.py:438-650` |
+| Execution logic | `TaskExecutionService.execute_task()` in `services/task_execution_service.py` | `_run_async_task_with_persistence()` inline in `routers/chat.py:438-650` |
 | Slot management | Service acquires/releases slots internally | Router acquires slot before spawning; background task releases in `finally` |
 | Activity tracking | Service tracks start/completion internally | Router tracks start; background task completes activities |
 | Result handling | Returns `TaskExecutionResult`; router translates to HTTP | Background task updates DB directly |
@@ -280,7 +280,7 @@ Same request/response as agent server, with additional parameters:
 **Backend Features**:
 - Authentication via JWT token
 - Access control validation
-- Activity tracking (sync: via `TaskExecutionService`; async: via `_execute_task_background`)
+- Activity tracking (sync: via `TaskExecutionService`; async: via `_run_async_task_with_persistence`)
 - Audit logging
 - **Slot management** - Capacity-limited parallel execution via `SlotService` (CAPACITY-001)
 - **Execution log persistence** - Full transcript saved to `schedule_executions.execution_log`
@@ -495,14 +495,14 @@ When `async_mode=true` is specified:
 1. **Backend acquires capacity slot** (CAPACITY-001)
 2. **Backend creates execution record** with `status="running"`
 3. **Tracks activity** (CHAT_START with async_mode: true)
-4. **Spawns background task** via `asyncio.create_task(_execute_task_background(...))`
+4. **Spawns background task** via `asyncio.create_task(_run_async_task_with_persistence(...))`
 5. **Returns immediately** with `execution_id` for polling
 6. **Background task executes** the Claude Code command (via `agent_post_with_retry`)
 7. **Updates execution record** when complete (success/failed)
 8. **Completes activities** asynchronously
 9. **Releases slot** in `finally` block
 
-Note: Async mode on the `/api/agents/{name}/task` endpoint does **not** use `TaskExecutionService`. It uses the inline `_execute_task_background()` function because it needs to manage its own activity IDs, collaboration tracking, and slot release timing. However, async mode on `/api/internal/execute-task` (used by the scheduler) **does** use `TaskExecutionService` inside its background coroutine — see [scheduler-service.md](scheduler-service.md).
+Note: Async mode on the `/api/agents/{name}/task` endpoint does **not** use `TaskExecutionService`. It uses the inline `_run_async_task_with_persistence()` function because it needs to manage its own activity IDs, collaboration tracking, and slot release timing. However, async mode on `/api/internal/execute-task` (used by the scheduler) **does** use `TaskExecutionService` inside its background coroutine — see [scheduler-service.md](scheduler-service.md).
 
 ### Architecture Diagram
 
@@ -522,7 +522,7 @@ Note: Async mode on the `/api/agents/{name}/task` endpoint does **not** use `Tas
 │  │  1. Acquire capacity slot (CAPACITY-001)                 │    │
 │  │  2. Create execution record (status="running")           │    │
 │  │  3. Track activities (CHAT_START)                        │    │
-│  │  4. asyncio.create_task(_execute_task_background(...))   │    │
+│  │  4. asyncio.create_task(_run_async_task_with_persistence(...))   │    │
 │  │  5. Return immediately:                                  │    │
 │  │     { status: "accepted", execution_id: "abc123" }       │    │
 │  └──────────────────────────┬──────────────────────────────┘    │
@@ -534,7 +534,7 @@ Note: Async mode on the `/api/agents/{name}/task` endpoint does **not** use `Tas
 │                        (Background task runs independently)      │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  _execute_task_background()                               │   │
+│  │  _run_async_task_with_persistence()                               │   │
 │  │                                                           │   │
 │  │  - Calls agent container /api/task                        │   │
 │  │  - On success: db.update_execution_status("success")      │   │
@@ -556,7 +556,7 @@ class ParallelTaskRequest(BaseModel):
 
 **Background Task Handler** (`src/backend/routers/chat.py:438-650`):
 ```python
-async def _execute_task_background(
+async def _run_async_task_with_persistence(
     agent_name: str,
     request: ParallelTaskRequest,
     execution_id: str,
@@ -606,7 +606,7 @@ if request.async_mode:
 
     # Spawn background task (slot will be released when task completes)
     asyncio.create_task(
-        _execute_task_background(
+        _run_async_task_with_persistence(
             agent_name=name,
             request=request,
             execution_id=execution_id,
@@ -1130,4 +1130,4 @@ See [authenticated-chat-tab.md](authenticated-chat-tab.md) for full Chat tab doc
 3. ~~**Session Persistence**: Optional session persistence with TTL for resume~~ **IMPLEMENTED** (CHAT-001)
 4. **Batch API**: `POST /api/agents/{name}/batch` for multiple tasks
 5. **Priority Queue**: Priority parameter for urgent tasks
-6. **Async mode service migration**: Migrate `_execute_task_background()` to use `TaskExecutionService` for consistency (EXEC-024 follow-up)
+6. **Async mode service migration**: Migrate `_run_async_task_with_persistence()` to use `TaskExecutionService` for consistency (EXEC-024 follow-up)

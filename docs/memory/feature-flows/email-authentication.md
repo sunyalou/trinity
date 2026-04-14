@@ -483,9 +483,10 @@ async function removeEmailFromWhitelist(email) {
 CREATE TABLE IF NOT EXISTS email_whitelist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE NOT NULL,
-    added_by TEXT NOT NULL,          -- User ID who added this email
-    added_at TEXT NOT NULL,          -- ISO timestamp
-    source TEXT NOT NULL,            -- "manual" or "agent_sharing"
+    added_by TEXT NOT NULL,                           -- User ID who added this email
+    added_at TEXT NOT NULL,                           -- ISO timestamp
+    source TEXT NOT NULL,                             -- "manual" | "agent_sharing" | "access_request" | "cli"
+    default_role TEXT NOT NULL DEFAULT 'user',        -- Role assigned on first email login (#314)
     FOREIGN KEY (added_by) REFERENCES users(id)
 )
 ```
@@ -517,7 +518,8 @@ CREATE INDEX idx_email_login_codes_code ON email_login_codes(code)
 | Method | Line | Purpose |
 |--------|------|---------|
 | `is_email_whitelisted(email)` | 27-35 | Check if email is in whitelist |
-| `add_to_whitelist(email, added_by, source)` | 37-67 | Add email to whitelist |
+| `add_to_whitelist(email, added_by, source, *, default_role)` | 37-90 | Add email to whitelist (default_role is a required kwarg, #314) |
+| `get_whitelist_default_role(email)` | 92-103 | Read default_role for a whitelisted email |
 | `remove_from_whitelist(email)` | 69-83 | Remove email from whitelist |
 | `list_whitelist(limit)` | 85-104 | Get all whitelisted emails with metadata |
 | `create_login_code(email, expiry_minutes)` | 110-145 | Generate 6-digit code with 10 min expiry |
@@ -700,8 +702,9 @@ Add email to whitelist.
 **Business Logic:**
 1. Parse request and lowercase email (lines 460-463)
 2. Add to whitelist (lines 466-467)
-   - `db.add_to_whitelist(email, current_user.username, source)`
-   - Returns `False` if already exists
+   - `db.add_to_whitelist(email, current_user.username, source, default_role=add_request.default_role)`
+   - `default_role` is a required keyword-only kwarg (defaults to `"user"` on the Pydantic request model); see #314.
+   - Returns `False` if already exists; raises `ValueError` if `default_role` is unknown.
 3. If duplicate: return 409 Conflict (lines 469-472)
 4. Return success (line 475)
 
@@ -738,7 +741,8 @@ if email_auth_setting.lower() == "true":
         db.add_to_whitelist(
             share_request.email,
             current_user.username,
-            source="agent_sharing"
+            source="agent_sharing",
+            default_role="user",  # chat-only grant — #314
         )
     except Exception:
         # Already whitelisted or error - continue anyway

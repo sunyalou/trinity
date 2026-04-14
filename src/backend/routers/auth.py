@@ -481,7 +481,10 @@ async def request_access(request: Request):
         return {"success": True, "message": "Access granted", "already_registered": True}
 
     try:
-        db.add_to_whitelist(email, added_by="admin", source="cli")
+        # Public self-signup — default to `user`. Owners who want a collaborator
+        # to create agents can promote them via `PUT /api/users/{username}/role`.
+        # Granting `creator` here would recreate the bug fixed in #314.
+        db.add_to_whitelist(email, added_by="admin", source="cli", default_role="user")
     except Exception as e:
         logger.error(f"Failed to add {email} to whitelist: {e}")
         record_login_attempt(client_ip, success=False)

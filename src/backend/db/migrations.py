@@ -1073,6 +1073,30 @@ def _migrate_public_link_require_email_unified(cursor, conn):
     conn.commit()
 
 
+def _migrate_email_whitelist_default_role(cursor, conn):
+    """Add default_role column to email_whitelist (#314).
+
+    Before: `get_or_create_email_user()` hardcoded new email users to role
+    `creator`, so anyone whitelisted via access-request approval, /share, or
+    the public CLI self-signup endpoint silently gained agent-creation rights.
+
+    After: whitelist rows carry the intended role. Access-based grants default
+    to `user`; only admin-initiated whitelisting can request `creator`. This
+    migration sets existing rows to `'user'` — a deliberate downgrade of the
+    buggy default going forward. It does NOT touch `users.role`, so users who
+    have already logged in and been promoted keep their current role.
+    """
+    cursor.execute("PRAGMA table_info(email_whitelist)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    if "default_role" not in columns:
+        cursor.execute(
+            "ALTER TABLE email_whitelist ADD COLUMN default_role TEXT NOT NULL DEFAULT 'user'"
+        )
+
+    conn.commit()
+
+
 def _migrate_telegram_group_configs(cursor, conn):
     """Create Telegram group configuration table (TGRAM-GROUP)."""
 
@@ -1182,5 +1206,6 @@ MIGRATIONS = [
     ("telegram_group_configs", _migrate_telegram_group_configs),
     ("access_control", _migrate_access_control),
     ("public_link_require_email_unified", _migrate_public_link_require_email_unified),
+    ("email_whitelist_default_role", _migrate_email_whitelist_default_role),
     ("backlog_support", _migrate_backlog_support),
 ]

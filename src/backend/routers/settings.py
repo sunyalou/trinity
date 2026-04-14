@@ -787,7 +787,12 @@ async def add_email_to_whitelist(
 
     # Add to whitelist
     try:
-        added = db.add_to_whitelist(email, current_user.username, source=add_request.source)
+        added = db.add_to_whitelist(
+            email,
+            current_user.username,
+            source=add_request.source,
+            default_role=add_request.default_role,
+        )
 
         if not added:
             raise HTTPException(

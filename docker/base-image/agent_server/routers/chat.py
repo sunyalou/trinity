@@ -295,6 +295,37 @@ async def get_execution_status(execution_id: str):
     return status
 
 
+@router.get("/api/executions/{execution_id}/last-error")
+async def get_execution_last_error(execution_id: str):
+    """
+    Get the last error from an execution's log buffer.
+
+    Used by the cleanup service to preserve error context when marking
+    stale executions as failed. Returns the most recent error found
+    in the execution's log buffer (if any).
+
+    Returns:
+        - 200: {"error_type": str, "error_message": str} if error found
+        - 200: {"error_type": null, "error_message": null} if no error
+        - 404: Execution not found in buffer
+    """
+    registry = get_process_registry()
+
+    # Check if execution exists (running or recently completed with buffer)
+    if not registry.is_execution_running(execution_id):
+        buffered = registry.get_buffered_logs(execution_id)
+        if buffered is None:
+            raise HTTPException(status_code=404, detail="Execution not found")
+
+    # Extract last error from buffer
+    error_info = registry.get_last_error(execution_id)
+    if error_info:
+        return error_info
+
+    # No error found in buffer
+    return {"error_type": None, "error_message": None}
+
+
 # ============================================================================
 # Live Execution Streaming Endpoints
 # ============================================================================

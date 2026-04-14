@@ -117,7 +117,7 @@ Request:  {"email": "user@example.com"}
 Response: {"success": true, "message": "Access granted", "already_registered": false}
 ```
 
-- Auto-adds email to whitelist via `db.add_to_whitelist(email, added_by="admin", source="cli")`
+- Auto-adds email to whitelist via `db.add_to_whitelist(email, added_by="admin", source="cli", default_role="user")` — #314 defaults public self-signup to `user`; owners promote via `PUT /api/users/{username}/role`.
 - Idempotent: returns `already_registered: true` if exists
 - Rate limited: reuses `check_login_rate_limit(client_ip)` — 5 req / 10 min per IP
 - Requires: setup completed, email auth enabled

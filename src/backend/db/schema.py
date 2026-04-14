@@ -113,6 +113,7 @@ TABLES = {
             added_by TEXT NOT NULL,
             added_at TEXT NOT NULL,
             source TEXT NOT NULL,
+            default_role TEXT NOT NULL DEFAULT 'user',
             FOREIGN KEY (added_by) REFERENCES users(id)
         )
     """,

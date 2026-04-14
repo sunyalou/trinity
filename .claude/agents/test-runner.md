@@ -127,7 +127,7 @@ The test suite covers:
 
 ### Smoke Tests (Fast, No Agent Required)
 - **Authentication** (test_auth.py) - Login, token validation, auth modes [SMOKE]
-- **Email Authentication** (test_email_auth.py) - Email-based login, OTP codes [SMOKE]
+- **Email Authentication** (test_email_auth.py) - Email-based login, OTP codes, whitelist CRUD, `default_role` plumbing (#314) [SMOKE]
 - **Templates** (test_templates.py) - Template listing [SMOKE]
 - **MCP Keys** (test_mcp_keys.py) - API key management [SMOKE]
 - **First-Time Setup** (test_setup.py) - Setup status, admin password validation [SMOKE]
@@ -138,7 +138,7 @@ The test suite covers:
 - **Agent Lifecycle** (test_agent_lifecycle.py) - CRUD, start/stop, logs
 - **Agent Chat** (test_agent_chat.py) - Message sending, history, sessions, in-memory activity, model selection
 - **Agent Files** (test_agent_files.py) - File browser, downloads
-- **Agent Sharing** (test_agent_sharing.py) - Share/unshare agents
+- **Agent Sharing** (test_agent_sharing.py) - Share/unshare agents, whitelist auto-add with `default_role="user"` (#314)
 - **Agent Permissions** (test_agent_permissions.py) - Agent-to-agent permission CRUD, defaults, cascade delete (Req 9.10)
 - **Agent Git** (test_agent_git.py) - Git sync operations
 - **Agent Metrics** (test_agent_metrics.py) - Custom metrics endpoint (Req 9.9)
@@ -175,6 +175,11 @@ The test suite covers:
 - **Parallel Tasks** (test_parallel_task.py) - Parallel headless execution (Req 12.1)
 - **Log Archive** (test_log_archive.py) - Log archival service (requires docker package in test env)
 - **Agent Notifications** (test_notifications.py) - Notification CRUD, acknowledge, dismiss, agent-specific queries (NOTIF-001) [SMOKE + Agent]
+- **Cleanup Service** (test_cleanup_service.py) - Cleanup status/trigger endpoints, report structure (CLEANUP-001, #106, #219) [SMOKE]
+- **Watchdog Integration** (test_watchdog.py) - Watchdog report fields in cleanup status/trigger [SMOKE]
+- **Watchdog Unit Tests** (test_watchdog_unit.py) - Reconciliation logic, orphan recovery, auto-terminate, per-agent TTL (#129, #226) [UNIT]
+- **Context Used Formula** (unit/test_context_used_formula.py) - Verify context_used = input_tokens only, not input+output (#56) [UNIT]
+- **OTel Trace Logging** (unit/test_otel_trace_logging.py) - Trace ID injection in logs, span context correlation (#305, RELIABILITY-002) [UNIT]
 
 ### Avatars & Image Generation
 - **Avatars** (test_avatars.py) - Avatar serving, generation, regeneration, deletion, emotions, identity prompts, default generation (AVATAR-001/002/003) [SMOKE + Agent]
@@ -215,10 +220,10 @@ The test suite covers:
 
 ## Test Suite Statistics
 
-**Total Tests**: ~2,143 tests across 112 test files
-**Smoke Tests**: ~553 tests (fast, no agent creation)
-**Unit Tests**: ~22 tests (no backend needed, rate limit detection/formatting)
-**Core Tests (not slow)**: ~2,040 tests
+**Total Tests**: ~2,175 tests across 116 test files
+**Smoke Tests**: ~564 tests (fast, no agent creation)
+**Unit Tests**: ~46 tests (no backend needed, rate limit detection, watchdog logic, context formula, OTel trace logging)
+**Core Tests (not slow)**: ~2,069 tests
 **Slow Tests**: ~89 tests (chat execution, fleet ops, system agent ops, execution termination)
 **WebSocket Tests**: ~10 tests (web terminal, execution streaming)
 
@@ -247,11 +252,38 @@ Use these thresholds to assess test health (based on **executed** tests, not inc
 - **Warning**: 75-90% pass rate, <5 failures
 - **Critical**: <75% pass rate or >5 failures
 
+## Recent Test Additions (2026-04-14)
+
+| Test File | Description | Tests Added |
+|-----------|-------------|-------------|
+| `unit/test_otel_trace_logging.py` | Trace ID injection in logs for log-trace correlation (#305) | 3 tests |
+| `unit/test_context_used_formula.py` | Verify context_used equals input_tokens only (#56) | 3 tests |
+| `test_watchdog_unit.py` | Updated `_reconcile_orphaned_executions()` tests for 3-tuple return (now returns `confirmed_running_ids` set, #226) | 7 tests updated |
+
+**OTel Trace Logging (#305)**: Added `tests/unit/test_otel_trace_logging.py` to verify the JsonFormatter injects `trace_id` and `span_id` into log entries when an OpenTelemetry span is active. Tests verify correct format (32 hex for trace_id, 16 hex for span_id), absence of trace context when no span is active, and preservation of standard log fields. Part of RELIABILITY-002.
+
+**Context Used Formula (#56)**: Added `tests/unit/test_context_used_formula.py` to verify `context_used` equals `input_tokens` only, not `input_tokens + output_tokens`. Per Claude Code SDK, `input_tokens` represents the full context window fill at final turn. Tests verify the formula, edge cases (missing tokens), and percentage calculation sanity.
+
+**Per-Agent Slot TTL (#226)**: Updated unit tests in `test_watchdog_unit.py::TestReconcileOrphanedExecutions` to expect `(orphaned, terminated, confirmed_running)` return signature. Added assertions verifying `confirmed_running` set contains execution IDs verified as still running on agents within their timeout. No new tests needed — existing cleanup API tests (`test_cleanup_service.py`) cover behavior; the change is internal optimization.
+
+---
+
 ## Recent Test Additions (2026-04-13)
 
 | Test File | Description | Tests Added |
 |-----------|-------------|-------------|
+| `test_email_auth.py`, `test_agent_sharing.py` | `TestEmailWhitelistDefaultRole` + `TestShareWhitelistDefaultRole` — whitelist `default_role` plumbing; first-login role no longer hardcoded to `creator` (#314) | 5 tests (all smoke) |
 | `test_public_links.py` | `TestUnifiedAccessPolicy` class — public web chat now honors agent-level `require_email` / `open_access` (unified with Slack/Telegram, #311 follow-up) | 6 tests (all smoke) |
+
+**Whitelist default_role** (`test_email_auth.py::TestEmailWhitelistDefaultRole`, `test_agent_sharing.py::TestShareWhitelistDefaultRole`):
+
+- `test_whitelist_entry_exposes_default_role` — list response includes `default_role` field on every row
+- `test_add_whitelist_defaults_to_user_role` — POST without `default_role` lands `"user"` (safer default)
+- `test_add_whitelist_admin_can_grant_creator` — admin passing `default_role="creator"` is honored
+- `test_add_whitelist_rejects_invalid_role` — unknown role returns 4xx, row is not persisted
+- `test_share_adds_whitelist_entry_with_user_role` — `POST /api/agents/{name}/share` auto-whitelists the recipient with `default_role="user"` (prevents silent promotion to `creator`)
+
+
 
 **Unified public-chat access policy** (`test_public_links.py::TestUnifiedAccessPolicy`):
 

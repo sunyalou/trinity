@@ -12,6 +12,11 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 from db.connection import get_db_connection
 
+# Valid role values for new users. Kept local to avoid a circular import with
+# dependencies.py (which imports from database, which imports from this module).
+# Must stay in sync with dependencies.ROLE_HIERARCHY.
+_VALID_DEFAULT_ROLES = {"user", "operator", "creator", "admin"}
+
 
 class EmailAuthOperations:
     """Handles email-based authentication operations."""
@@ -34,18 +39,36 @@ class EmailAuthOperations:
             )
             return cursor.fetchone() is not None
 
-    def add_to_whitelist(self, email: str, added_by: str, source: str = "manual") -> bool:
+    def add_to_whitelist(
+        self,
+        email: str,
+        added_by: str,
+        source: str,
+        *,
+        default_role: str,
+    ) -> bool:
         """
         Add an email to the whitelist.
 
         Args:
             email: Email address to whitelist
             added_by: Username of user adding this email
-            source: Source of addition (manual, agent_sharing, etc.)
+            source: Source of addition (manual, agent_sharing, access_request, cli)
+            default_role: Role assigned on first email login. Required keyword-only
+                so every callsite makes the role decision deliberately (#314).
 
         Returns:
             True if added, False if already exists
+
+        Raises:
+            ValueError: If default_role is not a recognized role.
         """
+        if default_role not in _VALID_DEFAULT_ROLES:
+            raise ValueError(
+                f"Invalid default_role: {default_role!r}. "
+                f"Must be one of {sorted(_VALID_DEFAULT_ROLES)}"
+            )
+
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
@@ -59,12 +82,25 @@ class EmailAuthOperations:
                 raise ValueError(f"User not found: {added_by}")
 
             cursor.execute("""
-                INSERT INTO email_whitelist (email, added_by, added_at, source)
-                VALUES (?, ?, ?, ?)
-            """, (email.lower(), user["id"], datetime.utcnow().isoformat(), source))
+                INSERT INTO email_whitelist (email, added_by, added_at, source, default_role)
+                VALUES (?, ?, ?, ?, ?)
+            """, (email.lower(), user["id"], datetime.utcnow().isoformat(), source, default_role))
 
             conn.commit()
             return True
+
+    def get_whitelist_default_role(self, email: str) -> Optional[str]:
+        """Return the default_role for a whitelisted email, or None if not found."""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT default_role FROM email_whitelist WHERE LOWER(email) = ?",
+                (email.lower(),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return row["default_role"] if row["default_role"] else None
 
     def remove_from_whitelist(self, email: str) -> bool:
         """
@@ -93,7 +129,8 @@ class EmailAuthOperations:
                     w.added_by,
                     u.username as added_by_username,
                     w.added_at,
-                    w.source
+                    w.source,
+                    w.default_role
                 FROM email_whitelist w
                 LEFT JOIN users u ON w.added_by = u.id
                 ORDER BY w.added_at DESC
@@ -228,11 +265,21 @@ class EmailAuthOperations:
         Get or create a user account for email authentication.
 
         Email becomes the username. No password is set (email auth only).
+
+        New users inherit the role recorded on their whitelist row, falling
+        back to "user" when no whitelist entry exists (safer default — see
+        #314). Previously this hardcoded "creator", which silently promoted
+        anyone whitelisted via access grants to full agent-creation rights.
         """
         # Try to get existing user by email
         user = self._user_ops.get_user_by_email(email)
         if user:
             return user
+
+        # Resolve intended role from whitelist row; "user" if no row or NULL.
+        role = self.get_whitelist_default_role(email) or "user"
+        if role not in _VALID_DEFAULT_ROLES:
+            role = "user"
 
         # Create new user
         now = datetime.utcnow().isoformat()
@@ -245,7 +292,7 @@ class EmailAuthOperations:
             cursor.execute("""
                 INSERT INTO users (username, email, role, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?)
-            """, (username, email.lower(), "creator", now, now))
+            """, (username, email.lower(), role, now, now))
 
             conn.commit()
 

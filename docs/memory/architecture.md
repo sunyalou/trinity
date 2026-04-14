@@ -227,6 +227,14 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 **Logging (`logging_config.py`):**
 - Structured JSON logging for production
 - Captured by Vector via Docker stdout/stderr
+- OpenTelemetry trace ID included in log entries for log-trace correlation (RELIABILITY-002)
+
+**OpenTelemetry Tracing (`main.py`):**
+- Auto-instrumentation for FastAPI, httpx, and Redis (RELIABILITY-002)
+- `traceparent` header propagated through inter-agent calls
+- Traces exported to OTel Collector via OTLP/gRPC (`trinity-otel-collector:4317`)
+- Configurable sampling via `OTEL_SAMPLE_RATE` (default 10%)
+- Enabled via `OTEL_ENABLED=1` environment variable
 
 **Utilities (`utils/`):**
 - `helpers.py` - Shared helper functions
@@ -1256,7 +1264,8 @@ Users authenticate to the Trinity web UI and API.
 
 - Email whitelist controls who can login via email
 - Admin login always available for 'admin' user
-- **4-tier role hierarchy** (ROLE-001): `user` < `operator` < `creator` < `admin`. New email users default to `creator`. Agent creation requires `creator` or above. Enforced via `require_role()` dependency factory in `dependencies.py`.
+- **4-tier role hierarchy** (ROLE-001): `user` < `operator` < `creator` < `admin`. Agent creation requires `creator` or above. Enforced via `require_role()` dependency factory in `dependencies.py`.
+- **Whitelist-driven role on first login** (#314): New email users inherit the `default_role` recorded on their `email_whitelist` row (fallback `user` if no row or NULL). Callsites pass explicit intent — `/share` and access-request approvals → `user` (chat-only grant); public `/api/access/request` self-signup → `user`; admin whitelist UI → caller-specified, defaults to `user`. Owners promote collaborators to `creator` explicitly via `PUT /api/users/{username}/role`. This closes a privilege-escalation where any access grant silently promoted the recipient to `creator` on first web login.
 
 ### 2. MCP API Keys (User → MCP Server)
 

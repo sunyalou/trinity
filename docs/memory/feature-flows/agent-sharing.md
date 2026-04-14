@@ -200,7 +200,7 @@ async def share_agent_endpoint(
     email_auth_setting = db.get_setting_value("email_auth_enabled", str(EMAIL_AUTH_ENABLED).lower())
     if email_auth_setting.lower() == "true":
         try:
-            db.add_to_whitelist(share_request.email, current_user.username, source="agent_sharing")
+            db.add_to_whitelist(share_request.email, current_user.username, source="agent_sharing", default_role="user")  # #314: chat-only grant
         except Exception:
             pass  # Already whitelisted or error - continue anyway
 
@@ -386,7 +386,7 @@ When email auth is enabled, shared emails are automatically added to the whiteli
 ```python
 if email_auth_setting.lower() == "true":
     try:
-        db.add_to_whitelist(share_request.email, current_user.username, source="agent_sharing")
+        db.add_to_whitelist(share_request.email, current_user.username, source="agent_sharing", default_role="user")  # #314: chat-only grant
     except Exception:
         pass  # Already whitelisted or error - continue anyway
 ```

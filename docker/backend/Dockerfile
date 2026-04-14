@@ -29,7 +29,13 @@ RUN pip install --no-cache-dir \
     "slack_sdk[socket-mode]==3.41.0" \
     aiohttp \
     slackify-markdown \
-    tenacity==9.0.0
+    tenacity==9.0.0 \
+    opentelemetry-api==1.29.0 \
+    opentelemetry-sdk==1.29.0 \
+    opentelemetry-exporter-otlp==1.29.0 \
+    opentelemetry-instrumentation-fastapi==0.50b0 \
+    opentelemetry-instrumentation-httpx==0.50b0 \
+    opentelemetry-instrumentation-redis==0.50b0
 
 # Copy all backend source files
 COPY ../../src/backend/main.py /app/

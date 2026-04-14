@@ -449,13 +449,15 @@ class EmailWhitelistEntry(BaseModel):
     added_by: str  # User ID
     added_by_username: Optional[str] = None
     added_at: datetime
-    source: str  # "manual", "agent_sharing"
+    source: str  # "manual", "agent_sharing", "access_request", "cli"
+    default_role: str = "user"  # Role assigned on first email login (#314)
 
 
 class EmailWhitelistAdd(BaseModel):
     """Request to add an email to the whitelist."""
     email: str
     source: str = "manual"
+    default_role: str = "user"  # Role assigned on first email login (#314)
 
 
 class EmailLoginRequest(BaseModel):

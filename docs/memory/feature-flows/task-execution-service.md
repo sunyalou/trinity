@@ -13,7 +13,7 @@ As the platform, I want task execution paths (authenticated sync tasks, public l
 | Path | Entry Point | Uses TaskExecutionService? | Notes |
 |------|------------|---------------------------|-------|
 | Sync parallel task | `POST /api/agents/{name}/task` (sync) | **Yes** | EXEC-024 delegation |
-| Async parallel task | `POST /api/agents/{name}/task` (async) | **No** | Inline `_execute_task_background()` in `chat.py:438` |
+| Async parallel task | `POST /api/agents/{name}/task` (async) | **Yes** | Issue #95: thin wrapper `_run_async_task_with_persistence` in `chat.py`. Router pre-acquires slot (preserves 429-upfront contract) then calls `execute_task(slot_already_held=True, ...)` |
 | Public link chat | `POST /api/public/chat/{token}` | **Yes** | Full lifecycle |
 | Scheduled execution | `POST /api/internal/execute-task` | **Yes** | Background coroutine wraps service call |
 | Interactive chat | `POST /api/agents/{name}/chat` | **No** | Direct agent HTTP call with inline retry in `chat.py` |
@@ -73,7 +73,26 @@ async def agent_post_with_retry(
 
 Exponential backoff: delay = `retry_delay * (2 ** attempt)`. Handles `httpx.ConnectError` for agent servers still booting.
 
-#### TaskExecutionService.execute_task() (line 113)
+#### terminate_execution_on_agent() (line 120, Issue #61)
+
+When the backend's HTTP client times out waiting for an agent response, this helper kills the orphaned Claude process:
+
+```python
+async def terminate_execution_on_agent(
+    agent_name: str,
+    execution_id: str,
+) -> bool:
+```
+
+Calls `POST /api/executions/{id}/terminate` on the agent container, which triggers:
+1. SIGINT (graceful termination, waits 5s)
+2. SIGKILL (force kill if process doesn't respond)
+
+Best-effort: failures are logged but don't raise exceptions. The cleanup service watchdog provides a safety net. Returns `True` for success/already_finished/not_found (404 means process may have finished), `False` for errors.
+
+**Timeout**: 5 seconds (constant `TERMINATE_TIMEOUT`). Short timeout to avoid blocking the failure path.
+
+#### TaskExecutionService.execute_task() (line 209)
 
 Full execution lifecycle in one method:
 
@@ -114,8 +133,18 @@ async def execute_task(
     allowed_tools: Optional[list] = None,
     system_prompt: Optional[str] = None,
     execution_id: Optional[str] = None,
+    fan_out_id: Optional[str] = None,
+    subscription_id: Optional[str] = None,
+    parent_activity_id: Optional[str] = None,       # Issue #95: CHAT_START parent linkage
+    extra_activity_details: Optional[dict] = None,  # Issue #95: merged into CHAT_START details
+    slot_already_held: bool = False,                # Issue #95: async path pre-acquires slot upfront
 ) -> TaskExecutionResult:
 ```
+
+**Issue #95 params** (added 2026-04-13):
+- `parent_activity_id`: set by the async `/task` router to the collaboration activity id so the CHAT_START is parented for agent-to-agent call graphs.
+- `extra_activity_details`: merged into the CHAT_START `details` dict. The async `/task` router passes `{parallel_mode: True, async_mode: True, model, timeout_seconds}` to keep the frontend Network view filter at `src/frontend/src/stores/network.js:255` working.
+- `slot_already_held`: when `True`, the service skips slot acquisition (but still releases in finally). The async `/task` router pre-acquires the slot synchronously so at-capacity returns HTTP 429 upfront, preserving the client contract. Other callers leave this `False` and the service both acquires and releases.
 
 **TIMEOUT-001**: When `timeout_seconds` is `None`, the service reads the agent's configured timeout via `db.get_execution_timeout(agent_name)`. Default agent timeout is 900 seconds (15 minutes).
 
@@ -257,13 +286,38 @@ The service catches all errors and returns `TaskExecutionResult` with `status=Ta
 
 | Error Case | Service Result | chat.py HTTP | public.py HTTP |
 |------------|---------------|--------------|----------------|
-| Slot not acquired | `status=TaskExecutionStatus.FAILED, error="Agent at capacity..."` | 429 | 429 |
-| Agent connect timeout | `status=TaskExecutionStatus.FAILED, error="timed out..."` | 504 | 504 |
-| Agent HTTP error | `status=TaskExecutionStatus.FAILED, error=detail` | 503 | 502 |
-| Unexpected exception | `status=TaskExecutionStatus.FAILED, error=str(e)` | 503 | 502 |
-| Cancelled execution | Preserved -- does not overwrite `TaskExecutionStatus.CANCELLED` | N/A | N/A |
+| Slot not acquired | `status=FAILED, error="Agent at capacity..."` | 429 | 429 |
+| Agent timeout (#61) | Terminates agent process, then `status=FAILED, error="timed out...", error_code=TIMEOUT` | 504 | 504 |
+| Agent HTTP error | `status=FAILED, error=detail` | 503 | 502 |
+| Auth failure (#285) | `status=FAILED, error=detail, error_code=AUTH` | 503 | 503 |
+| Unexpected exception | `status=FAILED, error=str(e)` | 503 | 502 |
+| Cancelled execution | Preserved -- does not overwrite `CANCELLED` | N/A | N/A |
 
 Cancel protection (lines 324-325, 366-367, 390-391): Before writing failed status, checks `db.get_execution(execution_id)` -- if status is already `TaskExecutionStatus.CANCELLED` (from user termination), the service does not overwrite it.
+
+### Auth Failure Fast-Fail (Issue #285)
+
+When subscription tokens expire, Claude Code sometimes hangs for up to an hour before failing. This wastes execution slots until the watchdog recovers them. Issue #285 adds real-time auth failure detection:
+
+**Agent Server** (`docker/base-image/agent_server/services/claude_code.py`):
+
+1. **Pattern Matcher** (`_is_auth_failure_message()`, line 675): Detects auth failure patterns in stderr:
+   - "Invalid API key", "Authentication failed", "401 Unauthorized", "auth failed"
+   - Model-specific errors: "does not have access to model", "exceeds context window"
+
+2. **Real-time Stderr Scan** (line 910): Background thread scans Claude Code stderr during execution. When an auth pattern is detected, sets `auth_failure_event` and captures the reason.
+
+3. **Process Kill** (line 935): Main execution loop checks for auth failure event and kills the Claude Code process immediately instead of waiting for timeout.
+
+4. **HTTP 503 Response**: Auth failures return HTTP 503 (Service Unavailable) so the backend can distinguish from other errors.
+
+**Backend** (`src/backend/services/task_execution_service.py`):
+
+1. **Error Code Detection** (line 415): When agent returns HTTP 503, sets `error_code=TaskExecutionErrorCode.AUTH`
+
+2. **Structured Result**: Returns `TaskExecutionResult` with `error_code=AUTH` so callers can handle auth failures specifically (e.g., prompt user to reconfigure subscription)
+
+**Result**: Auth failures now fast-fail in seconds instead of hanging for up to an hour.
 
 > **Status Enums (#92)**: Execution statuses use `TaskExecutionStatus` (`running/success/failed/cancelled/skipped`). Activity statuses use `ActivityState` (`started/completed/failed`). Both are defined in `models.py`.
 
@@ -292,7 +346,7 @@ execute_task()
   |      +-- Retries: 3 attempts, exponential backoff (1s, 2s, 4s)
   |      |
   |      +-- httpx.ConnectError --> retry or fail
-  |      +-- httpx.TimeoutException --> fail
+  |      +-- httpx.TimeoutException --> terminate_execution_on_agent() --> fail (#61)
   |      +-- httpx.HTTPError --> fail
   |
   +-- 5. sanitize_execution_log() + sanitize_response()

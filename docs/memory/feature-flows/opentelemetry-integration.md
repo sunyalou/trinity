@@ -826,7 +826,161 @@ curl http://localhost:8889/metrics | grep trinity_claude_code
 
 ---
 
-**Last Updated**: 2026-01-23 (Line numbers verified)
+## Distributed Tracing (RELIABILITY-002)
+
+### Overview
+
+Backend auto-instrumentation for distributed tracing across multi-agent request flows. Enables end-to-end request correlation: when Agent A calls the backend which calls Agent B, all operations share a single trace ID.
+
+### Architecture
+
+```
+Request (User)                    Agent A                    Agent B
+     │                               │                          │
+     │ ──traceparent──►              │                          │
+     │                               │                          │
+     ▼                               ▼                          ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Trinity Backend                              │
+│  FastAPI (auto-instrumented) → httpx (auto-instrumented) → Agent    │
+│                    │                                                 │
+│                    │ traceparent header propagated                  │
+│                    ▼                                                 │
+│              OTLP/gRPC                                               │
+└────────────────────┬────────────────────────────────────────────────┘
+                     │
+                     ▼
+          ┌──────────────────┐
+          │  OTel Collector  │
+          │  :4317 (gRPC)    │
+          └──────────────────┘
+```
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OTEL_ENABLED` | `0` | Set to `1` to enable tracing |
+| `OTEL_SAMPLE_RATE` | `0.1` | Fraction of requests to sample (10% default) |
+| `OTEL_COLLECTOR_ENDPOINT` | `http://trinity-otel-collector:4317` | Collector gRPC endpoint |
+
+### Backend Implementation
+
+**File**: `src/backend/main.py` (lines 247-289)
+
+```python
+def setup_opentelemetry(app: FastAPI) -> bool:
+    """Initialize OTel distributed tracing."""
+    if os.getenv("OTEL_ENABLED", "0") != "1":
+        return False
+
+    # Configure sampling (10% default)
+    sample_rate = float(os.getenv("OTEL_SAMPLE_RATE", "0.1"))
+    sampler = TraceIdRatioBased(sample_rate)
+
+    # Create resource with service metadata
+    resource = Resource.create({
+        "service.name": "trinity-backend",
+        "service.version": "1.0.0",
+        "deployment.environment": os.getenv("ENVIRONMENT", "development"),
+    })
+
+    # Set up tracer provider
+    provider = TracerProvider(resource=resource, sampler=sampler)
+    trace.set_tracer_provider(provider)
+
+    # Configure OTLP exporter
+    endpoint = os.getenv("OTEL_COLLECTOR_ENDPOINT", "http://trinity-otel-collector:4317")
+    exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
+    provider.add_span_processor(BatchSpanProcessor(exporter))
+
+    # Auto-instrument frameworks
+    FastAPIInstrumentor.instrument_app(app)
+    HTTPXClientInstrumentor().instrument()
+    RedisInstrumentor().instrument()
+
+    return True
+```
+
+**Called at**: App creation time, before middleware/routers (line 542)
+
+### Log-Trace Correlation
+
+**File**: `src/backend/logging_config.py` (lines 24-29)
+
+```python
+# Add OpenTelemetry trace context for log-trace correlation
+span = trace.get_current_span()
+span_context = span.get_span_context()
+if span_context.is_valid:
+    log_entry["trace_id"] = format(span_context.trace_id, "032x")
+    log_entry["span_id"] = format(span_context.span_id, "016x")
+```
+
+**Result**: All JSON log entries during a request include `trace_id` and `span_id`:
+
+```json
+{
+  "timestamp": "2026-04-14T12:19:35.623530Z",
+  "level": "INFO",
+  "logger": "services.execution_queue",
+  "message": "[Queue] Agent 'trinity-system' execution started",
+  "trace_id": "48b5fef080ff82fb283c308f2f3d408a",
+  "span_id": "23dbd607a019b726"
+}
+```
+
+### Dependencies
+
+**File**: `docker/backend/Dockerfile` (lines 33-38)
+
+```dockerfile
+opentelemetry-api==1.29.0 \
+opentelemetry-sdk==1.29.0 \
+opentelemetry-exporter-otlp==1.29.0 \
+opentelemetry-instrumentation-fastapi==0.50b0 \
+opentelemetry-instrumentation-httpx==0.50b0 \
+opentelemetry-instrumentation-redis==0.50b0
+```
+
+### Testing
+
+```bash
+# Enable tracing
+export OTEL_ENABLED=1
+
+# Restart backend
+docker compose up -d backend
+
+# Check startup log
+docker compose logs backend | grep "OpenTelemetry tracing"
+# Expected: "OpenTelemetry tracing enabled (sample rate: 10%)"
+
+# Make a request that triggers logging
+curl -X POST http://localhost:8000/api/agents/trinity-system/chat \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "hello"}'
+
+# Check logs for trace_id
+docker compose logs backend --since 10s | grep trace_id
+
+# Check collector is receiving traces
+docker compose logs otel-collector --since 30s | grep Traces
+# Expected: "Traces" with "spans": N
+```
+
+### Error Handling
+
+| Error | Behavior |
+|-------|----------|
+| Collector unreachable | Traces buffered, dropped after timeout; app continues |
+| Invalid config | Logs warning, tracing disabled; app starts normally |
+| OTEL_ENABLED=0 | No initialization, no overhead |
+
+---
+
+**Last Updated**: 2026-04-14 (Added Distributed Tracing section for RELIABILITY-002)
 
 ---
 
@@ -834,6 +988,7 @@ curl http://localhost:8889/metrics | grep trinity_claude_code
 
 | Date | Changes |
 |------|---------|
+| 2026-04-14 | Added Distributed Tracing section (RELIABILITY-002): backend auto-instrumentation for FastAPI/httpx/Redis, trace_id in logs, 10% sampling |
 | 2026-01-23 | Updated line numbers for crud.py (308-316), docker-compose.yml (207-228), observability.py, main.py (289), Dashboard.vue (357, 371, 35-56, 340, 430-431), ObservabilityPanel.vue (185 lines). Added system_agent_service.py and ops.py to files modified. Added health_check endpoint port 13133 to docker-compose. Updated otel-collector.yaml to show health_check extension and telemetry config. |
 | 2025-12-30 | Line numbers verified |
 | 2025-12-20 | Initial Phase 1, 2, and 2.5 implementation complete |
