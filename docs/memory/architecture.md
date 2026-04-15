@@ -292,7 +292,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - Tools access auth context via `context.session` parameter
 - Agent-to-agent collaboration uses agent-scoped keys for access control
 
-**62 Tools** across 13 tool modules (`src/tools/`):
+**64 Tools** across 14 tool modules (`src/tools/`):
 
 | Module | Tools | Description |
 |--------|-------|-------------|
@@ -309,6 +309,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 | `notifications.ts` (1) | `send_notification` | Agent-to-platform notifications |
 | `events.ts` (4) | `emit_event`, `subscribe_to_event`, `list_event_subscriptions`, `delete_event_subscription` | Agent event pub/sub (EVT-001) |
 | `docs.ts` (1) | `get_agent_requirements` | Agent documentation |
+| `channels.ts` (2) | `list_channel_groups`, `send_group_message` | Channel group discovery and proactive messaging (#349) |
 
 ### Vector Log Aggregator (`config/vector.yaml`)
 

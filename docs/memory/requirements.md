@@ -760,7 +760,8 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
 - **Key Features**:
   - Group message handling: respond to @mentions of bot username in message entities
   - Reply-to-bot detection: respond when user replies to bot's own messages
-  - Configurable trigger mode per group: "mention" (default, @mention-only) or "all" (all messages)
+  - Configurable trigger mode per group: "mention" (default, @mention-only), "all" (all messages), or "observe" (all messages but agent can return `[NO_REPLY]` to skip responding)
+  - Sender identity context in group messages: `[Group: title] [From: @username (Name)]` prefix so agent knows who is speaking
   - New member welcome messages: configurable text with {name} placeholder
   - Auto-created group configs on first interaction (no manual setup required)
   - Bot added/removed from group detection via `my_chat_member` update events
@@ -776,6 +777,10 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
   - `GET /api/agents/{name}/telegram/groups` — List group configs
   - `PUT /api/agents/{name}/telegram/groups/{id}` — Update group config (trigger mode, welcome settings)
   - `DELETE /api/agents/{name}/telegram/groups/{id}` — Remove group config (deactivates)
+  - `POST /api/agents/{name}/telegram/groups/{chat_id}/messages` — Proactive group messaging (rate limited: 10/hr/group, 100/hr/agent)
+- **MCP Tools**:
+  - `list_channel_groups` — List Telegram groups the agent is connected to
+  - `send_group_message` — Send proactive message to a group (supports Telegram HTML, max 4096 chars)
 - **Webhook Changes**:
   - `allowed_updates` now includes `["message", "my_chat_member", "chat_member"]`
 - **Security**:
