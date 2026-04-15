@@ -521,6 +521,13 @@ class TestSubscriptionAutoAssign:
 
     def test_create_agent_no_subscriptions(self, api_client: TrinityApiClient):
         """Agent created with no subscriptions uses platform API key."""
+        # Clear ALL subscriptions first to ensure clean state
+        # (prior tests may have left subscriptions that would auto-assign)
+        subs_response = api_client.get("/api/subscriptions")
+        if subs_response.status_code == 200:
+            for sub in subs_response.json():
+                api_client.delete(f"/api/subscriptions/{sub['id']}")
+
         agent_name = f"test-noauto-{uuid.uuid4().hex[:8]}"
         try:
             self._create_agent(api_client, agent_name)
