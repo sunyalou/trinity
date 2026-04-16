@@ -184,3 +184,64 @@ class SharingMixin:
             cursor.execute("DELETE FROM agent_sharing WHERE agent_name = ?", (agent_name,))
             conn.commit()
             return cursor.rowcount
+
+    # =========================================================================
+    # Proactive Messaging (Issue #321)
+    # =========================================================================
+
+    def can_agent_message_email(self, agent_name: str, email: str) -> bool:
+        """Check if agent is authorized to send proactive messages to this email.
+
+        Authorization requires:
+        1. User is in agent_sharing for this agent AND allow_proactive = 1
+        2. OR user is the owner of the agent (always allowed)
+        """
+        if not email:
+            return False
+
+        # Check if owner
+        owner = self.get_agent_owner(agent_name)
+        if owner:
+            owner_user = self._user_ops.get_user_by_username(owner["owner_username"])
+            if owner_user and owner_user.get("email", "").lower() == email.lower():
+                return True
+
+        # Check sharing with allow_proactive flag
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 1 FROM agent_sharing
+                WHERE agent_name = ? AND shared_with_email = ? AND allow_proactive = 1
+            """, (agent_name, email.lower()))
+            return cursor.fetchone() is not None
+
+    def set_allow_proactive(
+        self, agent_name: str, email: str, allow: bool, setter_username: str
+    ) -> bool:
+        """Update allow_proactive flag for a sharing record.
+
+        Only the owner or admin can modify this flag.
+        Returns True if updated, False if not authorized or share not found.
+        """
+        if not self.can_user_share_agent(setter_username, agent_name):
+            return False
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE agent_sharing
+                SET allow_proactive = ?
+                WHERE agent_name = ? AND shared_with_email = ?
+            """, (1 if allow else 0, agent_name, email.lower()))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_proactive_enabled_shares(self, agent_name: str) -> List[str]:
+        """Get all emails that have opted in to receive proactive messages from this agent."""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT shared_with_email FROM agent_sharing
+                WHERE agent_name = ? AND allow_proactive = 1
+            """, (agent_name,))
+            return [row[0] for row in cursor.fetchall()]

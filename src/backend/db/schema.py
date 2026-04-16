@@ -82,6 +82,7 @@ TABLES = {
             shared_with_email TEXT NOT NULL,
             shared_by_id INTEGER NOT NULL,
             created_at TEXT NOT NULL,
+            allow_proactive INTEGER DEFAULT 0,
             FOREIGN KEY (shared_by_id) REFERENCES users(id),
             UNIQUE(agent_name, shared_with_email)
         )

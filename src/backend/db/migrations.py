@@ -1386,6 +1386,28 @@ def _migrate_agent_git_config_pat(cursor, conn):
     conn.commit()
 
 
+def _migrate_proactive_messaging(cursor, conn):
+    """Add allow_proactive column to agent_sharing for proactive messaging consent (#321).
+
+    Users must explicitly opt-in to receive proactive messages from agents.
+    Default is 0 (no proactive messages allowed).
+    """
+    cursor.execute("PRAGMA table_info(agent_sharing)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    if "allow_proactive" not in columns:
+        print("Adding allow_proactive column to agent_sharing for proactive messaging consent...")
+        cursor.execute("ALTER TABLE agent_sharing ADD COLUMN allow_proactive INTEGER DEFAULT 0")
+
+    # Create index for efficient lookup of proactive-enabled shares
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_sharing_proactive "
+        "ON agent_sharing(agent_name, shared_with_email) WHERE allow_proactive = 1"
+    )
+
+    conn.commit()
+
+
 MIGRATIONS = [
     ("agent_sharing", _migrate_agent_sharing_table),
     ("schedule_executions_observability", _migrate_schedule_executions_observability),
@@ -1433,4 +1455,5 @@ MIGRATIONS = [
     ("group_auth_mode", _migrate_group_auth_mode),
     ("agent_ownership_guardrails", _migrate_agent_ownership_guardrails),
     ("agent_git_config_pat", _migrate_agent_git_config_pat),
+    ("proactive_messaging", _migrate_proactive_messaging),
 ]

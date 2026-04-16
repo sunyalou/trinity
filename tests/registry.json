@@ -152,6 +152,13 @@
       "added": "2026-04-16",
       "categories": ["backend", "api", "git", "credentials"],
       "description": "Tests for per-agent GitHub PAT (#347): GET/PUT/DELETE endpoints, status checking, PAT validation, encryption roundtrip, auth requirements"
+    },
+    {
+      "file": "test_proactive_messaging.py",
+      "feature": "Issue #321",
+      "added": "2026-04-16",
+      "categories": ["backend", "api", "messaging", "channels"],
+      "description": "Tests for proactive agent messaging (#321): send_message endpoint validation, allow_proactive flag management, proactive shares listing, channel selection, owner authorization, rate limiting info"
     }
   ]
 }

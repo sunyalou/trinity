@@ -389,6 +389,22 @@ class DatabaseManager:
         return self._agent_ops.delete_agent_shares(agent_name)
 
     # =========================================================================
+    # Proactive Messaging (Issue #321) - delegated to db/agents.py
+    # =========================================================================
+
+    def can_agent_message_email(self, agent_name: str, email: str):
+        """Check if agent can send proactive messages to this email."""
+        return self._agent_ops.can_agent_message_email(agent_name, email)
+
+    def set_allow_proactive(self, agent_name: str, email: str, allow: bool, setter_username: str):
+        """Update allow_proactive flag for a sharing record."""
+        return self._agent_ops.set_allow_proactive(agent_name, email, allow, setter_username)
+
+    def get_proactive_enabled_shares(self, agent_name: str):
+        """Get all emails that have opted in to proactive messages from this agent."""
+        return self._agent_ops.get_proactive_enabled_shares(agent_name)
+
+    # =========================================================================
     # Agent API Key Settings (delegated to db/agents.py)
     # =========================================================================
 
@@ -1477,6 +1493,10 @@ class DatabaseManager:
 
     def clear_telegram_verified_email(self, binding_id, telegram_user_id):
         return self._telegram_channel_ops.clear_verified_email(binding_id, telegram_user_id)
+
+    def get_telegram_chat_link_by_verified_email(self, binding_id, email):
+        """Reverse lookup: find chat link by verified email for proactive messaging (#321)."""
+        return self._telegram_channel_ops.get_chat_link_by_verified_email(binding_id, email)
 
     # Telegram Group Configs (TGRAM-GROUP)
 

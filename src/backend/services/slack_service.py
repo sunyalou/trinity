@@ -325,6 +325,45 @@ class SlackService:
             logger.error(f"Failed to open Slack DM channel: {e}")
             return None
 
+    async def get_user_by_email(
+        self,
+        bot_token: str,
+        email: str
+    ) -> Optional[dict]:
+        """
+        Look up a Slack user by email address (for proactive messaging #321).
+
+        Returns user info dict with 'id', 'name', 'real_name', or None if not found.
+        Requires users:read.email scope on the bot token.
+        """
+        try:
+            response = await self.client.get(
+                f"{self.SLACK_API_BASE}/users.lookupByEmail",
+                headers={"Authorization": f"Bearer {bot_token}"},
+                params={"email": email.lower()}
+            )
+            data = response.json()
+
+            if not data.get("ok"):
+                error = data.get("error", "unknown_error")
+                if error == "users_not_found":
+                    logger.debug(f"Slack user not found for email: {email}")
+                else:
+                    logger.warning(f"Failed to lookup Slack user by email: {error}")
+                return None
+
+            user = data.get("user", {})
+            return {
+                "id": user.get("id"),
+                "name": user.get("name"),
+                "real_name": user.get("real_name"),
+                "profile": user.get("profile", {}),
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to lookup Slack user by email: {e}")
+            return None
+
     async def add_reaction(
         self,
         bot_token: str,

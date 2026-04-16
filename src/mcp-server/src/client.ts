@@ -1008,6 +1008,34 @@ export class TrinityClient {
   }
 
   // ============================================================================
+  // Proactive Messaging (Issue #321)
+  // ============================================================================
+
+  /**
+   * Send a proactive message to a user by verified email
+   */
+  async sendUserMessage(
+    agentName: string,
+    data: {
+      recipient_email: string;
+      text: string;
+      channel?: "auto" | "telegram" | "slack" | "web";
+      reply_to_thread?: boolean;
+    }
+  ): Promise<{
+    success: boolean;
+    channel: string;
+    message_id?: string;
+    error?: string;
+  }> {
+    return this.request(
+      "POST",
+      `/api/agents/${encodeURIComponent(agentName)}/messages`,
+      data
+    );
+  }
+
+  // ============================================================================
   // Agent Event Subscriptions (EVT-001)
   // ============================================================================
 

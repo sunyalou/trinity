@@ -308,6 +308,41 @@ class TelegramChannelOperations:
             conn.commit()
             return cursor.rowcount > 0
 
+    def get_chat_link_by_verified_email(
+        self, binding_id: int, email: str
+    ) -> Optional[dict]:
+        """Reverse lookup: find a chat link by verified email for proactive messaging (#321).
+
+        Returns the chat link for a user who has verified with this email,
+        or None if no such user exists for this binding.
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, binding_id, telegram_user_id, telegram_username,
+                       session_id, message_count, created_at, last_active,
+                       verified_email, verified_at
+                FROM telegram_chat_links
+                WHERE binding_id = ? AND verified_email = ?
+                ORDER BY last_active DESC
+                LIMIT 1
+            """, (binding_id, email.lower()))
+            row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "binding_id": row[1],
+            "telegram_user_id": row[2],
+            "telegram_username": row[3],
+            "session_id": row[4],
+            "message_count": row[5],
+            "created_at": row[6],
+            "last_active": row[7],
+            "verified_email": row[8],
+            "verified_at": row[9],
+        }
+
     def increment_message_count(self, chat_link_id: int) -> None:
         """Increment message count and update last_active."""
         now = datetime.utcnow().isoformat()

@@ -44,6 +44,7 @@ class AuditEventType(str, Enum):
     CREDENTIALS = "credentials"
     MCP_OPERATION = "mcp_operation"
     GIT_OPERATION = "git_operation"
+    PROACTIVE_MESSAGE = "proactive_message"  # Issue #321
     SYSTEM = "system"
 
 

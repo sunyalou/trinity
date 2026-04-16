@@ -92,6 +92,7 @@ from routers.operator_queue import router as operator_queue_router, set_websocke
 from routers.voice import router as voice_router
 from routers.event_subscriptions import router as event_subscriptions_router, set_websocket_manager as set_event_subs_ws_manager, set_filtered_websocket_manager as set_event_subs_filtered_ws_manager
 from routers.users import router as users_router
+from routers.messages import router as messages_router  # Proactive Messaging (#321)
 
 # Import activity service
 from services.activity_service import activity_service
@@ -632,6 +633,7 @@ app.include_router(internal_router)  # Internal agent-to-backend endpoints (no a
 app.include_router(tags_router)  # Agent Tags (ORG-001)
 app.include_router(system_views_router)  # System Views (ORG-001 Phase 2)
 app.include_router(notifications_router)  # Agent Notifications (NOTIF-001)
+app.include_router(messages_router)  # Proactive Messaging (#321)
 app.include_router(subscriptions_router)  # Subscription Management (SUB-001)
 app.include_router(monitoring_router)  # Agent Monitoring (MON-001)
 app.include_router(slack_public_router)  # Slack Integration Public (SLACK-001)
