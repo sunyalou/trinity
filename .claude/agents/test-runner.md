@@ -143,6 +143,7 @@ The test suite covers:
 - **Telegram Groups** (test_telegram_groups.py) - Trigger mode validation (mention/all/observe), proactive message endpoint validation (#349) [SMOKE + Agent]
 - **Agent Permissions** (test_agent_permissions.py) - Agent-to-agent permission CRUD, defaults, cascade delete (Req 9.10)
 - **Agent Git** (test_agent_git.py) - Git sync operations
+- **Agent GitHub PAT** (test_github_pat.py) - Per-agent GitHub PAT: status, set, clear, encryption roundtrip (#347) [SMOKE + Agent]
 - **Agent Metrics** (test_agent_metrics.py) - Custom metrics endpoint (Req 9.9)
 - **Agent Shared Folders** (test_shared_folders.py) - Folder expose/consume configuration (Req 9.11)
 - **Agent API Key** (test_agent_api_key_setting.py) - Per-agent API key configuration
@@ -224,8 +225,8 @@ The test suite covers:
 
 ## Test Suite Statistics
 
-**Total Tests**: ~2,191 tests across 118 test files
-**Smoke Tests**: ~569 tests (fast, no agent creation)
+**Total Tests**: ~2,200 tests across 119 test files
+**Smoke Tests**: ~578 tests (fast, no agent creation)
 **Unit Tests**: ~57 tests (no backend needed, rate limit detection, watchdog logic, context formula, OTel trace logging, file upload)
 **Core Tests (not slow)**: ~2,069 tests
 **Slow Tests**: ~89 tests (chat execution, fleet ops, system agent ops, execution termination)
@@ -260,7 +261,27 @@ Use these thresholds to assess test health (based on **executed** tests, not inc
 
 | Test File | Description | Tests Added |
 |-----------|-------------|-------------|
+| `test_github_pat.py` | Per-agent GitHub PAT: GET/PUT/DELETE endpoints, encryption roundtrip (#347) | 9 tests |
 | `unit/test_file_upload.py` | Telegram file upload support: file extraction, download, MIME validation, parse_message (#354) | 11 tests |
+
+**GitHub PAT (#347)** (`test_github_pat.py`):
+
+- **TestGitHubPATStatus** (2 tests):
+  - `test_get_pat_status_no_git_config` — Agent without PAT shows source="global"
+  - `test_get_pat_status_unauthorized` — Requires authentication (401)
+
+- **TestSetGitHubPAT** (3 tests):
+  - `test_set_pat_invalid_token` — Invalid PAT rejected with 400
+  - `test_set_pat_empty_token` — Empty PAT rejected
+  - `test_set_pat_no_git_config` — Fails if agent has no git config
+
+- **TestClearGitHubPAT** (2 tests):
+  - `test_clear_pat_success` — Clear succeeds even if not configured
+  - `test_clear_pat_unauthorized` — Requires authentication (401)
+
+- **TestGitPATDBOperations** (2 tests):
+  - `test_encrypt_decrypt_roundtrip` — AES-256-GCM encryption preserves PAT
+  - `test_decrypt_invalid_data` — Decrypting invalid data returns None
 
 **File Upload (#354)** (`unit/test_file_upload.py`):
 

@@ -536,6 +536,22 @@ class DatabaseManager:
         return self._agent_ops.set_default_avatar(agent_name, identity_prompt, updated_at)
 
     # =========================================================================
+    # GitHub PAT (delegated to db/agents.py) - #347
+    # =========================================================================
+
+    def get_agent_github_pat(self, agent_name: str):
+        return self._agent_ops.get_agent_github_pat(agent_name)
+
+    def set_agent_github_pat(self, agent_name: str, pat: str) -> bool:
+        return self._agent_ops.set_agent_github_pat(agent_name, pat)
+
+    def clear_agent_github_pat(self, agent_name: str) -> bool:
+        return self._agent_ops.clear_agent_github_pat(agent_name)
+
+    def has_agent_github_pat(self, agent_name: str) -> bool:
+        return self._agent_ops.has_agent_github_pat(agent_name)
+
+    # =========================================================================
     # MCP API Key Management (delegated to db/mcp_keys.py)
     # =========================================================================
 

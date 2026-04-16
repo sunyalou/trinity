@@ -484,6 +484,8 @@ async def set_agent_github_pat(
             )
     except GitHubError as e:
         raise HTTPException(status_code=400, detail=f"GitHub API error: {str(e)}")
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to validate PAT: {str(e)}")
 
