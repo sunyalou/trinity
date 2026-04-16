@@ -37,6 +37,7 @@ Migration Order (as of 2026-02-28):
 30. execution_fan_out_id - FANOUT-001 fan-out operation linkage
 31. scheduler_retry_support - RETRY-001 scheduler retry mechanism
 32. validation_support - VALIDATE-001 post-execution business validation
+33. agent_git_config_pat - #347 per-agent GitHub PAT support
 """
 import logging
 import sqlite3
@@ -1373,6 +1374,18 @@ def _migrate_audit_log_table(cursor, conn):
     print("Created audit_log table with indexes and immutability triggers (SEC-001)")
 
 
+def _migrate_agent_git_config_pat(cursor, conn):
+    """Add github_pat_encrypted column to agent_git_config for per-agent GitHub PAT (#347)."""
+    cursor.execute("PRAGMA table_info(agent_git_config)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    if "github_pat_encrypted" not in columns:
+        print("Adding github_pat_encrypted column to agent_git_config for per-agent GitHub PAT...")
+        cursor.execute("ALTER TABLE agent_git_config ADD COLUMN github_pat_encrypted TEXT")
+
+    conn.commit()
+
+
 MIGRATIONS = [
     ("agent_sharing", _migrate_agent_sharing_table),
     ("schedule_executions_observability", _migrate_schedule_executions_observability),
@@ -1419,4 +1432,5 @@ MIGRATIONS = [
     ("audit_log_table", _migrate_audit_log_table),
     ("group_auth_mode", _migrate_group_auth_mode),
     ("agent_ownership_guardrails", _migrate_agent_ownership_guardrails),
+    ("agent_git_config_pat", _migrate_agent_git_config_pat),
 ]

@@ -386,3 +386,145 @@ async def initialize_github_sync(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to initialize GitHub sync: {str(e)}")
+
+
+# =============================================================================
+# Per-Agent GitHub PAT Configuration (#347)
+# =============================================================================
+
+def get_github_pat_for_agent(agent_name: str) -> str:
+    """
+    Get GitHub PAT for an agent, with fallback to global PAT.
+
+    Priority:
+    1. Per-agent PAT (if configured and decryption succeeds)
+    2. Global PAT from system settings / env var
+
+    Args:
+        agent_name: Name of the agent
+
+    Returns:
+        GitHub PAT string (may be empty if neither configured)
+    """
+    from services.settings_service import get_github_pat
+
+    # Try per-agent PAT first
+    agent_pat = db.get_agent_github_pat(agent_name)
+    if agent_pat:
+        return agent_pat
+
+    # Fall back to global PAT
+    return get_github_pat()
+
+
+class GitHubPATRequest(BaseModel):
+    """Request body for setting agent GitHub PAT."""
+    pat: str
+
+
+@router.get("/{agent_name}/github-pat")
+async def get_agent_github_pat_status(
+    agent_name: AuthorizedAgentByName,
+    request: Request
+):
+    """
+    Get GitHub PAT configuration status for an agent.
+
+    Returns:
+    - configured: Whether agent has a custom PAT
+    - source: "agent" if custom PAT, "global" if using system PAT
+    - has_global: Whether a global PAT is configured
+    """
+    from services.settings_service import get_github_pat
+
+    has_agent_pat = db.has_agent_github_pat(agent_name)
+    global_pat = get_github_pat()
+    has_global_pat = bool(global_pat)
+
+    return {
+        "agent_name": agent_name,
+        "configured": has_agent_pat,
+        "source": "agent" if has_agent_pat else "global",
+        "has_global": has_global_pat
+    }
+
+
+@router.put("/{agent_name}/github-pat")
+async def set_agent_github_pat(
+    agent_name: OwnedAgentByName,
+    body: GitHubPATRequest,
+    request: Request
+):
+    """
+    Set a per-agent GitHub PAT.
+
+    The PAT is validated against GitHub API before saving.
+    PAT is encrypted at rest using AES-256-GCM.
+
+    Note: Agent must be restarted for the new PAT to be used in
+    container git operations (PAT is embedded in remote URL on restart).
+
+    Body:
+    - pat: GitHub Personal Access Token
+    """
+    from services.github_service import GitHubService, GitHubError
+
+    pat = body.pat.strip()
+    if not pat:
+        raise HTTPException(status_code=400, detail="PAT cannot be empty")
+
+    # Validate PAT against GitHub API
+    try:
+        gh = GitHubService(pat)
+        is_valid, username = await gh.validate_token()
+        if not is_valid:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid GitHub PAT. Token was rejected by GitHub API."
+            )
+    except GitHubError as e:
+        raise HTTPException(status_code=400, detail=f"GitHub API error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to validate PAT: {str(e)}")
+
+    # Check if agent has git config (required for storing PAT)
+    git_config = git_service.get_agent_git_config(agent_name)
+    if not git_config:
+        raise HTTPException(
+            status_code=400,
+            detail="Agent does not have Git sync configured. Initialize Git sync first."
+        )
+
+    # Store encrypted PAT
+    success = db.set_agent_github_pat(agent_name, pat)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to save PAT")
+
+    return {
+        "message": "GitHub PAT configured successfully",
+        "agent_name": agent_name,
+        "github_username": username,
+        "source": "agent",
+        "note": "Restart agent for new PAT to be used in git operations"
+    }
+
+
+@router.delete("/{agent_name}/github-pat")
+async def clear_agent_github_pat(
+    agent_name: OwnedAgentByName,
+    request: Request
+):
+    """
+    Clear per-agent GitHub PAT (revert to global PAT).
+
+    Note: Agent must be restarted for the change to take effect
+    in container git operations.
+    """
+    # Clear the PAT
+    db.clear_agent_github_pat(agent_name)
+
+    return {
+        "message": "GitHub PAT cleared, now using global PAT",
+        "agent_name": agent_name,
+        "source": "global"
+    }

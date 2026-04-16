@@ -476,6 +476,31 @@ export const useAgentsStore = defineStore('agents', {
       return response.data
     },
 
+    // Per-agent GitHub PAT methods (#347)
+    async getGitHubPATStatus(name) {
+      const authStore = useAuthStore()
+      const response = await axios.get(`/api/agents/${name}/github-pat`, {
+        headers: authStore.authHeader
+      })
+      return response.data
+    },
+
+    async setGitHubPAT(name, pat) {
+      const authStore = useAuthStore()
+      const response = await axios.put(`/api/agents/${name}/github-pat`, { pat }, {
+        headers: authStore.authHeader
+      })
+      return response.data
+    },
+
+    async clearGitHubPAT(name) {
+      const authStore = useAuthStore()
+      const response = await axios.delete(`/api/agents/${name}/github-pat`, {
+        headers: authStore.authHeader
+      })
+      return response.data
+    },
+
     async listAgentFiles(name, path = '/home/developer', showHidden = false) {
       const authStore = useAuthStore()
       const response = await axios.get(`/api/agents/${name}/files`, {

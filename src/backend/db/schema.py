@@ -409,6 +409,7 @@ TABLES = {
             last_commit_sha TEXT,
             sync_enabled INTEGER DEFAULT 1,
             sync_paths TEXT,
+            github_pat_encrypted TEXT,
             FOREIGN KEY (agent_name) REFERENCES agent_ownership(agent_name)
         )
     """,

@@ -145,6 +145,13 @@
       "added": "2026-04-14",
       "categories": ["backend", "api", "scheduler", "validation"],
       "description": "Tests for business task validation (#294): prompt building (placeholders, truncation, custom prompts), response parsing (JSON, markdown blocks, text fallback, failure indicators), business status mapping, schedule/execution model validation fields, API integration tests"
+    },
+    {
+      "file": "test_github_pat.py",
+      "feature": "Issue #347",
+      "added": "2026-04-16",
+      "categories": ["backend", "api", "git", "credentials"],
+      "description": "Tests for per-agent GitHub PAT (#347): GET/PUT/DELETE endpoints, status checking, PAT validation, encryption roundtrip, auth requirements"
     }
   ]
 }

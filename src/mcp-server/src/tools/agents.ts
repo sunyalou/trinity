@@ -716,5 +716,108 @@ export function createAgentTools(
         return JSON.stringify(response, null, 2);
       },
     },
+
+    // ========================================================================
+    // get_agent_github_pat_status - Get GitHub PAT configuration status (#347)
+    // ========================================================================
+    getAgentGithubPatStatus: {
+      name: "get_agent_github_pat_status",
+      description:
+        "Get the GitHub PAT configuration status for an agent. " +
+        "Returns whether the agent has a custom GitHub PAT configured or uses the global PAT. " +
+        "Does not return the actual PAT value for security.",
+      parameters: z.object({
+        agent_name: z
+          .string()
+          .describe("The name of the agent to check"),
+      }),
+      execute: async (
+        args: { agent_name: string },
+        context?: { session?: McpAuthContext }
+      ) => {
+        const authContext = context?.session;
+        const apiClient = getClient(authContext);
+
+        console.log(
+          `[get_agent_github_pat_status] Checking PAT status for agent '${args.agent_name}'`
+        );
+
+        interface GitHubPATStatusResponse {
+          agent_name: string;
+          configured: boolean;
+          source: "agent" | "global";
+          has_global: boolean;
+        }
+
+        const response = await apiClient.request<GitHubPATStatusResponse>(
+          "GET",
+          `/api/agents/${args.agent_name}/github-pat`
+        );
+
+        return JSON.stringify(response, null, 2);
+      },
+    },
+
+    // ========================================================================
+    // set_agent_github_pat - Set per-agent GitHub PAT (#347)
+    // ========================================================================
+    setAgentGithubPat: {
+      name: "set_agent_github_pat",
+      description:
+        "Set a per-agent GitHub Personal Access Token. " +
+        "The PAT is validated against GitHub API before saving and encrypted at rest. " +
+        "When set, git operations for this agent will use this PAT instead of the global PAT. " +
+        "To clear the PAT and revert to global, pass an empty string. " +
+        "Note: Agent must be restarted for git operations to use the new PAT.",
+      parameters: z.object({
+        agent_name: z
+          .string()
+          .describe("The name of the agent"),
+        pat: z
+          .string()
+          .describe("GitHub Personal Access Token (or empty string to clear)"),
+      }),
+      execute: async (
+        args: { agent_name: string; pat: string },
+        context?: { session?: McpAuthContext }
+      ) => {
+        const authContext = context?.session;
+        const apiClient = getClient(authContext);
+
+        // Handle clear case
+        if (!args.pat || args.pat.trim() === "") {
+          console.log(
+            `[set_agent_github_pat] Clearing PAT for agent '${args.agent_name}'`
+          );
+
+          const response = await apiClient.request<{ message: string }>(
+            "DELETE",
+            `/api/agents/${args.agent_name}/github-pat`
+          );
+
+          return JSON.stringify(response, null, 2);
+        }
+
+        console.log(
+          `[set_agent_github_pat] Setting PAT for agent '${args.agent_name}'`
+        );
+
+        interface SetGitHubPATResponse {
+          message: string;
+          agent_name: string;
+          github_username: string;
+          source: string;
+          note: string;
+        }
+
+        const response = await apiClient.request<SetGitHubPATResponse>(
+          "PUT",
+          `/api/agents/${args.agent_name}/github-pat`,
+          { pat: args.pat }
+        );
+
+        return JSON.stringify(response, null, 2);
+      },
+    },
   };
 }

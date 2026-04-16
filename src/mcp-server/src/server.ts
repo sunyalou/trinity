@@ -186,6 +186,9 @@ export async function createServer(config: ServerConfig = {}) {
   server.addTool(agentTools.getAgentSshAccess);
   server.addTool(agentTools.deployLocalAgent);
   server.addTool(agentTools.initializeGithubSync);
+  // #347: Per-agent GitHub PAT tools
+  server.addTool(agentTools.getAgentGithubPatStatus);
+  server.addTool(agentTools.setAgentGithubPat);
 
   // Register chat tools with auth context for access control
   const chatTools = createChatTools(client, requireApiKey);

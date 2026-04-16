@@ -369,6 +369,53 @@ def get_github_pat(self) -> str:
     return os.getenv('GITHUB_PAT', '')
 ```
 
+### Per-Agent GitHub PAT (#347)
+
+Agents can optionally have their own GitHub PAT, falling back to the global PAT if not configured.
+
+**Entry Points:**
+| Type | Location | Description |
+|------|----------|-------------|
+| **UI** | Git tab > GitHub Authentication | Status display + Configure button |
+| **API** | `GET /api/agents/{name}/github-pat` | Get PAT config status (agent vs global) |
+| **API** | `PUT /api/agents/{name}/github-pat` | Set per-agent PAT (validated, encrypted) |
+| **API** | `DELETE /api/agents/{name}/github-pat` | Clear per-agent PAT (revert to global) |
+| **MCP** | `get_agent_github_pat_status` | Check PAT configuration |
+| **MCP** | `set_agent_github_pat` | Set or clear per-agent PAT |
+
+**Database Storage:**
+- Column: `agent_git_config.github_pat_encrypted` (TEXT, nullable)
+- Encryption: AES-256-GCM via `CredentialEncryptionService` (same as Slack bot tokens)
+- Migration: `_migrate_agent_git_config_pat` (#33)
+
+**Helper Function** (`src/backend/routers/git.py:390-409`):
+```python
+def get_github_pat_for_agent(agent_name: str) -> str:
+    """Get per-agent PAT if set, otherwise fall back to global PAT."""
+    agent_pat = db.get_agent_github_pat(agent_name)
+    if agent_pat:
+        return agent_pat
+    return get_github_pat()  # Global fallback
+```
+
+**DB Mixin** (`src/backend/db/agent_settings/git_pat.py`):
+- `get_agent_github_pat(agent_name)` - Returns decrypted PAT or None
+- `set_agent_github_pat(agent_name, pat)` - Encrypts and stores PAT
+- `clear_agent_github_pat(agent_name)` - Removes per-agent PAT
+- `has_agent_github_pat(agent_name)` - Boolean check
+
+**Frontend UI** (`src/frontend/src/components/GitPanel.vue`):
+- Status display: "Agent-specific PAT" or "Using Global PAT"
+- Configure button opens modal for PAT entry
+- PAT validated against GitHub API before saving
+- Clear button to revert to global PAT
+
+**Security:**
+- PAT values never returned in API responses (only `configured: true/false`)
+- PAT validated via `GitHubService.validate_token()` before storage
+- Encrypted at rest using platform-wide `CREDENTIAL_ENCRYPTION_KEY`
+- Agent restart required for git operations to use new PAT
+
 ### GitHub Service Integration
 
 Repository operations use the centralized GitHub service:
@@ -685,6 +732,7 @@ Working - Pull fix for working branches (2026-03-26)
 
 | Date | Changes |
 |------|---------|
+| 2026-04-16 | **Per-Agent GitHub PAT** (#347): Added per-agent PAT configuration. Agents can now use their own GitHub PAT instead of the global one. DB column `github_pat_encrypted` in `agent_git_config`, encrypted with AES-256-GCM. 3 new API endpoints (GET/PUT/DELETE), 2 MCP tools, GitPanel.vue settings UI. Helper `get_github_pat_for_agent()` provides fallback logic. |
 | 2026-03-26 | **Fix git pull for working branches** (#195): Added `_get_pull_branch()` helper that detects `trinity/*` branches and redirects pull/status to `origin/main`. Fixed `git fetch --dry-run` → `git fetch origin` in status endpoint. Fixed `initialize_git_in_container()` to preserve remote history via `git fetch + reset` instead of `git init + force push`. Tests in `tests/unit/test_git_pull_branch.py`. |
 | 2026-02-28 | **Git Branch Support** (GIT-002): Added complete data flow documentation with line numbers. URL syntax (`github:owner/repo@branch`) parses branch in crud.py:102-113. MCP types.ts:29 and agents.ts:201-207 expose `source_branch` parameter. template_service.py:22-41 passes branch to git clone. startup.sh:38-45 uses `-b` flag. Added testing checklist from requirements spec. |
 | 2026-02-24 | **Async Docker Operations** (DOCKER-001): `execute_command_in_container()` in docker_service.py now async. All git_service.py calls await this function. `check_git_initialized()` now async. routers/git.py updated to await. |

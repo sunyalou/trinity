@@ -9,6 +9,7 @@ to focused mixin classes in db/agent_settings/:
 - AutonomyMixin: Autonomy mode, API key settings
 - AvatarMixin: Avatar identity management
 - MetadataMixin: Batch queries, rename operations
+- GitPATMixin: Per-agent GitHub PAT management (#347)
 """
 
 import sqlite3
@@ -24,6 +25,7 @@ from .agent_settings import (
     AvatarMixin,
     MetadataMixin,
     AccessPolicyMixin,
+    GitPATMixin,
 )
 
 # System agent name constant
@@ -38,6 +40,7 @@ class AgentOperations(
     AvatarMixin,
     MetadataMixin,
     AccessPolicyMixin,
+    GitPATMixin,
 ):
     """Agent ownership, access control, and settings database operations.
 

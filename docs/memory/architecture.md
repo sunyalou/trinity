@@ -292,11 +292,11 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - Tools access auth context via `context.session` parameter
 - Agent-to-agent collaboration uses agent-scoped keys for access control
 
-**64 Tools** across 14 tool modules (`src/tools/`):
+**66 Tools** across 14 tool modules (`src/tools/`):
 
 | Module | Tools | Description |
 |--------|-------|-------------|
-| `agents.ts` (17) | `list_agents`, `get_agent`, `get_agent_info`, `create_agent`, `rename_agent`, `delete_agent`, `start_agent`, `stop_agent`, `list_templates`, `get_credential_status`, `inject_credentials`, `export_credentials`, `import_credentials`, `get_credential_encryption_key`, `get_agent_ssh_access`, `deploy_local_agent`, `initialize_github_sync` | Agent lifecycle, credentials, SSH, local deploy, GitHub sync |
+| `agents.ts` (19) | `list_agents`, `get_agent`, `get_agent_info`, `create_agent`, `rename_agent`, `delete_agent`, `start_agent`, `stop_agent`, `list_templates`, `get_credential_status`, `inject_credentials`, `export_credentials`, `import_credentials`, `get_credential_encryption_key`, `get_agent_ssh_access`, `deploy_local_agent`, `initialize_github_sync`, `get_agent_github_pat_status`, `set_agent_github_pat` | Agent lifecycle, credentials, SSH, local deploy, GitHub sync, per-agent PAT (#347) |
 | `chat.ts` (3) | `chat_with_agent`, `get_chat_history`, `get_agent_logs` | Chat (enforces sharing rules), history, logs |
 | `schedules.ts` (8) | `list_agent_schedules`, `create_agent_schedule`, `get_agent_schedule`, `update_agent_schedule`, `delete_agent_schedule`, `toggle_agent_schedule`, `trigger_agent_schedule`, `get_schedule_executions` | Schedule CRUD and execution history |
 | `executions.ts` (3) | `list_recent_executions`, `get_execution_result`, `get_agent_activity_summary` | Execution queries, async result polling, activity monitoring (MCP-007) |
@@ -571,6 +571,13 @@ Services that run continuously in the backend process:
 | POST | `/api/agents/{name}/credentials/inject` | Inject files directly to agent (NEW) |
 | POST | `/api/agents/{name}/credentials/export` | Export to .credentials.enc (NEW) |
 | POST | `/api/agents/{name}/credentials/import` | Import from encrypted file (NEW) |
+
+### GitHub PAT (3 endpoints - #347)
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/agents/{name}/github-pat` | Get PAT config status (agent vs global) |
+| PUT | `/api/agents/{name}/github-pat` | Set per-agent GitHub PAT (validated, encrypted) |
+| DELETE | `/api/agents/{name}/github-pat` | Clear per-agent PAT (revert to global) |
 
 ### Internal (1 endpoint - no auth)
 | Method | Path | Description |

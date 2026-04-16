@@ -297,6 +297,142 @@
           Last synced commit: <code class="bg-gray-100 dark:bg-gray-700 px-1 rounded">{{ gitStatus.db_config.last_commit_sha.substring(0, 7) }}</code>
         </p>
       </div>
+
+      <!-- GitHub PAT Settings (#347) -->
+      <div class="border-t dark:border-gray-700 pt-4 mt-4">
+        <h3 class="text-sm font-medium text-gray-900 dark:text-white mb-3">GitHub Authentication</h3>
+
+        <!-- PAT Status -->
+        <div v-if="patStatus" class="bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+              <svg class="h-5 w-5 text-gray-500 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+              </svg>
+              <div>
+                <p class="text-sm font-medium text-gray-900 dark:text-white">
+                  {{ patStatus.configured ? 'Agent-specific PAT' : 'Using Global PAT' }}
+                </p>
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  <span v-if="patStatus.configured" class="text-green-600 dark:text-green-400">Custom PAT configured for this agent</span>
+                  <span v-else-if="patStatus.has_global" class="text-blue-600 dark:text-blue-400">Using system-wide GitHub PAT from Settings</span>
+                  <span v-else class="text-yellow-600 dark:text-yellow-400">No PAT configured - git operations may fail</span>
+                </p>
+              </div>
+            </div>
+            <button
+              @click="showPatModal = true"
+              class="inline-flex items-center px-3 py-1.5 border border-gray-300 dark:border-gray-600 shadow-sm text-xs font-medium rounded text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+            >
+              {{ patStatus.configured ? 'Change' : 'Configure' }}
+            </button>
+          </div>
+
+          <!-- Clear button if configured -->
+          <div v-if="patStatus.configured" class="mt-3 pt-3 border-t border-gray-200 dark:border-gray-600">
+            <button
+              @click="clearPat"
+              :disabled="patSaving"
+              class="text-xs text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300"
+            >
+              Clear agent PAT (revert to global)
+            </button>
+          </div>
+        </div>
+
+        <!-- Loading PAT status -->
+        <div v-else class="text-center py-4">
+          <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-indigo-500 mx-auto"></div>
+        </div>
+      </div>
+
+      <!-- PAT Configuration Modal -->
+      <div v-if="showPatModal" class="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="pat-modal-title" role="dialog" aria-modal="true">
+        <div class="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+          <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" aria-hidden="true" @click="closePatModal"></div>
+          <div class="inline-block align-bottom bg-white dark:bg-gray-800 rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+            <div class="bg-white dark:bg-gray-800 px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+              <div class="sm:flex sm:items-start">
+                <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-indigo-100 dark:bg-indigo-900/30 sm:mx-0 sm:h-10 sm:w-10">
+                  <svg class="h-6 w-6 text-indigo-600 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                  </svg>
+                </div>
+                <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left flex-1">
+                  <h3 class="text-lg leading-6 font-medium text-gray-900 dark:text-white" id="pat-modal-title">
+                    Configure GitHub PAT
+                  </h3>
+                  <div class="mt-4 space-y-4">
+                    <!-- Error Message -->
+                    <div v-if="patError" class="rounded-md bg-red-50 dark:bg-red-900/30 p-4">
+                      <p class="text-sm text-red-800 dark:text-red-300">{{ patError }}</p>
+                    </div>
+
+                    <!-- Success Message -->
+                    <div v-if="patSuccess" class="rounded-md bg-green-50 dark:bg-green-900/30 p-4">
+                      <p class="text-sm text-green-800 dark:text-green-300">{{ patSuccess }}</p>
+                    </div>
+
+                    <!-- PAT Input -->
+                    <div>
+                      <label for="github-pat" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Personal Access Token
+                      </label>
+                      <input
+                        type="password"
+                        id="github-pat"
+                        v-model="newPat"
+                        placeholder="ghp_xxxxxxxxxxxx"
+                        :disabled="patSaving"
+                        class="mt-1 block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm dark:bg-gray-700 dark:text-white font-mono"
+                      />
+                      <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        Token must have <code class="bg-gray-100 dark:bg-gray-700 px-1 rounded">repo</code> scope
+                      </p>
+                    </div>
+
+                    <!-- Info Box -->
+                    <div class="rounded-md bg-blue-50 dark:bg-blue-900/30 p-4">
+                      <div class="flex">
+                        <svg class="h-5 w-5 text-blue-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                          <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+                        </svg>
+                        <div class="ml-3 flex-1 text-xs text-blue-700 dark:text-blue-300">
+                          <p><strong>Per-agent PAT</strong> allows this agent to use a different GitHub account than other agents.</p>
+                          <p class="mt-1">The PAT is validated against GitHub and encrypted at rest.</p>
+                          <p class="mt-1"><strong>Note:</strong> Restart the agent for the new PAT to take effect in git operations.</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="bg-gray-50 dark:bg-gray-700 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+              <button
+                type="button"
+                @click="savePat"
+                :disabled="!newPat || patSaving"
+                class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-indigo-600 text-base font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <svg v-if="patSaving" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                {{ patSaving ? 'Validating...' : 'Save PAT' }}
+              </button>
+              <button
+                type="button"
+                @click="closePatModal"
+                :disabled="patSaving"
+                class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 dark:border-gray-600 shadow-sm px-4 py-2 bg-white dark:bg-gray-800 text-base font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -331,6 +467,14 @@ const repoName = ref('')
 const createRepo = ref(true)
 const privateRepo = ref(true)
 
+// PAT configuration state (#347)
+const patStatus = ref(null)
+const showPatModal = ref(false)
+const newPat = ref('')
+const patSaving = ref(false)
+const patError = ref(null)
+const patSuccess = ref(null)
+
 const loadGitStatus = async () => {
   loading.value = true
   try {
@@ -338,6 +482,8 @@ const loadGitStatus = async () => {
     // Also load git log if status shows git is enabled
     if (gitStatus.value?.git_enabled && gitStatus.value?.branch) {
       gitLog.value = await agentsStore.getGitLog(props.agentName, 10)
+      // Load PAT status when git is enabled (#347)
+      await loadPatStatus()
     }
   } catch (err) {
     console.error('Failed to load git status:', err)
@@ -390,6 +536,60 @@ const closeInitializeModal = () => {
   initializeError.value = null
   repoOwner.value = ''
   repoName.value = ''
+}
+
+// PAT management methods (#347)
+const loadPatStatus = async () => {
+  try {
+    patStatus.value = await agentsStore.getGitHubPATStatus(props.agentName)
+  } catch (err) {
+    console.error('Failed to load PAT status:', err)
+    patStatus.value = { configured: false, source: 'global', has_global: false }
+  }
+}
+
+const savePat = async () => {
+  if (!newPat.value) return
+
+  patSaving.value = true
+  patError.value = null
+  patSuccess.value = null
+
+  try {
+    const response = await agentsStore.setGitHubPAT(props.agentName, newPat.value)
+    patSuccess.value = `PAT configured successfully for GitHub user: ${response.github_username}`
+    await loadPatStatus()
+    // Close modal after short delay to show success message
+    setTimeout(() => {
+      closePatModal()
+    }, 1500)
+  } catch (error) {
+    patError.value = error.response?.data?.detail || error.message || 'Failed to save PAT'
+  } finally {
+    patSaving.value = false
+  }
+}
+
+const clearPat = async () => {
+  if (!confirm('Clear the agent-specific PAT and revert to using the global PAT?')) return
+
+  patSaving.value = true
+  try {
+    await agentsStore.clearGitHubPAT(props.agentName)
+    await loadPatStatus()
+  } catch (error) {
+    console.error('Failed to clear PAT:', error)
+  } finally {
+    patSaving.value = false
+  }
+}
+
+const closePatModal = () => {
+  if (patSaving.value) return
+  showPatModal.value = false
+  newPat.value = ''
+  patError.value = null
+  patSuccess.value = null
 }
 
 const formatDate = (dateString) => {

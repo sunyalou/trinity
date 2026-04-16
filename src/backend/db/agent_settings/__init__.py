@@ -8,6 +8,7 @@ Each module provides a mixin class that AgentOperations inherits from:
 - AutonomyMixin: Autonomy mode, API key settings
 - AvatarMixin: Avatar identity management
 - MetadataMixin: Batch queries, rename operations
+- GitPATMixin: Per-agent GitHub PAT management (#347)
 """
 
 from .sharing import SharingMixin
@@ -17,6 +18,7 @@ from .autonomy import AutonomyMixin
 from .avatar import AvatarMixin
 from .metadata import MetadataMixin
 from .access_policy import AccessPolicyMixin
+from .git_pat import GitPATMixin
 
 __all__ = [
     'SharingMixin',
@@ -26,4 +28,5 @@ __all__ = [
     'AvatarMixin',
     'MetadataMixin',
     'AccessPolicyMixin',
+    'GitPATMixin',
 ]
