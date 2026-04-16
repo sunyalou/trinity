@@ -13,6 +13,7 @@ from dependencies import get_current_user
 from services.docker_service import get_agent_container
 from services.docker_utils import container_stop, container_rename
 from services.image_generation_prompts import AVATAR_EMOTIONS
+from services.platform_audit_service import platform_audit_service, AuditEventType
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -170,6 +171,20 @@ async def rename_agent_endpoint(
             await manager.broadcast(json.dumps(event))
         if filtered_manager:
             await filtered_manager.broadcast_filtered(event)
+
+        # SEC-001: audit rename
+        await platform_audit_service.log(
+            event_type=AuditEventType.AGENT_LIFECYCLE,
+            event_action="rename",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            target_type="agent",
+            target_id=sanitized_name,
+            endpoint=str(request.url.path),
+            request_id=getattr(request.state, "request_id", None),
+            details={"old_name": agent_name, "new_name": sanitized_name},
+        )
 
         # Restart agent if it was running
         # Note: Container needs to be recreated for new volume mount

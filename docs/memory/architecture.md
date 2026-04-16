@@ -598,7 +598,18 @@ Services that run continuously in the backend process:
 
 **Storage**: append-only `audit_log` table in main SQLite DB. SQLite triggers block UPDATE unconditionally and DELETE within the 365-day retention window.
 
-**Phase 1 + agent lifecycle smoke test.** Phase 1 ships infrastructure; Phase 2a ships agent lifecycle audit. Remaining integrations (auth, sharing, settings, credentials — Phase 2b), MCP TypeScript audit (Phase 3), and hash-chain verification (Phase 4) follow as separate PRs.
+**Distinct from `/api/audit`**: the existing `/api/audit` router exposes the
+Process Engine's workflow audit (`audit_entries` table). The new `/api/audit-log`
+covers cross-cutting platform events (lifecycle, auth, MCP, credentials, etc.)
+via the new `audit_log` table. Both are intentionally separate per the SEC-001
+architecture; a unified surface can be added later.
+
+**Phases 1–2b complete.** Phase 1 ships infrastructure; Phase 2a ships agent
+lifecycle audit (create/start/stop/delete); Phase 2b ships auth
+(login success/failure), sharing (share/unshare/access requests), credentials
+(inject/export/import), settings changes, agent rename, and request-ID
+middleware for correlation. MCP TypeScript audit (Phase 3) and hash-chain
+verification + export (Phase 4) follow as separate PRs against issue #20.
 
 ### Nevermined Payments (NVM-001)
 

@@ -9,6 +9,7 @@ from jose import JWTError, jwt
 import redis
 
 from models import Token
+from services.platform_audit_service import platform_audit_service, AuditEventType
 from config import (
     SECRET_KEY,
     ALGORITHM,
@@ -206,6 +207,16 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
     if not user:
         # Record failed attempt
         record_login_attempt(client_ip, success=False)
+        # SEC-001: audit failed admin login
+        await platform_audit_service.log(
+            event_type=AuditEventType.AUTHENTICATION,
+            event_action="login_failed",
+            source="api",
+            actor_ip=client_ip,
+            endpoint=str(request.url.path),
+            request_id=getattr(request.state, "request_id", None),
+            details={"method": "admin", "username": form_data.username},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -223,6 +234,19 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
         data={"sub": user["username"]},
         expires_delta=access_token_expires,
         mode="admin"  # Mark as admin login token
+    )
+
+    # SEC-001: audit successful admin login
+    await platform_audit_service.log(
+        event_type=AuditEventType.AUTHENTICATION,
+        event_action="login_success",
+        source="api",
+        actor_ip=client_ip,
+        target_type="user",
+        target_id=user["username"],
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={"method": "admin"},
     )
 
     return {"access_token": access_token, "token_type": "bearer"}
@@ -392,6 +416,16 @@ async def verify_email_login_code(request: Request):
     if not verification:
         record_login_attempt(client_ip, success=False)
         record_otp_attempt(email, success=False)
+        # SEC-001: audit failed email login
+        await platform_audit_service.log(
+            event_type=AuditEventType.AUTHENTICATION,
+            event_action="login_failed",
+            source="api",
+            actor_ip=client_ip,
+            endpoint=str(request.url.path),
+            request_id=getattr(request.state, "request_id", None),
+            details={"method": "email", "email": email},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired verification code"
@@ -418,6 +452,19 @@ async def verify_email_login_code(request: Request):
         data={"sub": user["username"]},
         expires_delta=access_token_expires,
         mode="email"  # Mark as email auth token
+    )
+
+    # SEC-001: audit successful email login
+    await platform_audit_service.log(
+        event_type=AuditEventType.AUTHENTICATION,
+        event_action="login_success",
+        source="api",
+        actor_ip=client_ip,
+        target_type="user",
+        target_id=user["username"],
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={"method": "email", "email": email},
     )
 
     return EmailLoginResponse(

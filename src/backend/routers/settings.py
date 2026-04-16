@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 from models import User
 from database import db, SystemSetting, SystemSettingUpdate
 from dependencies import get_current_user
+from services.platform_audit_service import platform_audit_service, AuditEventType
 
 # Import from settings_service (these are re-exported for backward compatibility)
 from services.settings_service import (
@@ -169,6 +170,18 @@ async def update_anthropic_key(
         # Store in settings
         db.set_setting('anthropic_api_key', key)
 
+        # SEC-001: audit API key change
+        await platform_audit_service.log(
+            event_type=AuditEventType.CONFIGURATION,
+            event_action="settings_change",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            endpoint=str(request.url.path),
+            request_id=getattr(request.state, "request_id", None),
+            details={"setting": "anthropic_api_key", "action": "update"},
+        )
+
         return {
             "success": True,
             "masked": mask_api_key(key)
@@ -193,6 +206,19 @@ async def delete_anthropic_key(
 
     try:
         deleted = db.delete_setting('anthropic_api_key')
+
+        # SEC-001: audit API key deletion
+        if deleted:
+            await platform_audit_service.log(
+                event_type=AuditEventType.CONFIGURATION,
+                event_action="settings_change",
+                source="api",
+                actor_user=current_user,
+                actor_ip=request.client.host if request.client else None,
+                endpoint=str(request.url.path),
+                request_id=getattr(request.state, "request_id", None),
+                details={"setting": "anthropic_api_key", "action": "delete"},
+            )
 
         # Check if env var fallback exists
         env_key = os.getenv('ANTHROPIC_API_KEY', '')
@@ -302,6 +328,18 @@ async def update_github_pat(
             logger.exception("GitHub PAT propagation failed")
             propagation_payload = {"error": f"Propagation failed: {str(e)}"}
 
+        # SEC-001: audit GitHub PAT change
+        await platform_audit_service.log(
+            event_type=AuditEventType.CONFIGURATION,
+            event_action="settings_change",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            endpoint=str(request.url.path),
+            request_id=getattr(request.state, "request_id", None),
+            details={"setting": "github_pat", "action": "update"},
+        )
+
         return {
             "success": True,
             "masked": mask_api_key(key),
@@ -327,6 +365,19 @@ async def delete_github_pat(
 
     try:
         deleted = db.delete_setting('github_pat')
+
+        # SEC-001: audit GitHub PAT deletion
+        if deleted:
+            await platform_audit_service.log(
+                event_type=AuditEventType.CONFIGURATION,
+                event_action="settings_change",
+                source="api",
+                actor_user=current_user,
+                actor_ip=request.client.host if request.client else None,
+                endpoint=str(request.url.path),
+                request_id=getattr(request.state, "request_id", None),
+                details={"setting": "github_pat", "action": "delete"},
+            )
 
         # Check if env var fallback exists
         env_key = os.getenv('GITHUB_PAT', '')
@@ -1104,6 +1155,18 @@ async def update_setting(
     try:
         setting = db.set_setting(key, body.value)
 
+        # SEC-001: audit generic setting change
+        await platform_audit_service.log(
+            event_type=AuditEventType.CONFIGURATION,
+            event_action="settings_change",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            endpoint=str(request.url.path),
+            request_id=getattr(request.state, "request_id", None),
+            details={"setting": key, "action": "update"},
+        )
+
         # Back-fill Telegram webhooks when public_chat_url becomes available.
         # Why: bindings created before public_chat_url was set have webhook_url IS NULL
         # and receive no messages. Re-registering is idempotent (setWebhook on Telegram).
@@ -1154,6 +1217,19 @@ async def delete_setting(
 
     try:
         deleted = db.delete_setting(key)
+
+        # SEC-001: audit setting deletion
+        if deleted:
+            await platform_audit_service.log(
+                event_type=AuditEventType.CONFIGURATION,
+                event_action="settings_change",
+                source="api",
+                actor_user=current_user,
+                actor_ip=request.client.host if request.client else None,
+                endpoint=str(request.url.path),
+                request_id=getattr(request.state, "request_id", None),
+                details={"setting": key, "action": "delete"},
+            )
 
         return {"success": True, "deleted": deleted}
     except Exception as e:

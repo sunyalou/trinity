@@ -604,3 +604,250 @@ def test_lifecycle_full_flow_creates_ordered_history(audit_service, audit_ops):
     # Newest first — reverse to get chronological order.
     actions = [r["event_action"] for r in reversed(rows)]
     assert actions == ["create", "start", "stop", "delete"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b integration tests — auth, sharing, credentials, settings, rename
+# ---------------------------------------------------------------------------
+
+
+def _audit_log(service, etype, event_type, action, **extra):
+    """Fire a service.log call matching Phase 2b router patterns."""
+    user = types.SimpleNamespace(id=7, email="owner@example.com")
+    return asyncio.run(
+        service.log(
+            event_type=event_type,
+            event_action=action,
+            source="api",
+            actor_user=extra.pop("actor_user", user),
+            actor_ip=extra.pop("actor_ip", "127.0.0.1"),
+            target_type=extra.pop("target_type", None),
+            target_id=extra.pop("target_id", None),
+            endpoint=extra.pop("endpoint", "/api/test"),
+            request_id=extra.pop("request_id", "req-001"),
+            **extra,
+        )
+    )
+
+
+# --- Authentication ---
+
+
+def test_auth_login_success_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _audit_log(
+        service, ETYPE, ETYPE.AUTHENTICATION, "login_success",
+        target_type="user", target_id="admin",
+        details={"method": "admin"},
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_type"] == "authentication"
+    assert row["event_action"] == "login_success"
+    assert row["target_id"] == "admin"
+    assert row["details"]["method"] == "admin"
+
+
+def test_auth_login_failed_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    # Failed login has no actor_user
+    event_id = asyncio.run(
+        service.log(
+            event_type=ETYPE.AUTHENTICATION,
+            event_action="login_failed",
+            source="api",
+            actor_ip="10.0.0.1",
+            endpoint="/api/token",
+            details={"method": "admin", "username": "admin"},
+        )
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_type"] == "authentication"
+    assert row["event_action"] == "login_failed"
+    assert row["actor_type"] == "system"  # fallback when no actor
+    assert row["actor_ip"] == "10.0.0.1"
+
+
+def test_auth_email_login_success_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _audit_log(
+        service, ETYPE, ETYPE.AUTHENTICATION, "login_success",
+        target_type="user", target_id="alice",
+        details={"method": "email", "email": "alice@example.com"},
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["details"]["method"] == "email"
+    assert row["details"]["email"] == "alice@example.com"
+
+
+# --- Authorization (sharing) ---
+
+
+def test_share_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _audit_log(
+        service, ETYPE, ETYPE.AUTHORIZATION, "share",
+        target_type="agent", target_id="oracle",
+        details={"shared_with": "bob@example.com"},
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_type"] == "authorization"
+    assert row["event_action"] == "share"
+    assert row["target_id"] == "oracle"
+    assert row["details"]["shared_with"] == "bob@example.com"
+
+
+def test_unshare_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _audit_log(
+        service, ETYPE, ETYPE.AUTHORIZATION, "unshare",
+        target_type="agent", target_id="oracle",
+        details={"removed_email": "bob@example.com"},
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_action"] == "unshare"
+    assert row["details"]["removed_email"] == "bob@example.com"
+
+
+def test_access_request_approved_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _audit_log(
+        service, ETYPE, ETYPE.AUTHORIZATION, "access_request_approved",
+        target_type="agent", target_id="oracle",
+        details={"email": "carol@example.com", "access_request_id": "ar-1"},
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_action"] == "access_request_approved"
+    assert row["details"]["email"] == "carol@example.com"
+
+
+def test_access_request_rejected_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _audit_log(
+        service, ETYPE, ETYPE.AUTHORIZATION, "access_request_rejected",
+        target_type="agent", target_id="oracle",
+        details={"email": "carol@example.com", "access_request_id": "ar-2"},
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_action"] == "access_request_rejected"
+
+
+# --- Credentials ---
+
+
+def test_credential_inject_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _audit_log(
+        service, ETYPE, ETYPE.CREDENTIALS, "inject",
+        target_type="agent", target_id="oracle",
+        details={"files": [".env", ".mcp.json"]},
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_type"] == "credentials"
+    assert row["event_action"] == "inject"
+    assert ".env" in row["details"]["files"]
+
+
+def test_credential_export_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _audit_log(
+        service, ETYPE, ETYPE.CREDENTIALS, "export",
+        target_type="agent", target_id="oracle",
+        details={"files_exported": 2},
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_action"] == "export"
+    assert row["details"]["files_exported"] == 2
+
+
+def test_credential_import_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _audit_log(
+        service, ETYPE, ETYPE.CREDENTIALS, "import",
+        target_type="agent", target_id="oracle",
+        details={"files_imported": [".env"]},
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_action"] == "import"
+
+
+# --- Configuration (settings) ---
+
+
+def test_settings_change_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _audit_log(
+        service, ETYPE, ETYPE.CONFIGURATION, "settings_change",
+        details={"setting": "anthropic_api_key", "action": "update"},
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_type"] == "configuration"
+    assert row["event_action"] == "settings_change"
+    assert row["details"]["setting"] == "anthropic_api_key"
+
+
+def test_settings_delete_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _audit_log(
+        service, ETYPE, ETYPE.CONFIGURATION, "settings_change",
+        details={"setting": "github_pat", "action": "delete"},
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["details"]["action"] == "delete"
+
+
+# --- Agent rename ---
+
+
+def test_rename_emits_row(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _audit_log(
+        service, ETYPE, ETYPE.AGENT_LIFECYCLE, "rename",
+        target_type="agent", target_id="oracle-v2",
+        details={"old_name": "oracle", "new_name": "oracle-v2"},
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["event_type"] == "agent_lifecycle"
+    assert row["event_action"] == "rename"
+    assert row["details"]["old_name"] == "oracle"
+    assert row["details"]["new_name"] == "oracle-v2"
+
+
+# --- Request-ID propagation ---
+
+
+def test_request_id_stored_in_entry(audit_service, audit_ops):
+    service, ETYPE, _ = audit_service
+    event_id = _audit_log(
+        service, ETYPE, ETYPE.AUTHENTICATION, "login_success",
+        request_id="req-abc-123",
+    )
+    row = audit_ops.get_audit_entry(event_id)
+    assert row["request_id"] == "req-abc-123"
+
+
+# --- Cross-category query ---
+
+
+def test_phase2b_mixed_events_queryable(audit_service, audit_ops):
+    """Multiple event types can be queried independently."""
+    service, ETYPE, _ = audit_service
+    _audit_log(service, ETYPE, ETYPE.AUTHENTICATION, "login_success")
+    _audit_log(service, ETYPE, ETYPE.AUTHORIZATION, "share",
+               target_type="agent", target_id="a")
+    _audit_log(service, ETYPE, ETYPE.CREDENTIALS, "inject",
+               target_type="agent", target_id="a")
+    _audit_log(service, ETYPE, ETYPE.CONFIGURATION, "settings_change")
+    _audit_log(service, ETYPE, ETYPE.AGENT_LIFECYCLE, "rename",
+               target_type="agent", target_id="b")
+
+    auth_rows = audit_ops.get_audit_entries(event_type="authentication")
+    assert len(auth_rows) >= 1
+
+    cred_rows = audit_ops.get_audit_entries(event_type="credentials")
+    assert len(cred_rows) >= 1
+
+    config_rows = audit_ops.get_audit_entries(event_type="configuration")
+    assert len(config_rows) >= 1
+
+    stats = audit_ops.get_audit_stats()
+    assert stats["total"] >= 5

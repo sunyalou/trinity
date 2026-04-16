@@ -570,6 +570,20 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Source-Agent", "Accept"],
 )
 
+# Request-ID middleware — generates a correlation ID for every request.
+# Stored on request.state.request_id for use by audit logging (SEC-001 Phase 2b).
+# Respects an incoming X-Request-ID header if present (e.g. from nginx or upstream proxy).
+import uuid as _uuid
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(_uuid.uuid4())
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
 # Security headers middleware — covers API responses when accessed directly (dev mode)
 # or through nginx proxy. X-Frame-Options is omitted here to avoid conflicting with
 # nginx's SAMEORIGIN value on proxied responses.

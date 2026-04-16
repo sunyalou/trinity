@@ -22,6 +22,7 @@ from models import (
 from config import OAUTH_CONFIGS, BACKEND_URL
 from dependencies import get_current_user, require_admin, get_authorized_agent_by_name, get_owned_agent_by_name
 from services.docker_service import get_agent_container, get_agent_status_from_container
+from services.platform_audit_service import platform_audit_service, AuditEventType
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +223,20 @@ async def inject_credentials(
             detail=f"Failed to connect to agent: {str(e)}"
         )
 
+    # SEC-001: audit credential injection
+    await platform_audit_service.log(
+        event_type=AuditEventType.CREDENTIALS,
+        event_action="inject",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="agent",
+        target_id=agent_name,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={"files": list(request_body.files.keys())},
+    )
+
     return CredentialInjectResponse(
         status="success",
         files_written=agent_response.get("files_written", list(request_body.files.keys())),
@@ -261,6 +276,20 @@ async def export_credentials(
 
         # Count files that were read
         files = await encryption_service.read_agent_credential_files(agent_name)
+
+        # SEC-001: audit credential export
+        await platform_audit_service.log(
+            event_type=AuditEventType.CREDENTIALS,
+            event_action="export",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            target_type="agent",
+            target_id=agent_name,
+            endpoint=str(request.url.path),
+            request_id=getattr(request.state, "request_id", None),
+            details={"files_exported": len(files)},
+        )
 
         return CredentialExportResponse(
             status="success",
@@ -302,6 +331,20 @@ async def import_credentials(
     try:
         encryption_service = get_credential_encryption_service()
         files = await encryption_service.import_to_agent(agent_name)
+
+        # SEC-001: audit credential import
+        await platform_audit_service.log(
+            event_type=AuditEventType.CREDENTIALS,
+            event_action="import",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            target_type="agent",
+            target_id=agent_name,
+            endpoint=str(request.url.path),
+            request_id=getattr(request.state, "request_id", None),
+            details={"files_imported": list(files.keys())},
+        )
 
         return CredentialImportResponse(
             status="success",

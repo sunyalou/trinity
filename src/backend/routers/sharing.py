@@ -11,6 +11,7 @@ from models import User
 from database import db, AgentShare, AgentShareRequest
 from dependencies import get_current_user, OwnedAgentByName, CurrentUser
 from services.docker_service import get_agent_container
+from services.platform_audit_service import platform_audit_service, AuditEventType
 
 router = APIRouter(prefix="/api/agents", tags=["sharing"])
 
@@ -94,6 +95,20 @@ async def share_agent_endpoint(
             "data": {"name": agent_name, "shared_with": share_request.email}
         }))
 
+    # SEC-001: audit share
+    await platform_audit_service.log(
+        event_type=AuditEventType.AUTHORIZATION,
+        event_action="share",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="agent",
+        target_id=agent_name,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={"shared_with": share_request.email},
+    )
+
     return share
 
 
@@ -118,6 +133,20 @@ async def unshare_agent_endpoint(
             "event": "agent_unshared",
             "data": {"name": agent_name, "removed_user": email}
         }))
+
+    # SEC-001: audit unshare
+    await platform_audit_service.log(
+        event_type=AuditEventType.AUTHORIZATION,
+        event_action="unshare",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="agent",
+        target_id=agent_name,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={"removed_email": email},
+    )
 
     return {"message": f"Sharing removed for {email}"}
 
@@ -181,6 +210,7 @@ async def decide_access_request_endpoint(
     agent_name: OwnedAgentByName,
     request_id: str,
     decision: AccessRequestDecision,
+    request: Request,
     current_user: CurrentUser,
 ):
     """Approve or deny a pending access request (owner-only).
@@ -226,5 +256,19 @@ async def decide_access_request_endpoint(
                 "event": "agent_shared",
                 "data": {"name": agent_name, "shared_with": existing["email"]},
             }))
+
+    # SEC-001: audit access request decision
+    await platform_audit_service.log(
+        event_type=AuditEventType.AUTHORIZATION,
+        event_action="access_request_approved" if decision.approve else "access_request_rejected",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="agent",
+        target_id=agent_name,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={"email": existing["email"], "access_request_id": request_id},
+    )
 
     return AccessRequest(**updated)

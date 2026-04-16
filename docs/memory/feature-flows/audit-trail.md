@@ -6,14 +6,14 @@ WHAT across agent lifecycle, authentication, authorization, configuration,
 credentials, MCP operations, git operations, and system events. Distinct from
 the Process Engine's `audit_entries` table which is workflow-specific.
 
-**Status**: Phase 1 implemented 2026-04-14. Phases 2–4 deferred to follow-up
+**Status**: Phase 2b implemented 2026-04-16. Phases 3–4 deferred to follow-up
 PRs (issue #20 stays open until all phases ship).
 
 | Phase | Scope | Status |
 |---|---|---|
-| **Phase 1** | Schema, immutability triggers, `PlatformAuditService`, `db/audit.py`, admin query API, unit tests | ✅ This PR |
-| **Phase 2a** | Agent lifecycle integration (create / start / stop / delete) as working smoke test | ✅ This PR |
-| Phase 2b | Remaining integrations (auth, sharing, settings, credentials, request_id middleware) | ⏳ Follow-up |
+| **Phase 1** | Schema, immutability triggers, `PlatformAuditService`, `db/audit.py`, admin query API, unit tests | ✅ Merged |
+| **Phase 2a** | Agent lifecycle integration (create / start / stop / delete) as working smoke test | ✅ Merged |
+| **Phase 2b** | Auth, sharing, credentials, settings, rename integrations + request_id middleware | ✅ This PR |
 | Phase 3 | MCP server integration — TypeScript audit logging for MCP tool calls | ⏳ Follow-up |
 | Phase 4 | Hash chain verification, CSV/JSON export, retention automation | ⏳ Follow-up |
 
@@ -235,21 +235,74 @@ deleted, etc.) — if the action fails partway, no audit row appears.
 Audit failures are swallowed by the service layer and never fail the caller's
 primary operation (verified by `test_service_never_raises_on_db_failure`).
 
-## Out of Scope (Phase 2b–4 follow-ups)
+## Phase 2b — Remaining Write Integrations (shipped in this PR)
 
-- **Phase 2b** — remaining write integrations:
-  - Authentication (`routers/auth.py` — login success/failure)
-  - Authorization (`routers/sharing.py`, permission grant/revoke)
-  - Settings changes (`routers/settings.py`)
-  - Credential operations (`routers/credentials.py`)
-  - Agent rename / recreate
-  - Request-ID middleware for correlation
+### Request-ID Middleware (`main.py`)
+
+HTTP middleware generates a UUID `X-Request-ID` for every request (or respects an
+incoming header from nginx/proxy). Stored on `request.state.request_id` and
+returned in the response header. All audit calls pass this for correlation.
+
+### Authentication (`routers/auth.py`)
+
+| Handler | Event action | Details payload |
+|---|---|---|
+| `login` (admin) — success | `login_success` | `{method: "admin"}` |
+| `login` (admin) — failure | `login_failed` | `{method: "admin", username}` |
+| `verify_email_login_code` — success | `login_success` | `{method: "email", email}` |
+| `verify_email_login_code` — failure | `login_failed` | `{method: "email", email}` |
+
+Failed logins have no `actor_user` — the service falls back to
+`actor_type=system`. The `actor_ip` is always captured for forensic queries.
+
+### Authorization (`routers/sharing.py`)
+
+| Handler | Event action | Details payload |
+|---|---|---|
+| `share_agent_endpoint` | `share` | `{shared_with}` |
+| `unshare_agent_endpoint` | `unshare` | `{removed_email}` |
+| `decide_access_request_endpoint` (approve) | `access_request_approved` | `{email, access_request_id}` |
+| `decide_access_request_endpoint` (reject) | `access_request_rejected` | `{email, access_request_id}` |
+
+### Credentials (`routers/credentials.py`)
+
+| Handler | Event action | Details payload |
+|---|---|---|
+| `inject_credentials` | `inject` | `{files: [".env", ...]}` |
+| `export_credentials` | `export` | `{files_exported: N}` |
+| `import_credentials` | `import` | `{files_imported: [".env", ...]}` |
+
+Credential *values* are never logged — only file paths and counts (security invariant).
+
+### Configuration (`routers/settings.py`)
+
+| Handler | Event action | Details payload |
+|---|---|---|
+| `update_anthropic_key` | `settings_change` | `{setting: "anthropic_api_key", action: "update"}` |
+| `delete_anthropic_key` | `settings_change` | `{setting: "anthropic_api_key", action: "delete"}` |
+| `update_github_pat` | `settings_change` | `{setting: "github_pat", action: "update"}` |
+| `delete_github_pat` | `settings_change` | `{setting: "github_pat", action: "delete"}` |
+| `update_setting` (generic) | `settings_change` | `{setting: key, action: "update"}` |
+| `delete_setting` (generic) | `settings_change` | `{setting: key, action: "delete"}` |
+
+API key *values* are never logged — only the setting name and action.
+
+### Agent Rename (`routers/agent_rename.py`)
+
+| Handler | Event action | Details payload |
+|---|---|---|
+| `rename_agent_endpoint` | `rename` | `{old_name, new_name}` |
+
+Uses `AGENT_LIFECYCLE` event type. Target ID is set to the *new* name.
+
+## Out of Scope (Phase 3–4 follow-ups)
+
 - **Phase 3** — MCP server integration (TypeScript) for tool-call audit
 - **Phase 4** — hash chain verification, CSV/JSON export, retention automation, frontend admin UI, unified `/api/audit?system=platform|process`
 
 ## Testing
 
-`tests/test_audit_log_unit.py` — 29 unit tests covering:
+`tests/test_audit_log_unit.py` — 44 unit tests covering:
 
 | Area | Tests |
 |---|---|
@@ -262,7 +315,13 @@ primary operation (verified by `test_service_never_raises_on_db_failure`).
 | Service actor resolution | user, agent, mcp_client, system mcp_scope |
 | Service serialization | JSON details encoding, request metadata (ip / request_id / endpoint) |
 | Error contract | DB failure must return None and never raise; unique event_ids across rapid calls |
-| Lifecycle integration | create / start / stop / delete produce correctly-shaped rows; full create→start→stop→delete flow produces 4 rows in temporal order |
+| Lifecycle integration | create / start / stop / delete / rename produce correctly-shaped rows |
+| Auth integration | login_success (admin + email), login_failed (no actor fallback) |
+| Sharing integration | share, unshare, access_request_approved, access_request_rejected |
+| Credentials integration | inject, export, import with file lists |
+| Configuration integration | settings_change for update and delete |
+| Request-ID propagation | request_id stored and queryable |
+| Cross-category query | mixed event types are independently queryable; stats aggregate all |
 
 Run: `.venv/bin/python -m pytest tests/test_audit_log_unit.py -v`
 
