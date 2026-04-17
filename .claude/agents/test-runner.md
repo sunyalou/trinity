@@ -141,7 +141,7 @@ The test suite covers:
 - **Agent Sharing** (test_agent_sharing.py) - Share/unshare agents, whitelist auto-add with `default_role="user"` (#314)
 - **Channel Access Control** (test_channel_access_control.py) - Per-agent access policy (require_email, open_access, group_auth_mode), access requests inbox (#311) [SMOKE + Agent]
 - **Telegram Groups** (test_telegram_groups.py) - Trigger mode validation (mention/all/observe), proactive message endpoint validation (#349) [SMOKE + Agent]
-- **Agent Permissions** (test_agent_permissions.py) - Agent-to-agent permission CRUD, defaults, cascade delete (Req 9.10)
+- **Agent Permissions** (test_agent_permissions.py) - Agent-to-agent permission CRUD, defaults, cascade delete, bulk edges endpoint (#359) (Req 9.10)
 - **Agent Git** (test_agent_git.py) - Git sync operations
 - **Agent GitHub PAT** (test_github_pat.py) - Per-agent GitHub PAT: status, set, clear, encryption roundtrip (#347) [SMOKE + Agent]
 - **Agent Metrics** (test_agent_metrics.py) - Custom metrics endpoint (Req 9.9)
@@ -256,6 +256,20 @@ Use these thresholds to assess test health (based on **executed** tests, not inc
 - **Healthy**: >90% pass rate, 0 critical failures
 - **Warning**: 75-90% pass rate, <5 failures
 - **Critical**: <75% pass rate or >5 failures
+
+## Recent Test Additions (2026-04-17)
+
+| Test File | Description | Tests Added |
+|-----------|-------------|-------------|
+| `test_agent_permissions.py` | Bulk permissions-edges endpoint (#359) | 5 tests |
+
+**Bulk Permissions Edges (#359)** (`test_agent_permissions.py::TestBulkPermissionEdges`):
+
+- `test_get_permissions_edges_returns_structure` — Endpoint returns `{"edges": [...]}`
+- `test_get_permissions_edges_empty_when_no_permissions` — No edges for agent without permissions
+- `test_get_permissions_edges_includes_granted_permissions` — Granted permissions appear in response
+- `test_get_permissions_edges_edge_structure` — Each edge has `source` and `target` fields
+- `test_get_permissions_edges_requires_auth` — Endpoint requires authentication (401/403)
 
 ## Recent Test Additions (2026-04-16)
 
