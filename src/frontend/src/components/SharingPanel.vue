@@ -138,14 +138,38 @@
                 </p>
               </div>
             </div>
-            <button
-              @click="removeShare(share.shared_with_email)"
-              :disabled="unshareLoading === share.shared_with_email"
-              class="text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 text-sm font-medium disabled:opacity-50"
-            >
-              <span v-if="unshareLoading === share.shared_with_email">Removing...</span>
-              <span v-else>Remove</span>
-            </button>
+            <div class="flex items-center gap-4">
+              <!-- Proactive messaging toggle -->
+              <label class="flex items-center gap-2 cursor-pointer" :title="share.allow_proactive ? 'Agent can send proactive messages' : 'Agent cannot send proactive messages'">
+                <span class="text-xs text-gray-500 dark:text-gray-400">Proactive</span>
+                <button
+                  type="button"
+                  role="switch"
+                  :aria-checked="share.allow_proactive"
+                  @click="toggleProactive(share)"
+                  :disabled="proactiveLoading === share.shared_with_email"
+                  :class="[
+                    share.allow_proactive ? 'bg-indigo-600' : 'bg-gray-200 dark:bg-gray-600',
+                    'relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed'
+                  ]"
+                >
+                  <span
+                    :class="[
+                      share.allow_proactive ? 'translate-x-4' : 'translate-x-0',
+                      'pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out'
+                    ]"
+                  />
+                </button>
+              </label>
+              <button
+                @click="removeShare(share.shared_with_email)"
+                :disabled="unshareLoading === share.shared_with_email"
+                class="text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 text-sm font-medium disabled:opacity-50"
+              >
+                <span v-if="unshareLoading === share.shared_with_email">Removing...</span>
+                <span v-else>Remove</span>
+              </button>
+            </div>
           </li>
         </ul>
       </div>
@@ -219,6 +243,30 @@ const {
   shareWithUser,
   removeShare
 } = useAgentSharing(agent, agentsStore, loadAgent, showNotification)
+
+// Proactive messaging toggle
+const proactiveLoading = ref(null)
+
+const toggleProactive = async (share) => {
+  proactiveLoading.value = share.shared_with_email
+  try {
+    await axios.put(
+      `/api/agents/${props.agentName}/shares/proactive`,
+      { email: share.shared_with_email, allow_proactive: !share.allow_proactive },
+      { headers: authStore.authHeader }
+    )
+    share.allow_proactive = !share.allow_proactive
+    showNotification(
+      share.allow_proactive ? 'Proactive messaging enabled' : 'Proactive messaging disabled',
+      'success'
+    )
+  } catch (err) {
+    console.error('Failed to update proactive setting:', err)
+    showNotification(err.response?.data?.detail || 'Failed to update setting', 'error')
+  } finally {
+    proactiveLoading.value = null
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Access policy + access requests (Issue #311)

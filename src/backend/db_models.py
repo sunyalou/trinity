@@ -57,6 +57,7 @@ class AgentShare(BaseModel):
     shared_by_id: int
     shared_by_email: str  # Email or username of who shared it
     created_at: datetime
+    allow_proactive: bool = False  # Can agent send proactive messages to this user
 
 
 class AgentShareRequest(BaseModel):

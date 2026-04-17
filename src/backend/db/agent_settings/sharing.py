@@ -24,7 +24,8 @@ class SharingMixin:
             shared_with_email=row["shared_with_email"],
             shared_by_id=row["shared_by_id"],
             shared_by_email=row["shared_by_email"] or "unknown",
-            created_at=datetime.fromisoformat(row["created_at"])
+            created_at=datetime.fromisoformat(row["created_at"]),
+            allow_proactive=bool(row["allow_proactive"]) if "allow_proactive" in row.keys() else False
         )
 
     def share_agent(self, agent_name: str, owner_username: str, share_with_email: str) -> Optional[AgentShare]:
@@ -93,6 +94,7 @@ class SharingMixin:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT s.id, s.agent_name, s.shared_with_email, s.shared_by_id, s.created_at,
+                       s.allow_proactive,
                        COALESCE(sb.email, sb.username) as shared_by_email
                 FROM agent_sharing s
                 JOIN users sb ON s.shared_by_id = sb.id
