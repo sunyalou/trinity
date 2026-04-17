@@ -26,22 +26,27 @@ As an agent owner, I want to share my agents with team members so that they can 
 
 The sharing UI is implemented as a dedicated component with multiple stacked sections.
 
-**Component Structure** (~310 lines total):
+**Component Structure** (~370 lines total):
 - Lines 3-74: **Channel Access Policy** section (Issue #311) — `require_email`, `open_access` checkboxes + Pending Access Requests list with Approve/Deny buttons
-- Lines 78-152: **Team Sharing** section (header, form, shared users list — the unified allow-list)
+- Lines 78-152: **Team Sharing** section (header, form, shared users list with proactive toggle — the unified allow-list)
 - Lines 157-158: Embedded `SlackChannelPanel`
 - Lines 163-164: Embedded `TelegramChannelPanel`
 - Lines 169-170: Embedded `PublicLinksPanel`
 - Lines 181-183: Imports for the embedded channel panels
 
-**Team Sharing Section** (lines 3-77):
+**Team Sharing Section** (lines 78-152):
 ```vue
 <div>
   <h3 class="text-lg font-medium ...">Team Sharing</h3>
-  <!-- Share form (lines 11-30) -->
-  <!-- Shared users list (lines 40-76) -->
+  <!-- Share form (lines 86-105) -->
+  <!-- Shared users list with proactive toggle (lines 116-152) -->
 </div>
 ```
+
+Each shared user row includes:
+- User avatar and email
+- **Proactive toggle** (Issue #376) — enables `allow_proactive` flag for proactive messaging
+- Remove button
 
 **Component Props** (lines 185-194):
 ```javascript

@@ -11,6 +11,7 @@
 
 | Date | ID | Feature | Flow |
 |------|-----|---------|------|
+| 2026-04-17 | #376 | Proactive messaging UI toggle — SharingPanel shows allow_proactive switch per shared user | [proactive-messaging.md](feature-flows/proactive-messaging.md), [agent-sharing.md](feature-flows/agent-sharing.md) |
 | 2026-04-16 | #321 | Proactive agent messaging — agents send messages to users by verified email via Telegram/Slack/web | [proactive-messaging.md](feature-flows/proactive-messaging.md) |
 | 2026-04-16 | #354 | Telegram file upload Phase 1 — photo/document extraction, download, size/MIME validation | [telegram-integration.md](feature-flows/telegram-integration.md) |
 | 2026-04-15 | #311 | Group auth mode — require at least one verified member before bot responds in Telegram groups | [unified-channel-access-control.md](feature-flows/unified-channel-access-control.md), [telegram-integration.md](feature-flows/telegram-integration.md) |

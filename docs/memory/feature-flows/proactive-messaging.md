@@ -1,8 +1,8 @@
 # Proactive Agent Messaging
 
-> **Issue**: #321
+> **Issue**: #321, #376
 > **Status**: Implemented
-> **Last Updated**: 2026-04-16
+> **Last Updated**: 2026-04-17
 
 ## Overview
 
@@ -54,6 +54,48 @@ Enables agents to send proactive messages to specific users by verified email ac
 │   │ sendMessage     │       │ chat.postMessage│       │ DB persist      │  │
 │   └─────────────────┘       └─────────────────┘       └─────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Frontend Layer
+
+### SharingPanel Toggle (#376)
+
+The `allow_proactive` flag is managed via a toggle switch in the Team Sharing section of the Sharing tab.
+
+**Location**: `src/frontend/src/components/SharingPanel.vue`
+
+**UI Structure** (lines 124-149):
+```vue
+<li v-for="share in shares" :key="share.id">
+  <div class="flex items-center gap-4">
+    <!-- Proactive messaging toggle -->
+    <label title="Agent can/cannot send proactive messages">
+      <span>Proactive</span>
+      <switch :checked="share.allow_proactive" @click="toggleProactive(share)" />
+    </label>
+    <button @click="removeShare(...)">Remove</button>
+  </div>
+</li>
+```
+
+**Toggle Handler** (lines 224-240):
+```javascript
+const toggleProactive = async (share) => {
+  await axios.put(
+    `/api/agents/${props.agentName}/shares/proactive`,
+    { email: share.shared_with_email, allow_proactive: !share.allow_proactive },
+    { headers: authStore.authHeader }
+  )
+  share.allow_proactive = !share.allow_proactive
+  showNotification(share.allow_proactive ? 'Proactive messaging enabled' : 'Proactive messaging disabled', 'success')
+}
+```
+
+**Model** (`src/backend/db_models.py:53-60`):
+```python
+class AgentShare(BaseModel):
+    # ... other fields
+    allow_proactive: bool = False  # Can agent send proactive messages to this user
 ```
 
 ## Data Flow
