@@ -1,12 +1,12 @@
 # Feature: Agent Network
 
-> **Last Updated**: 2026-04-08 - Owner filter (#69): Added owner dropdown to Dashboard header controls. Network store gains `filterOwner` ref (persisted to localStorage) and `setFilterOwner()` action. On change, agents are filtered client-side before `convertAgentsToNodes()` — graph shows only selected owner's agents. Dropdown hidden when ≤1 distinct owner.
+> **Last Updated**: 2026-04-17 - Bulk permissions endpoint (#359): `fetchPermissionEdges()` now calls `GET /api/agents/permissions-edges` (single bulk query) instead of N per-agent calls. Backend filters edges at SQL level to accessible agents only. Reduces dashboard load from ~15s to ~3-5s with 12+ agents.
+>
+> **Previous (2026-04-08)** - Owner filter (#69): Added owner dropdown to Dashboard header controls. Network store gains `filterOwner` ref (persisted to localStorage) and `setFilterOwner()` action. On change, agents are filtered client-side before `convertAgentsToNodes()` — graph shows only selected owner's agents. Dropdown hidden when ≤1 distinct owner.
 >
 > **Previous (2026-03-20)** - Canonical edge deduplication: bidirectional agent connections now render as ONE line with arrowheads on appropriate ends, instead of TWO overlapping lines. New `getCanonicalEdgePair(x, y)` helper (line 128) returns alphabetically sorted pair. `fetchPermissionEdges()`, `createHistoricalEdges()`, `animateEdge()`, `clearEdgeAnimation()`, and `resetAllEdges()` all use canonical IDs and track `hasForward`/`hasReverse` in edge data for direction-aware `markerStart`/`markerEnd` arrowheads.
 >
 > **Previous (2026-03-18)** - Graph edges simplified to permission-only: `edges` computed now returns `permissionEdges.value` directly (old merge logic combining collaborationEdges + permissionEdges removed). `collaborationEdges` still exists in state and is populated by WebSocket events for live animation purposes, but is NOT rendered in the graph.
->
-> **Previous (2026-03-17)** - Permission edges now populated: `fetchPermissionEdges()` implemented in network.js, fetching `GET /api/agents/{name}/permissions` for all non-system agents in parallel and rendering dashed gray directional arrows (`perm-{source}-{target}` IDs) that represent static agent-to-agent communication permissions.
 >
 > **Previous (2026-03-14)** - Dashboard header compacted: agents display shortened to "N/N agents" format (running/total), removed redundant "active" collaboration indicator, added whitespace-nowrap to tag selector to prevent two-row wrapping.
 >
@@ -281,22 +281,21 @@ function getCanonicalEdgePair(x, y) {
 ```
 Returns alphabetically sorted `[a, b]` pair. Used by `fetchPermissionEdges()`, `createHistoricalEdges()`, and `animateEdge()` to ensure bidirectional connections between two agents always map to the same canonical edge ID, eliminating duplicate overlapping edges.
 
-##### fetchPermissionEdges() (Lines 132-200)
+##### fetchPermissionEdges() (Lines 152-200)
 ```javascript
-// Runs after fetchAgents() populates nodes.value
-// Skips system agents and agents where permissions return 403.
-const results = await Promise.allSettled(
-  agentNames.map(name =>
-    axios.get(`/api/agents/${name}/permissions`)
-      .then(r => ({ agent: name, permitted: r.data.permitted_agents.map(p => p.name) }))
-  )
-)
+// Single bulk API call instead of N per-agent calls (#359)
+const response = await axios.get('/api/agents/permissions-edges')
+const edges = response.data.edges || []
+
 // Collect canonical pairs via pairMap to deduplicate bidirectional permissions
-// For each pair, track hasForward (a->b) and hasReverse (b->a)
-// Set markerEnd for forward, markerStart for reverse
+edges.forEach(({ source, target }) => {
+  // Filter to edges where both nodes exist in current view
+  const [a, b] = getCanonicalEdgePair(source, target)
+  // Track hasForward (a->b) and hasReverse (b->a) for direction arrowheads
+})
 permissionEdges.value = newEdges
 ```
-Fetches agent-to-agent communication permissions for all non-system agents in parallel via `GET /api/agents/{name}/permissions`. Uses `getCanonicalEdgePair()` and a `pairMap` to collapse bidirectional permissions into a single edge with direction-appropriate arrowheads (`markerStart`/`markerEnd`).
+Fetches all agent-to-agent permission edges in a single `GET /api/agents/permissions-edges` call. Backend filters to accessible agents at SQL level. Uses `getCanonicalEdgePair()` and a `pairMap` to collapse bidirectional permissions into a single edge with direction-appropriate arrowheads (`markerStart`/`markerEnd`).
 
 **Edge format**:
 ```javascript
@@ -1002,6 +1001,44 @@ Returns JSON:
       "contextMax": 200000,
       "lastActivityTime": "2025-12-02T20:45:30.123456"
     }
+  ]
+}
+```
+
+#### GET /api/agents/permissions-edges (Lines 273-291) — NEW #359
+```python
+@router.get("/permissions-edges")
+async def get_all_permission_edges(
+    current_user: User = Depends(get_current_user)
+):
+    """Get all permission edges for dashboard graph visualization (bulk endpoint)."""
+    # Get accessible agents once (not N times)
+    accessible = {a['name'] for a in get_accessible_agents(current_user)}
+    # Single DB query filtered at SQL level
+    edges = db.get_all_permission_edges(accessible)
+    return {"edges": edges}
+```
+
+Replaces N per-agent `GET /api/agents/{name}/permissions` calls with a single bulk query. Backend filters edges to accessible agents at SQL level (security: no info leak).
+
+**Database Layer**: `src/backend/db/permissions.py:53-88`
+```python
+def get_all_permission_edges(self, accessible_agents: Optional[set] = None) -> List[dict]:
+    if accessible_agents:
+        placeholders = ",".join("?" for _ in accessible_agents)
+        cursor.execute(f"""
+            SELECT source_agent, target_agent FROM agent_permissions
+            WHERE source_agent IN ({placeholders}) AND target_agent IN ({placeholders})
+        """, agent_list + agent_list)
+    return [{"source": row["source_agent"], "target": row["target_agent"]} for row in cursor.fetchall()]
+```
+
+**Response Format**:
+```json
+{
+  "edges": [
+    {"source": "agent-a", "target": "agent-b"},
+    {"source": "agent-b", "target": "agent-c"}
   ]
 }
 ```
