@@ -3,13 +3,14 @@
 > **Requirement**: 12.1 - Parallel Headless Execution
 > **Status**: Implemented
 > **Created**: 2025-12-22
-> **Updated**: 2026-03-26 (Line number refresh)
+> **Updated**: 2026-04-17 (Issue #361 max-turns error fix)
 > **Verified**: 2026-02-05
 
 ## Revision History
 
 | Date | Changes |
 |------|---------|
+| 2026-04-17 | **Issue #361 - Max-turns error fix**: Fixed max_turns termination being misclassified as authentication failure. Added detection for `terminal_reason="max_turns"` and `subtype="error_max_turns"` in result messages (`claude_code.py:329-336`). Max-turns errors now return HTTP 422 with clear "Task exceeded turn limit" message instead of HTTP 503 "Authentication failure". Also raised `max_turns_task` default from 20 to 50 in both `claude_code.py:52` and `guardrails-baseline.json:65`. |
 | 2026-03-26 | **Line number refresh**: Updated all file/line references to match current codebase after upstream shifts (~92 lines in backend `chat.py`, model extraction in `models.py`, agent server reorganisation). |
 | 2026-03-11 | **Issue #81 - Default Model for Headless Tasks**: Fixed misleading "token expired" error when agent's `~/.claude/settings.json` contains a model incompatible with the assigned subscription. `execute_headless_task()` now defaults to `model="sonnet"` when model is None (`claude_code.py:768-770`). Added `_is_model_access_error()` helper (`claude_code.py:657-674`) to detect subscription/model access errors. Enhanced `_diagnose_exit_failure()` (`claude_code.py:685-700`) to provide actionable error messages when model access fails. Terminal WebSocket sessions always passed `model=sonnet` via URL param, but headless tasks didn't specify `--model` flag, causing Claude Code to use agent settings which might be incompatible. |
 | 2026-03-07 | **ExecutionMetadata Error Fields**: Added `error_type` and `error_message` fields to `ExecutionMetadata` model (`models.py:91-92`). Populated during stream parsing in `claude_code.py` from two sources: `result` messages with `is_error=true` (line 304-311, classifies as `rate_limit` or `execution_error`) and `assistant` messages with `error` field (line 341-349, uses Claude Code's classification directly). Enables the platform to distinguish rate limits from other failures for better error handling (429 vs 503). |
@@ -471,7 +472,7 @@ Both parameters provide safety limits:
 | Parameter | Protects Against | Behavior at Limit |
 |-----------|-----------------|-------------------|
 | `timeout_seconds` | Wall-clock time exceeded | Process killed, HTTP 504 |
-| `max_turns` | Too many agentic operations | CLI exits gracefully, HTTP 500 |
+| `max_turns` | Too many agentic operations | CLI exits gracefully, HTTP 422 |
 
 Use both together for comprehensive protection:
 ```json

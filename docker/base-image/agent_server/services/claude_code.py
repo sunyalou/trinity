@@ -49,7 +49,7 @@ _execution_lock = asyncio.Lock()
 _GUARDRAILS_RUNTIME_PATH = "/opt/trinity/guardrails-runtime.json"
 _GUARDRAILS_BASELINE_PATH = "/opt/trinity/guardrails-baseline.json"
 _DEFAULT_MAX_TURNS_CHAT = 50
-_DEFAULT_MAX_TURNS_TASK = 20
+_DEFAULT_MAX_TURNS_TASK = 50
 
 
 def _load_guardrails() -> dict:
@@ -324,15 +324,23 @@ def process_stream_line(line: str, execution_log: List[ExecutionLogEntry], metad
         metadata.num_turns = msg.get("num_turns")
         result_text = msg.get("result", "")
 
-        # Detect error results (e.g., rate limit, auth failures)
+        # Detect error results (e.g., max_turns, rate limit, auth failures)
         if msg.get("is_error") and not metadata.error_type:
-            # Try to classify from the result text
-            metadata.error_message = result_text
-            if _is_rate_limit_message(result_text):
+            # Check for max_turns termination first (Issue #361)
+            terminal_reason = msg.get("terminal_reason")
+            subtype = msg.get("subtype")
+            if terminal_reason == "max_turns" or subtype == "error_max_turns":
+                errors = msg.get("errors", [])
+                metadata.error_type = "max_turns"
+                metadata.error_message = errors[0] if errors else f"Task stopped after {metadata.num_turns} turns"
+                logger.warning(f"Claude Code max_turns reached: {metadata.error_message}")
+            elif _is_rate_limit_message(result_text):
                 metadata.error_type = "rate_limit"
+                metadata.error_message = result_text
             else:
                 metadata.error_type = "execution_error"
-            logger.warning(f"Claude Code result is_error=true: type={metadata.error_type}, message={result_text}")
+                metadata.error_message = result_text
+                logger.warning(f"Claude Code result is_error=true: type={metadata.error_type}, message={result_text}")
 
         if result_text:
             response_parts.clear()
@@ -1077,6 +1085,15 @@ async def execute_headless_task(
                 raise HTTPException(
                     status_code=429,
                     detail=error_detail
+                )
+
+            # Issue #361: Check for max_turns termination (before auth checks to prevent misclassification)
+            if metadata.error_type == "max_turns":
+                error_msg = metadata.error_message or f"Task stopped after {metadata.num_turns} turns"
+                logger.warning(f"[Headless Task] Max turns reached: {error_msg}")
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Task exceeded turn limit: {error_msg}. Consider increasing max_turns_task in guardrails or breaking into smaller subtasks."
                 )
 
             # Issue #285: Check for auth failure detected in stderr

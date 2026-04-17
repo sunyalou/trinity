@@ -232,7 +232,7 @@ def test_runtime_config_uses_baseline_when_no_env(tmp_path):
     assert runtime.exists()
     data = json.loads(runtime.read_text())
     assert data["max_turns_chat"] == 50
-    assert data["max_turns_task"] == 20
+    assert data["max_turns_task"] == 50  # Raised from 20 in Issue #361
 
 
 def test_runtime_config_applies_overrides(tmp_path):
