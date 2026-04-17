@@ -11,6 +11,7 @@ from services.agent_service import (
     get_autonomy_status_logic,
     set_autonomy_status_logic,
 )
+from services.platform_audit_service import platform_audit_service, AuditEventType
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -57,6 +58,7 @@ async def get_agent_autonomy_status(
 async def set_agent_autonomy_status(
     agent_name: str,
     body: dict,
+    request: Request,
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -68,7 +70,22 @@ async def set_agent_autonomy_status(
     When autonomy is enabled, all schedules for the agent are enabled.
     When disabled, all schedules are paused.
     """
-    return await set_autonomy_status_logic(agent_name, body, current_user)
+    result = await set_autonomy_status_logic(agent_name, body, current_user)
+
+    await platform_audit_service.log(
+        event_type=AuditEventType.CONFIGURATION,
+        event_action="autonomy_toggle",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="agent",
+        target_id=agent_name,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={"enabled": bool(body.get("enabled"))},
+    )
+
+    return result
 
 
 # ============================================================================
@@ -157,6 +174,7 @@ async def get_agent_resources(
 async def set_agent_resources(
     agent_name: str,
     body: dict,
+    request: Request,
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -209,6 +227,24 @@ async def set_agent_resources(
     restart_needed = (
         (memory and memory != current_memory) or
         (cpu and cpu != current_cpu)
+    )
+
+    await platform_audit_service.log(
+        event_type=AuditEventType.CONFIGURATION,
+        event_action="resource_limits",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="agent",
+        target_id=agent_name,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={
+            "memory": memory,
+            "cpu": cpu,
+            "previous_memory": current_memory,
+            "previous_cpu": current_cpu,
+        },
     )
 
     return {

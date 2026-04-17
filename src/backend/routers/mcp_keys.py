@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from models import User
 from database import db, McpApiKeyCreate, McpApiKey, McpApiKeyWithSecret
 from dependencies import get_current_user
+from services.platform_audit_service import platform_audit_service, AuditEventType
 
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 
@@ -26,6 +27,23 @@ async def create_mcp_api_key_endpoint(
 
         if not api_key:
             raise HTTPException(status_code=400, detail="Failed to create API key")
+
+        await platform_audit_service.log(
+            event_type=AuditEventType.MCP_OPERATION,
+            event_action="key_create",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            target_type="mcp_key",
+            target_id=getattr(api_key, "id", None),
+            endpoint=str(request.url.path),
+            request_id=getattr(request.state, "request_id", None),
+            details={
+                "name": getattr(key_data, "name", None),
+                "scope": getattr(api_key, "scope", None),
+                "agent_name": getattr(api_key, "agent_name", None),
+            },
+        )
 
         return api_key
     except HTTPException:
@@ -123,6 +141,18 @@ async def revoke_mcp_api_key_endpoint(
     if not success:
         raise HTTPException(status_code=404, detail="MCP API key not found")
 
+    await platform_audit_service.log(
+        event_type=AuditEventType.MCP_OPERATION,
+        event_action="key_revoke",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="mcp_key",
+        target_id=key_id,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+    )
+
     return {"message": f"MCP API key {key_id} revoked"}
 
 
@@ -137,6 +167,18 @@ async def delete_mcp_api_key_endpoint(
 
     if not success:
         raise HTTPException(status_code=404, detail="MCP API key not found")
+
+    await platform_audit_service.log(
+        event_type=AuditEventType.MCP_OPERATION,
+        event_action="key_delete",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="mcp_key",
+        target_id=key_id,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+    )
 
     return {"message": f"MCP API key {key_id} deleted"}
 

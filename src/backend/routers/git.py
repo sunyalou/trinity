@@ -16,6 +16,7 @@ from models import User
 from database import db
 from dependencies import get_current_user, AuthorizedAgentByName, OwnedAgentByName
 from services import git_service
+from services.platform_audit_service import platform_audit_service, AuditEventType
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,8 @@ async def get_git_status(
 async def sync_to_github(
     agent_name: OwnedAgentByName,
     request: Request,
-    body: GitSyncRequest = GitSyncRequest()
+    body: GitSyncRequest = GitSyncRequest(),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Sync agent changes to GitHub.
@@ -147,6 +149,24 @@ async def sync_to_github(
             headers=conflict_headers,
         )
 
+    await platform_audit_service.log(
+        event_type=AuditEventType.GIT_OPERATION,
+        event_action="sync",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="agent",
+        target_id=agent_name,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={
+            "commit_sha": result.commit_sha,
+            "files_changed": result.files_changed,
+            "branch": result.branch,
+            "strategy": body.strategy,
+        },
+    )
+
     return {
         "success": result.success,
         "commit_sha": result.commit_sha,
@@ -188,7 +208,8 @@ async def get_git_log(
 async def pull_from_github(
     agent_name: AuthorizedAgentByName,
     request: Request,
-    body: GitPullRequest = GitPullRequest()
+    body: GitPullRequest = GitPullRequest(),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Pull latest changes from GitHub to the agent.
@@ -224,6 +245,19 @@ async def pull_from_github(
             detail=result.get("message"),
             headers=conflict_headers,
         )
+
+    await platform_audit_service.log(
+        event_type=AuditEventType.GIT_OPERATION,
+        event_action="pull",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="agent",
+        target_id=agent_name,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={"strategy": body.strategy},
+    )
 
     return result
 
@@ -269,7 +303,8 @@ async def get_git_config(
 async def initialize_github_sync(
     agent_name: OwnedAgentByName,
     body: GitInitializeRequest,
-    request: Request
+    request: Request,
+    current_user: User = Depends(get_current_user)
 ):
     """
     Initialize GitHub synchronization for an agent.
@@ -406,6 +441,25 @@ async def initialize_github_sync(
                     cleanup_exc,
                 )
             raise
+
+        await platform_audit_service.log(
+            event_type=AuditEventType.GIT_OPERATION,
+            event_action="init",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            target_type="agent",
+            target_id=agent_name,
+            endpoint=str(request.url.path),
+            request_id=getattr(request.state, "request_id", None),
+            details={
+                "github_repo": repo_full_name,
+                "working_branch": init_result.working_branch,
+                "instance_id": instance_id,
+                "created_repo": bool(body.create_repo),
+                "private": bool(body.private),
+            },
+        )
 
         return {
             "success": True,

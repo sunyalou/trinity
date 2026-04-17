@@ -20,6 +20,7 @@ import httpx
 from models import User
 from dependencies import get_current_user, get_authorized_agent, AuthorizedAgent, CurrentUser
 from database import db, Schedule, ScheduleCreate, ScheduleExecution
+from services.platform_audit_service import platform_audit_service, AuditEventType
 
 logger = logging.getLogger(__name__)
 
@@ -369,7 +370,8 @@ async def disable_schedule(
 @router.post("/{name}/schedules/{schedule_id}/trigger")
 async def trigger_schedule(
     name: AuthorizedAgent,
-    schedule_id: str
+    schedule_id: str,
+    current_user: User = Depends(get_current_user)
 ):
     """
     Manually trigger a schedule execution.
@@ -415,6 +417,21 @@ async def trigger_schedule(
 
             result = response.json()
             logger.info(f"Manual trigger delegated to scheduler: {schedule_id}")
+
+            await platform_audit_service.log(
+                event_type=AuditEventType.EXECUTION,
+                event_action="task_triggered",
+                source="api",
+                actor_user=current_user,
+                target_type="agent",
+                target_id=name,
+                endpoint=f"/api/agents/{name}/schedules/{schedule_id}/trigger",
+                details={
+                    "schedule_id": schedule_id,
+                    "schedule_name": result.get("schedule_name"),
+                    "triggered_by": "manual",
+                },
+            )
 
             return {
                 "status": "triggered",

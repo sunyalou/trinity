@@ -220,6 +220,24 @@ async def execute_task_internal(request: InternalTaskExecutionRequest):
     """
     task_service = get_task_execution_service()
 
+    # Audit schedule-triggered execution (source=scheduler, actor=system)
+    if request.triggered_by == "schedule":
+        await platform_audit_service.log(
+            event_type=AuditEventType.EXECUTION,
+            event_action="schedule_triggered",
+            source="scheduler",
+            target_type="agent",
+            target_id=request.agent_name,
+            endpoint="/api/internal/execute-task",
+            details={
+                "execution_id": request.execution_id,
+                "schedule_id": getattr(request, "schedule_id", None),
+                "schedule_name": getattr(request, "schedule_name", None),
+                "async_mode": bool(request.async_mode),
+                "attempt": request.attempt,
+            },
+        )
+
     if request.async_mode:
         # Fire-and-forget: spawn background task, return immediately
         asyncio.create_task(_execute_task_internal_background(

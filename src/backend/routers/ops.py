@@ -25,6 +25,7 @@ from services.docker_utils import container_stop, container_start
 from services.agent_client import get_agent_client
 from db.agents import SYSTEM_AGENT_NAME
 from utils.helpers import utc_now_iso
+from services.platform_audit_service import platform_audit_service, AuditEventType
 
 router = APIRouter(prefix="/api/ops", tags=["operations"])
 logger = logging.getLogger(__name__)
@@ -679,6 +680,22 @@ async def emergency_stop(
                         results["errors"].append(f"Agent {agent_name}: {result.get('error', 'unknown error')}")
                 except Exception as e:
                     results["errors"].append(f"Agent {agent_name}: {e}")
+
+    await platform_audit_service.log(
+        event_type=AuditEventType.SYSTEM,
+        event_action="emergency_stop",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={
+            "schedules_paused": results["schedules_paused"],
+            "agents_stopped": results["agents_stopped"],
+            "system_prefix": system_prefix,
+            "errors": results["errors"] or None,
+        },
+    )
 
     return {
         "success": True,

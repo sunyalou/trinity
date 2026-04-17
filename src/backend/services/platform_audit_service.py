@@ -234,6 +234,15 @@ class PlatformAuditService:
     @staticmethod
     def _compute_hash(entry: Dict[str, Any]) -> str:
         """SHA-256 over a stable subset of the entry. Used only when hash chain is enabled."""
+        # Details round-trips through DB as JSON text: string at write-time (see log()),
+        # dict at read-time (see db/audit.py::_row_to_dict). Normalize to dict so the
+        # hash is stable across both paths.
+        details = entry.get("details")
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except (TypeError, ValueError):
+                pass
         content = json.dumps(
             {
                 "event_id": entry["event_id"],
@@ -242,7 +251,7 @@ class PlatformAuditService:
                 "actor_id": entry.get("actor_id"),
                 "target_id": entry.get("target_id"),
                 "timestamp": entry["timestamp"],
-                "details": entry.get("details"),
+                "details": details,
                 "previous_hash": entry.get("previous_hash"),
             },
             sort_keys=True,

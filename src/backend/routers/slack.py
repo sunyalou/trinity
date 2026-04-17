@@ -26,6 +26,7 @@ from models import User
 from services.slack_service import slack_service
 from db_models import SlackConnectionStatus, SlackOAuthInitResponse
 from services.settings_service import get_slack_signing_secret
+from services.platform_audit_service import platform_audit_service, AuditEventType
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,22 @@ async def slack_oauth_callback(code: str = None, state: str = None, error: str =
             team_name=team_name,
             bot_token=bot_token,
             connected_by=user_id
+        )
+
+        await platform_audit_service.log(
+            event_type=AuditEventType.CREDENTIALS,
+            event_action="oauth_complete",
+            source="api",
+            target_type="slack_workspace",
+            target_id=team_id,
+            endpoint="/oauth/callback",
+            details={
+                "provider": "slack",
+                "team_name": team_name,
+                "source": source,
+                "agent_name": agent_name,
+                "initiated_by_user_id": str(user_id) if user_id else None,
+            },
         )
 
         # Platform install: just store workspace, no channel binding

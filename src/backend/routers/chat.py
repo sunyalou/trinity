@@ -31,6 +31,7 @@ from services.platform_prompt_service import (
     is_execution_context_enabled,
 )
 from utils.helpers import utc_now_iso
+from services.platform_audit_service import platform_audit_service, AuditEventType
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,26 @@ async def chat_with_agent(
     try:
         queue_result, execution = await queue.submit(execution, wait_if_busy=True)
         logger.info(f"[Chat] Agent '{name}' execution {execution.id}: {queue_result}")
+        await platform_audit_service.log(
+            event_type=AuditEventType.EXECUTION,
+            event_action="chat_started",
+            source="mcp" if x_via_mcp else "api",
+            actor_user=current_user if not x_source_agent else None,
+            actor_agent_name=x_source_agent,
+            mcp_key_id=x_mcp_key_id,
+            mcp_key_name=x_mcp_key_name,
+            mcp_scope="agent" if x_source_agent else ("user" if x_via_mcp else None),
+            target_type="agent",
+            target_id=name,
+            endpoint=f"/api/agents/{name}/chat",
+            request_id=None,
+            details={
+                "execution_id": execution.id,
+                "queue_result": queue_result,
+                "source": source.value if hasattr(source, "value") else str(source),
+                "message_length": len(request.message) if request.message else 0,
+            },
+        )
     except QueueFullError as e:
         logger.warning(f"[Chat] Agent '{name}' queue full, rejecting request")
         raise HTTPException(

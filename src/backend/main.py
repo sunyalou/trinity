@@ -104,6 +104,14 @@ from services.operator_queue_service import operator_queue_service, set_websocke
 from services.cleanup_service import cleanup_service, set_cleanup_ws_manager
 
 
+# Import process engine WebSocket publisher
+from services.process_engine.events import set_websocket_publisher_broadcast
+from services.platform_audit_service import platform_audit_service, AuditEventType
+
+# Import execution recovery function
+from routers.executions import run_execution_recovery
+
+
 # Import logging configuration
 import logging
 from logging_config import setup_logging
@@ -294,6 +302,13 @@ async def lifespan(app: FastAPI):
                     int(os.getenv("REDIS_STREAM_MAXLEN", "10000")))
     except Exception as e:
         logger.error(f"Event bus startup failed (broadcasts will degrade): {e}")
+
+    await platform_audit_service.log(
+        event_type=AuditEventType.SYSTEM,
+        event_action="startup",
+        source="system",
+        details={"otel_enabled": bool(_otel_enabled)},
+    )
 
     # Report OpenTelemetry status (RELIABILITY-002)
     if _otel_enabled:
@@ -537,6 +552,15 @@ async def lifespan(app: FastAPI):
         print("Agent HTTP client pool closed")
     except Exception as e:
         print(f"Error closing agent HTTP client pool: {e}")
+
+    try:
+        await platform_audit_service.log(
+            event_type=AuditEventType.SYSTEM,
+            event_action="shutdown",
+            source="system",
+        )
+    except Exception as e:
+        print(f"Error writing shutdown audit entry: {e}")
 
     # Drain event bus + stop dispatcher last so late-lifecycle broadcasts
     # (e.g. "agent_stopped" emitted during service shutdown) still land on

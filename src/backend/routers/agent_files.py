@@ -25,6 +25,7 @@ from services.agent_service import (
     update_agent_file_logic,
     get_agent_metrics_logic,
 )
+from services.platform_audit_service import platform_audit_service, AuditEventType
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -245,7 +246,20 @@ async def set_agent_permissions(
     current_user: User = Depends(get_current_user)
 ):
     """Set permissions for an agent (full replacement)."""
-    return await set_agent_permissions_logic(agent_name, body, current_user, request)
+    result = await set_agent_permissions_logic(agent_name, body, current_user, request)
+    await platform_audit_service.log(
+        event_type=AuditEventType.AUTHORIZATION,
+        event_action="permissions_set",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="agent",
+        target_id=agent_name,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={"targets": body.get("permissions") or body.get("targets")},
+    )
+    return result
 
 
 @router.post("/{agent_name}/permissions/{target_agent}")
@@ -256,7 +270,20 @@ async def add_agent_permission(
     current_user: User = Depends(get_current_user)
 ):
     """Add permission for an agent to communicate with another agent."""
-    return await add_agent_permission_logic(agent_name, target_agent, current_user, request)
+    result = await add_agent_permission_logic(agent_name, target_agent, current_user, request)
+    await platform_audit_service.log(
+        event_type=AuditEventType.AUTHORIZATION,
+        event_action="permission_grant",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="agent",
+        target_id=agent_name,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={"target_agent": target_agent},
+    )
+    return result
 
 
 @router.delete("/{agent_name}/permissions/{target_agent}")
@@ -267,7 +294,20 @@ async def remove_agent_permission(
     current_user: User = Depends(get_current_user)
 ):
     """Remove permission for an agent to communicate with another agent."""
-    return await remove_agent_permission_logic(agent_name, target_agent, current_user, request)
+    result = await remove_agent_permission_logic(agent_name, target_agent, current_user, request)
+    await platform_audit_service.log(
+        event_type=AuditEventType.AUTHORIZATION,
+        event_action="permission_revoke",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        target_type="agent",
+        target_id=agent_name,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={"target_agent": target_agent},
+    )
+    return result
 
 
 # ============================================================================
