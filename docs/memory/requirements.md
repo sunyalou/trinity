@@ -1102,45 +1102,65 @@ The Process Engine supports six step types:
 ## 20. Security & Compliance
 
 ### 20.1 Audit Trail System (SEC-001)
-- **Status**: 🚧 Phase 1 implemented (2026-04-14, Issue #20). Phases 2–4 pending.
+- **Status**: ✅ Complete (Phases 1, 2a, 2b, 3, 4, 5 shipped via #20 / PR #371, 2026-04-17).
 - **Requirement ID**: SEC-001
 - **Priority**: HIGH
 - **Description**: Comprehensive audit logging for all user and agent actions with full actor attribution. Enables investigation, compliance reporting, and accountability.
 - **Key Features**:
   - Append-only `audit_log` table with immutability triggers (UPDATE blocked unconditionally; DELETE blocked within 365-day retention)
   - Full actor attribution (user, agent, MCP client, system)
-  - MCP API key tracking per tool call
-  - Hash chain for tamper evidence (Phase 4 — code present but dormant in Phase 1)
-  - Query API with filters, pagination, and stats aggregation
+  - MCP API key tracking per tool call (all 71 tools wrapped transparently)
+  - Hash chain (SHA-256) for tamper evidence with verify endpoint
+  - Query API with filters, pagination, stats aggregation, and JSON/CSV export
   - Distinct from Process Engine audit (`audit_entries`) — coexist intentionally
-- **Phase 1 Delivery (#20, this PR)**:
+- **Phase 1 Delivery**:
   - `audit_log` table + indexes + immutability triggers (`db/schema.py`, migration #31)
   - `PlatformAuditOperations` (`db/audit.py`)
   - `PlatformAuditService` with global instance (`services/platform_audit_service.py`)
   - Admin query API: `GET /api/audit-log`, `GET /api/audit-log/stats`, `GET /api/audit-log/{event_id}`
-  - 29 unit tests (schema, query, filters, pagination, immutability, service actor resolution, error handling, lifecycle integration shape)
-- **Phase 2a Delivery (#20, same PR — agent lifecycle smoke test)**:
+  - 29 unit tests (schema, query, filters, pagination, immutability, service actor resolution, error handling)
+- **Phase 2a Delivery (agent lifecycle smoke test)**:
   - `routers/agents.py` emits audit rows after successful create / start / stop / delete
   - 5 integration-shape tests asserting the exact field layout produced by the handlers
-  - End-to-end verifiable: UI agent action → row appears in `/api/audit-log`
-- **Event Categories**:
-  - `AGENT_LIFECYCLE`: create, start, stop, delete, recreate
-  - `EXECUTION`: task_triggered, chat_started, schedule_triggered
-  - `AUTHENTICATION`: login_success, login_failed, logout
-  - `AUTHORIZATION`: permission_grant, permission_revoke, share, unshare
-  - `CONFIGURATION`: settings_change, resource_limits
-  - `CREDENTIALS`: create, delete, reload
-  - `MCP_OPERATION`: tool_call, key_create, key_revoke
-  - `GIT_OPERATION`: sync, pull, init, commit
+- **Phase 2b Delivery**:
+  - `auth.py` — login_success / login_failed (admin + email)
+  - `sharing.py` — share / unshare
+  - `credentials.py` — inject / export / import (CRED-002 file-injection ops)
+  - `settings.py` — settings_change
+  - `agent_rename.py` — rename
+  - Request-ID correlation middleware (`X-Request-ID` header, UUID, passthrough)
+- **Phase 3 Delivery (MCP tool call audit)**:
+  - `src/mcp-server/src/audit.ts` — `withAudit` transparent wrapper
+  - All 71 tools auto-wrapped at registration time in `server.ts`
+  - Fire-and-forget POST to `/api/internal/audit` (shared-secret auth via `INTERNAL_API_SECRET`)
+  - Captures tool name, auth context (user/agent/system scope), duration, success/failure with error message
+- **Phase 4 Delivery (hash chain + export)**:
+  - `POST /api/audit-log/hash-chain/enable?enabled=true|false` — runtime toggle
+  - `POST /api/audit-log/verify?start_id=&end_id=` — chain integrity check
+  - `GET /api/audit-log/export?format=json|csv` — compliance export
+  - `_compute_hash` normalizes `details` field across write/read paths for stable SHA-256
+- **Phase 5 Delivery (action coverage gaps)**:
+  - `execution`: chat_started (`chat.py`), task_triggered (`schedules.py`), schedule_triggered (`internal.py`)
+  - `authorization`: permission_grant / permission_revoke / permissions_set (`agent_files.py`)
+  - `configuration`: autonomy_toggle / resource_limits (`agent_config.py`)
+  - `mcp_operation`: key_create / key_revoke / key_delete (`mcp_keys.py`)
+  - `git_operation`: sync / pull / init (`git.py`)
+  - `system`: startup / shutdown (`main.py` lifespan), emergency_stop (`ops.py`)
+  - `credentials`: oauth_complete (`slack.py` OAuth callback)
+- **Event Categories** (actions tracked):
+  - `AGENT_LIFECYCLE`: create, start, stop, delete, rename (recreate — no endpoint)
+  - `EXECUTION`: chat_started, task_triggered, schedule_triggered
+  - `AUTHENTICATION`: login_success, login_failed (logout / token_refresh — no endpoints in Trinity)
+  - `AUTHORIZATION`: share, unshare, permission_grant, permission_revoke, permissions_set
+  - `CONFIGURATION`: settings_change, resource_limits, autonomy_toggle
+  - `CREDENTIALS`: inject, export, import, oauth_complete (CRED-002 replaced spec's create/delete/reload)
+  - `MCP_OPERATION`: tool_call, key_create, key_revoke, key_delete
+  - `GIT_OPERATION`: sync, pull, init (commit — folded into sync)
   - `SYSTEM`: startup, shutdown, emergency_stop
 - **Architecture**: `docs/requirements/AUDIT_TRAIL_ARCHITECTURE.md`
 - **Flow**: `docs/memory/feature-flows/audit-trail.md`
-- **Implementation Phases**:
-  1. ✅ Core infrastructure (table, service, db ops, API, tests) — landed in this PR
-  2a. ✅ Agent lifecycle integration (create / start / stop / delete) — landed in this PR as smoke test
-  2b. ⏳ Remaining backend integration (auth, sharing, settings, credentials, rename, request_id middleware)
-  3. ⏳ MCP integration (TypeScript audit logging for tool calls)
-  4. ⏳ Advanced features (hash chain verification, CSV/JSON export, retention automation, admin UI)
+- **Test plan**: `docs/testing/audit-trail-manual-test-plan.md` (19 acceptance checks; 18/19 passed live, hash-chain verify bug fixed in-flight and re-verified)
+- **Follow-up (optional)**: admin UI (no requirement in spec — API export satisfies compliance criterion); forward `schedule_id` / `schedule_name` from scheduler to `/api/internal/execute-task` so `schedule_triggered` audit carries that context.
 
 ### 20.2 Execution Origin Tracking (AUDIT-001)
 - **Status**: ⏳ Pending Implementation
