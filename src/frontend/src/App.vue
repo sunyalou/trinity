@@ -6,6 +6,9 @@
         <component :is="Component" />
       </KeepAlive>
     </router-view>
+
+    <!-- Help chat widget (authenticated users only) -->
+    <HelpChatWidget v-if="authStore.isAuthenticated" />
   </div>
 </template>
 
@@ -15,6 +18,7 @@ import axios from 'axios'
 import { useAuthStore } from './stores/auth'
 import { useThemeStore } from './stores/theme'
 import { useWebSocket } from './utils/websocket'
+import HelpChatWidget from './components/HelpChatWidget.vue'
 
 const authStore = useAuthStore()
 const themeStore = useThemeStore()

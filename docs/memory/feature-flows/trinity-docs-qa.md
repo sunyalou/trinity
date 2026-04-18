@@ -178,12 +178,51 @@ The assistant has a baked-in personality via system prompt:
 - **Context window**: Large questions may be truncated
 - **Session timeout**: Sessions expire after ~30 min of inactivity
 
+## In-App Help Widget (#391)
+
+A floating help chat widget provides instant access to Trinity documentation from within the UI.
+
+### Components
+
+| File | Purpose |
+|------|---------|
+| `src/frontend/src/components/HelpChatWidget.vue` | Floating button + expandable chat panel |
+| `src/frontend/src/App.vue` | Mounts widget for authenticated users |
+
+### Features
+
+- Floating button in bottom-right corner (collapsible)
+- Chat panel with message history
+- Multi-turn conversations via session persistence (localStorage)
+- Markdown rendering with DOMPurify sanitization
+- Loading indicator while waiting for response
+- Error handling with retry button
+- Keyboard navigation and focus trap
+- ARIA labels for accessibility
+- "New conversation" button to reset session
+
+### User Flow
+
+```
+User clicks help button → Panel opens → Types question → Enter to send
+    → Loading indicator → Response renders with markdown
+    → Continue conversation or start new one
+```
+
+### Session Persistence
+
+- Session ID stored in `localStorage` key `trinity_help_session_id`
+- Sessions persist ~30 min server-side (Vertex AI Search limit)
+- Conversation history shown in-panel during session
+- "New conversation" clears local messages and session ID
+
 ## Future Enhancements
 
 - [ ] Add more docs (architecture, API reference)
-- [ ] Integrate into Trinity UI as help widget
+- [x] ~~Integrate into Trinity UI as help widget~~ (done: #391)
 - [x] ~~Add conversation memory for follow-up questions~~ (done: session support)
 - [ ] Support for code snippets with syntax highlighting
+- [ ] Usage analytics/telemetry
 
 ## Related
 

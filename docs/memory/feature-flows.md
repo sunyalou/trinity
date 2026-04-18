@@ -11,7 +11,7 @@
 
 | Date | ID | Feature | Flow |
 |------|-----|---------|------|
-| 2026-04-18 | DOCS-QA-001 | Trinity Docs Q&A — public Vertex AI Search endpoint with multi-turn chat sessions and friendly tone | [trinity-docs-qa.md](feature-flows/trinity-docs-qa.md) |
+| 2026-04-18 | DOCS-QA-001 | Trinity Docs Q&A — public Vertex AI Search endpoint + in-app floating help widget (#391) | [trinity-docs-qa.md](feature-flows/trinity-docs-qa.md) |
 | 2026-04-17 | #376 | Proactive messaging UI toggle — SharingPanel shows allow_proactive switch per shared user | [proactive-messaging.md](feature-flows/proactive-messaging.md), [agent-sharing.md](feature-flows/agent-sharing.md) |
 | 2026-04-16 | #321 | Proactive agent messaging — agents send messages to users by verified email via Telegram/Slack/web | [proactive-messaging.md](feature-flows/proactive-messaging.md) |
 | 2026-04-16 | #354 | Telegram file upload Phase 1 — photo/document extraction, download, size/MIME validation | [telegram-integration.md](feature-flows/telegram-integration.md) |
