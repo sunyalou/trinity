@@ -82,7 +82,7 @@ Thread-safe registry for tracking running subprocess handles.
 | `list_running()` | List all currently running executions |
 | `cleanup_finished()` | Remove entries for finished processes |
 
-**Termination Flow** (lines 54-110):
+**Termination Flow**:
 ```python
 def terminate(self, execution_id: str, graceful_timeout: int = 5) -> dict:
     # 1. Check if process exists
@@ -93,14 +93,18 @@ def terminate(self, execution_id: str, graceful_timeout: int = 5) -> dict:
     if process.poll() is not None:
         return {"success": False, "reason": "already_finished", "returncode": ...}
 
-    # 3. Graceful termination (SIGINT = Ctrl+C)
-    process.send_signal(signal.SIGINT)
+    # 3. Graceful termination (SIGINT = Ctrl+C) — signal the whole
+    #    process group via captured pgid so hook grandchildren go too
+    #    (Issue #407). Falls back to signaling just the parent if pgid
+    #    is unknown.
+    pgid = (entry.get("metadata") or {}).get("pgid")
+    _signal_process_tree(process, signal.SIGINT, pgid=pgid)
 
     try:
         process.wait(timeout=graceful_timeout)  # Wait 5 seconds
     except subprocess.TimeoutExpired:
-        # 4. Force kill if graceful didn't work
-        process.kill()
+        # 4. Force kill the group if graceful didn't work
+        _signal_process_tree(process, signal.SIGKILL, pgid=pgid)
         process.wait(timeout=2)
 
     return {"success": True, "returncode": process.returncode}
@@ -469,12 +473,16 @@ When termination succeeds:
 
 ## Signal Handling
 
-| Signal | Purpose | Timeout |
-|--------|---------|---------|
-| `SIGINT` | Graceful termination (Ctrl+C) | 5 seconds |
-| `SIGKILL` | Force kill (after SIGINT timeout) | 2 seconds |
+| Signal | Purpose | Scope | Timeout |
+|--------|---------|-------|---------|
+| `SIGINT` | Graceful termination (Ctrl+C) | Full process group | 5 seconds |
+| `SIGKILL` | Force kill (after SIGINT timeout) | Full process group | 2 seconds |
 
 Claude Code handles SIGINT gracefully, finishing its current operation before exiting. This allows tools like `Write` or `Bash` to complete their current action.
+
+**Process-group semantics (Issue #407)**: The claude subprocess is launched with `start_new_session=True` so it leads its own process group. Hook subprocesses (bash-guardrail, file-guardrail, output-scanner, …) and any grandchildren they fork are in the same group. Termination sends signals to the group via `os.killpg(pgid, …)` so hook grandchildren don't outlive claude and keep our stdout/stderr pipes open (which previously caused `readline()` to wedge, leaving a `<defunct>` zombie and pinning agent-server CPU until the container was restarted).
+
+The pgid is captured at spawn time (before `process.wait()` reaps the parent — after that, `os.getpgid(pid)` raises) and stored in the registry entry metadata so termination can signal the full tree even after the parent has exited. See `docker/base-image/agent_server/utils/subprocess_pgroup.py` for the helper functions (`capture_pgid`, `terminate_process_group`, `signal_process_tree`, `drain_reader_threads`).
 
 ---
 
