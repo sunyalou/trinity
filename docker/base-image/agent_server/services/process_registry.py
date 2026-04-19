@@ -15,6 +15,8 @@ from datetime import datetime
 from typing import Dict, Optional, List, AsyncIterator
 from threading import Lock
 
+from ..utils.subprocess_pgroup import signal_process_tree as _signal_process_tree
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,21 +113,33 @@ class ProcessRegistry:
                 del self._processes[execution_id]
                 return {"success": False, "reason": "already_finished", "returncode": returncode}
 
+        # Read pgid from the entry metadata (captured at register time)
+        # so we can signal the full process group even if the parent has
+        # already been reaped (Issue #407).
+        pgid = (entry.get("metadata") or {}).get("pgid")
+
         # Terminate outside lock to avoid blocking other operations
         try:
             # Graceful termination first (SIGINT = Ctrl+C)
-            # Claude Code handles SIGINT gracefully, finishing current tool
-            logger.info(f"[ProcessRegistry] Sending SIGINT to execution {execution_id}")
-            process.send_signal(signal.SIGINT)
+            # Claude Code handles SIGINT gracefully, finishing current tool.
+            # Issue #407: signal the whole process group so hook
+            # grandchildren don't linger holding our pipe FDs.
+            logger.info(f"[ProcessRegistry] Sending SIGINT to execution {execution_id} (process group)")
+            _signal_process_tree(process, signal.SIGINT, pgid=pgid)
 
             try:
                 process.wait(timeout=graceful_timeout)
                 logger.info(f"[ProcessRegistry] Execution {execution_id} terminated gracefully")
             except subprocess.TimeoutExpired:
                 # Force kill if graceful didn't work
-                logger.warning(f"[ProcessRegistry] Force killing execution {execution_id}")
-                process.kill()
-                process.wait(timeout=2)
+                logger.warning(f"[ProcessRegistry] Force killing execution {execution_id} (process group)")
+                _signal_process_tree(process, signal.SIGKILL, pgid=pgid)
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    logger.error(
+                        f"[ProcessRegistry] Execution {execution_id} did not exit after SIGKILL"
+                    )
 
             returncode = process.returncode
 

@@ -27,6 +27,12 @@ from ..utils.credential_sanitizer import (
     sanitize_dict,
     sanitize_subprocess_line,
 )
+from ..utils.subprocess_pgroup import (
+    capture_pgid as _capture_pgid,
+    terminate_process_group as _terminate_process_group,
+    safe_close_pipes as _safe_close_pipes,
+    drain_reader_threads as _drain_reader_threads,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -560,35 +566,44 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
         # Mark session as potentially running (will be set to running when first tool starts)
         logger.info(f"Starting Claude Code with streaming: {' '.join(cmd[:5])}...")
 
-        # Use Popen for real-time streaming instead of blocking run()
+        # Use Popen for real-time streaming instead of blocking run().
+        # Issue #407: start_new_session=True puts claude (and hook children
+        # it spawns) into their own process group so we can reap the whole
+        # tree on exit — hook grandchildren can otherwise outlive claude
+        # and wedge readline() forever via inherited pipe FDs.
         process = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1  # Line buffered
+            bufsize=1,  # Line buffered
+            start_new_session=True,
         )
+        # Issue #407: capture pgid now — after wait() reaps the parent,
+        # the pid is gone and we lose the ability to signal the group.
+        process_pgid = _capture_pgid(process)
 
         # Register process for potential termination
         registry = get_process_registry()
         registry.register(execution_id, process, metadata={
             "type": "chat",
-            "message_preview": prompt[:100]
+            "message_preview": prompt[:100],
+            "pgid": process_pgid,
         })
 
         # Write prompt to stdin and close it
         process.stdin.write(prompt)
         process.stdin.close()
 
-        # Helper function that reads subprocess output (runs in thread pool)
-        def read_subprocess_output():
-            """Blocking function to read subprocess output line by line"""
+        stderr_lines: List[str] = []
+
+        def read_stdout():
+            """Read stdout (stream-json); parse and publish log entries."""
             try:
                 for line in iter(process.stdout.readline, ''):
                     if not line:
                         break
-                    # Capture raw JSON for full execution log (same as execute_headless_task)
                     try:
                         raw_msg = json.loads(line.strip())
                         if not isinstance(raw_msg, dict):
@@ -597,22 +612,41 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
                         # SECURITY: Sanitize credentials from output before storing
                         raw_msg = sanitize_dict(raw_msg)
                         raw_messages.append(raw_msg)
-                        # Publish to live streaming subscribers
                         registry.publish_log_entry(execution_id, raw_msg)
                     except json.JSONDecodeError:
                         pass
-                    # SECURITY: Sanitize the line before processing
                     sanitized_line = sanitize_subprocess_line(line)
-                    # Process each line immediately - updates session_activity in real-time
                     process_stream_line(sanitized_line, execution_log, metadata, tool_start_times, response_parts)
             except Exception as e:
                 logger.error(f"Error reading Claude output: {e}")
 
-            # Wait for process to complete and get stderr
-            stderr = process.stderr.read()
-            # SECURITY: Sanitize stderr output
-            stderr = sanitize_text(stderr) if stderr else stderr
+        def read_stderr():
+            """Read stderr line by line (captured for error reporting)."""
+            try:
+                for line in iter(process.stderr.readline, ''):
+                    if not line:
+                        break
+                    stderr_lines.append(line)
+            except Exception as e:
+                logger.error(f"Error reading Claude stderr: {e}")
+
+        def read_subprocess_output():
+            """Runs in thread pool. Starts stdout/stderr reader threads, waits
+            for subprocess, drains readers with process-group cleanup if
+            hook grandchildren still hold pipes open (Issue #407)."""
+            stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+            stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+            stdout_thread.start()
+            stderr_thread.start()
+
             return_code = process.wait()
+            _drain_reader_threads(
+                process, stdout_thread, stderr_thread,
+                grace=5, pgid=process_pgid,
+            )
+
+            stderr = ''.join(stderr_lines)
+            stderr = sanitize_text(stderr) if stderr else stderr
             return stderr, return_code
 
         # Run the blocking subprocess reading in a thread pool to allow FastAPI
@@ -838,8 +872,6 @@ async def execute_headless_task(
 
     Returns: (response_text, execution_log, metadata, session_id)
     """
-    import signal
-
     # Issue #81: Default to "sonnet" when model is not specified.
     # Without this, Claude Code uses the agent's ~/.claude/settings.json model,
     # which may be incompatible with the assigned subscription (e.g., haiku on
@@ -927,21 +959,30 @@ async def execute_headless_task(
 
         logger.info(f"[Headless Task] Starting task {task_session_id}: {' '.join(cmd[:5])}...")
 
-        # Use Popen for real-time streaming
+        # Use Popen for real-time streaming.
+        # Issue #407: start_new_session=True puts claude (and any hooks it
+        # spawns) into their own process group so we can reap the whole tree
+        # on exit/timeout. Without this, hook grandchildren can outlive
+        # claude, keep pipe FDs open, and wedge readline() forever.
         process = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1  # Line buffered
+            bufsize=1,  # Line buffered
+            start_new_session=True,
         )
+        # Issue #407: capture pgid now — after wait() reaps the parent,
+        # the pid is gone and we lose the ability to signal the group.
+        process_pgid = _capture_pgid(process)
 
         # Register process for potential termination
         registry = get_process_registry()
         registry.register(task_session_id, process, metadata={
             "type": "task",
-            "message_preview": prompt[:100]
+            "message_preview": prompt[:100],
+            "pgid": process_pgid,
         })
 
         # Write prompt to stdin and close it
@@ -953,46 +994,47 @@ async def execute_headless_task(
         auth_abort_event = threading.Event()
         auth_abort_reason: List[str] = []  # Capture the auth failure message
 
-        # Helper function that reads subprocess output (runs in thread pool)
-        def read_subprocess_output_with_timeout():
-            """Blocking function to read subprocess output line by line with timeout"""
+        # Issue #407: box for capturing exceptions from the stdout reader
+        # thread (e.g. permission-mode RuntimeError) so the main executor
+        # function can re-raise after joining.
+        stdout_exc: List[BaseException] = []
 
-            # Read stderr in separate thread (verbose output with thinking/tool calls)
-            # Issue #285: Also scan for auth failure patterns and abort early
-            def read_stderr():
-                try:
-                    for line in iter(process.stderr.readline, ''):
-                        if not line:
-                            break
-                        stripped = line.rstrip('\n')
-                        verbose_output_lines.append(stripped)
+        def read_stderr():
+            """Read stderr line by line; scan for auth failures."""
+            try:
+                for line in iter(process.stderr.readline, ''):
+                    if not line:
+                        break
+                    stripped = line.rstrip('\n')
+                    verbose_output_lines.append(stripped)
 
-                        # Issue #285: Check for auth failure patterns in real-time
-                        # If detected, signal abort immediately instead of waiting for timeout
-                        if _is_auth_failure_message(stripped):
-                            logger.warning(
-                                f"[Headless Task] Auth failure detected in stderr: {stripped[:200]}"
+                    # Issue #285: detect auth failures in real time
+                    if _is_auth_failure_message(stripped):
+                        logger.warning(
+                            f"[Headless Task] Auth failure detected in stderr: {stripped[:200]}"
+                        )
+                        auth_abort_reason.append(stripped)
+                        auth_abort_event.set()
+                        # Kill the whole process group so stdout's readline()
+                        # gets EOF and we unwind cleanly (Issue #407).
+                        try:
+                            _terminate_process_group(process, graceful_timeout=2, pgid=process_pgid)
+                        except Exception as kill_err:
+                            logger.error(
+                                f"[Headless Task] Failed to kill process on auth abort: {kill_err}"
                             )
-                            auth_abort_reason.append(stripped)
-                            auth_abort_event.set()
-                            # Kill the process immediately
-                            try:
-                                process.kill()
-                            except Exception as kill_err:
-                                logger.error(f"[Headless Task] Failed to kill process on auth abort: {kill_err}")
-                            break
-                except Exception as e:
-                    logger.error(f"[Headless Task] Error reading stderr: {e}")
+                        break
+            except Exception as e:
+                logger.error(f"[Headless Task] Error reading stderr: {e}")
 
-            stderr_thread = threading.Thread(target=read_stderr)
-            stderr_thread.start()
-
-            # Read stdout (stream-json for metadata)
+        def read_stdout():
+            """Read stdout (stream-json); parse and publish log entries."""
+            nonlocal permission_mode_validated
             try:
                 for line in iter(process.stdout.readline, ''):
                     if not line:
                         break
-                    # Issue #285: Check if stderr thread detected auth failure
+                    # Issue #285: stderr thread detected auth failure
                     if auth_abort_event.is_set():
                         logger.info(f"[Headless Task] Stdout loop exiting due to auth abort")
                         break
@@ -1020,11 +1062,10 @@ async def execute_headless_task(
                                 logger.error(
                                     f"[Headless Task] CRITICAL: Permission bypass not active! "
                                     f"permissionMode={perm_mode} (expected bypassPermissions). "
-                                    f"Killing process to prevent silent timeout. "
+                                    f"Killing process tree to prevent silent timeout. "
                                     f"Task: {task_session_id}"
                                 )
-                                process.kill()
-                                process.wait()
+                                _terminate_process_group(process, graceful_timeout=2, pgid=process_pgid)
                                 raise RuntimeError(
                                     f"Permission bypass failed: permissionMode={perm_mode}. "
                                     f"This may be caused by a stale Claude Code session process "
@@ -1042,23 +1083,80 @@ async def execute_headless_task(
             except Exception as e:
                 logger.error(f"[Headless Task] Error reading stdout: {e}")
 
-            # Wait for stderr thread and process to complete
-            stderr_thread.join(timeout=5)
-            return_code = process.wait()
+        def _run_stdout():
+            try:
+                read_stdout()
+            except BaseException as e:  # noqa: BLE001 — captured for main thread re-raise
+                stdout_exc.append(e)
+                # Wake the main thread's process.wait() by killing the group
+                try:
+                    _terminate_process_group(process, graceful_timeout=2, pgid=process_pgid)
+                except Exception:
+                    pass
+
+        def read_subprocess_output_with_timeout():
+            """Runs in thread pool. Waits for subprocess with bounded timeout,
+            then drains reader threads (killing process-group stragglers if
+            they hold pipes open — Issue #407)."""
+            stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+            stdout_thread = threading.Thread(target=_run_stdout, daemon=True)
+            stderr_thread.start()
+            stdout_thread.start()
+
+            # Bounded wait on the subprocess itself. If claude hangs, we
+            # never wedge the executor thread for more than timeout_seconds.
+            try:
+                return_code = process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                logger.error(
+                    f"[Headless Task] Task {task_session_id} timed out after {timeout_seconds}s "
+                    f"— killing process group"
+                )
+                _terminate_process_group(process, graceful_timeout=5, pgid=process_pgid)
+                _drain_reader_threads(
+                    process, stdout_thread, stderr_thread,
+                    grace=3, pgid=process_pgid,
+                )
+                raise
+
+            # Subprocess exited. Drain readers — if a hook grandchild still
+            # holds a pipe, the helper will close the pipe FDs so the
+            # reader threads can exit.
+            _drain_reader_threads(
+                process, stdout_thread, stderr_thread,
+                grace=5, pgid=process_pgid,
+            )
+
+            # Re-raise permission-mode failure captured by stdout thread
+            if stdout_exc:
+                raise stdout_exc[0]
+
             return return_code
 
-        # Run with timeout using asyncio
+        # Run with timeout using asyncio. The inner function already bounds
+        # its wait on the subprocess; the outer wait_for is a safety net
+        # with a small grace period for drain/cleanup.
         loop = asyncio.get_event_loop()
         try:
             try:
                 return_code = await asyncio.wait_for(
                     loop.run_in_executor(None, read_subprocess_output_with_timeout),
-                    timeout=timeout_seconds
+                    timeout=timeout_seconds + 60
                 )
             except asyncio.TimeoutError:
-                # Kill the process on timeout
-                process.kill()
-                process.wait()
+                # Inner machinery should have raised first; safety net.
+                logger.error(
+                    f"[Headless Task] Outer timeout on task {task_session_id} "
+                    f"— killing process group as last resort"
+                )
+                _terminate_process_group(process, graceful_timeout=2, pgid=process_pgid)
+                _safe_close_pipes(process)
+                raise HTTPException(
+                    status_code=504,
+                    detail=f"Task execution timed out after {timeout_seconds} seconds"
+                )
+            except subprocess.TimeoutExpired:
+                # Inner process.wait() timed out; tree has already been killed.
                 logger.error(f"[Headless Task] Task {task_session_id} timed out after {timeout_seconds}s")
                 raise HTTPException(
                     status_code=504,
