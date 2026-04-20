@@ -128,6 +128,7 @@ Before adding endpoints, services, DB tables, or frontend views, review the Arch
 | `docs/memory/requirements.md` | **SINGLE SOURCE OF TRUTH** - All features |
 | @docs/memory/architecture.md | Current system design (~1000 lines max) |
 | `docs/memory/feature-flows.md` | Index of vertical slice docs |
+| `docs/planning/ORCHESTRATION_RELIABILITY_2026-04.md` | Active multi-sprint plan for execution/orchestration reliability. **Current focus: Tier 2.5 Simplification — #306 (push event bus) → #428/#429/#430.** Consult before touching `task_execution_service`, `slot_service`, `backlog_service`, `execution_queue`, or `cleanup_service`. |
 | GitHub Issues + Project Board | Prioritized task queue — **Trinity Roadmap** board (Todo/In Progress/Done), priority labels (P0-P3), Tier sub-priority (P1a/P1b/P1c) |
 
 ---
@@ -312,6 +313,7 @@ The **[abilities](https://github.com/abilityai/abilities)** repo is the canonica
 ## See Also
 
 - **SDLC & Development Workflow**: `docs/DEVELOPMENT_WORKFLOW.md` ← Start here for dev process
+- **Orchestration Reliability Plan**: `docs/planning/ORCHESTRATION_RELIABILITY_2026-04.md` ← Active direction for execution stack; read before extending orchestration primitives
 - **Full Architecture**: @docs/memory/architecture.md
 - **All Requirements**: `.claude/memory/requirements.md`
 - **Current Roadmap**: https://github.com/abilityai/trinity/issues
