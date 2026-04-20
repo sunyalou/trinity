@@ -3,7 +3,11 @@ Agent Service Lifecycle - Agent start/stop and configuration management.
 
 Contains functions for starting, stopping, and reconfiguring agents.
 """
+import asyncio
 import logging
+import os
+import time
+
 import docker
 import httpx
 
@@ -25,6 +29,58 @@ from .helpers import check_shared_folder_mounts_match, check_api_key_env_matches
 from .read_only import inject_read_only_hooks
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Readiness Probe (#406)
+# =============================================================================
+
+# Docker reporting a container as "running" precedes the in-container FastAPI
+# server accepting connections by several seconds. Under multi-agent deploys,
+# the downstream credential-injection retry window exhausts before the server
+# is up. Gate post-start injections on HTTP readiness to close the race.
+
+AGENT_READINESS_TIMEOUT_S = int(os.getenv("AGENT_READINESS_TIMEOUT_S", "60"))
+AGENT_READINESS_POLL_INTERVAL_S = float(os.getenv("AGENT_READINESS_POLL_INTERVAL_S", "1.0"))
+
+
+async def wait_for_agent_ready(
+    agent_name: str,
+    timeout_s: int = AGENT_READINESS_TIMEOUT_S,
+    poll_interval_s: float = AGENT_READINESS_POLL_INTERVAL_S,
+) -> bool:
+    """Poll the agent's /health endpoint until it returns 200 or timeout.
+
+    Returns True if ready, False on timeout. Never raises — callers treat a
+    False return as "proceed anyway and let downstream retries cope."
+    """
+    url = f"http://agent-{agent_name}:8000/health"
+    deadline = time.monotonic() + timeout_s
+    attempt = 0
+    async with httpx.AsyncClient() as client:
+        while time.monotonic() < deadline:
+            attempt += 1
+            try:
+                r = await client.get(url, timeout=2.0)
+                if r.status_code == 200:
+                    if attempt > 1:
+                        logger.info(
+                            f"Agent {agent_name} became ready after {attempt} poll(s)"
+                        )
+                    return True
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout):
+                pass
+            except Exception as e:  # noqa: BLE001 — readiness probe must never bubble
+                logger.debug(
+                    f"Readiness probe for {agent_name} hit unexpected error: {e}"
+                )
+            await asyncio.sleep(poll_interval_s)
+
+    logger.warning(
+        f"Agent {agent_name} did not become ready within {timeout_s}s "
+        f"(polled {attempt} time(s)) — proceeding anyway"
+    )
+    return False
 
 
 # =============================================================================
@@ -229,6 +285,11 @@ async def start_agent_internal(agent_name: str) -> dict:
         }
         skills_status = "skipped"
     else:
+        # Gate post-start injections on HTTP readiness — Docker "running"
+        # precedes FastAPI "listening" by several seconds, and the downstream
+        # retry window is too short under multi-agent deploys (#406).
+        await wait_for_agent_ready(agent_name)
+
         # Inject assigned credentials from the Credentials page
         credentials_result = await inject_assigned_credentials(agent_name)
         credentials_status = credentials_result.get("status", "unknown")
