@@ -461,19 +461,26 @@ class ScheduleOperations:
             return cursor.rowcount > 0
 
     def update_schedule_run_times(self, schedule_id: str, last_run_at: datetime = None, next_run_at: datetime = None) -> bool:
-        """Update schedule run timestamps."""
+        """Update schedule run timestamps.
+
+        #420: Bookkeeping-only update — must not bump `updated_at`, which the
+        scheduler's sync loop uses as a config-change signal.
+        """
+        updates: list[str] = []
+        params: list = []
+
+        if last_run_at:
+            updates.append("last_run_at = ?")
+            params.append(last_run_at.isoformat())
+        if next_run_at:
+            updates.append("next_run_at = ?")
+            params.append(next_run_at.isoformat())
+
+        if not updates:
+            return False
+
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            updates = ["updated_at = ?"]
-            params = [utc_now_iso()]
-
-            if last_run_at:
-                updates.append("last_run_at = ?")
-                params.append(last_run_at.isoformat())
-            if next_run_at:
-                updates.append("next_run_at = ?")
-                params.append(next_run_at.isoformat())
-
             params.append(schedule_id)
             cursor.execute(f"""
                 UPDATE agent_schedules SET {", ".join(updates)} WHERE id = ?

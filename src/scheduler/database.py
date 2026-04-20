@@ -187,19 +187,29 @@ class SchedulerDatabase:
         last_run_at: datetime = None,
         next_run_at: datetime = None
     ) -> bool:
-        """Update schedule run timestamps."""
+        """Update schedule run timestamps.
+
+        #420: Do NOT touch `updated_at` here. This method persists bookkeeping
+        (last/next run) not config changes, and `_sync_agent_schedules` uses
+        `updated_at` as its change-detection signal. Bumping it here created a
+        feedback loop: _add_job → update_schedule_run_times → updated_at
+        bumped → next sync tick thinks config changed → _add_job again → ...
+        """
+        updates: list[str] = []
+        params: list = []
+
+        if last_run_at:
+            updates.append("last_run_at = ?")
+            params.append(last_run_at.isoformat())
+        if next_run_at:
+            updates.append("next_run_at = ?")
+            params.append(next_run_at.isoformat())
+
+        if not updates:
+            return False
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            updates = ["updated_at = ?"]
-            params = [datetime.utcnow().isoformat()]
-
-            if last_run_at:
-                updates.append("last_run_at = ?")
-                params.append(last_run_at.isoformat())
-            if next_run_at:
-                updates.append("next_run_at = ?")
-                params.append(next_run_at.isoformat())
-
             params.append(schedule_id)
             cursor.execute(f"""
                 UPDATE agent_schedules SET {", ".join(updates)} WHERE id = ?
