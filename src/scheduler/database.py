@@ -187,11 +187,20 @@ class SchedulerDatabase:
         last_run_at: datetime = None,
         next_run_at: datetime = None
     ) -> bool:
-        """Update schedule run timestamps."""
+        """Update schedule run timestamps.
+
+        Does NOT bump ``updated_at`` — that column signals config changes and
+        is watched by the sync loop in ``SchedulerService._sync_agent_schedules``.
+        Bumping it on every run would cause a self-triggering sync loop that
+        re-registers every schedule once per tick (Issue #420).
+        """
+        if last_run_at is None and next_run_at is None:
+            return False
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            updates = ["updated_at = ?"]
-            params = [datetime.utcnow().isoformat()]
+            updates = []
+            params = []
 
             if last_run_at:
                 updates.append("last_run_at = ?")
@@ -688,11 +697,18 @@ class SchedulerDatabase:
         last_run_at: datetime = None,
         next_run_at: datetime = None
     ) -> bool:
-        """Update process schedule run timestamps."""
+        """Update process schedule run timestamps.
+
+        Does NOT bump ``updated_at`` — same rationale as
+        :meth:`update_schedule_run_times` (Issue #420).
+        """
+        if last_run_at is None and next_run_at is None:
+            return False
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            updates = ["updated_at = ?"]
-            params = [datetime.utcnow().isoformat()]
+            updates = []
+            params = []
 
             if last_run_at:
                 updates.append("last_run_at = ?")

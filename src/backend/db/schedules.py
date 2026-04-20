@@ -461,11 +461,20 @@ class ScheduleOperations:
             return cursor.rowcount > 0
 
     def update_schedule_run_times(self, schedule_id: str, last_run_at: datetime = None, next_run_at: datetime = None) -> bool:
-        """Update schedule run timestamps."""
+        """Update schedule run timestamps.
+
+        Does NOT bump ``updated_at`` — that column signals config changes and
+        is watched by the scheduler service's sync loop. Bumping it here caused
+        a self-triggering loop that re-registered every schedule once per tick
+        (Issue #420).
+        """
+        if last_run_at is None and next_run_at is None:
+            return False
+
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            updates = ["updated_at = ?"]
-            params = [utc_now_iso()]
+            updates = []
+            params = []
 
             if last_run_at:
                 updates.append("last_run_at = ?")
