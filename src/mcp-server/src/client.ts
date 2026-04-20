@@ -556,8 +556,13 @@ export class TrinityClient {
       chat_session_id: options?.chat_session_id,
     };
 
-    // Async mode returns immediately; sync mode waits for full execution
-    const timeout = options?.async_mode ? 30 : (options?.timeout_seconds || 600) + 10;
+    // Async mode returns immediately; sync mode waits for full execution.
+    // When timeout_seconds is omitted, backend resolves the target agent's
+    // configured execution_timeout_seconds (max 7200s). Use platform max + buffer
+    // as the HTTP client ceiling so we don't abort before the backend does.
+    const timeout = options?.async_mode
+      ? 30
+      : (options?.timeout_seconds ?? 7200) + 60;
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout * 1000);
@@ -661,19 +666,24 @@ export class TrinityClient {
       headers["X-MCP-Key-Name"] = mcpKeyInfo.keyName;
     }
 
-    const body = {
+    // Only include timeout_seconds if caller provided it, so the backend can
+    // fall back to the target agent's configured execution_timeout_seconds.
+    const body: Record<string, unknown> = {
       tasks,
       agent: options?.agent || "self",
-      timeout_seconds: options?.timeout_seconds || 600,
       max_concurrency: options?.max_concurrency || 3,
       policy: options?.policy || "best-effort",
       model: options?.model,
       system_prompt: options?.system_prompt,
       allowed_tools: options?.allowed_tools,
     };
+    if (options?.timeout_seconds !== undefined) {
+      body.timeout_seconds = options.timeout_seconds;
+    }
 
-    // Overall timeout: the fan-out timeout + buffer for HTTP overhead
-    const timeout = (options?.timeout_seconds || 600) + 30;
+    // HTTP ceiling: when no explicit fan-out timeout, cover the platform max
+    // per-agent timeout (7200s) + buffer so we don't abort before the backend.
+    const timeout = (options?.timeout_seconds ?? 7200) + 60;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout * 1000);
 

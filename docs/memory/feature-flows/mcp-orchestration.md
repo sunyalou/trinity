@@ -381,6 +381,9 @@ console.log(`Registered ${totalTools} tools`);
 | `chat_with_agent` | 132-270 | `{agent_name, message, parallel?, model?, allowed_tools?, system_prompt?, timeout_seconds?}` | `POST /api/agents/{name}/chat` or `/task` |
 | `get_chat_history` | 275-292 | `{agent_name}` | `GET /api/agents/{name}/chat/history` |
 | `get_agent_logs` | 297-326 | `{agent_name, lines?}` | `GET /api/agents/{name}/logs` |
+| `fan_out` | 390-590 | `{agent_name, tasks[], timeout_seconds?, max_concurrency?, model?, system_prompt?, allowed_tools?}` | `POST /api/agents/{name}/fan-out` |
+
+> **Per-agent timeout fallback (#418, 2026-04-20)**: For `chat_with_agent` (when `parallel=true`) and `fan_out`, `timeout_seconds` is fully optional with **no default**. When omitted, the backend falls back to the target agent's configured `execution_timeout_seconds` (TIMEOUT-001; default 900s, max 7200s). Previously, the Zod schema defaulted to `600`, which silently capped inter-agent invocations below the per-agent setting.
 
 ### System Tools (`src/mcp-server/src/tools/systems.ts`)
 
@@ -440,7 +443,9 @@ chat_with_agent({
   model: "sonnet",             // Optional: model override
   allowed_tools: ["Read"],     // Optional: tool restrictions
   system_prompt: "Be concise", // Optional: additional instructions
-  timeout_seconds: 300         // Optional: timeout (default 5 min)
+  timeout_seconds: 300         // Optional. Omit to use the target agent's
+                               // configured execution_timeout_seconds
+                               // (TIMEOUT-001; default 900s, max 7200s).
 })
 ```
 
@@ -469,7 +474,8 @@ chat_with_agent({
   message: "Process large dataset",
   parallel: true,              // Required for async mode
   async: true,                 // Return immediately with execution_id
-  timeout_seconds: 3600        // Long-running task
+  timeout_seconds: 3600        // Optional. Omit to use worker-1's configured
+                               // execution_timeout_seconds (TIMEOUT-001).
 })
 // Returns immediately:
 // {
@@ -661,11 +667,39 @@ async chat(name: string, message: string, sourceAgent?: string): Promise<ChatRes
 }
 ```
 
-### Parallel Task Execution (lines 393-445)
+### Parallel Task Execution (`client.task`, lines 511-600)
 ```typescript
 async task(name: string, message: string, options?: TaskOptions, sourceAgent?: string): Promise<ChatResponse> {
   // Stateless execution, no queue, can run N tasks concurrently
+  // HTTP ceiling covers platform max per-agent timeout (7200s) + buffer so the
+  // client never aborts before the backend resolves per-agent timeout (#418).
+  const timeout = options?.async_mode
+    ? 30
+    : (options?.timeout_seconds ?? 7200) + 60;
   const response = await fetch(`${this.baseUrl}/api/agents/${name}/task`, ...);
+}
+```
+
+### Fan-Out (`client.fanOut`, lines 621-720)
+```typescript
+async fanOut(name: string, tasks: FanOutTask[], options?: FanOutOptions): Promise<FanOutResult> {
+  // Only include timeout_seconds if caller provided it, so the backend can
+  // fall back to the target agent's configured execution_timeout_seconds (#418).
+  const body: Record<string, unknown> = {
+    tasks,
+    agent: options?.agent || "self",
+    max_concurrency: options?.max_concurrency || 3,
+    policy: options?.policy || "best-effort",
+    model: options?.model,
+    system_prompt: options?.system_prompt,
+    allowed_tools: options?.allowed_tools,
+  };
+  if (options?.timeout_seconds !== undefined) {
+    body.timeout_seconds = options.timeout_seconds;
+  }
+  // HTTP ceiling matches platform max per-agent timeout (7200s) + buffer.
+  const timeout = (options?.timeout_seconds ?? 7200) + 60;
+  const response = await fetch(`${this.baseUrl}/api/agents/${name}/fan-out`, ...);
 }
 ```
 
@@ -1025,6 +1059,7 @@ curl http://localhost:8000/api/agents/user2-agent | jq .owner  # Should be user2
 
 | Date | Changes |
 |------|---------|
+| 2026-04-20 | **Inter-agent timeout fix (#418)**: Removed Zod `.default(600)` from `timeout_seconds` on `chat_with_agent` (`parallel=true`) and `fan_out` in `src/mcp-server/src/tools/chat.ts`. When omitted, backend now falls back to the target agent's configured `execution_timeout_seconds` (TIMEOUT-001; default 900s, max 7200s). `client.ts` HTTP fetch ceilings in `task()` and `fanOut()` raised from `(timeout \|\| 600) + 10` to `(timeout ?? 7200) + 60` so the client never aborts before the backend. `fanOut()` now conditionally spreads `timeout_seconds` so the backend sees `None` and triggers per-agent fallback. |
 | 2026-02-22 | **Subscription tools (SUB-001)**: Tool count updated from 45 to 51. Added 6 subscription management tools: `register_subscription`, `list_subscriptions`, `assign_subscription`, `clear_agent_subscription`, `get_agent_auth`, `delete_subscription`. See [subscription-management.md](subscription-management.md) for full documentation. |
 | 2026-02-20 | **Notification tools (NOTIF-001)**: Tool count updated from 44 to 45. Added `send_notification` tool. |
 | 2026-02-20 | **Schedule tools: Per-schedule execution config**: `create_agent_schedule` and `update_agent_schedule` now support `timeout_seconds` and `allowed_tools` parameters for per-schedule execution configuration. Added dedicated Schedule Tools section with parameter table. |

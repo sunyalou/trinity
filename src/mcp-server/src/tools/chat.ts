@@ -180,9 +180,10 @@ export function createChatTools(client: TrinityClient, requireApiKey: boolean) {
         timeout_seconds: z
           .number()
           .optional()
-          .default(600)
           .describe(
-            "Execution timeout in seconds (default: 600). Only applies when parallel=true."
+            "Execution timeout in seconds. If omitted, uses the target agent's " +
+            "configured execution_timeout_seconds (default 900s, max 7200s). " +
+            "Only applies when parallel=true."
           ),
         async: z
           .boolean()
@@ -408,8 +409,11 @@ export function createChatTools(client: TrinityClient, requireApiKey: boolean) {
         timeout_seconds: z
           .number()
           .optional()
-          .default(600)
-          .describe("Overall deadline in seconds for the entire fan-out (default: 600, max: 3600)"),
+          .describe(
+            "Overall deadline in seconds for the entire fan-out (max: 3600). " +
+            "If omitted, no outer deadline is applied — each sub-task is still " +
+            "bounded by the target agent's configured execution_timeout_seconds."
+          ),
         max_concurrency: z
           .number()
           .optional()

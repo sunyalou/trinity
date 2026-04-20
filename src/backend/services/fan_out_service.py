@@ -72,7 +72,7 @@ class FanOutService:
         agent_name: str,
         tasks: List[FanOutTaskInput],
         max_concurrency: int = 3,
-        timeout_seconds: int = 600,
+        timeout_seconds: Optional[int] = None,
         model: Optional[str] = None,
         system_prompt: Optional[str] = None,
         allowed_tools: Optional[list] = None,
@@ -90,7 +90,10 @@ class FanOutService:
             agent_name: Target agent (typically self).
             tasks: List of tasks to execute.
             max_concurrency: Max concurrent subtasks (semaphore size).
-            timeout_seconds: Overall deadline for the entire fan-out.
+            timeout_seconds: Optional overall deadline for the entire fan-out.
+                When None, no outer deadline is applied — each sub-task is
+                still bounded by the target agent's configured
+                execution_timeout_seconds (TIMEOUT-001).
             model: Model override for subtasks.
             system_prompt: System prompt for subtasks.
             allowed_tools: Tool restrictions for subtasks.
@@ -105,9 +108,10 @@ class FanOutService:
         # Safe for concurrent writes: asyncio is single-threaded, no preemption between awaits.
         results: dict[str, FanOutTaskResult] = {}
 
+        deadline_desc = f"{timeout_seconds}s" if timeout_seconds is not None else "per-agent"
         logger.info(
             f"[FanOut] Starting {fan_out_id}: {len(tasks)} tasks on '{agent_name}' "
-            f"(concurrency={max_concurrency}, timeout={timeout_seconds}s)"
+            f"(concurrency={max_concurrency}, deadline={deadline_desc})"
         )
 
         async def run_subtask(task: FanOutTaskInput) -> None:
@@ -115,6 +119,11 @@ class FanOutService:
             start = datetime.utcnow()
             async with semaphore:
                 try:
+                    # Per-subtask timeout: pass None so TaskExecutionService
+                    # resolves the target agent's configured
+                    # execution_timeout_seconds (TIMEOUT-001). The optional
+                    # overall `timeout_seconds` parameter governs the outer
+                    # fan-out deadline, not the individual task ceiling.
                     result = await task_service.execute_task(
                         agent_name=agent_name,
                         message=task.message,
@@ -125,7 +134,7 @@ class FanOutService:
                         source_mcp_key_id=source_mcp_key_id,
                         source_mcp_key_name=source_mcp_key_name,
                         model=model,
-                        timeout_seconds=timeout_seconds,
+                        timeout_seconds=None,
                         system_prompt=system_prompt,
                         allowed_tools=allowed_tools,
                         fan_out_id=fan_out_id,
@@ -170,14 +179,20 @@ class FanOutService:
                         duration_ms=elapsed_ms,
                     )
 
-        # Dispatch all tasks with overall deadline.
-        # return_exceptions=True ensures all coroutines complete even if one raises
-        # an unexpected error — individual failures are handled inside run_subtask.
+        # Dispatch all tasks. When an overall deadline is set, wrap in
+        # asyncio.timeout so slow subtasks get cancelled once the deadline
+        # hits. Without a deadline, each subtask is still individually
+        # bounded by the target agent's execution_timeout_seconds.
+        # return_exceptions=True ensures all coroutines complete even if one
+        # raises — individual failures are handled inside run_subtask.
         deadline_exceeded = False
         coroutines = [run_subtask(t) for t in tasks]
 
         try:
-            async with asyncio.timeout(timeout_seconds):
+            if timeout_seconds is not None:
+                async with asyncio.timeout(timeout_seconds):
+                    await asyncio.gather(*coroutines, return_exceptions=True)
+            else:
                 await asyncio.gather(*coroutines, return_exceptions=True)
         except TimeoutError:
             deadline_exceeded = True

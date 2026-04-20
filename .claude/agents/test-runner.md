@@ -185,6 +185,7 @@ The test suite covers:
 - **OTel Trace Logging** (unit/test_otel_trace_logging.py) - Trace ID injection in logs, span context correlation (#305, RELIABILITY-002) [UNIT]
 - **File Upload** (unit/test_file_upload.py) - Telegram file extraction, download, message router validation, parse_message with files (#354) [UNIT]
 - **Telegram Voice** (unit/test_telegram_voice.py) - Voice transcription validation (duration/size limits), formatting, placeholder constants (#318) [UNIT]
+- **Inter-Agent Timeout** (test_inter_agent_timeout_unit.py) - FanOutRequest Optional timeout, per-subtask None dispatch, conditional asyncio.timeout wrap (#418) [UNIT]
 
 ### Avatars & Image Generation
 - **Avatars** (test_avatars.py) - Avatar serving, generation, regeneration, deletion, emotions, identity prompts, default generation (AVATAR-001/002/003) [SMOKE + Agent]
@@ -226,10 +227,10 @@ The test suite covers:
 
 ## Test Suite Statistics
 
-**Total Tests**: ~2,200 tests across 119 test files
+**Total Tests**: ~2,207 tests across 120 test files
 **Smoke Tests**: ~578 tests (fast, no agent creation)
-**Unit Tests**: ~79 tests (no backend needed, rate limit detection, watchdog logic, context formula, OTel trace logging, file upload, voice transcription)
-**Core Tests (not slow)**: ~2,069 tests
+**Unit Tests**: ~86 tests (no backend needed, rate limit detection, watchdog logic, context formula, OTel trace logging, file upload, voice transcription, inter-agent timeout)
+**Core Tests (not slow)**: ~2,076 tests
 **Slow Tests**: ~89 tests (chat execution, fleet ops, system agent ops, execution termination)
 **WebSocket Tests**: ~10 tests (web terminal, execution streaming)
 
@@ -257,6 +258,24 @@ Use these thresholds to assess test health (based on **executed** tests, not inc
 - **Healthy**: >90% pass rate, 0 critical failures
 - **Warning**: 75-90% pass rate, <5 failures
 - **Critical**: <75% pass rate or >5 failures
+
+## Recent Test Additions (2026-04-20)
+
+| Test File | Description | Tests Added |
+|-----------|-------------|-------------|
+| `test_inter_agent_timeout_unit.py` | Inter-agent timeout honors per-agent config (#418) | 7 tests |
+
+**Inter-Agent Timeout Fix (#418)** (`test_inter_agent_timeout_unit.py`):
+
+- `test_fan_out_request_allows_omitted_timeout` — FanOutRequest accepts no `timeout_seconds`, defaults to None
+- `test_fan_out_request_accepts_explicit_timeout` — Explicit value round-trips
+- `test_fan_out_request_rejects_out_of_range_timeout` — Validator rejects <10 / >3600
+- `test_fan_out_request_accepts_none_explicitly` — `timeout_seconds=None` short-circuits validator
+- `test_fan_out_service_forwards_none_per_subtask_without_outer_deadline` — Each sub-task gets `timeout_seconds=None` (per-agent config applies)
+- `test_fan_out_service_forwards_none_per_subtask_with_outer_deadline` — Outer deadline wraps gather, but per-subtask timeout stays None
+- `test_fan_out_service_outer_deadline_actually_applies` — When outer deadline exceeded, tasks marked `error_code="timeout"`
+
+Pure unit tests — mock `TaskExecutionService` and stub `database`/`models` modules. No backend container required.
 
 ## Recent Test Additions (2026-04-18)
 

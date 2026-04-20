@@ -3,13 +3,14 @@
 > **Requirement**: 12.1 - Parallel Headless Execution
 > **Status**: Implemented
 > **Created**: 2025-12-22
-> **Updated**: 2026-04-17 (Issue #361 max-turns error fix)
+> **Updated**: 2026-04-20 (Issue #418 inter-agent timeout fix)
 > **Verified**: 2026-02-05
 
 ## Revision History
 
 | Date | Changes |
 |------|---------|
+| 2026-04-20 | **Issue #418 - Inter-agent timeout ceiling fix**: Removed hardcoded 600s timeout assumption from the MCP parallel/task path so per-agent `execution_timeout_seconds` (TIMEOUT-001, default 900s, max 7200s) is honored end-to-end. `src/mcp-server/src/tools/chat.ts` — `chat_with_agent` Zod schema no longer applies `.default(600)` to `timeout_seconds`; when callers omit it, `undefined` now flows through to the backend, which resolves the target agent's configured timeout. `src/mcp-server/src/client.ts:563-565` — `client.task()` HTTP fetch ceiling changed from `(timeout_seconds \|\| 600) + 10` to `(timeout_seconds ?? 7200) + 60`, so the fetch client doesn't abort before a long-running agent-configured task finishes. Async mode still uses a fixed 30s HTTP ceiling (unchanged). |
 | 2026-04-17 | **Issue #361 - Max-turns error fix**: Fixed max_turns termination being misclassified as authentication failure. Added detection for `terminal_reason="max_turns"` and `subtype="error_max_turns"` in result messages (`claude_code.py:329-336`). Max-turns errors now return HTTP 422 with clear "Task exceeded turn limit" message instead of HTTP 503 "Authentication failure". Also raised `max_turns_task` default from 20 to 50 in both `claude_code.py:52` and `guardrails-baseline.json:65`. |
 | 2026-03-26 | **Line number refresh**: Updated all file/line references to match current codebase after upstream shifts (~92 lines in backend `chat.py`, model extraction in `models.py`, agent server reorganisation). |
 | 2026-03-11 | **Issue #81 - Default Model for Headless Tasks**: Fixed misleading "token expired" error when agent's `~/.claude/settings.json` contains a model incompatible with the assigned subscription. `execute_headless_task()` now defaults to `model="sonnet"` when model is None (`claude_code.py:768-770`). Added `_is_model_access_error()` helper (`claude_code.py:657-674`) to detect subscription/model access errors. Enhanced `_diagnose_exit_failure()` (`claude_code.py:685-700`) to provide actionable error messages when model access fails. Terminal WebSocket sessions always passed `model=sonnet` via URL param, but headless tasks didn't specify `--model` flag, causing Claude Code to use agent settings which might be incompatible. |
@@ -209,9 +210,10 @@ POST /api/task
 
 | File | Line | Purpose |
 |------|------|---------|
-| `src/client.ts` | 499-560 | task() method with async_mode option |
-| `src/tools/chat.ts` | 132-284 | chat_with_agent tool with parallel and async parameters |
-| `src/tools/chat.ts` | 187-195 | async parameter definition |
+| `src/client.ts` | 511-587 | `task()` method with async_mode option. HTTP fetch ceiling: `(timeout_seconds ?? 7200) + 60` for sync, 30s for async (Issue #418). |
+| `src/tools/chat.ts` | 132-211 | `chat_with_agent` tool with parallel and async parameters. `timeout_seconds` Zod schema has no default — undefined flows through to backend (Issue #418). |
+| `src/tools/chat.ts` | 180-187 | `timeout_seconds` parameter definition (agent-configured fallback). |
+| `src/tools/chat.ts` | 188-195 | `async` parameter definition. |
 
 ### Sync vs Async Code Paths (EXEC-024)
 
@@ -238,7 +240,9 @@ The router (`chat.py:652-917`) still handles: container validation, execution re
   "model": "sonnet|opus|haiku",  // Optional: Model override
   "allowed_tools": ["Read"],     // Optional: Tool restrictions
   "system_prompt": "string",     // Optional: Additional instructions
-  "timeout_seconds": 900,        // Optional: Timeout (default 15 min)
+  "timeout_seconds": 900,        // Optional: Timeout. If omitted, backend resolves the target
+                                 //   agent's configured execution_timeout_seconds (TIMEOUT-001,
+                                 //   default 900s / 15 min, max 7200s / 2h).
   "max_turns": 50,               // Optional: Max agentic turns (runaway prevention)
   "execution_id": "uuid"         // Optional: Database execution ID for process registry
 }
@@ -324,7 +328,7 @@ Retrieve the full execution log for any task execution.
 | model | string | null | Model override (parallel only) |
 | allowed_tools | string[] | null | Tool restrictions (parallel only) |
 | system_prompt | string | null | Additional instructions (parallel only) |
-| timeout_seconds | number | 300 | Timeout in seconds (parallel only) |
+| timeout_seconds | number | agent-configured (default 900s, max 7200s) | Execution timeout in seconds (parallel only). If omitted, backend resolves target agent's `execution_timeout_seconds` (TIMEOUT-001). Issue #418 removed the prior hardcoded 600s MCP ceiling. |
 | max_turns | number | null | Max agentic turns for runaway prevention (parallel only) |
 | async | boolean | false | Fire-and-forget mode - return immediately with execution_id (parallel only) |
 
@@ -652,17 +656,25 @@ if result.status == "failed":
         raise HTTPException(status_code=503, ...)
 ```
 
-**MCP Client** (`src/mcp-server/src/client.ts:499-560`):
+**MCP Client** (`src/mcp-server/src/client.ts:511-587`):
 ```typescript
 async task(name: string, message: string, options?: {
   // ... existing options ...
   async_mode?: boolean;  // If true, return immediately with execution_id
 }, sourceAgent?: string) {
-  // Async mode returns immediately; sync mode waits for full execution
-  const timeout = options?.async_mode ? 30 : (options?.timeout_seconds || 600) + 10;
+  // Async mode returns immediately; sync mode waits for full execution.
+  // Issue #418: When timeout_seconds is omitted, backend resolves the target
+  // agent's configured execution_timeout_seconds (TIMEOUT-001, max 7200s).
+  // The HTTP fetch ceiling must cover the platform's max per-agent timeout
+  // plus a buffer, so fetch doesn't abort before the backend finishes.
+  const timeout = options?.async_mode
+    ? 30
+    : (options?.timeout_seconds ?? 7200) + 60;
   // ...
 }
 ```
+
+Note: Previously this ceiling was `(timeout_seconds || 600) + 10`, which capped inter-agent task duration at ~10 minutes and ignored per-agent `execution_timeout_seconds` whenever the caller omitted the parameter. Issue #418 lifted the ceiling to cover the platform max (7200s / 2h) with a 60s buffer.
 
 **MCP Tool** (`src/mcp-server/src/tools/chat.ts:187-195`):
 ```typescript
@@ -796,7 +808,7 @@ for agent in get_all_agents():
 |--------|------------------------|-------------------------|
 | Return time | After task completes | Immediately |
 | Response | Full result with execution_log | execution_id only |
-| HTTP timeout | timeout_seconds + 10 | 30 seconds |
+| HTTP timeout (MCP client → backend) | `timeout_seconds + 60` when explicit; `7200 + 60` (2h + 60s buffer) fallback when omitted (Issue #418) | 30 seconds (unchanged) |
 | Result retrieval | In response | Poll endpoint |
 | Error handling | Exception in response | Poll for error status |
 | Connection held | Yes, for duration | No, released immediately |

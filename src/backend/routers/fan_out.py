@@ -53,7 +53,10 @@ class FanOutRequest(BaseModel):
     """Request model for fan-out parallel task execution."""
     tasks: List[FanOutTask]
     agent: str = "self"
-    timeout_seconds: int = 600
+    # Optional overall fan-out deadline. When None, no outer deadline is
+    # applied — each sub-task is still bounded by the target agent's
+    # configured execution_timeout_seconds (TIMEOUT-001).
+    timeout_seconds: Optional[int] = None
     max_concurrency: int = 3
     policy: str = "best-effort"
     model: Optional[str] = None
@@ -83,7 +86,9 @@ class FanOutRequest(BaseModel):
 
     @field_validator("timeout_seconds")
     @classmethod
-    def validate_timeout(cls, v: int) -> int:
+    def validate_timeout(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return v
         if v < 10 or v > 3600:
             raise ValueError("timeout_seconds must be between 10 and 3600")
         return v
