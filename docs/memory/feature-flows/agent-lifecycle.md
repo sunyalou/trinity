@@ -408,17 +408,26 @@ async def start_agent_internal(agent_name: str) -> dict:
         await recreate_container_with_updated_config(agent_name, container, "system")
         container = get_agent_container(agent_name)
 
+    was_already_running = getattr(container, "status", None) == "running"
     await container_start(container)
 
     # NOTE: Trinity platform instructions are now injected at runtime via
     # --append-system-prompt on every chat/task request (Issue #136).
     # No file-based injection needed on startup.
 
-    # 1. Import credentials from encrypted .credentials.enc file (CRED-002)
-    credentials_result = await inject_assigned_credentials(agent_name)
-
-    # 2. Inject assigned skills from the Skills page
-    skills_result = await inject_assigned_skills(agent_name)
+    # #421: Skip credential/skill injection on an idempotent start against a
+    # container that was already running and did not need recreation — the
+    # workspace volume still carries `.env` and `.claude/skills/`, so the
+    # HTTP injections are redundant and can collide with a busy agent.
+    skip_injection = was_already_running and not needs_recreation
+    if skip_injection:
+        credentials_result = {"status": "skipped", "reason": "container_already_running"}
+        skills_result = {"status": "skipped", "reason": "container_already_running"}
+    else:
+        # 1. Import credentials from encrypted .credentials.enc file (CRED-002)
+        credentials_result = await inject_assigned_credentials(agent_name)
+        # 2. Inject assigned skills from the Skills page
+        skills_result = await inject_assigned_skills(agent_name)
 
     # 3. Inject read-only hooks if enabled
     read_only_result = {"status": "skipped", "reason": "not_enabled"}
@@ -441,6 +450,8 @@ async def start_agent_internal(agent_name: str) -> dict:
 1. **Credentials** (`inject_assigned_credentials`, :68) - CRED-002: Decrypt `.credentials.enc` and write files
 2. **Skills** (`inject_assigned_skills`, :127) - Write skill files to `~/.claude/skills/{name}/SKILL.md`
 3. **Read-Only Hooks** (`inject_read_only_hooks`, :218-230) - If read-only mode enabled
+
+> **Issue #421 Note**: Steps 1 and 2 are skipped when the container was already running AND no recreation was needed. The workspace volume preserves `.env` and `~/.claude/skills/` across restarts, so the HTTP injections would be redundant and previously generated `Credential import attempt N failed: All connection attempts failed` noise when the agent was under load. Recreation (shared folders, auth env vars, resource limits, capabilities, guardrails) still triggers injection because the container is effectively fresh.
 
 > **Issue #136 Note**: Trinity platform instructions (`inject_trinity_meta_prompt`) were removed from the startup sequence. They are now injected at runtime via `--append-system-prompt` on every chat/task request. See `system-wide-trinity-prompt.md`.
 >

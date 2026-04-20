@@ -187,6 +187,7 @@ async def start_agent_internal(agent_name: str) -> dict:
 
     # Check if container needs recreation for shared folders, API key, resource limits, or capabilities
     await container_reload(container)
+    was_already_running = getattr(container, "status", None) == "running"
     shared_folder_match = await check_shared_folder_mounts_match(container, agent_name)
     needs_recreation = (
         not shared_folder_match or
@@ -209,13 +210,32 @@ async def start_agent_internal(agent_name: str) -> dict:
     # --append-system-prompt on every chat/task request (Issue #136).
     # No file-based injection needed on startup.
 
-    # Inject assigned credentials from the Credentials page
-    credentials_result = await inject_assigned_credentials(agent_name)
-    credentials_status = credentials_result.get("status", "unknown")
+    # Skip credential/skill injection when the container was already running
+    # and we didn't recreate it (#421). The workspace volume persists `.env`
+    # and `.claude/skills/` across container starts, so re-injection on an
+    # idempotent start is redundant and generates connection-error noise when
+    # the agent is under load and can't accept new HTTP connections.
+    skip_injection = was_already_running and not needs_recreation
 
-    # Inject assigned skills from the Skills page
-    skills_result = await inject_assigned_skills(agent_name)
-    skills_status = skills_result.get("status", "unknown")
+    if skip_injection:
+        credentials_result = {
+            "status": "skipped",
+            "reason": "container_already_running",
+        }
+        credentials_status = "skipped"
+        skills_result = {
+            "status": "skipped",
+            "reason": "container_already_running",
+        }
+        skills_status = "skipped"
+    else:
+        # Inject assigned credentials from the Credentials page
+        credentials_result = await inject_assigned_credentials(agent_name)
+        credentials_status = credentials_result.get("status", "unknown")
+
+        # Inject assigned skills from the Skills page
+        skills_result = await inject_assigned_skills(agent_name)
+        skills_status = skills_result.get("status", "unknown")
 
     # Inject read-only hooks if enabled
     read_only_result = {"status": "skipped", "reason": "not_enabled"}
