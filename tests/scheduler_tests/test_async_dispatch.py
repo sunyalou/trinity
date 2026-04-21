@@ -164,6 +164,7 @@ class TestDBPolling:
 
         with patch("scheduler.service.config") as mock_config:
             mock_config.poll_interval = 0.01  # Fast polling for tests
+            mock_config.poll_deadline_buffer = 60
 
             result = await service._poll_execution_completion(
                 execution_id=execution.id,
@@ -199,6 +200,7 @@ class TestDBPolling:
 
         with patch("scheduler.service.config") as mock_config:
             mock_config.poll_interval = 0.01
+            mock_config.poll_deadline_buffer = 60
 
             result = await service._poll_execution_completion(
                 execution_id=execution.id,
@@ -244,6 +246,7 @@ class TestDBPolling:
         with patch.object(db_with_data, "get_execution", side_effect=get_execution_with_delay), \
              patch("scheduler.service.config") as mock_config:
             mock_config.poll_interval = 0.01
+            mock_config.poll_deadline_buffer = 60
 
             result = await service._poll_execution_completion(
                 execution_id=execution.id,
@@ -275,11 +278,12 @@ class TestDBPolling:
 
         with patch("scheduler.service.config") as mock_config:
             mock_config.poll_interval = 0.01
+            mock_config.poll_deadline_buffer = 0  # disable grace buffer (#415)
 
             with pytest.raises(Exception, match="Polling deadline exceeded"):
                 await service._poll_execution_completion(
                     execution_id=execution.id,
-                    timeout_seconds=0,  # Immediate deadline (0 + 60s buffer is tiny with 0.01s poll)
+                    timeout_seconds=0,  # Immediate deadline with buffer=0
                 )
 
 
@@ -588,6 +592,7 @@ class TestFireAndForget:
         with patch("httpx.AsyncClient") as mock_client_cls, \
              patch("scheduler.service.config") as mock_config:
             mock_config.poll_interval = 0.01
+            mock_config.poll_deadline_buffer = 60
             mock_client = AsyncMock()
             mock_client.post.return_value = mock_response
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)

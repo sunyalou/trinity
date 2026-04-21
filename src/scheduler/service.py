@@ -942,8 +942,8 @@ class SchedulerService:
         Raises:
             Exception if polling deadline exceeded.
         """
-        # Deadline = task timeout + 60s buffer for slot acquisition and cleanup
-        deadline = time.monotonic() + float(timeout_seconds) + 60
+        # Deadline = task timeout + grace buffer for slot acquisition and cleanup
+        deadline = time.monotonic() + float(timeout_seconds) + config.poll_deadline_buffer
         poll_count = 0
 
         while time.monotonic() < deadline:

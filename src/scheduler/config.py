@@ -57,6 +57,12 @@ class SchedulerConfig:
         "POLL_INTERVAL", "10"
     )))  # seconds between DB polls while waiting for task completion
 
+    # Grace seconds added to task timeout for slot acquisition + finalize.
+    # Extracted from a literal so tests can override via config patching (#415).
+    poll_deadline_buffer: float = field(default_factory=lambda: float(os.getenv(
+        "POLL_DEADLINE_BUFFER", "60"
+    )))
+
     # Misfire grace time — how long after a missed trigger APScheduler will
     # still execute the job.  Default 30s is far too low for weekly cron jobs
     # whose container may restart.  3600s (1 hour) gives ample runway.
