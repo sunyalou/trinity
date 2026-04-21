@@ -11,6 +11,7 @@ from typing import Optional, List
 
 from .connection import get_db_connection
 from db_models import SharedFolderConfig
+from utils.helpers import utc_now_iso
 
 
 class SharedFolderOperations:
@@ -65,7 +66,7 @@ class SharedFolderOperations:
         Only updates the fields that are provided (not None).
         Returns the updated configuration.
         """
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()

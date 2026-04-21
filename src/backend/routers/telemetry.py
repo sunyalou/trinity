@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from dependencies import get_current_user
 from models import User
 from services.docker_service import docker_client, list_all_agents_fast
+from utils.helpers import utc_now_iso
 
 # Module-level executor for Docker operations (blocking calls)
 # Limited to 4 workers to avoid overwhelming Docker daemon
@@ -62,7 +63,7 @@ async def get_host_stats(current_user: User = Depends(get_current_user)):
                 "used_gb": round(disk.used / (1024**3), 1),
                 "total_gb": round(disk.total / (1024**3), 1)
             },
-            "timestamp": datetime.utcnow().isoformat() + "Z"
+            "timestamp": utc_now_iso()
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting host stats: {str(e)}")
@@ -134,7 +135,7 @@ async def get_container_stats(current_user: User = Depends(get_current_user)):
                 "total_cpu_percent": 0,
                 "total_memory_mb": 0,
                 "containers": [],
-                "timestamp": datetime.utcnow().isoformat() + "Z"
+                "timestamp": utc_now_iso()
             }
 
         # Fetch all container stats in PARALLEL using thread pool
@@ -168,7 +169,7 @@ async def get_container_stats(current_user: User = Depends(get_current_user)):
             "total_cpu_percent": round(total_cpu_percent, 1),
             "total_memory_mb": round(total_memory_mb, 1),
             "containers": sorted(processed_stats, key=lambda x: x.get('cpu', 0), reverse=True),
-            "timestamp": datetime.utcnow().isoformat() + "Z"
+            "timestamp": utc_now_iso()
         }
 
     except Exception as e:

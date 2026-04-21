@@ -42,6 +42,7 @@ Migration Order (as of 2026-02-28):
 import logging
 import sqlite3
 from datetime import datetime, timezone
+from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -513,7 +514,7 @@ def _migrate_setup_completed_backfill(cursor, conn):
         cursor.execute("""
             INSERT OR REPLACE INTO system_settings (key, value, updated_at)
             VALUES ('setup_completed', 'true', ?)
-        """, (datetime.utcnow().isoformat(),))
+        """, (utc_now_iso(),))
         conn.commit()
         print("Setup marked as completed.")
 

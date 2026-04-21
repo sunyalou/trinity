@@ -96,6 +96,7 @@ from db_models import (
 
 # Re-export connection utilities
 from db.connection import get_db_connection, DB_PATH
+from utils.helpers import utc_now_iso
 
 # Import schema and migration utilities
 from db.migrations import run_all_migrations
@@ -190,7 +191,7 @@ def _ensure_admin_user(cursor, conn):
             print("         Set ADMIN_PASSWORD environment variable to create admin user")
             return
 
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         # Hash password using bcrypt
         from passlib.context import CryptContext
         pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -230,7 +231,7 @@ def _ensure_admin_user(cursor, conn):
             cursor.execute("""
                 UPDATE users SET password_hash = ?, updated_at = ?
                 WHERE username = ?
-            """, (hashed, datetime.utcnow().isoformat(), admin_username))
+            """, (hashed, utc_now_iso(), admin_username))
             conn.commit()
 
 

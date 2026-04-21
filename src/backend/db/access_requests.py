@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from .connection import get_db_connection
+from utils.helpers import utc_now_iso
 
 
 class AccessRequestOperations:
@@ -43,7 +44,7 @@ class AccessRequestOperations:
         anyway (e.g. share removed), we reset to pending so the owner sees it.
         """
         email = email.lower()
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         rid = secrets.token_urlsafe(16)
 
         with get_db_connection() as conn:
@@ -124,7 +125,7 @@ class AccessRequestOperations:
         decided_by_user_id: int,
     ) -> Optional[dict]:
         """Mark a request approved or denied. Returns updated row."""
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         new_status = "approved" if approve else "denied"
         with get_db_connection() as conn:
             cursor = conn.cursor()

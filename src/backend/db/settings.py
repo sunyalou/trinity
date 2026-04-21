@@ -10,6 +10,7 @@ from typing import Optional, List, Dict, Any
 
 from .connection import get_db_connection
 from db_models import SystemSetting
+from utils.helpers import utc_now_iso
 
 
 class SettingsOperations:
@@ -64,7 +65,7 @@ class SettingsOperations:
         Creates the setting if it doesn't exist, updates if it does.
         Returns the updated setting.
         """
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()

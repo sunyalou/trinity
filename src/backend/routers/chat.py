@@ -30,6 +30,7 @@ from services.platform_prompt_service import (
     get_platform_system_prompt,
     is_execution_context_enabled,
 )
+from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ async def broadcast_collaboration_event(source_agent: str, target_agent: str, ac
             "source_agent": source_agent,
             "target_agent": target_agent,
             "action": action,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": utc_now_iso()
         }
         await _websocket_manager.broadcast(json.dumps(event))
     else:
@@ -618,7 +619,7 @@ async def _run_async_task_with_persistence(
                     "execution_id": execution_id,
                     "agent_name": agent_name,
                     "chat_session_id": chat_session_id,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": utc_now_iso(),
                 }))
             except Exception as e:
                 logger.warning(f"[Task Async] chat_response_ready broadcast failed: {e}")
@@ -702,7 +703,7 @@ async def _run_async_task_with_persistence(
                     "activity_type": "self_task",
                     "activity_state": "completed" if result.status == TaskExecutionStatus.SUCCESS else "failed",
                     "action": f"Background task completed",
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": utc_now_iso(),
                     "details": {
                         "execution_id": execution_id,
                         "chat_session_id": request.chat_session_id,
@@ -831,7 +832,7 @@ async def execute_parallel_task(
                     "activity_type": "self_task",
                     "activity_state": "started",
                     "action": f"Background task: {request.message[:50]}...",
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": utc_now_iso(),
                     "details": {
                         "execution_id": execution_id,
                         "chat_session_id": request.chat_session_id,

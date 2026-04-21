@@ -66,6 +66,7 @@ from services.agent_service import (
     # Autonomy (global view)
     get_all_autonomy_status_logic,
 )
+from utils.helpers import utc_now_iso
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -266,7 +267,7 @@ async def get_all_agent_slots(
 
     return BulkSlotState(
         agents=slot_states,
-        timestamp=datetime.utcnow().isoformat() + "Z"
+        timestamp=utc_now_iso()
     )
 
 

@@ -12,6 +12,7 @@ from datetime import datetime
 
 from db.connection import get_db_connection
 from db_models import SystemView, SystemViewCreate, SystemViewUpdate
+from utils.helpers import utc_now_iso
 
 
 class SystemViewOperations:
@@ -29,7 +30,7 @@ class SystemViewOperations:
             The created SystemView
         """
         view_id = f"sv_{secrets.token_urlsafe(12)}"
-        now = datetime.utcnow().isoformat() + "Z"
+        now = utc_now_iso()
 
         # Normalize and validate tags
         filter_tags = sorted(set(t.lower().strip() for t in data.filter_tags if t.strip()))
@@ -169,7 +170,7 @@ class SystemViewOperations:
             return self.get_view(view_id)
 
         updates.append("updated_at = ?")
-        params.append(datetime.utcnow().isoformat() + "Z")
+        params.append(utc_now_iso())
         params.append(view_id)
 
         with get_db_connection() as conn:

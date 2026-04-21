@@ -31,7 +31,7 @@ from services.template_service import (
 from services import git_service
 from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities, get_agent_quota_for_role
 from services.github_service import GitHubService, GitHubError
-from utils.helpers import sanitize_agent_name
+from utils.helpers import sanitize_agent_name, utc_now_iso
 from .helpers import validate_base_image
 from .lifecycle import RESTRICTED_CAPABILITIES, FULL_CAPABILITIES
 
@@ -558,7 +558,7 @@ async def create_agent_internal(
                     'trinity.ssh-port': str(config.port),
                     'trinity.cpu': config.resources['cpu'],
                     'trinity.memory': config.resources['memory'],
-                    'trinity.created': datetime.now().isoformat(),
+                    'trinity.created': utc_now_iso(),
                     'trinity.template': config.template or '',
                     'trinity.agent-runtime': config.runtime or 'claude-code',
                     'trinity.full-capabilities': str(full_capabilities).lower(),

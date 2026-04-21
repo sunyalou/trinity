@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from db.connection import get_db_connection
+from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class SlackChannelOperations:
     ) -> dict:
         """Create or update a workspace connection. Bot token is encrypted at rest."""
         workspace_id = secrets.token_urlsafe(16)
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         encrypted_token = self._encrypt_token(bot_token)
 
         with get_db_connection() as conn:
@@ -145,7 +146,7 @@ class SlackChannelOperations:
     ) -> dict:
         """Bind a Slack channel to an agent."""
         binding_id = secrets.token_urlsafe(16)
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -278,7 +279,7 @@ class SlackChannelOperations:
         agent_name: str,
     ) -> None:
         """Record that the bot responded in a thread (enables reply-without-mention)."""
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""

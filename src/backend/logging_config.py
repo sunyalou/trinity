@@ -9,6 +9,7 @@ import json
 from datetime import datetime
 
 from opentelemetry import trace
+from utils.helpers import utc_now_iso
 
 
 class JsonFormatter(logging.Formatter):
@@ -16,7 +17,7 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record):
         log_entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": utc_now_iso(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),

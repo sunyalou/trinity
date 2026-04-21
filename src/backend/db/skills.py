@@ -12,6 +12,7 @@ from typing import List, Optional
 
 from .connection import get_db_connection
 from db_models import AgentSkill
+from utils.helpers import utc_now_iso
 
 
 class SkillsOperations:
@@ -89,7 +90,7 @@ class SkillsOperations:
         Returns:
             AgentSkill object if created, None if already exists
         """
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -150,7 +151,7 @@ class SkillsOperations:
         Returns:
             Number of skills assigned
         """
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()

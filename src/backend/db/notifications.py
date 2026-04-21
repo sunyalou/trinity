@@ -12,6 +12,7 @@ from datetime import datetime
 
 from db.connection import get_db_connection
 from db_models import Notification, NotificationCreate
+from utils.helpers import utc_now_iso
 
 
 class NotificationOperations:
@@ -33,7 +34,7 @@ class NotificationOperations:
             The created notification
         """
         notification_id = f"notif_{secrets.token_urlsafe(12)}"
-        now = datetime.utcnow().isoformat() + "Z"
+        now = utc_now_iso()
 
         # Serialize metadata to JSON if provided
         metadata_json = json.dumps(data.metadata) if data.metadata else None
@@ -195,7 +196,7 @@ class NotificationOperations:
         Returns:
             The updated notification or None if not found
         """
-        now = datetime.utcnow().isoformat() + "Z"
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -234,7 +235,7 @@ class NotificationOperations:
         Returns:
             The updated notification or None if not found
         """
-        now = datetime.utcnow().isoformat() + "Z"
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()

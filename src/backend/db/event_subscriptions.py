@@ -12,6 +12,7 @@ from datetime import datetime
 
 from db.connection import get_db_connection
 from db_models import EventSubscription, EventSubscriptionCreate, AgentEvent
+from utils.helpers import utc_now_iso
 
 
 class EventSubscriptionOperations:
@@ -29,7 +30,7 @@ class EventSubscriptionOperations:
     ) -> EventSubscription:
         """Create a new event subscription."""
         sub_id = f"esub_{secrets.token_urlsafe(12)}"
-        now = datetime.utcnow().isoformat() + "Z"
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -142,7 +143,7 @@ class EventSubscriptionOperations:
         if not updates:
             return self.get_subscription(subscription_id)
 
-        now = datetime.utcnow().isoformat() + "Z"
+        now = utc_now_iso()
         updates.append("updated_at = ?")
         params.append(now)
         params.append(subscription_id)
@@ -217,7 +218,7 @@ class EventSubscriptionOperations:
     ) -> AgentEvent:
         """Persist an emitted event."""
         event_id = f"evt_{secrets.token_urlsafe(12)}"
-        now = datetime.utcnow().isoformat() + "Z"
+        now = utc_now_iso()
         payload_json = json.dumps(payload) if payload else None
 
         with get_db_connection() as conn:

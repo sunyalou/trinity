@@ -15,6 +15,7 @@ from typing import Optional, List, Dict, Any
 
 from .connection import get_db_connection
 from db_models import SubscriptionCredential, SubscriptionUsage, SubscriptionUsageWindow, SubscriptionWithAgents
+from utils.helpers import utc_now_iso
 
 
 class SubscriptionOperations:
@@ -91,7 +92,7 @@ class SubscriptionOperations:
         encryption_service = self._get_encryption_service()
         encrypted = encryption_service.encrypt({"token": token})
 
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -482,7 +483,7 @@ class SubscriptionOperations:
         Returns the count of consecutive rate-limit events for this pair
         (events within the last 2 hours, no successful execution in between).
         """
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         event_id = str(uuid.uuid4())
 
         with get_db_connection() as conn:

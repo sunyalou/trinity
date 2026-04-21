@@ -11,6 +11,7 @@ from typing import Optional, List
 
 from .connection import get_db_connection
 from db_models import NeverminedConfig, NeverminedPaymentLog
+from utils.helpers import utc_now_iso
 
 
 class NeverminedOperations:
@@ -76,7 +77,7 @@ class NeverminedOperations:
         """Create or update Nevermined config for an agent. Encrypts the API key."""
         encryption_service = self._get_encryption_service()
         encrypted = encryption_service.encrypt({"nvm_api_key": nvm_api_key})
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -163,7 +164,7 @@ class NeverminedOperations:
 
     def set_enabled(self, agent_name: str, enabled: bool) -> bool:
         """Enable or disable Nevermined payments for an agent."""
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -203,7 +204,7 @@ class NeverminedOperations:
     ) -> NeverminedPaymentLog:
         """Log a payment action (verify, settle, settle_failed, reject)."""
         log_id = str(uuid.uuid4())
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()

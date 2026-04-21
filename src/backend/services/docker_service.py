@@ -2,9 +2,9 @@
 Docker service for managing agent containers.
 """
 from typing import List, Optional
-from datetime import datetime
 import docker
 from models import AgentStatus
+from utils.helpers import parse_iso_timestamp, utc_now
 
 
 # Initialize Docker client
@@ -73,7 +73,7 @@ def get_agent_status_from_container(container) -> AgentStatus:
         type=labels.get("trinity.agent-type", "unknown"),
         status=normalized_status,
         port=int(labels.get("trinity.ssh-port", "0")),
-        created=datetime.fromisoformat(labels.get("trinity.created", datetime.now().isoformat())),
+        created=parse_iso_timestamp(labels["trinity.created"]) if labels.get("trinity.created") else utc_now(),
         resources={
             "cpu": labels.get("trinity.cpu", "2"),
             "memory": labels.get("trinity.memory", "4g")
@@ -144,7 +144,7 @@ def list_all_agents_fast() -> List[AgentStatus]:
                 type=labels.get("trinity.agent-type", "unknown"),
                 status=normalized_status,
                 port=int(labels.get("trinity.ssh-port", "0")),
-                created=datetime.fromisoformat(labels.get("trinity.created", datetime.now().isoformat())),
+                created=parse_iso_timestamp(labels["trinity.created"]) if labels.get("trinity.created") else utc_now(),
                 resources={
                     "cpu": labels.get("trinity.cpu", "2"),
                     "memory": labels.get("trinity.memory", "4g")

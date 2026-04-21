@@ -13,6 +13,7 @@ from typing import Optional, List
 
 from .connection import get_db_connection
 from db_models import PublicChatSession, PublicChatMessage
+from utils.helpers import utc_now_iso
 
 # Header injected into every public chat request so agents know they're serving a public user
 PUBLIC_LINK_MODE_HEADER = "### Trinity: Public Link Access Mode"
@@ -82,7 +83,7 @@ class PublicChatOperations:
 
             # Create new session
             session_id = secrets.token_urlsafe(16)
-            now = datetime.utcnow().isoformat()
+            now = utc_now_iso()
 
             cursor.execute("""
                 INSERT INTO public_chat_sessions (
@@ -147,7 +148,7 @@ class PublicChatOperations:
 
             # Create message
             message_id = secrets.token_urlsafe(16)
-            now = datetime.utcnow().isoformat()
+            now = utc_now_iso()
 
             cursor.execute("""
                 INSERT INTO public_chat_messages (

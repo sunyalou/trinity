@@ -36,6 +36,7 @@ import secrets
 from datetime import datetime
 from croniter import croniter
 import pytz
+from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -795,7 +796,7 @@ def _register_process_schedules(definition: ProcessDefinition) -> int:
             )
         """)
 
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         for trigger in schedule_triggers:
             if not trigger.enabled:

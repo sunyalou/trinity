@@ -24,6 +24,7 @@ from ..domain.events import (
     CompensationFailed,
 )
 from ..events.bus import EventBus
+from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ class WebSocketEventPublisher:
         message = {
             "type": "process_event",
             "event_type": event_type,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now_iso(),
         }
 
         # Add event-specific data

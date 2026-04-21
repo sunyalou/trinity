@@ -24,6 +24,7 @@ from services.docker_service import get_agent_container, docker_client, list_all
 from services.docker_utils import container_stop, container_start
 from services.agent_client import get_agent_client
 from db.agents import SYSTEM_AGENT_NAME
+from utils.helpers import utc_now_iso
 
 router = APIRouter(prefix="/api/ops", tags=["operations"])
 logger = logging.getLogger(__name__)
@@ -106,7 +107,7 @@ async def get_fleet_status(
     )
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utc_now_iso(),
         "summary": {
             "total": total,
             "running": running,
@@ -210,7 +211,7 @@ async def get_fleet_health(
         overall = "healthy"
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utc_now_iso(),
         "overall": overall,
         "critical_issues": critical_issues,
         "warnings": warnings,
@@ -317,7 +318,7 @@ async def restart_fleet(
             failures += 1
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utc_now_iso(),
         "summary": {
             "total": len(agents),
             "successes": successes,
@@ -410,7 +411,7 @@ async def stop_fleet(
             failures += 1
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utc_now_iso(),
         "summary": {
             "total": len(agents),
             "successes": successes,
@@ -487,7 +488,7 @@ async def list_all_schedules(
     agents_with_schedules = len(set(s.agent_name for s in schedules))
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utc_now_iso(),
         "summary": {
             "total": total,
             "enabled": enabled,
@@ -710,7 +711,7 @@ async def list_alerts(
     # For now, return placeholder - check fleet health for issues
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utc_now_iso(),
         "alerts": [],
         "message": "Alerts feature coming soon. Check fleet health for current issues."
     }
@@ -785,7 +786,7 @@ async def get_ops_costs(
                     "enabled": True,
                     "available": False,
                     "error": f"OTel Collector returned status {response.status_code}",
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": utc_now_iso()
                 }
 
             # Parse Prometheus metrics
@@ -831,7 +832,7 @@ async def get_ops_costs(
             result = {
                 "enabled": True,
                 "available": True,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": utc_now_iso(),
 
                 # Summary
                 "summary": {
@@ -869,14 +870,14 @@ async def get_ops_costs(
             "enabled": True,
             "available": False,
             "error": "Cannot connect to OTel Collector. Is it running?",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": utc_now_iso()
         }
     except httpx.TimeoutException:
         return {
             "enabled": True,
             "available": False,
             "error": "OTel Collector request timed out",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": utc_now_iso()
         }
     except Exception as e:
         logger.error(f"Failed to fetch cost metrics: {e}")
@@ -884,7 +885,7 @@ async def get_ops_costs(
             "enabled": True,
             "available": False,
             "error": f"Failed to fetch metrics: {str(e)}",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": utc_now_iso()
         }
 
 
@@ -995,7 +996,7 @@ async def get_auth_report(
     ]
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utc_now_iso(),
         "summary": {
             "total_agents": len(agents) - len([a for a in agents if db.get_agent_owner(a.name) and db.get_agent_owner(a.name).get("is_system")]),
             "using_subscription": len(subscription_agents),

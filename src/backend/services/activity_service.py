@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Callable, Any
 from datetime import datetime
 from models import ActivityType, ActivityState, ActivityCreate
 from database import db
+from utils.helpers import utc_now_iso
 
 
 class ActivityService:
@@ -189,7 +190,7 @@ class ActivityService:
             "activity_type": activity_type,
             "activity_state": activity_state,
             "action": action,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now_iso(),
             "details": details or {},
             "error": error
         }

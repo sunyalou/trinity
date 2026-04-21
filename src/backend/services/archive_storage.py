@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 from datetime import datetime
+from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,7 @@ class LocalArchiveStorage(ArchiveStorage):
                 "storage_type": "local",
                 "path": str(dest_path),
                 "size": file_size,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": utc_now_iso(),
             }
 
         except Exception as e:

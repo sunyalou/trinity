@@ -11,6 +11,7 @@ from datetime import datetime
 
 from db.connection import get_db_connection
 from db_models import AgentTagList, TagWithCount
+from utils.helpers import utc_now_iso
 
 
 class TagOperations:
@@ -50,7 +51,7 @@ class TagOperations:
             )
 
             # Insert new tags
-            now = datetime.utcnow().isoformat() + "Z"
+            now = utc_now_iso()
             for tag in normalized:
                 cursor.execute(
                     "INSERT INTO agent_tags (agent_name, tag, created_at) VALUES (?, ?, ?)",
@@ -77,7 +78,7 @@ class TagOperations:
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            now = datetime.utcnow().isoformat() + "Z"
+            now = utc_now_iso()
 
             # Use INSERT OR IGNORE to handle duplicates
             cursor.execute(

@@ -10,6 +10,7 @@ from typing import Optional, List
 
 from .connection import get_db_connection
 from db_models import ChatSession, ChatMessage
+from utils.helpers import utc_now_iso
 
 
 class ChatOperations:
@@ -85,7 +86,7 @@ class ChatOperations:
 
             # Create a new session
             session_id = secrets.token_urlsafe(16)
-            now = datetime.utcnow().isoformat()
+            now = utc_now_iso()
 
             cursor.execute("""
                 INSERT INTO chat_sessions (
@@ -125,7 +126,7 @@ class ChatOperations:
 
             # Create message
             message_id = secrets.token_urlsafe(16)
-            now = datetime.utcnow().isoformat()
+            now = utc_now_iso()
 
             cursor.execute("""
                 INSERT INTO chat_messages (
@@ -272,7 +273,7 @@ class ChatOperations:
 
             # Create a new session
             session_id = secrets.token_urlsafe(16)
-            now = datetime.utcnow().isoformat()
+            now = utc_now_iso()
 
             cursor.execute("""
                 INSERT INTO chat_sessions (

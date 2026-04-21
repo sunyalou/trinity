@@ -27,6 +27,7 @@ from .agent_settings import (
     AccessPolicyMixin,
     GitPATMixin,
 )
+from utils.helpers import utc_now_iso
 
 # System agent name constant
 SYSTEM_AGENT_NAME = "trinity-system"
@@ -74,7 +75,7 @@ class AgentOperations(
                 cursor.execute("""
                     INSERT INTO agent_ownership (agent_name, owner_id, created_at, is_system)
                     VALUES (?, ?, ?, ?)
-                """, (agent_name, user["id"], datetime.utcnow().isoformat(), 1 if is_system else 0))
+                """, (agent_name, user["id"], utc_now_iso(), 1 if is_system else 0))
                 conn.commit()
                 return True
             except sqlite3.IntegrityError:

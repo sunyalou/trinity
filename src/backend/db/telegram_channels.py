@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from db.connection import get_db_connection
+from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ class TelegramChannelOperations:
         """Create or update a Telegram bot binding for an agent."""
         webhook_secret = secrets.token_urlsafe(32)
         telegram_secret_token = secrets.token_urlsafe(32)
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         encrypted_token = self._encrypt_token(bot_token)
 
         with get_db_connection() as conn:
@@ -152,7 +153,7 @@ class TelegramChannelOperations:
 
     def update_webhook_url(self, agent_name: str, webhook_url: str) -> None:
         """Update the registered webhook URL for a binding."""
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -223,7 +224,7 @@ class TelegramChannelOperations:
             if row:
                 return self._row_to_chat_link(row)
 
-            now = datetime.utcnow().isoformat()
+            now = utc_now_iso()
             cursor.execute("""
                 INSERT INTO telegram_chat_links
                 (binding_id, telegram_user_id, telegram_username, message_count, created_at, last_active)
@@ -278,7 +279,7 @@ class TelegramChannelOperations:
         email: str,
     ) -> bool:
         """Persist a verified email onto the chat link (auto-creates the row)."""
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         email = email.lower()
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -345,7 +346,7 @@ class TelegramChannelOperations:
 
     def increment_message_count(self, chat_link_id: int) -> None:
         """Increment message count and update last_active."""
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -367,7 +368,7 @@ class TelegramChannelOperations:
         chat_type: str = "group",
     ) -> dict:
         """Get or create a group config. Auto-creates on first interaction."""
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -464,7 +465,7 @@ class TelegramChannelOperations:
         welcome_text: Optional[str] = None,
     ) -> Optional[dict]:
         """Update group config settings."""
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         with get_db_connection() as conn:
             cursor = conn.cursor()
             updates = ["updated_at = ?"]
@@ -501,7 +502,7 @@ class TelegramChannelOperations:
 
     def deactivate_group_config(self, binding_id: int, chat_id: str) -> bool:
         """Mark a group config as inactive (bot removed from group)."""
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -555,7 +556,7 @@ class TelegramChannelOperations:
 
     def set_group_verified(self, binding_id: int, chat_id: str, email: str) -> bool:
         """Mark a group as verified by the given email."""
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -568,7 +569,7 @@ class TelegramChannelOperations:
 
     def clear_group_verification(self, binding_id: int, chat_id: str) -> bool:
         """Clear verification status for a group (e.g., when verified user leaves)."""
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""

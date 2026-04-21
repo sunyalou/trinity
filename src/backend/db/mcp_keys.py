@@ -12,6 +12,7 @@ from typing import Optional, List, Dict
 
 from .connection import get_db_connection
 from db_models import McpApiKey, McpApiKeyCreate, McpApiKeyWithSecret
+from utils.helpers import utc_now_iso
 
 
 class McpKeyOperations:
@@ -69,7 +70,7 @@ class McpKeyOperations:
         key_id = self._generate_id()
         api_key = self._generate_mcp_api_key()
         key_hash = self._hash_api_key(api_key)
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -123,7 +124,7 @@ class McpKeyOperations:
         key_id = self._generate_id()
         api_key = self._generate_mcp_api_key()
         key_hash = self._hash_api_key(api_key)
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         key_name = f"agent-{agent_name}-key"
 
         with get_db_connection() as conn:
@@ -217,7 +218,7 @@ class McpKeyOperations:
                 return None
 
             # Update usage statistics
-            now = datetime.utcnow().isoformat()
+            now = utc_now_iso()
             cursor.execute("""
                 UPDATE mcp_api_keys
                 SET last_used_at = ?, usage_count = usage_count + 1

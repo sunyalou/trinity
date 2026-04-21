@@ -27,6 +27,7 @@ from config import CORS_ORIGINS, VOICE_ENABLED, GEMINI_API_KEY
 from models import User
 from dependencies import get_current_user
 from services.docker_service import docker_client, list_all_agents_fast
+from utils.helpers import utc_now_iso
 
 # OpenTelemetry imports for distributed tracing (RELIABILITY-002)
 from opentelemetry import trace
@@ -757,7 +758,7 @@ async def health_check():
             status_code=503,
             content={
                 "status": "unhealthy",
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": utc_now_iso(),
                 "migrations": {"applied": applied, "expected": expected},
             },
         )

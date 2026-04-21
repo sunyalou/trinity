@@ -28,6 +28,7 @@ from ..domain.events import (
     ApprovalRequested,
 )
 from ..events.bus import EventBus
+from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ class WebhookEventPublisher:
         # Build base payload
         payload = {
             "event_type": event_type,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": utc_now_iso(),
         }
 
         # Add event-specific data

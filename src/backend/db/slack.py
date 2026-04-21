@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 
 from db.connection import get_db_connection
+from utils.helpers import utc_now_iso
 
 
 class SlackOperations:
@@ -31,7 +32,7 @@ class SlackOperations:
     ) -> dict:
         """Create a new Slack connection for a public link."""
         connection_id = secrets.token_urlsafe(16)
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -219,7 +220,7 @@ class SlackOperations:
     ) -> dict:
         """Create a user verification record."""
         verification_id = secrets.token_urlsafe(16)
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -251,7 +252,7 @@ class SlackOperations:
                 FROM slack_pending_verifications
                 WHERE slack_user_id = ? AND slack_team_id = ?
                 AND expires_at > ?
-            """, (slack_user_id, slack_team_id, datetime.utcnow().isoformat()))
+            """, (slack_user_id, slack_team_id, utc_now_iso()))
             row = cursor.fetchone()
 
         if not row:
@@ -351,7 +352,7 @@ class SlackOperations:
             cursor.execute("""
                 DELETE FROM slack_pending_verifications
                 WHERE expires_at < ?
-            """, (datetime.utcnow().isoformat(),))
+            """, (utc_now_iso(),))
             conn.commit()
             return cursor.rowcount
 

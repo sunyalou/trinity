@@ -24,6 +24,7 @@ import redis
 import time
 
 from dataclasses import dataclass
+from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,7 @@ class SlotService:
         metadata_key = self._metadata_key(agent_name, execution_id)
         slot_number = current_count + 1  # Assign next available slot number
         self.redis.hset(metadata_key, mapping={
-            "started_at": datetime.utcnow().isoformat(),
+            "started_at": utc_now_iso(),
             "message_preview": message_preview[:100] if message_preview else "",
             "slot_number": str(slot_number),
             "timeout_seconds": str(timeout_seconds)

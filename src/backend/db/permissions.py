@@ -11,6 +11,7 @@ from typing import Optional, List
 
 from .connection import get_db_connection
 from db_models import AgentPermission
+from utils.helpers import utc_now_iso
 
 
 class PermissionOperations:
@@ -122,7 +123,7 @@ class PermissionOperations:
 
         Returns the created permission or None if it already exists.
         """
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -168,7 +169,7 @@ class PermissionOperations:
         """
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            now = datetime.utcnow().isoformat()
+            now = utc_now_iso()
 
             # Remove all existing permissions for this source
             cursor.execute("""

@@ -9,6 +9,7 @@ from typing import Optional, Dict, List, Any
 
 from .connection import get_db_connection
 from db_models import UserCreate
+from utils.helpers import utc_now_iso
 
 
 class UserOperations:
@@ -64,7 +65,7 @@ class UserOperations:
 
     def create_user(self, user_data: UserCreate) -> Dict:
         """Create a new user."""
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -116,7 +117,7 @@ class UserOperations:
                 return self.get_user_by_username(username)
 
             set_clauses.append("updated_at = ?")
-            params.append(datetime.utcnow().isoformat())
+            params.append(utc_now_iso())
             params.append(username)
 
             cursor.execute(f"""
@@ -141,7 +142,7 @@ class UserOperations:
         """
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            now = datetime.utcnow().isoformat()
+            now = utc_now_iso()
 
             # Try to update existing user
             cursor.execute("""
@@ -164,7 +165,7 @@ class UserOperations:
         """Update user's last login timestamp."""
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            now = datetime.utcnow().isoformat()
+            now = utc_now_iso()
             cursor.execute("""
                 UPDATE users SET last_login = ?, updated_at = ? WHERE username = ?
             """, (now, now, username))
@@ -195,7 +196,7 @@ class UserOperations:
                 cursor.execute("""
                     UPDATE users SET auth0_sub = ?, name = ?, picture = ?, updated_at = ?
                     WHERE username = ?
-                """, (auth0_sub, name, picture, datetime.utcnow().isoformat(), email))
+                """, (auth0_sub, name, picture, utc_now_iso(), email))
                 conn.commit()
             return self.get_user_by_username(email)
 
@@ -231,7 +232,7 @@ class UserOperations:
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE users SET role = ?, updated_at = ? WHERE username = ?
-            """, (role, datetime.now().isoformat(), username))
+            """, (role, utc_now_iso(), username))
             conn.commit()
             if cursor.rowcount == 0:
                 return None

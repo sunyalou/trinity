@@ -23,6 +23,7 @@ from services.docker_service import (
 from services.docker_utils import container_reload, container_start, containers_run
 from services.settings_service import get_anthropic_api_key
 from services.agent_service.lifecycle import FULL_CAPABILITIES
+from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +223,7 @@ class SystemAgentService:
             'trinity.ssh-port': str(ssh_port),  # Required for port tracking
             'trinity.cpu': str(resources.get('cpu', '4')),
             'trinity.memory': resources.get('memory', '8g'),
-            'trinity.created': datetime.utcnow().isoformat(),
+            'trinity.created': utc_now_iso(),
             'trinity.template': SYSTEM_AGENT_TEMPLATE,
             'trinity.is-system': 'true',  # Mark as system agent
         }

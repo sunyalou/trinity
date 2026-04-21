@@ -10,6 +10,7 @@ from typing import Optional, List
 
 from db.connection import get_db_connection
 from db_models import AgentShare
+from utils.helpers import utc_now_iso
 
 
 class SharingMixin:
@@ -49,7 +50,7 @@ class SharingMixin:
         if owner_email and owner_email.lower() == share_with_email.lower():
             return None
 
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()

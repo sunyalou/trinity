@@ -11,6 +11,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Optional, List
 from db.connection import get_db_connection
+from utils.helpers import utc_now_iso
 
 # Valid role values for new users. Kept local to avoid a circular import with
 # dependencies.py (which imports from database, which imports from this module).
@@ -84,7 +85,7 @@ class EmailAuthOperations:
             cursor.execute("""
                 INSERT INTO email_whitelist (email, added_by, added_at, source, default_role)
                 VALUES (?, ?, ?, ?, ?)
-            """, (email.lower(), user["id"], datetime.utcnow().isoformat(), source, default_role))
+            """, (email.lower(), user["id"], utc_now_iso(), source, default_role))
 
             conn.commit()
             return True
@@ -216,7 +217,7 @@ class EmailAuthOperations:
                 UPDATE email_login_codes
                 SET verified = 1, used_at = ?
                 WHERE id = ?
-            """, (datetime.utcnow().isoformat(), code_record["id"]))
+            """, (utc_now_iso(), code_record["id"]))
 
             conn.commit()
 
@@ -282,7 +283,7 @@ class EmailAuthOperations:
             role = "user"
 
         # Create new user
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
         with get_db_connection() as conn:
             cursor = conn.cursor()
 

@@ -31,6 +31,7 @@ from typing import Optional
 from database import db
 from models import BusinessStatus
 from services.task_execution_service import TaskExecutionService, TaskExecutionResult
+from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -379,7 +380,7 @@ class ValidationService:
                     "items": validation_result.items,
                     "recommendation": validation_result.recommendation,
                 },
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": utc_now_iso(),
             }
 
             # Read existing queue, append, write back

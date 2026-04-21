@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
 from db.connection import get_db_connection
+from utils.helpers import utc_now_iso
 
 
 def _utcnow() -> datetime:
@@ -53,7 +54,7 @@ class PublicLinkOperations:
         """
         link_id = secrets.token_urlsafe(16)
         token = secrets.token_urlsafe(24)
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -346,7 +347,7 @@ class PublicLinkOperations:
         """Record a chat usage for a public link."""
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            now = datetime.utcnow().isoformat()
+            now = utc_now_iso()
 
             # Check for existing usage record
             cursor.execute("""
@@ -464,7 +465,7 @@ class PublicLinkOperations:
         memory_text, message_count, created_at, updated_at.
         """
         email = user_email.lower()
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -503,7 +504,7 @@ class PublicLinkOperations:
         Returns the new message_count.
         """
         email = user_email.lower()
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -528,7 +529,7 @@ class PublicLinkOperations:
         Returns True if the record was found and updated.
         """
         email = user_email.lower()
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         with get_db_connection() as conn:
             cursor = conn.cursor()

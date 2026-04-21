@@ -17,6 +17,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .archive_storage import get_archive_storage
+from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +121,7 @@ class LogArchiveService:
                             metadata = {
                                 "original_size": str(original_size),
                                 "compressed_size": str(compressed_size),
-                                "archived_at": datetime.utcnow().isoformat(),
+                                "archived_at": utc_now_iso(),
                                 "retention_days": str(retention_days),
                                 "original_file": log_file.name,
                             }
