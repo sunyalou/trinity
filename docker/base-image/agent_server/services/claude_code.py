@@ -56,6 +56,7 @@ _GUARDRAILS_RUNTIME_PATH = "/opt/trinity/guardrails-runtime.json"
 _GUARDRAILS_BASELINE_PATH = "/opt/trinity/guardrails-baseline.json"
 _DEFAULT_MAX_TURNS_CHAT = 50
 _DEFAULT_MAX_TURNS_TASK = 50
+_DEFAULT_EXECUTION_TIMEOUT_SEC = 1800  # GUARD-003 (#313): 30 min wall clock for chat
 
 
 def _load_guardrails() -> dict:
@@ -529,6 +530,12 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
         if disallowed_tools:
             cmd.extend(["--disallowedTools", ",".join(disallowed_tools)])
             logger.info(f"[Chat] Guardrails disallow tools: {disallowed_tools}")
+        # GUARD-003 (#313): wall-clock cap so a stuck claude subprocess
+        # (billing error, stalled stream, max-turns evasion) doesn't hang
+        # the chat session until the container is killed externally.
+        timeout_seconds = int(
+            guardrails.get("execution_timeout_sec") or _DEFAULT_EXECUTION_TIMEOUT_SEC
+        )
 
         # Add MCP config if .mcp.json exists (for agent-to-agent collaboration via Trinity MCP)
         mcp_config_path = Path.home() / ".mcp.json"
@@ -632,14 +639,28 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
 
         def read_subprocess_output():
             """Runs in thread pool. Starts stdout/stderr reader threads, waits
-            for subprocess, drains readers with process-group cleanup if
-            hook grandchildren still hold pipes open (Issue #407)."""
+            for subprocess (bounded by timeout_seconds — GUARD-003 #313),
+            drains readers with process-group cleanup if hook grandchildren
+            still hold pipes open (Issue #407)."""
             stdout_thread = threading.Thread(target=read_stdout, daemon=True)
             stderr_thread = threading.Thread(target=read_stderr, daemon=True)
             stdout_thread.start()
             stderr_thread.start()
 
-            return_code = process.wait()
+            try:
+                return_code = process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                logger.error(
+                    f"[Chat] Session {execution_id} timed out after {timeout_seconds}s "
+                    f"— killing process group"
+                )
+                _terminate_process_group(process, graceful_timeout=5, pgid=process_pgid)
+                _drain_reader_threads(
+                    process, stdout_thread, stderr_thread,
+                    grace=3, pgid=process_pgid,
+                )
+                raise
+
             _drain_reader_threads(
                 process, stdout_thread, stderr_thread,
                 grace=5, pgid=process_pgid,
@@ -650,10 +671,33 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
             return stderr, return_code
 
         # Run the blocking subprocess reading in a thread pool to allow FastAPI
-        # to handle other requests (like /api/activity polling) during execution
+        # to handle other requests (like /api/activity polling) during execution.
+        # Outer asyncio.wait_for is a safety net with a small grace period for
+        # drain/cleanup after the inner process.wait() already bounded itself.
         loop = asyncio.get_event_loop()
         try:
-            stderr_output, return_code = await loop.run_in_executor(_executor, read_subprocess_output)
+            try:
+                stderr_output, return_code = await asyncio.wait_for(
+                    loop.run_in_executor(_executor, read_subprocess_output),
+                    timeout=timeout_seconds + 60
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"[Chat] Outer timeout on session {execution_id} "
+                    f"— killing process group as last resort"
+                )
+                _terminate_process_group(process, graceful_timeout=2, pgid=process_pgid)
+                _safe_close_pipes(process)
+                raise HTTPException(
+                    status_code=504,
+                    detail=f"Chat execution timed out after {timeout_seconds} seconds"
+                )
+            except subprocess.TimeoutExpired:
+                logger.error(f"[Chat] Session {execution_id} timed out after {timeout_seconds}s")
+                raise HTTPException(
+                    status_code=504,
+                    detail=f"Chat execution timed out after {timeout_seconds} seconds"
+                )
 
             # Check for rate limit detected during stream parsing (takes priority)
             if metadata.error_type == "rate_limit":
