@@ -173,6 +173,9 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - `scheduler_service.py` - APScheduler-based scheduling service
 - `cleanup_service.py` - Active watchdog reconciliation + passive stale recovery for executions, activities, and slots (CLEANUP-001, #129)
 
+*Real-time delivery:*
+- `event_bus.py` - Redis Streams transport for WebSocket delivery (`EventBus` publisher + `StreamDispatcher` consumer, reconnect replay via `last-event-id`, 3-failure client eviction, MAXLEN-trimmed stream) (RELIABILITY-003, #306)
+
 *Monitoring & Activities:*
 - `activity_service.py` - Activity tracking and timeline
 - `monitoring_service.py` - Fleet-wide health monitoring (MON-001)
@@ -256,6 +259,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - WebSocket client at `utils/websocket.js`
 - Auto-reconnect on disconnect
 - Status update broadcasts
+- Tracks `_eid` (Redis stream id) on every incoming message; reconnect URL appends `&last-event-id=<id>` so brief disconnects replay missed events. On `{type: "resync_required"}` the cursor is cleared and authoritative state is refetched via REST (RELIABILITY-003, #306)
 
 **Collaboration Dashboard:**
 - Vue Flow for node-based graph visualization
@@ -634,7 +638,7 @@ These are structural patterns that must be preserved. Breaking them causes casca
 
 9. **Channel Adapter ABC** — External messaging (Slack, Telegram) follows `adapters/base.py` → `ChannelAdapter` ABC with `NormalizedMessage` and `ChannelResponse`. New channels must implement this interface.
 
-10. **WebSocket Events for Real-Time** — All real-time updates go through WebSocket broadcast (`agent_activity`, `agent_collaboration`). Frontend subscribes via `utils/websocket.js`. Don't poll for state that should be pushed.
+10. **WebSocket Events for Real-Time** — All real-time updates go through WebSocket broadcast (`agent_activity`, `agent_collaboration`). Frontend subscribes via `utils/websocket.js`. Don't poll for state that should be pushed. Transport is the Redis Streams event bus in `services/event_bus.py` (RELIABILITY-003, #306) — `ConnectionManager` / `FilteredWebSocketManager` are thin shims that `XADD` to `trinity:events`; the `StreamDispatcher` runs one `XREAD BLOCK` per backend process and fans out to registered clients. New broadcast sites should continue calling the existing `manager.broadcast(...)` / `filtered_manager.broadcast_filtered(...)` API — do not bypass it to publish directly.
 
 11. **Docker as Source of Truth** — Agent container state comes from Docker labels (`trinity.*`), not from an in-memory registry. `docker_service.py` is the single point of Docker interaction.
 
@@ -1293,6 +1297,8 @@ Internal endpoints (`/api/internal/`) used by the scheduler and agent containers
 ### WebSocket Security (C-002)
 
 The `/ws` endpoint requires JWT authentication. Token provided via `?token=` query parameter or as first message (`Bearer <token>`, 5s timeout). Unauthenticated connections are rejected. The `/ws/events` endpoint requires MCP API key authentication (unchanged).
+
+**Reconnect replay (RELIABILITY-003, #306):** Both `/ws` and `/ws/events` accept an optional `?last-event-id=<stream_id>` query param. The value is regex-gated (`^\d+-\d+$`) by `validate_last_event_id()` in `services/event_bus.py` before reaching `XRANGE`; malformed input is ignored (no catchup). Catchup is capped at `REPLAY_GAP_LIMIT=5000` entries — a larger gap returns `{"type": "resync_required", "reason": "gap_too_large"}` instead of an unbounded `XRANGE`. Authorization (`accessible_agents` for `/ws/events`) is re-applied on replay, not just on live fan-out.
 
 ### Frontend XSS Protection (H-005)
 
