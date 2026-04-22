@@ -22,6 +22,19 @@ Fail-open by design: any exception or malformed response at this layer
 propagates to the scheduler as "no decision", which falls back to the
 default fire behavior. A broken pre-check must never silently suppress
 scheduled work.
+
+Security note: ``check()`` is executed with the agent-server's full Python
+interpreter access — templates can import ``subprocess``, open sockets,
+etc. This is the same sandbox as chat-mode tool calls (non-root container,
+dropped capabilities, isolated network), so it introduces no new privilege,
+but operators reviewing templates should treat ``.trinity/pre-check.py``
+with the same scrutiny as ``CLAUDE.md`` and any skill files.
+
+Module-reload caching is intentionally absent: every request re-runs
+``exec_module`` so template edits take effect on the next call without
+a restart. Given the file is small and the poll cadence is minutes, the
+cost is negligible. If polling tightens to sub-second, add mtime-based
+caching — see PR #455 review thread for history.
 """
 from __future__ import annotations
 
@@ -73,10 +86,19 @@ def _normalise_result(raw: Any) -> Dict[str, Any]:
     message = raw.get("message")
     if message is not None:
         message = str(message)
-        if len(message.encode("utf-8")) > MAX_MESSAGE_BYTES:
-            logger.warning(
-                "[pre-check] message exceeds %d bytes — dropping override",
+        size = len(message.encode("utf-8"))
+        if size > MAX_MESSAGE_BYTES:
+            # Silently falling back to schedule.message would hide a real
+            # template bug. Log loudly and expose the reason in the response
+            # so the scheduler/operator can see what happened.
+            logger.error(
+                "[pre-check] message override %d bytes exceeds cap %d — "
+                "falling back to schedule.message",
+                size,
                 MAX_MESSAGE_BYTES,
+            )
+            out["message_truncated"] = (
+                f"override dropped: {size} bytes exceeds {MAX_MESSAGE_BYTES} cap"
             )
         else:
             out["message"] = message
@@ -93,7 +115,7 @@ async def pre_check() -> Dict[str, Any]:
         if inspect.iscoroutinefunction(fn):
             raw = await fn()
         else:
-            raw = await asyncio.get_event_loop().run_in_executor(None, fn)
+            raw = await asyncio.get_running_loop().run_in_executor(None, fn)
     except Exception as e:
         logger.exception("[pre-check] check() raised: %s", e)
         raise HTTPException(status_code=500, detail=f"pre-check error: {e}")

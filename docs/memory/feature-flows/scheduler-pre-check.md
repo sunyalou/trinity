@@ -20,7 +20,8 @@ No UI change. Skipped executions appear in the existing schedule executions list
 - Dynamically loads `/home/developer/.trinity/pre-check.py` via `importlib.util.spec_from_file_location`. No caching beyond Python's default `sys.modules` behavior.
 - Returns 404 if the file is absent (fail-open signal to scheduler).
 - Accepts both sync and async `check()` functions (`inspect.iscoroutinefunction` branch).
-- Normalises the return value: clamps `reason` to 2000 chars; drops `message` if it exceeds 32 KB UTF-8; requires `fire` key or raises 500.
+- Normalises the return value: clamps `reason` to 2000 chars; requires `fire` key or raises 500. If `check()` returns a non-dict (e.g. `None`, `True`), the normaliser raises `ValueError` which surfaces as a 500 — scheduler treats that as fail-open.
+- **Oversized `message` override**: if `message` exceeds 32 KB UTF-8, the router drops it from the response and sets a sibling `message_truncated: "override dropped: N bytes exceeds 32000 cap"` key. The scheduler sees no `message`, falls back to `schedule.message`, and operators can inspect the truncated-reason in agent-server logs (logged at `ERROR`). Templates must produce compact prompts or rely on `schedule.message`.
 - Any exception in `check()` → 500 with the exception text. Scheduler treats 500 as fail-open.
 
 **Registration**: `docker/base-image/agent_server/routers/__init__.py` and `main.py` mount `pre_check_router` alongside existing routers (chat, files, git, skills, dashboard).
@@ -96,18 +97,23 @@ New event type: `schedule_execution_skipped`
 | Manual trigger (`triggered_by != 'schedule'`) | Skips pre-check entirely — explicit operator intent always fires |
 
 ## Security
-- Pre-check runs inside the agent's container as `developer`, same sandbox as chat-mode tool calls. No new privilege.
-- Stdout/message cap at 32 KB UTF-8 — oversized payloads are dropped with a warning, fall through to schedule.message.
+- Pre-check runs inside the agent's container as `developer`, same sandbox as chat-mode tool calls. No new privilege over what chat-mode tool calls can already do.
+- **Template review expectation**: `~/.trinity/pre-check.py` is executed with full Python interpreter access — it can `import subprocess`, open sockets, read files. This is intentional (operators already trust the template's `CLAUDE.md`, skills, and tool invocations), but `.trinity/pre-check.py` should be reviewed with the same scrutiny as any other executable file the template ships.
+- Stdout/message cap at 32 KB UTF-8 — oversized payloads are dropped from the response and the drop is surfaced via a `message_truncated` field + `ERROR` log, not silently swallowed.
 - Fail-open policy means a malicious/broken pre-check cannot suppress scheduled invocations (worst case: wastes tokens — today's baseline).
 - Invariant #5 ("Agent Server Mirrors Backend") preserved: agent exposes an HTTP contract, scheduler proxies to it.
 - Invariant #1 ("Three-layer backend: router → service → db") preserved on the scheduler side — CLI wrapper → service → database.
 
 ## Testing
-**Unit** (`tests/scheduler_tests/test_pre_check.py`, 12 tests):
+**Scheduler-side** (`tests/scheduler_tests/test_pre_check.py`, 12 tests):
 - `AgentClient.pre_check` — returns decision on 200, None on 404, None on 5xx, None on unreachable, None on malformed JSON, None on missing `fire` field, normal pass on fire-false, normal pass on fire-true-with-message.
 - `SchedulerService._execute_schedule_with_lock` — skip records execution with correct reason, fire-true with message uses override, fail-open routes through backend, fire-true without message uses schedule.message, manual trigger bypasses pre-check.
 
-Full scheduler suite: 161/161 passing.
+**Agent-server router** (`tests/unit/test_pre_check_router.py`, 15 tests):
+- `_normalise_result` — skip/fire/override cases; oversized message drops with `message_truncated` marker; reason clamped to 2000 chars; non-dict return raises `ValueError`; missing `fire` field raises.
+- Router HTTP — 404 when `check()` absent, 200 on skip/fire, 500 when `check()` raises, 500 when `check()` returns non-dict, oversized-message fall-back path, async `check()` awaited correctly.
+
+Full scheduler + unit suite: 176/176 passing.
 
 **Live end-to-end** (verified 2026-04-22 in local Trinity):
 - Empty scan on `dolho/pr-reviewer-agent` → `fire:false` → skip row in DB, `$0` cost, zero backend activity.
