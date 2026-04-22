@@ -1,11 +1,14 @@
 """
-Tests for the agent-owned pre-check hook (#454).
+Tests for the conditional schedule pre-check hook (#454, SCHED-COND-001).
 
 Covers:
-- AgentClient.pre_check returns dict on 200, None on 404, None on error
-- SchedulerService skips execution when pre_check returns fire=False
-- SchedulerService uses override message when pre_check returns fire=True with message
-- SchedulerService falls through to normal fire when pre_check returns None (fail-open)
+- `_run_pre_check` translates backend `docker exec` responses correctly:
+  hook absent → None, non-zero exit → None, empty stdout → skip,
+  non-empty stdout → fire with message override.
+- `_execute_schedule_with_lock` honours the translated decision: skips
+  when `fire=False`, fires with override when `fire=True` carries a
+  message, fail-opens when `_run_pre_check` returns None, bypasses
+  pre-check entirely for manual triggers.
 """
 
 # Path setup must happen before scheduler imports
@@ -21,85 +24,114 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from scheduler.agent_client import AgentClient, AgentNotReachableError
 from scheduler.models import ExecutionStatus
 
 
 # ---------------------------------------------------------------------------
-# AgentClient.pre_check unit tests
+# _run_pre_check translation layer (backend JSON → scheduler decision)
 # ---------------------------------------------------------------------------
 
 
-class TestAgentClientPreCheck:
+def _build_svc(db_with_data):
+    """SchedulerService instance with just the dependencies _run_pre_check needs."""
+    from scheduler.service import SchedulerService
+
+    svc = SchedulerService.__new__(SchedulerService)
+    svc.db = db_with_data
+    return svc
+
+
+def _mock_httpx_post(response_json=None, status_code=200, raise_exc=None):
+    """Build the `async with httpx.AsyncClient() as client` patch target."""
+    response = MagicMock()
+    response.status_code = status_code
+    if response_json is not None:
+        response.json = MagicMock(return_value=response_json)
+    client_ctx = AsyncMock()
+    if raise_exc is not None:
+        client_ctx.__aenter__.return_value.post = AsyncMock(side_effect=raise_exc)
+    else:
+        client_ctx.__aenter__.return_value.post = AsyncMock(return_value=response)
+    return patch("scheduler.service.httpx.AsyncClient", return_value=client_ctx)
+
+
+class TestRunPreCheckTranslation:
     @pytest.mark.asyncio
-    async def test_returns_decision_on_200(self):
-        client = AgentClient("pr-reviewer")
+    async def test_no_hook_returns_none(self, db_with_data):
+        svc = _build_svc(db_with_data)
+        with _mock_httpx_post({"hook_present": False}):
+            decision = await svc._run_pre_check("test-agent")
+        assert decision is None
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_returns_none_failopen(self, db_with_data):
+        svc = _build_svc(db_with_data)
+        body = {
+            "hook_present": True,
+            "exit_code": 2,
+            "stdout": "",
+            "stderr": "ModuleNotFoundError: foo",
+        }
+        with _mock_httpx_post(body):
+            decision = await svc._run_pre_check("test-agent")
+        assert decision is None
+
+    @pytest.mark.asyncio
+    async def test_empty_stdout_skips(self, db_with_data):
+        svc = _build_svc(db_with_data)
+        body = {"hook_present": True, "exit_code": 0, "stdout": "  \n", "stderr": ""}
+        with _mock_httpx_post(body):
+            decision = await svc._run_pre_check("test-agent")
+        assert decision == {"fire": False, "reason": "pre-check returned empty stdout"}
+
+    @pytest.mark.asyncio
+    async def test_nonempty_stdout_fires_with_override(self, db_with_data):
+        svc = _build_svc(db_with_data)
+        body = {
+            "hook_present": True,
+            "exit_code": 0,
+            "stdout": "Review PR #1\n",
+            "stderr": "",
+        }
+        with _mock_httpx_post(body):
+            decision = await svc._run_pre_check("test-agent")
+        assert decision == {"fire": True, "message": "Review PR #1"}
+
+    @pytest.mark.asyncio
+    async def test_backend_404_returns_none(self, db_with_data):
+        svc = _build_svc(db_with_data)
+        with _mock_httpx_post(None, status_code=404):
+            decision = await svc._run_pre_check("missing-agent")
+        assert decision is None
+
+    @pytest.mark.asyncio
+    async def test_backend_5xx_returns_none(self, db_with_data):
+        svc = _build_svc(db_with_data)
+        with _mock_httpx_post({}, status_code=502):
+            decision = await svc._run_pre_check("test-agent")
+        assert decision is None
+
+    @pytest.mark.asyncio
+    async def test_connection_error_returns_none(self, db_with_data):
+        svc = _build_svc(db_with_data)
+        with _mock_httpx_post(raise_exc=Exception("connection refused")):
+            decision = await svc._run_pre_check("test-agent")
+        assert decision is None
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_returns_none(self, db_with_data):
+        """Backend returns 200 but body isn't valid JSON → fail-open."""
+        svc = _build_svc(db_with_data)
         response = MagicMock()
         response.status_code = 200
-        response.json.return_value = {"fire": True, "message": "review this"}
-        with patch.object(client, "_request", AsyncMock(return_value=response)):
-            result = await client.pre_check()
-        assert result == {"fire": True, "message": "review this"}
-
-    @pytest.mark.asyncio
-    async def test_returns_none_on_404(self):
-        """Endpoint absent — scheduler should fall back to normal fire."""
-        client = AgentClient("no-hook-agent")
-        response = MagicMock()
-        response.status_code = 404
-        with patch.object(client, "_request", AsyncMock(return_value=response)):
-            result = await client.pre_check()
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_on_5xx(self):
-        client = AgentClient("broken-agent")
-        response = MagicMock()
-        response.status_code = 500
-        with patch.object(client, "_request", AsyncMock(return_value=response)):
-            result = await client.pre_check()
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_on_unreachable(self):
-        client = AgentClient("unreachable-agent")
-        with patch.object(
-            client,
-            "_request",
-            AsyncMock(side_effect=AgentNotReachableError("timeout")),
+        response.json = MagicMock(side_effect=ValueError("not json"))
+        client_ctx = AsyncMock()
+        client_ctx.__aenter__.return_value.post = AsyncMock(return_value=response)
+        with patch(
+            "scheduler.service.httpx.AsyncClient", return_value=client_ctx
         ):
-            result = await client.pre_check()
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_on_malformed_json(self):
-        client = AgentClient("sketchy-agent")
-        response = MagicMock()
-        response.status_code = 200
-        response.json.side_effect = ValueError("not json")
-        with patch.object(client, "_request", AsyncMock(return_value=response)):
-            result = await client.pre_check()
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_on_missing_fire_field(self):
-        client = AgentClient("wrong-shape-agent")
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = {"message": "hi"}  # no "fire"
-        with patch.object(client, "_request", AsyncMock(return_value=response)):
-            result = await client.pre_check()
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_skip_decision(self):
-        client = AgentClient("pr-reviewer")
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = {"fire": False, "reason": "no new PRs"}
-        with patch.object(client, "_request", AsyncMock(return_value=response)):
-            result = await client.pre_check()
-        assert result == {"fire": False, "reason": "no new PRs"}
+            decision = await svc._run_pre_check("test-agent")
+        assert decision is None
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +141,7 @@ class TestAgentClientPreCheck:
 
 @pytest.fixture
 def mock_scheduler(db_with_data):
-    """Build a SchedulerService with mocked dependencies so we can drive the
+    """Build a SchedulerService with mocked I/O deps so we can drive the
     pre-check branch of `_execute_schedule_with_lock` without real networking."""
     from scheduler.service import SchedulerService
 
@@ -163,7 +195,7 @@ class TestSchedulerPreCheckBranch:
     async def test_fail_open_when_pre_check_returns_none(
         self, mock_scheduler, db_with_data
     ):
-        """pre-check returns None (e.g. 404) → fire as usual with schedule.message."""
+        """pre-check returns None (e.g. no hook, exec error) → fire with schedule.message."""
         mock_scheduler._run_pre_check = AsyncMock(return_value=None)
 
         await mock_scheduler._execute_schedule_with_lock("schedule-1")

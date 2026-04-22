@@ -899,22 +899,76 @@ class SchedulerService:
             })
 
     async def _run_pre_check(self, agent_name: str) -> Optional[dict]:
-        """Call the agent's ``/api/pre-check`` hook (#454).
+        """Run the agent's optional pre-check hook (#454, SCHED-COND-001).
 
-        Returns the agent's decision dict, or ``None`` if the agent has no
-        hook or the call fails. ``None`` signals the caller to fire the
-        schedule as usual (fail-open).
+        Calls the backend's internal endpoint, which executes
+        ``~/.trinity/pre-check.py`` inside the agent container via
+        ``docker exec`` (same primitive as the persistent-state allowlist
+        in ``services/git_service.py``). The scheduler never opens its
+        own HTTP edge to agents — backend remains the orchestrator.
+
+        Contract translation (backend → caller):
+          - ``hook_present == False``               → return ``None`` (fire as usual)
+          - ``exit_code != 0``                       → return ``None`` (fail-open + log)
+          - ``exit_code == 0`` & empty stdout        → return ``{"fire": False, "reason": ...}``
+          - ``exit_code == 0`` & non-empty stdout    → return ``{"fire": True, "message": stdout}``
+
+        Returning ``None`` means "no decision, fire the schedule as today."
+        Fail-open is structural — a broken hook or unreachable backend must
+        never silently suppress scheduled work.
         """
-        from .agent_client import AgentClient
+        headers = {}
+        if config.internal_api_secret:
+            headers["X-Internal-Secret"] = config.internal_api_secret
 
         try:
-            client = AgentClient(agent_name, timeout=60.0)
-            return await client.pre_check()
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{config.backend_url}/api/internal/agents/{agent_name}/pre-check",
+                    headers=headers,
+                    timeout=70.0,  # agent-side timeout is 60s, give us headroom
+                )
         except Exception as e:
             logger.warning(
-                f"[pre-check] unexpected error for {agent_name}: {e} — fail-open"
+                f"[pre-check] backend call for {agent_name} failed ({e}) — fail-open"
             )
             return None
+
+        if response.status_code == 404:
+            logger.warning(
+                f"[pre-check] backend says agent {agent_name} not found — fail-open"
+            )
+            return None
+        if response.status_code != 200:
+            logger.warning(
+                f"[pre-check] backend returned {response.status_code} for {agent_name} — fail-open"
+            )
+            return None
+
+        try:
+            data = response.json()
+        except Exception as e:
+            logger.warning(
+                f"[pre-check] malformed backend response for {agent_name} ({e}) — fail-open"
+            )
+            return None
+
+        if not data.get("hook_present"):
+            return None  # template has no hook — backward compat
+
+        exit_code = data.get("exit_code", 1)
+        if exit_code != 0:
+            stderr = (data.get("stderr") or data.get("stdout") or "")[:500]
+            logger.warning(
+                f"[pre-check] hook for {agent_name} exited {exit_code}: "
+                f"{stderr!r} — fail-open"
+            )
+            return None
+
+        stdout = (data.get("stdout") or "").strip()
+        if not stdout:
+            return {"fire": False, "reason": "pre-check returned empty stdout"}
+        return {"fire": True, "message": stdout}
 
     async def _call_backend_execute_task(
         self,

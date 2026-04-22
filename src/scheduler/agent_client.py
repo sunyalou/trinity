@@ -152,48 +152,6 @@ class AgentClient:
         result = response.json()
         return self._parse_task_response(result)
 
-    async def pre_check(self, timeout: float = 60.0) -> Optional[Dict[str, Any]]:
-        """
-        Ask the agent whether a scheduled invocation should actually fire (#454).
-
-        Returns:
-            None if the endpoint is absent (404) or the call fails for any
-            reason. The scheduler treats this as "no decision" and falls back
-            to normal firing (fail-open).
-
-            Otherwise a dict with at least ``fire: bool`` and optionally
-            ``reason`` (str) and ``message`` (str — chat override).
-        """
-        try:
-            response = await self._request(
-                "POST", "/api/pre-check", timeout=timeout, json={}
-            )
-        except AgentClientError as e:
-            logger.info(
-                f"[pre-check] agent {self.agent_name} unreachable: {e} — fail-open"
-            )
-            return None
-        if response.status_code == 404:
-            return None
-        if response.status_code >= 400:
-            logger.warning(
-                f"[pre-check] agent {self.agent_name} returned {response.status_code} — fail-open"
-            )
-            return None
-        try:
-            data = response.json()
-        except Exception as e:
-            logger.warning(
-                f"[pre-check] agent {self.agent_name} invalid JSON ({e}) — fail-open"
-            )
-            return None
-        if not isinstance(data, dict) or "fire" not in data:
-            logger.warning(
-                f"[pre-check] agent {self.agent_name} malformed response — fail-open"
-            )
-            return None
-        return data
-
     async def health_check(self, timeout: float = 5.0) -> bool:
         """
         Check if agent is healthy and responding.

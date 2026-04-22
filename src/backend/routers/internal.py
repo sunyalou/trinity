@@ -59,6 +59,82 @@ async def internal_health():
     return {"status": "ok"}
 
 
+# ---------------------------------------------------------------------------
+# Scheduler pre-check (#454, SCHED-COND-001)
+# ---------------------------------------------------------------------------
+
+# Cap stdout/stderr to keep responses bounded. Stdout becomes a chat prompt;
+# 32 KB is plenty even for verbose scan output.
+_PRE_CHECK_STDOUT_CAP = 32_000
+_PRE_CHECK_STDERR_CAP = 4_000
+_PRE_CHECK_HOOK_PATH = "/home/developer/.trinity/pre-check.py"
+_PRE_CHECK_TIMEOUT_SECONDS = 60
+
+
+@router.post("/agents/{agent_name}/pre-check")
+async def internal_agent_pre_check(agent_name: str):
+    """Run the agent's optional pre-check hook (SCHED-COND-001 / #454).
+
+    Called by the dedicated scheduler before firing a cron-triggered task.
+    Executes ``~/.trinity/pre-check.py`` inside the agent container via
+    ``docker exec`` (the same primitive used by ``services/git_service.py``
+    for the persistent-state allowlist, by ``ssh_service`` for key
+    provisioning, etc.).
+
+    Contract:
+      - ``hook_present == False`` → scheduler treats as no decision and
+        fires as usual (backward compat for templates without a hook).
+      - ``hook_present == True``, ``exit_code != 0`` → fail-open: scheduler
+        logs the stderr and fires as usual.
+      - ``hook_present == True``, ``exit_code == 0``, empty stdout →
+        scheduler records a skipped execution.
+      - ``hook_present == True``, ``exit_code == 0``, non-empty stdout →
+        scheduler fires with the stdout used as the chat message
+        (overrides ``schedule.message``).
+
+    Fail-open is structural: any error here must not silently suppress
+    scheduled work. Worst case is today's baseline (chat fires, tokens
+    burn).
+    """
+    from services.docker_service import (
+        execute_command_in_container,
+        get_agent_container,
+    )
+
+    container = get_agent_container(agent_name)
+    if not container:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    container_name = f"agent-{agent_name}"
+
+    # Step 1: fast existence check. If the template ships no hook, return
+    # immediately so the scheduler can fire as usual without spinning up
+    # python3 inside the container.
+    exists = await execute_command_in_container(
+        container_name=container_name,
+        command=f"test -f {_PRE_CHECK_HOOK_PATH}",
+        timeout=5,
+    )
+    if exists.get("exit_code") != 0:
+        return {"hook_present": False}
+
+    # Step 2: run the hook. Stdout becomes the chat prompt (or empty = skip).
+    result = await execute_command_in_container(
+        container_name=container_name,
+        command=f"python3 {_PRE_CHECK_HOOK_PATH}",
+        timeout=_PRE_CHECK_TIMEOUT_SECONDS,
+    )
+    output = (result.get("output") or "")[: _PRE_CHECK_STDOUT_CAP + _PRE_CHECK_STDERR_CAP]
+    return {
+        "hook_present": True,
+        "exit_code": int(result.get("exit_code", 1)),
+        # `output` from container_exec_run is the combined stream — keep both
+        # fields for forward-compat in case we split them later.
+        "stdout": output[:_PRE_CHECK_STDOUT_CAP],
+        "stderr": "",
+    }
+
+
 @router.get("/agents/{agent_name}/sync-health-status")
 async def internal_agent_sync_health(agent_name: str):
     """#389: lightweight read used by the dedicated scheduler before dispatching.

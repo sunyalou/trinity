@@ -24,7 +24,6 @@ from .routers import (
     dashboard_router,
     skills_router,
     snapshot_router,
-    pre_check_router,
 )
 from .state import agent_state
 from .services.trinity_mcp import inject_trinity_mcp_if_configured
@@ -61,7 +60,6 @@ app.include_router(trinity_router)  # Trinity injection API
 app.include_router(dashboard_router)  # Dashboard endpoint
 app.include_router(skills_router)  # Skills/playbooks listing endpoint
 app.include_router(snapshot_router)  # Snapshot/restore primitives (#384, S3)
-app.include_router(pre_check_router)  # Agent-owned pre-check hook (#454)
 
 # #389 S1a: auto-sync heartbeat loop (gated by GIT_SYNC_AUTO env var).
 schedule_auto_sync_if_enabled(app)
