@@ -723,13 +723,57 @@ class SchedulerService:
             logger.info(f"Schedule {schedule_id} skipped: agent {schedule.agent_name} autonomy is disabled")
             return
 
+        # Agent-owned pre-check hook (#454). Only for cron-triggered invocations:
+        # manual triggers from the UI represent an explicit operator decision and
+        # must always fire. Fail-open: any None return means the agent has no
+        # pre-check or the call errored — fall through to normal firing.
+        effective_message = schedule.message
+        if triggered_by == "schedule":
+            decision = await self._run_pre_check(schedule.agent_name)
+            if decision is not None:
+                if not decision.get("fire", True):
+                    reason = decision.get("reason") or "pre-check returned fire=false"
+                    skipped = self.db.create_skipped_execution(
+                        schedule_id=schedule.id,
+                        agent_name=schedule.agent_name,
+                        message=schedule.message,
+                        triggered_by=triggered_by,
+                        skip_reason=f"pre-check: {reason}",
+                    )
+                    logger.info(
+                        f"Schedule {schedule.name} skipped by pre-check: {reason}"
+                    )
+                    now = datetime.utcnow()
+                    next_run = self._get_next_run_time(
+                        schedule.cron_expression, schedule.timezone
+                    )
+                    self.db.update_schedule_run_times(
+                        schedule.id, last_run_at=now, next_run_at=next_run
+                    )
+                    await self._publish_event({
+                        "type": "schedule_execution_skipped",
+                        "agent": schedule.agent_name,
+                        "schedule_id": schedule.id,
+                        "execution_id": skipped.id if skipped else None,
+                        "schedule_name": schedule.name,
+                        "reason": reason,
+                    })
+                    return
+                override = decision.get("message")
+                if override and isinstance(override, str):
+                    effective_message = override
+                    logger.info(
+                        f"Schedule {schedule.name} pre-check overrode message "
+                        f"({len(override)} chars)"
+                    )
+
         logger.info(f"Executing schedule: {schedule.name} for agent {schedule.agent_name} (triggered_by={triggered_by})")
 
         # Create execution record
         execution = self.db.create_execution(
             schedule_id=schedule.id,
             agent_name=schedule.agent_name,
-            message=schedule.message,
+            message=effective_message,
             triggered_by=triggered_by,
             model_used=schedule.model
         )
@@ -755,7 +799,7 @@ class SchedulerService:
         try:
             result = await self._call_backend_execute_task(
                 agent_name=schedule.agent_name,
-                message=schedule.message,
+                message=effective_message,
                 triggered_by=triggered_by,
                 model=schedule.model,
                 timeout_seconds=schedule.timeout_seconds,
@@ -853,6 +897,24 @@ class SchedulerService:
                 "status": actual_status,
                 "error": error_msg if actual_status == ExecutionStatus.FAILED else None
             })
+
+    async def _run_pre_check(self, agent_name: str) -> Optional[dict]:
+        """Call the agent's ``/api/pre-check`` hook (#454).
+
+        Returns the agent's decision dict, or ``None`` if the agent has no
+        hook or the call fails. ``None`` signals the caller to fire the
+        schedule as usual (fail-open).
+        """
+        from .agent_client import AgentClient
+
+        try:
+            client = AgentClient(agent_name, timeout=60.0)
+            return await client.pre_check()
+        except Exception as e:
+            logger.warning(
+                f"[pre-check] unexpected error for {agent_name}: {e} — fail-open"
+            )
+            return None
 
     async def _call_backend_execute_task(
         self,
