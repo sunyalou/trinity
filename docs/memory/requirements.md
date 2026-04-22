@@ -373,6 +373,21 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
   - Configurable `POLL_INTERVAL` env var (default 10s)
 - **Root Cause**: TCP connection drops after 15-30 min on long-running scheduled tasks, causing false `failed` status even though agent work completed successfully
 
+### 10.6.1 Conditional Schedule Pre-Check (SCHED-COND-001)
+- **Status**: ✅ Implemented (2026-04-22)
+- **Requirement ID**: SCHED-COND-001
+- **GitHub Issue**: #454
+- **Description**: Optional agent-owned hook that lets a scheduled cron tick be skipped deterministically — scheduler calls `POST /api/pre-check` on the target agent before firing a chat and records a skipped execution when the agent returns `fire=false`. Eliminates Claude token cost on empty polls for poll-driven agents (PR reviewers, inbox monitors, alert routers, RSS watchers).
+- **Key Features**:
+  - Contract: agent templates drop a `~/.trinity/pre-check.py` with a top-level `check()` returning `{"fire": bool, "message": str?, "reason": str?}`. Base-image router at `POST /api/pre-check` invokes it.
+  - Fail-open: endpoint absent (404), timeout, 5xx, malformed response → scheduler fires as usual. A broken pre-check never silently suppresses scheduled work.
+  - Message override: `fire=true` with a `message` field replaces `schedule.message` for that one invocation — lets the agent inject real work items (e.g. the PR list) into the chat prompt.
+  - Skip record: `fire=false` writes a row to `schedule_executions` with `status='skipped'`, reason, and zero cost — visible in the Trinity UI alongside successful runs.
+  - Manual triggers bypass pre-check entirely (explicit operator intent always fires).
+  - Zero DB schema change (reuses existing `ExecutionStatus.SKIPPED` + `create_skipped_execution`).
+- **Test plan**: 12 unit tests covering client response shapes (200/404/5xx/timeout/malformed) + scheduler branch behaviors (skip, override, fail-open, manual-bypass). Full 161-test scheduler suite passes.
+- **Root Cause**: No platform primitive for "deterministic gate before LLM invocation." Previously required per-template daemons backgrounded inside agent containers — invisible to Trinity UI, reimplemented per template, no skip metrics.
+
 ### 10.7 Per-Agent Execution Timeout (TIMEOUT-001)
 - **Status**: ✅ Implemented (2026-03-12)
 - **Requirement ID**: TIMEOUT-001
