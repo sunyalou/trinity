@@ -11,6 +11,7 @@
 
 | Date | ID | Feature | Flow |
 |------|-----|---------|------|
+| 2026-04-22 | #458 | `.gitignore` init fix — `initialize_git_in_container` now appends missing patterns instead of truncate-and-write; adds `.env`, `.env.*`, `.mcp.json` to the default list and runs for both `/home/developer` and legacy `/home/developer/workspace` (stops credential leak on first GitHub sync) | [github-repo-initialization.md](feature-flows/github-repo-initialization.md) |
 | 2026-04-21 | RELIABILITY-003 (#306) | WebSocket event bus on Redis Streams — replaces in-process broadcast with XADD/XREAD, adds reconnect replay via `?last-event-id=`, 3-failure eviction, MAXLEN trim (tunable) | [websocket-event-bus.md](feature-flows/websocket-event-bus.md) |
 | 2026-04-20 | #420 | Scheduler sync loop fix — `update_schedule_run_times` no longer bumps `updated_at`, stopping the self-triggering re-register of every schedule per tick | [scheduler-service.md](feature-flows/scheduler-service.md) |
 | 2026-04-20 | #418 | Inter-agent timeout honors per-agent `execution_timeout_seconds` — removed 600s hardcoded defaults in MCP `chat_with_agent`/`fan_out` tools and fan-out service; HTTP client ceiling bumped to platform max (7200s) | [fan-out.md](feature-flows/fan-out.md), [mcp-orchestration.md](feature-flows/mcp-orchestration.md), [parallel-headless-execution.md](feature-flows/parallel-headless-execution.md) |
