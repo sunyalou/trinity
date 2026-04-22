@@ -194,8 +194,13 @@ class PlatformAuditService:
                     last = entries[0]
                     if isinstance(last, dict) and last.get("entry_hash"):
                         self._last_hash = last["entry_hash"]
-            except Exception:
-                pass
+            except Exception as e:
+                # Non-fatal: chain will start from None and verify_chain skips
+                # entries written before seeding succeeded.
+                logger.warning(
+                    "[PlatformAuditService] failed to seed hash chain from last entry: %s",
+                    e,
+                )
 
     async def verify_chain(self, start_id: int, end_id: int) -> Dict[str, Any]:
         """Verify hash chain integrity between two row IDs (inclusive).

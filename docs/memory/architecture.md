@@ -595,6 +595,10 @@ Services that run continuously in the backend process:
 | GET | `/api/audit-log` | Admin | List entries (filters: event_type, actor_type, actor_id, target_type, target_id, source, start_time, end_time, limit, offset) |
 | GET | `/api/audit-log/stats` | Admin | Aggregate counts by event_type and actor_type |
 | GET | `/api/audit-log/{event_id}` | Admin | Single entry by UUID |
+| GET | `/api/audit-log/export` | Admin | Export time-range entries as `json` or `csv` (Phase 4) |
+| POST | `/api/audit-log/verify` | Admin | Verify SHA-256 hash chain over `start_id..end_id` (Phase 4) |
+| POST | `/api/audit-log/hash-chain/enable` | Admin | Toggle hash chain computation for new entries (Phase 4) |
+| POST | `/api/internal/audit` | Internal secret | Fire-and-forget write path for MCP server tool-call audit (Phase 3) |
 
 **Storage**: append-only `audit_log` table in main SQLite DB. SQLite triggers block UPDATE unconditionally and DELETE within the 365-day retention window.
 

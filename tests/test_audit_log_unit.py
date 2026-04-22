@@ -1013,3 +1013,75 @@ def test_export_entries_by_time_range(audit_service, audit_ops):
         limit=100_000,
     )
     assert len(entries) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 regression — hash chain details round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_compute_hash_details_string_dict_equivalence(audit_service):
+    """Regression for Phase 5 bug.
+
+    `details` is stored as a JSON string at write-time (``json.dumps``)
+    and returned as a dict at read-time (``_row_to_dict``). Both forms
+    must produce the same hash, otherwise ``verify_chain`` returns
+    ``valid=False`` for every entry with non-null details.
+    """
+    service, _, _ = audit_service
+    base = {
+        "event_id": "fixed-uuid",
+        "event_type": "system",
+        "event_action": "test",
+        "actor_id": "trinity-system",
+        "target_id": None,
+        "timestamp": "2026-04-21T00:00:00Z",
+        "previous_hash": None,
+    }
+    details = {"key": "value", "n": 1, "nested": {"a": [1, 2, 3]}}
+    write_form = {**base, "details": json.dumps(details)}
+    read_form = {**base, "details": details}
+
+    assert service._compute_hash(write_form) == service._compute_hash(read_form)
+
+
+def test_verify_chain_valid_with_details(audit_service, audit_ops):
+    """End-to-end: hash chain verifies across entries that carry details.
+
+    Reproduces the exact scenario from the Phase 5 bug — entries with
+    non-null details should round-trip through the DB and still verify.
+    """
+    service, ETYPE, _ = audit_service
+    service.enable_hash_chain(True)
+    try:
+        asyncio.run(
+            service.log(
+                event_type=ETYPE.SYSTEM,
+                event_action="with_details_1",
+                source="test",
+                details={"tool": "list_agents", "duration_ms": 12},
+            )
+        )
+        asyncio.run(
+            service.log(
+                event_type=ETYPE.SYSTEM,
+                event_action="with_details_2",
+                source="test",
+                details={"nested": {"ok": True, "items": [1, 2]}},
+            )
+        )
+
+        entries = audit_ops.get_audit_entries(event_type="system", limit=100)
+        ids = sorted(
+            e["id"]
+            for e in entries
+            if e.get("entry_hash") and e["event_action"].startswith("with_details_")
+        )
+        assert len(ids) == 2
+
+        result = asyncio.run(service.verify_chain(ids[0], ids[-1]))
+        assert result["valid"] is True
+        assert result["checked"] == 2
+        assert result["first_invalid_id"] is None
+    finally:
+        service.enable_hash_chain(False)

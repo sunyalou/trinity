@@ -185,25 +185,8 @@ export async function createServer(config: ServerConfig = {}) {
     }
   }
 
-  // Register all tool groups with audit wrapping (SEC-001 Phase 3)
-  addAllTools(createAgentTools(client, requireApiKey));
-  addAllTools(createChatTools(client, requireApiKey));
-  addAllTools(createSystemTools(client, requireApiKey));
-  addAllTools(createDocsTools());
-  addAllTools(createSkillsTools(client, requireApiKey));
-  addAllTools(createScheduleTools(client, requireApiKey));
-  addAllTools(createTagTools(client, requireApiKey));
-  addAllTools(createNotificationTools(client, requireApiKey));
-  addAllTools(createSubscriptionTools(client, requireApiKey));
-  addAllTools(createMonitoringTools(client, requireApiKey));
-  addAllTools(createNeverminedTools(client, requireApiKey));
-  addAllTools(createExecutionTools(client, requireApiKey));
-  addAllTools(createEventTools(client, requireApiKey));
-  addAllTools(createChannelTools(client, requireApiKey));
-  addAllTools(createMessageTools(client, requireApiKey));
-
-  // Count registered tools from all groups
-  const toolGroups = [
+  // Build tool groups once, then register + count (SEC-001 Phase 3).
+  const toolGroups: Record<string, any>[] = [
     createAgentTools(client, requireApiKey),
     createChatTools(client, requireApiKey),
     createSystemTools(client, requireApiKey),
@@ -220,6 +203,9 @@ export async function createServer(config: ServerConfig = {}) {
     createChannelTools(client, requireApiKey),
     createMessageTools(client, requireApiKey),
   ];
+  for (const group of toolGroups) {
+    addAllTools(group);
+  }
   const totalTools = toolGroups.reduce((sum, g) => sum + Object.keys(g).length, 0);
   console.log(`Registered ${totalTools} tools with audit wrapping (SEC-001 Phase 3)`);
 
