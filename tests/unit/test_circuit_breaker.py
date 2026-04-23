@@ -142,6 +142,32 @@ class TestCircuitState:
         assert d["state"] == "open"
         assert d["cooldown_remaining"] > 0
 
+    def test_stale_failures_reset_before_new_incident(self):
+        # Failures older than one cooldown window must not compound with a new
+        # burst from a separate incident (fixes #474 cascade).
+        circuit = CircuitState(agent_name="test", failure_threshold=3, cooldown_seconds=30.0)
+        circuit.record_failure()
+        circuit.record_failure()
+        assert circuit.failure_count == 2
+        assert circuit.state == "closed"
+
+        # Simulate time advancing past the cooldown window
+        circuit.last_failure_time = time.monotonic() - 31.0
+
+        # A new failure belongs to a fresh incident — counter resets first
+        circuit.record_failure()
+        assert circuit.failure_count == 1  # reset to 0, then +1
+        assert circuit.state == "closed"   # did not trip (needs 3)
+
+    def test_rapid_failures_still_trip_circuit(self):
+        # Failures within the window must still accumulate and trip the circuit.
+        circuit = CircuitState(agent_name="test", failure_threshold=3, cooldown_seconds=30.0)
+        circuit.record_failure()
+        circuit.record_failure()
+        circuit.record_failure()
+        assert circuit.failure_count == 3
+        assert circuit.state == "open"
+
 
 # ============================================================================
 # Circuit Registry Tests
@@ -265,6 +291,65 @@ class TestAgentClientCircuitBreaker:
             pass
 
         assert client._circuit.failure_count > 0
+
+    @pytest.mark.asyncio
+    async def test_read_error_does_not_count_toward_circuit(self):
+        # EPIPE / ECONNRESET from a dropped client pipe must not trip the
+        # circuit breaker — the agent is still healthy (fixes #474).
+        import httpx
+        from unittest.mock import AsyncMock, patch
+
+        client = AgentClient("pipe-drop-agent")
+        assert client._circuit.failure_count == 0
+
+        mock_response = AsyncMock(side_effect=httpx.ReadError("Broken pipe"))
+        with patch.object(
+            agent_client._get_http_client(client.base_url),
+            "request",
+            mock_response,
+        ):
+            with pytest.raises(AgentNotReachableError):
+                await client._request("GET", "/api/health", timeout=5.0)
+
+        assert client._circuit.failure_count == 0  # not charged
+
+    @pytest.mark.asyncio
+    async def test_write_error_does_not_count_toward_circuit(self):
+        import httpx
+        from unittest.mock import AsyncMock, patch
+
+        client = AgentClient("write-drop-agent")
+        assert client._circuit.failure_count == 0
+
+        mock_response = AsyncMock(side_effect=httpx.WriteError("Connection reset"))
+        with patch.object(
+            agent_client._get_http_client(client.base_url),
+            "request",
+            mock_response,
+        ):
+            with pytest.raises(AgentNotReachableError):
+                await client._request("POST", "/api/task", timeout=5.0)
+
+        assert client._circuit.failure_count == 0  # not charged
+
+    @pytest.mark.asyncio
+    async def test_connect_error_still_counts_toward_circuit(self):
+        # ConnectError (agent truly unreachable) MUST still count.
+        import httpx
+        from unittest.mock import AsyncMock, patch
+
+        client = AgentClient("down-agent")
+
+        mock_response = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
+        with patch.object(
+            agent_client._get_http_client(client.base_url),
+            "request",
+            mock_response,
+        ):
+            with pytest.raises(AgentNotReachableError):
+                await client._request("GET", "/api/health", timeout=5.0)
+
+        assert client._circuit.failure_count == 1
 
 
 # ============================================================================

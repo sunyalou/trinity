@@ -42,8 +42,14 @@ class CircuitState:
     agent_name: str = ""
 
     def record_failure(self):
+        now = time.monotonic()
+        # Stale failures from a previous incident (older than one cooldown window)
+        # must not compound with a new burst — reset the counter so each incident
+        # is judged on its own merits.
+        if self.failure_count > 0 and (now - self.last_failure_time) > self.cooldown_seconds:
+            self.failure_count = 0
         self.failure_count += 1
-        self.last_failure_time = time.monotonic()
+        self.last_failure_time = now
         if self.failure_count >= self.failure_threshold:
             if self.state != "open":
                 logger.warning(
@@ -270,6 +276,19 @@ class AgentClient:
             self._circuit.record_failure()
             raise AgentNotReachableError(
                 f"Request to agent {self.agent_name} timed out after {timeout}s"
+            )
+        except (httpx.ReadError, httpx.WriteError) as e:
+            # Mid-connection drop (EPIPE, ECONNRESET): typically caused by the
+            # caller dropping their end (e.g. MCP client disconnect cancelling
+            # the backend→agent pipe) rather than the agent being unhealthy.
+            # Do NOT count toward the circuit threshold — ConnectError will fire
+            # if the agent is genuinely down on follow-up calls.
+            logger.warning(
+                "Connection to agent %s dropped mid-request (pipe/reset): %s",
+                self.agent_name, e,
+            )
+            raise AgentNotReachableError(
+                f"Connection to agent {self.agent_name} dropped: {e}"
             )
 
     async def get(self, path: str, timeout: float = None, **kwargs) -> httpx.Response:
