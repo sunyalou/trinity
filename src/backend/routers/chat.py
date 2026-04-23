@@ -793,6 +793,9 @@ async def execute_parallel_task(
     if x_source_agent:
         source = ExecutionSource.AGENT
         triggered_by = "self_task" if is_self_task else "agent"
+    elif x_via_mcp:
+        source = ExecutionSource.USER
+        triggered_by = "mcp"
     else:
         source = ExecutionSource.USER
         triggered_by = "manual"

@@ -154,11 +154,14 @@ class TestTriggeredByField:
     def test_triggered_by_self_task_for_self_calls(self):
         """triggered_by should be 'self_task' for self-calls."""
         x_source_agent = "my-agent"
+        x_via_mcp = "true"
         name = "my-agent"
         is_self_task = (x_source_agent is not None and x_source_agent == name)
 
         if x_source_agent:
             triggered_by = "self_task" if is_self_task else "agent"
+        elif x_via_mcp:
+            triggered_by = "mcp"
         else:
             triggered_by = "manual"
 
@@ -167,24 +170,46 @@ class TestTriggeredByField:
     def test_triggered_by_agent_for_other_agent_calls(self):
         """triggered_by should be 'agent' for agent-to-agent calls (not self)."""
         x_source_agent = "other-agent"
+        x_via_mcp = "true"
         name = "my-agent"
         is_self_task = (x_source_agent is not None and x_source_agent == name)
 
         if x_source_agent:
             triggered_by = "self_task" if is_self_task else "agent"
+        elif x_via_mcp:
+            triggered_by = "mcp"
         else:
             triggered_by = "manual"
 
         assert triggered_by == "agent"
 
-    def test_triggered_by_manual_for_user_calls(self):
-        """triggered_by should be 'manual' for user-initiated calls."""
+    def test_triggered_by_mcp_for_mcp_user_calls(self):
+        """triggered_by should be 'mcp' for MCP user calls (no source agent)."""
         x_source_agent = None
+        x_via_mcp = "true"
         name = "my-agent"
         is_self_task = (x_source_agent is not None and x_source_agent == name)
 
         if x_source_agent:
             triggered_by = "self_task" if is_self_task else "agent"
+        elif x_via_mcp:
+            triggered_by = "mcp"
+        else:
+            triggered_by = "manual"
+
+        assert triggered_by == "mcp"
+
+    def test_triggered_by_manual_for_user_calls(self):
+        """triggered_by should be 'manual' for direct API calls (no MCP, no source agent)."""
+        x_source_agent = None
+        x_via_mcp = None
+        name = "my-agent"
+        is_self_task = (x_source_agent is not None and x_source_agent == name)
+
+        if x_source_agent:
+            triggered_by = "self_task" if is_self_task else "agent"
+        elif x_via_mcp:
+            triggered_by = "mcp"
         else:
             triggered_by = "manual"
 
