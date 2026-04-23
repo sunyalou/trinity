@@ -67,7 +67,7 @@ class TestScheduleRetryConfiguration:
             created_at=now,
             updated_at=now
         )
-        assert schedule.max_retries == 1
+        assert schedule.max_retries == 0  # #476: default flipped 1 → 0 (opt-in)
         assert schedule.retry_delay_seconds == 60
 
     def test_schedule_custom_retry_values(self):
@@ -264,8 +264,9 @@ class TestRetryDatabaseReadParsing:
         """Test _row_to_schedule correctly parses retry configuration."""
         schedule = db_with_data.get_schedule("schedule-1")
 
-        # Default values from migration (existing schedules get 0)
-        assert schedule.max_retries == 0 or schedule.max_retries == 1
+        # #476: default is 0 (was 1 before the flip). Existing schedules also
+        # got 0 from the RETRY-001 migration, so this is now unambiguous.
+        assert schedule.max_retries == 0
         assert schedule.retry_delay_seconds == 60
 
     def test_row_to_execution_parses_retry_tracking(self, db_with_data):

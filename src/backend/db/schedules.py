@@ -17,7 +17,7 @@ from croniter import croniter
 from .connection import get_db_connection
 from db_models import Schedule, ScheduleCreate, ScheduleExecution, AgentGitConfig
 from models import TaskExecutionStatus
-from utils.helpers import utc_now_iso, to_utc_iso, parse_iso_timestamp
+from utils.helpers import iso_cutoff, utc_now_iso, to_utc_iso, parse_iso_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ class ScheduleOperations:
             allowed_tools=allowed_tools,
             model=row["model"] if "model" in row_keys else None,
             # Retry configuration (RETRY-001)
-            max_retries=row["max_retries"] if "max_retries" in row_keys and row["max_retries"] is not None else 1,
+            max_retries=row["max_retries"] if "max_retries" in row_keys and row["max_retries"] is not None else 0,
             retry_delay_seconds=row["retry_delay_seconds"] if "retry_delay_seconds" in row_keys and row["retry_delay_seconds"] is not None else 60,
             # Validation configuration (VALIDATE-001)
             validation_enabled=bool(row["validation_enabled"]) if "validation_enabled" in row_keys and row["validation_enabled"] is not None else False,
@@ -1074,8 +1074,8 @@ class ScheduleOperations:
                     MAX(started_at) as last_execution_at
                 FROM schedule_executions
                 WHERE agent_name = ?
-                AND started_at > datetime('now', ? || ' hours')
-            """, (agent_name, f"-{hours}"))
+                AND started_at > ?
+            """, (agent_name, iso_cutoff(hours)))
 
             row = cursor.fetchone()
             if not row or row["task_count"] == 0:
@@ -1128,9 +1128,9 @@ class ScheduleOperations:
                     SUM(COALESCE(cost, 0)) as total_cost,
                     MAX(started_at) as last_execution_at
                 FROM schedule_executions
-                WHERE started_at > datetime('now', ? || ' hours')
+                WHERE started_at > ?
                 GROUP BY agent_name
-            """, (f"-{hours}",))
+            """, (iso_cutoff(hours),))
 
             results = []
             for row in cursor.fetchall():
@@ -1161,15 +1161,17 @@ class ScheduleOperations:
         """
         with get_db_connection() as conn:
             cursor = conn.cursor()
+            cutoff_24h = iso_cutoff(24)
+            cutoff_7d = iso_cutoff(168)
             cursor.execute("""
                 SELECT
                     agent_name,
-                    SUM(CASE WHEN started_at > datetime('now', '-24 hours') THEN 1 ELSE 0 END) as task_count_24h,
-                    SUM(CASE WHEN started_at > datetime('now', '-24 hours') AND status = 'success' THEN 1 ELSE 0 END) as success_count_24h,
-                    SUM(CASE WHEN started_at > datetime('now', '-24 hours') AND status = 'failed' THEN 1 ELSE 0 END) as failed_count_24h,
-                    SUM(CASE WHEN started_at > datetime('now', '-24 hours') AND status = 'running' THEN 1 ELSE 0 END) as running_count_24h,
-                    SUM(CASE WHEN started_at > datetime('now', '-24 hours') THEN COALESCE(cost, 0) ELSE 0 END) as total_cost_24h,
-                    MAX(CASE WHEN started_at > datetime('now', '-24 hours') THEN started_at ELSE NULL END) as last_execution_at_24h,
+                    SUM(CASE WHEN started_at > ? THEN 1 ELSE 0 END) as task_count_24h,
+                    SUM(CASE WHEN started_at > ? AND status = 'success' THEN 1 ELSE 0 END) as success_count_24h,
+                    SUM(CASE WHEN started_at > ? AND status = 'failed' THEN 1 ELSE 0 END) as failed_count_24h,
+                    SUM(CASE WHEN started_at > ? AND status = 'running' THEN 1 ELSE 0 END) as running_count_24h,
+                    SUM(CASE WHEN started_at > ? THEN COALESCE(cost, 0) ELSE 0 END) as total_cost_24h,
+                    MAX(CASE WHEN started_at > ? THEN started_at ELSE NULL END) as last_execution_at_24h,
                     COUNT(*) as task_count_7d,
                     SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count_7d,
                     SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_count_7d,
@@ -1177,9 +1179,9 @@ class ScheduleOperations:
                     SUM(COALESCE(cost, 0)) as total_cost_7d,
                     MAX(started_at) as last_execution_at_7d
                 FROM schedule_executions
-                WHERE started_at > datetime('now', '-168 hours')
+                WHERE started_at > ?
                 GROUP BY agent_name
-            """)
+            """, (cutoff_24h, cutoff_24h, cutoff_24h, cutoff_24h, cutoff_24h, cutoff_24h, cutoff_7d))
 
             results = []
             for row in cursor.fetchall():

@@ -691,10 +691,13 @@ Failed scheduled executions can be automatically retried with configurable delay
 
 | Field | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `max_retries` | 1 | 0-5 | Max retry attempts (0=disabled) |
+| `max_retries` | 0 | 0-5 | Max retry attempts (0=disabled; opt-in) |
 | `retry_delay_seconds` | 60 | 30-600 | Delay between retries |
 
-New schedules default to 1 retry. Existing schedules migrated with 0 (opt-in).
+Both new and existing schedules default to 0 (opt-in). Flipped from `1` to `0` in
+#476 because retries amplified load during multi-hour subscription outages
+without typically adding value — scheduled agents catch up on the next cron
+tick. Users opt in (1-5) when a missed tick is genuinely costly.
 
 ### Retry Flow
 
@@ -1075,6 +1078,7 @@ The embedded scheduler (`src/backend/services/scheduler_service.py`) has been co
 
 | Date | Change |
 |------|--------|
+| 2026-04-23 | **Retry Default Flipped (#476)**: `max_retries` default `1 → 0`. Both new and existing schedules are opt-in now. Scheduled agents typically catch up on next tick; retries amplified load during multi-hour outages. |
 | 2026-04-14 | **Automatic Retry (RETRY-001)**: Added Flow 10 documenting configurable retry mechanism for failed executions. New fields: max_retries, retry_delay_seconds, attempt_number, retry_of_execution_id, retry_scheduled_at. New status: pending_retry. |
 | 2026-03-26 | **Line number refresh + Process Schedules documentation**: Updated all line numbers to match current code. Added Flow 3 (Process Schedule Execution), process schedule sync documentation, process schedule database operations, and full service method reference table. |
 | 2026-03-13 | **Schedule Update Nullable Field Fix**: Changed `schedules.py:270` from `if v is not None` filter to `model_dump(exclude_unset=True)`. |

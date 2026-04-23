@@ -154,7 +154,7 @@ TABLES = {
             timeout_seconds INTEGER DEFAULT 900,
             allowed_tools TEXT,
             model TEXT,
-            max_retries INTEGER DEFAULT 1,
+            max_retries INTEGER DEFAULT 0,
             retry_delay_seconds INTEGER DEFAULT 60,
             validation_enabled INTEGER DEFAULT 0,
             validation_prompt TEXT,

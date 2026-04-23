@@ -96,6 +96,10 @@ class CleanupService:
         # process restart. Zero orphan recoveries over 2 weeks is the gate.
         self.cumulative_orphaned: int = 0
         self.cumulative_auto_terminated: int = 0
+        # #476: Cycle counter gates hourly maintenance (rate-limit-event prune)
+        # inside the 5-min cleanup loop. First cycle runs maintenance
+        # immediately; then every 12th cycle (60 min at 5-min interval).
+        self._cycle_count: int = 0
 
     def start(self):
         """Start the background cleanup loop."""
@@ -201,6 +205,18 @@ class CleanupService:
             )
         except Exception as e:
             logger.error(f"[Cleanup] Error cleaning stale slots: {e}")
+
+        # 4. Hourly maintenance: prune rate-limit events older than 24h (#476).
+        # Runs every 12th cycle (60 min at 5-min interval) plus the first
+        # cycle after startup so we don't wait an hour on boot.
+        if self._cycle_count % 12 == 0:
+            try:
+                pruned = db.cleanup_old_rate_limit_events()
+                if pruned > 0:
+                    logger.info(f"[Cleanup] Pruned {pruned} rate-limit events (>24h old)")
+            except Exception as e:
+                logger.error(f"[Cleanup] Error pruning rate-limit events: {e}")
+        self._cycle_count += 1
 
         self.last_run_at = utc_now_iso()
         self.last_report = report

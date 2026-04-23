@@ -103,7 +103,9 @@ async def _perform_auto_switch(
     # `select_best_alternative_subscription()` uses that to filter candidates.
     # Clearing here causes a ping-pong between exhausted subscriptions because
     # the old sub looks viable on the next cycle (issue #444). Events age out
-    # naturally via the 2h query window and the 24h cleanup job.
+    # naturally via the 2h query window (enforced by iso_cutoff — see
+    # utils/helpers.py, issue #476) and the 24h cleanup in
+    # services/cleanup_service.py removes them from disk.
 
     # Restart agent container to apply new subscription token
     restart_result = await _restart_agent(agent_name)

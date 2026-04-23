@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
 from .connection import get_db_connection
-from utils.helpers import utc_now_iso
+from utils.helpers import iso_cutoff, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -131,10 +131,10 @@ class DashboardHistoryOperations:
                 SELECT captured_at, value_numeric, value_text
                 FROM agent_dashboard_values
                 WHERE agent_name = ? AND widget_key = ?
-                AND captured_at > datetime('now', ? || ' hours')
+                AND captured_at > ?
                 ORDER BY captured_at ASC
                 LIMIT ?
-            """, (agent_name, widget_key, f"-{hours}", limit))
+            """, (agent_name, widget_key, iso_cutoff(hours), limit))
 
             results = []
             for row in cursor.fetchall():
@@ -169,9 +169,9 @@ class DashboardHistoryOperations:
                 SELECT widget_key, captured_at, value_numeric, value_text
                 FROM agent_dashboard_values
                 WHERE agent_name = ?
-                AND captured_at > datetime('now', ? || ' hours')
+                AND captured_at > ?
                 ORDER BY widget_key, captured_at ASC
-            """, (agent_name, f"-{hours}"))
+            """, (agent_name, iso_cutoff(hours)))
 
             results: Dict[str, List[Dict[str, Any]]] = {}
             for row in cursor.fetchall():
@@ -287,8 +287,8 @@ class DashboardHistoryOperations:
             cursor = conn.cursor()
             cursor.execute("""
                 DELETE FROM agent_dashboard_values
-                WHERE captured_at < datetime('now', ? || ' days')
-            """, (f"-{days}",))
+                WHERE captured_at < ?
+            """, (iso_cutoff(days * 24),))
             conn.commit()
             deleted = cursor.rowcount
             if deleted > 0:

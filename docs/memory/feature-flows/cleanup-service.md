@@ -55,6 +55,7 @@ Singleton pattern via global `cleanup_service` instance (line 141).
 - `_running: bool` - Service running flag
 - `last_run_at: Optional[str]` - ISO timestamp of last run
 - `last_report: Optional[CleanupReport]` - Results from last cycle
+- `_cycle_count: int` - Cycle counter gating hourly maintenance (#476; every 12th cycle @ 5-min interval)
 
 **Methods**:
 - `start()` (line 58): Creates asyncio task for `_cleanup_loop()`, sets `_running = True`
@@ -64,7 +65,7 @@ Singleton pattern via global `cleanup_service` instance (line 141).
 
 ### Cleanup Cycle (`run_cleanup`)
 
-Seven sequential operations, each wrapped in individual try/except. Watchdog runs FIRST to release resources before passive cleanup:
+Seven sequential operations plus an hourly maintenance gate, each wrapped in individual try/except. Watchdog runs FIRST to release resources before passive cleanup:
 
 0. **Watchdog: reconcile DB vs agent process registries** (Issue #129, #226)
    ```python
@@ -109,6 +110,14 @@ Seven sequential operations, each wrapped in individual try/except. Watchdog run
    )
    ```
    Calls `SlotService.cleanup_stale_slots()` with per-agent timeouts (#226). The service scans all `agent:slots:*` keys, computes each agent's TTL as `timeout_seconds + 5 min buffer` (or default 20 min if no timeout configured), removes entries older than that TTL, and returns a dict mapping agent names to reclaimed execution IDs. Phase 3 is then implemented by `_process_stale_slot_reclaims()` — see [Phase 3 Slot Reclaim Re-verification](#phase-3-slot-reclaim-re-verification-issue-378) below.
+
+6. **Hourly maintenance: prune rate-limit events** (Issue #476)
+   ```python
+   if self._cycle_count % 12 == 0:
+       pruned = db.cleanup_old_rate_limit_events()
+   self._cycle_count += 1
+   ```
+   Runs on cycle 0 (first sweep after boot) and every 12th cycle thereafter — so roughly hourly at the 5-min cleanup interval. Deletes rows from `subscription_rate_limit_events` with `occurred_at < iso_cutoff(24)`. Wired here after #476 confirmed `cleanup_old_rate_limit_events()` had zero production callers; without this, the SUB-003 rate-limit events table would grow unbounded once the lexicographic-compare fix started letting events age correctly.
 
 ### Watchdog Reconciliation (Issue #129)
 

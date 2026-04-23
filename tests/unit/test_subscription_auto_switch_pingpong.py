@@ -216,3 +216,92 @@ class TestPingPongPrevention:
         alt = sub_ops.select_best_alternative_subscription("sub-a")
         assert alt is not None
         assert alt.id == "sub-b"
+
+
+# =============================================================================
+# #476 regression: rate-limit events must age out correctly within the 2h window
+# =============================================================================
+
+class TestRateLimitAging:
+    """Issue #476 — before the fix, the SQL `datetime('now', '-2 hours')` filter
+    compared against `utc_now_iso()`-formatted TEXT lexicographically. Position 10
+    of `utc_now_iso()` is `T` (0x54); `datetime('now', ...)` uses space (0x20). So
+    every event whose date prefix matched today's date passed the "last 2 hours"
+    check regardless of actual clock time — events never aged out within the same
+    UTC day.
+
+    Pin the correct post-fix behavior using explicit `iso_cutoff()` seed values.
+    """
+
+    @staticmethod
+    def _seed_event(tmp_db_path, subscription_id: str, occurred_at: str) -> None:
+        """Insert a rate-limit event with a specific occurred_at timestamp."""
+        import sqlite3
+        import uuid as _uuid
+
+        conn = sqlite3.connect(str(tmp_db_path))
+        try:
+            conn.execute(
+                "INSERT INTO subscription_rate_limit_events "
+                "(id, agent_name, subscription_id, error_message, occurred_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (str(_uuid.uuid4()), "agent-x", subscription_id, "429", occurred_at),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_event_3h_ago_does_not_rate_limit(self, sub_ops, tmp_db):
+        """Event occurred 3h ago → outside the 2h window → not rate-limited.
+
+        Pre-fix this would incorrectly return True (same UTC day → date prefix
+        matched → lexicographic compare at position 10 tripped on T > space)."""
+        from utils.helpers import iso_cutoff
+
+        self._seed_event(tmp_db, "sub-a", iso_cutoff(3))
+        assert sub_ops.is_subscription_rate_limited("sub-a") is False
+
+    def test_event_1h_ago_rate_limits(self, sub_ops, tmp_db):
+        """Sanity check: event 1h ago is inside the 2h window → rate-limited."""
+        from utils.helpers import iso_cutoff
+
+        self._seed_event(tmp_db, "sub-a", iso_cutoff(1))
+        assert sub_ops.is_subscription_rate_limited("sub-a") is True
+
+    def test_consecutive_count_excludes_out_of_window_event(self, sub_ops, tmp_db):
+        """Two seeded events (3h ago + 1h ago) plus one live recording: the
+        `consecutive_count` returned by `record_rate_limit_event` must count
+        only in-window events (the 1h-old + just-now = 2). Pre-fix it would
+        have counted all three = 3, because neither seeded event ages out."""
+        from utils.helpers import iso_cutoff
+
+        self._seed_event(tmp_db, "sub-a", iso_cutoff(3))  # outside 2h window
+        self._seed_event(tmp_db, "sub-a", iso_cutoff(1))  # inside
+        # Live record (stores occurred_at = utc_now_iso, clearly inside)
+        count = sub_ops.record_rate_limit_event(
+            agent_name="agent-x",
+            subscription_id="sub-a",
+            error_message="429",
+        )
+        assert count == 2  # 1h-ago + just-now. Pre-fix: 3.
+
+    def test_event_25h_ago_does_not_rate_limit(self, sub_ops, tmp_db):
+        """Cross-day boundary sanity: a 25h-old event (guaranteed to span UTC
+        midnight from any execution time) must not rate-limit."""
+        from utils.helpers import iso_cutoff
+
+        self._seed_event(tmp_db, "sub-a", iso_cutoff(25))
+        assert sub_ops.is_subscription_rate_limited("sub-a") is False
+
+    def test_cleanup_removes_old_events(self, sub_ops, tmp_db):
+        """`cleanup_old_rate_limit_events` deletes rows with occurred_at >24h
+        ago, leaves fresher rows alone."""
+        from utils.helpers import iso_cutoff
+
+        self._seed_event(tmp_db, "sub-a", iso_cutoff(25))   # should prune
+        self._seed_event(tmp_db, "sub-a", iso_cutoff(30))   # should prune
+        self._seed_event(tmp_db, "sub-a", iso_cutoff(1))    # should keep
+        pruned = sub_ops.cleanup_old_rate_limit_events()
+        assert pruned == 2
+        # Fresh event still flags the subscription
+        assert sub_ops.is_subscription_rate_limited("sub-a") is True

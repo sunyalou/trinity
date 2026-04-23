@@ -1186,21 +1186,22 @@ def _migrate_scheduler_retry_support(cursor, conn):
     """RETRY-001: Scheduler retry mechanism for failed executions.
 
     Adds:
-    - agent_schedules.max_retries: max retry attempts (0=disabled, default 1 for new, 0 for existing)
+    - agent_schedules.max_retries: max retry attempts (0=disabled, default 0; #476 flipped from 1)
     - agent_schedules.retry_delay_seconds: delay between retries (default 60, range 30-600)
     - schedule_executions.attempt_number: which attempt this is (1 = first try)
     - schedule_executions.retry_of_execution_id: links retry to original execution
     - schedule_executions.retry_scheduled_at: when retry is scheduled (for restart recovery)
 
     Note: Existing schedules get max_retries=0 (opt-in) to avoid surprising behavior changes.
-    New schedules default to max_retries=1 (resilient by default).
+    New schedules also default to max_retries=0 since #476 (was 1 at migration time);
+    retries amplified load during multi-hour subscription outages.
     """
     # agent_schedules columns
     cursor.execute("PRAGMA table_info(agent_schedules)")
     as_cols = {row[1] for row in cursor.fetchall()}
 
     if "max_retries" not in as_cols:
-        # Default 0 for existing schedules (opt-in), schema default 1 for new
+        # Default 0 for existing schedules (opt-in); schema default is also 0 since #476
         cursor.execute("ALTER TABLE agent_schedules ADD COLUMN max_retries INTEGER DEFAULT 0")
     if "retry_delay_seconds" not in as_cols:
         cursor.execute("ALTER TABLE agent_schedules ADD COLUMN retry_delay_seconds INTEGER DEFAULT 60")

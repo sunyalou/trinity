@@ -106,7 +106,7 @@ def initialized_db(temp_db_path: str) -> Generator[str, None, None]:
             last_run_at TEXT,
             next_run_at TEXT,
             model TEXT,
-            max_retries INTEGER DEFAULT 1,
+            max_retries INTEGER DEFAULT 0,
             retry_delay_seconds INTEGER DEFAULT 60
         )
     """)

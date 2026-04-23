@@ -2,7 +2,7 @@
 Utility helper functions for the Trinity backend.
 """
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
 
 
@@ -41,6 +41,33 @@ def utc_now_iso() -> str:
         '2026-01-15T10:30:00.123456Z'
     """
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+
+
+def iso_cutoff(hours: int) -> str:
+    """
+    Compute a past-cutoff ISO timestamp in the same format as utc_now_iso().
+
+    Use this when building SQL that filters an `utc_now_iso()`-formatted
+    TEXT column by a rolling time window. DO NOT use SQLite's
+    `datetime('now', '-N hours')` for this — its output uses a space
+    separator and no `Z` suffix, which breaks lexicographic comparison
+    against ISO-Z strings at the separator character (issue #476).
+
+    Example:
+        cursor.execute(
+            "SELECT COUNT(*) FROM events WHERE occurred_at > ?",
+            (iso_cutoff(2),)
+        )
+
+    Args:
+        hours: Hours in the past (positive). `iso_cutoff(0)` ≈ `utc_now_iso()`.
+
+    Returns:
+        ISO timestamp matching the format of utc_now_iso().
+    """
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
+        '%Y-%m-%dT%H:%M:%S.%fZ'
+    )
 
 
 def to_utc_iso(dt: datetime) -> str:

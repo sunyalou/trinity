@@ -124,8 +124,8 @@
                   v-model="formData.max_retries"
                   class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 >
-                  <option :value="0">Disabled</option>
-                  <option :value="1">1 retry (default)</option>
+                  <option :value="0">Disabled (default)</option>
+                  <option :value="1">1 retry</option>
                   <option :value="2">2 retries</option>
                   <option :value="3">3 retries</option>
                   <option :value="5">5 retries</option>
@@ -664,8 +664,8 @@ const formData = ref({
   timeout_seconds: 900,
   allowed_tools: null,  // null = all tools allowed
   model: 'claude-opus-4-5-20251101',  // MODEL-001
-  // RETRY-001: Retry configuration
-  max_retries: 1,  // 0 = disabled, 1-5 range
+  // RETRY-001: Retry configuration. 0 = disabled (default, #476); 1-5 opt-in.
+  max_retries: 0,
   retry_delay_seconds: 60  // Seconds between retries (30-600 range)
 })
 
@@ -794,7 +794,7 @@ function closeForm() {
     allowed_tools: null,
     model: 'claude-opus-4-5-20251101',
     // RETRY-001
-    max_retries: 1,
+    max_retries: 0,
     retry_delay_seconds: 60
   }
 }
@@ -813,7 +813,7 @@ function editSchedule(schedule) {
     allowed_tools: schedule.allowed_tools || null,
     model: schedule.model || 'claude-opus-4-6',
     // RETRY-001
-    max_retries: schedule.max_retries ?? 1,
+    max_retries: schedule.max_retries ?? 0,
     retry_delay_seconds: schedule.retry_delay_seconds ?? 60
   }
 }

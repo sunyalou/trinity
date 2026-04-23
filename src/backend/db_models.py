@@ -117,7 +117,10 @@ class ScheduleCreate(BaseModel):
     allowed_tools: Optional[List[str]] = None  # None = all tools allowed
     model: Optional[str] = None  # Model override (MODEL-001). None = agent default
     # Retry configuration (RETRY-001)
-    max_retries: int = 1  # 0 = disabled, 1-5 range. Default 1 for resilience.
+    # 0 = disabled (default, #476). Set 1-5 to opt in. Scheduled agents
+    # typically catch up on the next cron tick, so retries add load without
+    # value during outages; users opt in when a missed tick matters.
+    max_retries: int = 0
     retry_delay_seconds: int = 60  # Seconds between retries (30-600 range)
     # Validation configuration (VALIDATE-001)
     validation_enabled: bool = False  # Enable post-execution validation
@@ -143,8 +146,8 @@ class Schedule(BaseModel):
     timeout_seconds: int = 900  # Default 15 minutes
     allowed_tools: Optional[List[str]] = None  # None = all tools allowed
     model: Optional[str] = None  # Model override (MODEL-001). None = agent default
-    # Retry configuration (RETRY-001)
-    max_retries: int = 1  # 0 = disabled, 1-5 range
+    # Retry configuration (RETRY-001). 0 = disabled (default, #476), 1-5 opt-in.
+    max_retries: int = 0
     retry_delay_seconds: int = 60  # Seconds between retries (30-600 range)
     # Validation configuration (VALIDATE-001)
     validation_enabled: bool = False  # Enable post-execution validation

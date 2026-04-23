@@ -50,7 +50,9 @@ Return switch result to caller → 429 response includes auto_switch info
 | Router | `src/backend/routers/chat.py` | 429 interception in chat proxy + background tasks |
 | Frontend | `src/frontend/src/views/Settings.vue` | Toggle in Subscriptions section |
 | Tests | `tests/test_subscription_auto_switch.py` | Smoke tests |
-| Tests | `tests/unit/test_subscription_auto_switch_pingpong.py` | Unit regression for #444 ping-pong prevention |
+| Tests | `tests/unit/test_subscription_auto_switch_pingpong.py` | Unit regression for #444 ping-pong prevention; `TestRateLimitAging` (#476) pins 2h-window correctness |
+| Tests | `tests/unit/test_iso_cutoff.py` | Format parity between `iso_cutoff(N)` and `utc_now_iso()` (#476) |
+| Util | `src/backend/utils/helpers.py::iso_cutoff` | Canonical cutoff helper for ISO-Z TEXT comparisons (#476) |
 | Spec | `docs/requirements/SUB-003-subscription-auto-switch.md` | Full requirements |
 
 ## Database
@@ -85,10 +87,35 @@ Return switch result to caller → 429 response includes auto_switch info
 3. Skip any subscription with rate-limit events in last 2 hours
 4. Return first viable candidate, or None
 
+## 2h Window Correctness (Issue #476)
+
+The "last 2 hours" filter in `is_subscription_rate_limited()` and
+`record_rate_limit_event()` now uses `iso_cutoff(2)` passed as a bound
+parameter — not SQLite's `datetime('now', '-2 hours')`. The two functions
+produce different string formats (`T` separator + `Z` suffix vs. space
+separator, no suffix); lexicographic compare on the old form tripped at
+position 10 (`T` (0x54) > space (0x20)), making every event with today's
+date pass the filter regardless of clock time. Net effect before the fix:
+events didn't age out until UTC midnight, and a single 429 early in the day
+marked a subscription as rate-limited for the rest of the UTC day, draining
+viable alternatives within minutes of the first real outage.
+
+Same correction applied to the 24h cleanup cutoff and the parallel
+`db/dashboard_history.py` / `db/schedules.py` stats queries that shared the
+pattern.
+
+## Cleanup Wiring
+
+`cleanup_old_rate_limit_events()` deletes events with `occurred_at <
+iso_cutoff(24)`. It is invoked hourly from `CleanupService._run_cleanup_inner`
+(phase 6, every 12th cycle at the 5-min loop interval). Prior to #476 it had
+zero production callers — the mis-comparison made the table look empty
+anyway, so the omission was silent.
+
 ## Edge Cases
 
 - **All subscriptions exhausted**: No switch, error surfaces as normal 429. `_perform_auto_switch` does **not** clear rate-limit events for the old subscription — those events are the signal that keeps `is_subscription_rate_limited()` truthful, so the just-drained sub is not offered as a candidate on the next cycle (issue #444).
 - **API key agents**: Auto-switch only applies to subscription-based agents
 - **Flip-flopping**: 2-consecutive-error requirement prevents immediate re-switch
 - **Concurrent switches**: SQLite serialization prevents races
-- **Cleanup**: Records older than 24h are eligible for cleanup; the 2h "is rate-limited" window drives candidate filtering independently of cleanup
+- **Cleanup**: Records older than 24h are pruned hourly by `CleanupService` (phase 6, #476); the 2h "is rate-limited" window drives candidate filtering independently of cleanup

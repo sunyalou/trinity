@@ -15,7 +15,7 @@ from typing import Optional, List, Dict, Any
 
 from .connection import get_db_connection
 from db_models import SubscriptionCredential, SubscriptionUsage, SubscriptionUsageWindow, SubscriptionWithAgents
-from utils.helpers import utc_now_iso
+from utils.helpers import iso_cutoff, utc_now_iso
 
 
 class SubscriptionOperations:
@@ -495,13 +495,14 @@ class SubscriptionOperations:
             """, (event_id, agent_name, subscription_id, error_message, now))
             conn.commit()
 
-            # Count consecutive events in last 2 hours
+            # Count consecutive events in last 2 hours (#476: iso_cutoff,
+            # not datetime('now', ...), so the format matches occurred_at)
             cursor.execute("""
                 SELECT COUNT(*) as cnt
                 FROM subscription_rate_limit_events
                 WHERE agent_name = ? AND subscription_id = ?
-                  AND occurred_at > datetime('now', '-2 hours')
-            """, (agent_name, subscription_id))
+                  AND occurred_at > ?
+            """, (agent_name, subscription_id, iso_cutoff(2)))
             return cursor.fetchone()["cnt"]
 
     def is_subscription_rate_limited(self, subscription_id: str) -> bool:
@@ -512,8 +513,8 @@ class SubscriptionOperations:
                 SELECT COUNT(*) as cnt
                 FROM subscription_rate_limit_events
                 WHERE subscription_id = ?
-                  AND occurred_at > datetime('now', '-2 hours')
-            """, (subscription_id,))
+                  AND occurred_at > ?
+            """, (subscription_id, iso_cutoff(2)))
             return cursor.fetchone()["cnt"] > 0
 
     def clear_rate_limit_events(self, agent_name: str, subscription_id: str) -> None:
@@ -532,8 +533,8 @@ class SubscriptionOperations:
             cursor = conn.cursor()
             cursor.execute("""
                 DELETE FROM subscription_rate_limit_events
-                WHERE occurred_at < datetime('now', '-24 hours')
-            """)
+                WHERE occurred_at < ?
+            """, (iso_cutoff(24),))
             count = cursor.rowcount
             conn.commit()
             return count
