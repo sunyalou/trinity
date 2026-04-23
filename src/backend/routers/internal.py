@@ -63,83 +63,21 @@ async def internal_health():
 # Scheduler pre-check (#454, SCHED-COND-001)
 # ---------------------------------------------------------------------------
 
-# Cap stdout/stderr to keep responses bounded. Stdout becomes a chat prompt;
-# 32 KB is plenty even for verbose scan output.
-_PRE_CHECK_STDOUT_CAP = 32_000
-_PRE_CHECK_STDERR_CAP = 4_000
-# Convention: language-agnostic executable. Template ships any executable
-# (Python, bash, node, compiled binary) — interpreter is determined by the
-# shebang line, not by Trinity. File must be marked +x.
-_PRE_CHECK_HOOK_PATH = "/home/developer/.trinity/pre-check"
-_PRE_CHECK_TIMEOUT_SECONDS = 60
-
 
 @router.post("/agents/{agent_name}/pre-check")
 async def internal_agent_pre_check(agent_name: str):
     """Run the agent's optional pre-check hook (SCHED-COND-001 / #454).
 
-    Called by the dedicated scheduler before firing a cron-triggered task.
-    Executes ``~/.trinity/pre-check`` inside the agent container via
-    ``docker exec`` (the same primitive used by ``services/git_service.py``
-    for the persistent-state allowlist, by ``ssh_service`` for key
-    provisioning, etc.). The hook is a language-agnostic executable; the
-    interpreter is selected by the file's shebang line.
-
-    Contract:
-      - ``hook_present == False`` → scheduler treats as no decision and
-        fires as usual (backward compat for templates without a hook).
-      - ``hook_present == True``, ``exit_code != 0`` → fail-open: scheduler
-        logs the stderr and fires as usual. Exit 126 (file not executable)
-        and 127 (no shebang / interpreter missing) surface here too — the
-        log is the operator's signal to fix the template.
-      - ``hook_present == True``, ``exit_code == 0``, empty stdout →
-        scheduler records a skipped execution.
-      - ``hook_present == True``, ``exit_code == 0``, non-empty stdout →
-        scheduler fires with the stdout used as the chat message
-        (overrides ``schedule.message``).
-
-    Fail-open is structural: any error here must not silently suppress
-    scheduled work. Worst case is today's baseline (chat fires, tokens
-    burn).
+    Thin passthrough — all logic lives in
+    ``services/pre_check_service.py`` (Invariant #1: Router → Service
+    → DB). See that module for the full contract.
     """
-    from services.docker_service import (
-        execute_command_in_container,
-        get_agent_container,
-    )
+    from services.pre_check_service import run_pre_check, AgentNotFound
 
-    container = get_agent_container(agent_name)
-    if not container:
+    try:
+        return await run_pre_check(agent_name)
+    except AgentNotFound:
         raise HTTPException(status_code=404, detail="Agent not found")
-
-    container_name = f"agent-{agent_name}"
-
-    # Step 1: fast existence check (`-f`, not `-x`). A present-but-non-executable
-    # file is treated as "hook present" so the operator gets a 126 in the logs
-    # rather than a silent backward-compat fall-through.
-    exists = await execute_command_in_container(
-        container_name=container_name,
-        command=f"test -f {_PRE_CHECK_HOOK_PATH}",
-        timeout=5,
-    )
-    if exists.get("exit_code") != 0:
-        return {"hook_present": False}
-
-    # Step 2: run the hook directly — shebang picks interpreter. Stdout
-    # becomes the chat prompt (or empty = skip).
-    result = await execute_command_in_container(
-        container_name=container_name,
-        command=_PRE_CHECK_HOOK_PATH,
-        timeout=_PRE_CHECK_TIMEOUT_SECONDS,
-    )
-    output = (result.get("output") or "")[: _PRE_CHECK_STDOUT_CAP + _PRE_CHECK_STDERR_CAP]
-    return {
-        "hook_present": True,
-        "exit_code": int(result.get("exit_code", 1)),
-        # `output` from container_exec_run is the combined stream — keep both
-        # fields for forward-compat in case we split them later.
-        "stdout": output[:_PRE_CHECK_STDOUT_CAP],
-        "stderr": "",
-    }
 
 
 @router.get("/agents/{agent_name}/sync-health-status")
