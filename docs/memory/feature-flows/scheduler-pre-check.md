@@ -1,13 +1,15 @@
 # Feature: Conditional Schedule Pre-Check (SCHED-COND-001 / Issue #454)
 
 ## Overview
-Optional template-supplied hook that lets a scheduled cron tick be skipped deterministically without waking Claude. Before firing a cron-triggered chat, the scheduler calls a **backend** internal endpoint, which `docker exec`s `~/.trinity/pre-check.py` inside the target agent container. Non-empty stdout becomes the chat prompt; empty stdout + exit 0 records a skipped execution. Eliminates per-tick token burn on poll-driven agents (PR reviewers, inbox monitors, alert routers).
+Optional template-supplied hook that lets a scheduled cron tick be skipped deterministically without waking Claude. Before firing a cron-triggered chat, the scheduler calls a **backend** internal endpoint, which `docker exec`s the executable `~/.trinity/pre-check` file inside the target agent container. Non-empty stdout becomes the chat prompt; empty stdout + exit 0 records a skipped execution. Eliminates per-tick token burn on poll-driven agents (PR reviewers, inbox monitors, alert routers).
+
+The hook is **language-agnostic** — Trinity execs the file directly, so the interpreter is chosen by the file's shebang line. Templates ship Python, bash, node, Go binaries — Trinity does not care.
 
 ## User Story
 As the author of a poll-driven agent template, I want a cheap deterministic gate to run before Claude wakes so empty polls (scan→no work) don't burn tokens. As a Trinity operator, I don't want to configure the gate per schedule — the agent template owns it, I just schedule the cadence.
 
 ## Entry Points
-- **Template contract**: ship `~/.trinity/pre-check.py` as a standalone executable script. Prints chat prompt to stdout when work is found; exits 0 with empty stdout to skip; exits non-zero on error (fail-open).
+- **Template contract**: ship `~/.trinity/pre-check` as a `+x` executable file with a shebang (`#!/usr/bin/env python3`, `#!/bin/bash`, etc.). Prints chat prompt to stdout when work is found; exits 0 with empty stdout to skip; exits non-zero on error (fail-open).
 - **Backend endpoint** (internal, `X-Internal-Secret` auth): `POST /api/internal/agents/{name}/pre-check` — runs the script and returns stdout + exit code. Called only by `trinity-scheduler`.
 - **No operator-facing API change**: schedule CRUD endpoints and the Schedules UI are unchanged. Operators create normal cron schedules; agents own the gate.
 
@@ -20,8 +22,8 @@ No UI change. Skipped executions appear in the existing schedule executions list
 Uses `services/docker_service.execute_command_in_container` (the same primitive as `services/git_service.py` persistent-state allowlist, `services/ssh_service.py` key provisioning, `services/agent_service/terminal.py`, `routers/system_agent.py`, `adapters/message_router.py` Slack ingest, etc.).
 
 Two exec steps:
-1. `test -f /home/developer/.trinity/pre-check.py` (5s timeout). If the file doesn't exist, return `{"hook_present": False}` immediately — scheduler treats as "no decision, fire as usual."
-2. `python3 /home/developer/.trinity/pre-check.py` (60s timeout). Returns the output (capped at 32 KB) and exit code.
+1. `test -f /home/developer/.trinity/pre-check` (5s timeout). If the file doesn't exist, return `{"hook_present": False}` immediately — scheduler treats as "no decision, fire as usual." Note `-f`, not `-x`: a file present but missing the executable bit is treated as "hook present" so the operator gets a 126 in the logs rather than a silent backward-compat fall-through.
+2. `/home/developer/.trinity/pre-check` (60s timeout). Trinity execs the path directly — no `python3` prefix. Interpreter resolution is the file's shebang. Returns the output (capped at 32 KB) and exit code.
 
 Returns:
 ```json
@@ -89,8 +91,10 @@ New event type: `schedule_execution_skipped`.
 | Condition | Scheduler behavior |
 |---|---|
 | Agent container doesn't exist | Backend returns 404 → fire as usual (schedule likely stale, let execute-task path handle the 404 surfacing) |
-| `~/.trinity/pre-check.py` absent | `hook_present: false` → fire as usual (backward compat) |
-| `python3 .../pre-check.py` exits non-zero | Fail-open — log stderr, fire with `schedule.message` |
+| `~/.trinity/pre-check` absent | `hook_present: false` → fire as usual (backward compat) |
+| File present but not `+x` (exit 126) | Fail-open — log "hook for X exited 126", fire with `schedule.message`. Operator's signal to `chmod +x` the hook. |
+| Shebang missing or interpreter not found (exit 127) | Fail-open — log shows "command not found"; operator fixes shebang. |
+| Hook exits non-zero for any other reason | Fail-open — log stderr, fire with `schedule.message` |
 | Exec timeout (>60s) | Backend returns non-zero exit → fail-open |
 | Backend unreachable (connection error) | Fail-open — fire as usual, log warning |
 | Backend 5xx / malformed JSON | Fail-open |
@@ -100,7 +104,7 @@ New event type: `schedule_execution_skipped`.
 
 ## Security
 - Pre-check runs inside the agent's container as `developer`, same sandbox as chat-mode tool calls. No new privilege over what chat-mode tool calls can already do.
-- **Template review expectation**: `.trinity/pre-check.py` is executed with full Python interpreter access — it can `import subprocess`, open sockets, read files. This is intentional (operators already trust the template's `CLAUDE.md`, skills, and tool invocations), but `.trinity/pre-check.py` should be reviewed with the same scrutiny as any other executable file the template ships.
+- **Template review expectation**: `.trinity/pre-check` is exec'd directly via the kernel — full process privileges of `developer`, in whatever language the shebang names. It can spawn subprocesses, open sockets, read files. This is intentional (operators already trust the template's `CLAUDE.md`, skills, and tool invocations), but `.trinity/pre-check` should be reviewed with the same scrutiny as any other executable the template ships.
 - Backend endpoint is gated by the existing `X-Internal-Secret` header (C-003). Only `trinity-scheduler` and other internal services can invoke it.
 - Stdout cap at 32 KB on the backend side — oversized output is truncated, still valid as a chat prompt (or truncated to "looks non-empty" which is fine for the fire-with-override path).
 - Fail-open policy means a malicious/broken pre-check cannot suppress scheduled invocations (worst case: wastes tokens — today's baseline).
@@ -133,4 +137,4 @@ No test file on the agent-server side — there's no agent-server router anymore
 ## Migration / Rollout
 - Zero migration required (no schema change).
 - Existing schedules and agent templates behave identically after deploy (script absent → fall back to today's fire semantics).
-- Templates opt in by shipping `.trinity/pre-check.py` (executable, `+x`). No Trinity-side flag.
+- Templates opt in by shipping `.trinity/pre-check` (executable, `+x`, with a shebang). No Trinity-side flag. File extension is intentionally absent — the file is whatever the shebang says it is.

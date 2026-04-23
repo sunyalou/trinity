@@ -67,7 +67,10 @@ async def internal_health():
 # 32 KB is plenty even for verbose scan output.
 _PRE_CHECK_STDOUT_CAP = 32_000
 _PRE_CHECK_STDERR_CAP = 4_000
-_PRE_CHECK_HOOK_PATH = "/home/developer/.trinity/pre-check.py"
+# Convention: language-agnostic executable. Template ships any executable
+# (Python, bash, node, compiled binary) — interpreter is determined by the
+# shebang line, not by Trinity. File must be marked +x.
+_PRE_CHECK_HOOK_PATH = "/home/developer/.trinity/pre-check"
 _PRE_CHECK_TIMEOUT_SECONDS = 60
 
 
@@ -76,16 +79,19 @@ async def internal_agent_pre_check(agent_name: str):
     """Run the agent's optional pre-check hook (SCHED-COND-001 / #454).
 
     Called by the dedicated scheduler before firing a cron-triggered task.
-    Executes ``~/.trinity/pre-check.py`` inside the agent container via
+    Executes ``~/.trinity/pre-check`` inside the agent container via
     ``docker exec`` (the same primitive used by ``services/git_service.py``
     for the persistent-state allowlist, by ``ssh_service`` for key
-    provisioning, etc.).
+    provisioning, etc.). The hook is a language-agnostic executable; the
+    interpreter is selected by the file's shebang line.
 
     Contract:
       - ``hook_present == False`` → scheduler treats as no decision and
         fires as usual (backward compat for templates without a hook).
       - ``hook_present == True``, ``exit_code != 0`` → fail-open: scheduler
-        logs the stderr and fires as usual.
+        logs the stderr and fires as usual. Exit 126 (file not executable)
+        and 127 (no shebang / interpreter missing) surface here too — the
+        log is the operator's signal to fix the template.
       - ``hook_present == True``, ``exit_code == 0``, empty stdout →
         scheduler records a skipped execution.
       - ``hook_present == True``, ``exit_code == 0``, non-empty stdout →
@@ -107,9 +113,9 @@ async def internal_agent_pre_check(agent_name: str):
 
     container_name = f"agent-{agent_name}"
 
-    # Step 1: fast existence check. If the template ships no hook, return
-    # immediately so the scheduler can fire as usual without spinning up
-    # python3 inside the container.
+    # Step 1: fast existence check (`-f`, not `-x`). A present-but-non-executable
+    # file is treated as "hook present" so the operator gets a 126 in the logs
+    # rather than a silent backward-compat fall-through.
     exists = await execute_command_in_container(
         container_name=container_name,
         command=f"test -f {_PRE_CHECK_HOOK_PATH}",
@@ -118,10 +124,11 @@ async def internal_agent_pre_check(agent_name: str):
     if exists.get("exit_code") != 0:
         return {"hook_present": False}
 
-    # Step 2: run the hook. Stdout becomes the chat prompt (or empty = skip).
+    # Step 2: run the hook directly — shebang picks interpreter. Stdout
+    # becomes the chat prompt (or empty = skip).
     result = await execute_command_in_container(
         container_name=container_name,
-        command=f"python3 {_PRE_CHECK_HOOK_PATH}",
+        command=_PRE_CHECK_HOOK_PATH,
         timeout=_PRE_CHECK_TIMEOUT_SECONDS,
     )
     output = (result.get("output") or "")[: _PRE_CHECK_STDOUT_CAP + _PRE_CHECK_STDERR_CAP]

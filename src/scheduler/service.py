@@ -901,11 +901,13 @@ class SchedulerService:
     async def _run_pre_check(self, agent_name: str) -> Optional[dict]:
         """Run the agent's optional pre-check hook (#454, SCHED-COND-001).
 
-        Calls the backend's internal endpoint, which executes
-        ``~/.trinity/pre-check.py`` inside the agent container via
-        ``docker exec`` (same primitive as the persistent-state allowlist
-        in ``services/git_service.py``). The scheduler never opens its
-        own HTTP edge to agents — backend remains the orchestrator.
+        Calls the backend's internal endpoint, which `docker exec`s the
+        executable ``~/.trinity/pre-check`` file inside the agent
+        container (same primitive as the persistent-state allowlist in
+        ``services/git_service.py``). The hook is language-agnostic —
+        Trinity execs the path directly, so the interpreter is chosen
+        by the file's shebang. The scheduler never opens its own HTTP
+        edge to agents — backend remains the orchestrator.
 
         Contract translation (backend → caller):
           - ``hook_present == False``               → return ``None`` (fire as usual)
