@@ -164,7 +164,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - `docker_service.py` - Docker container management
 - `docker_utils.py` - Docker utility helpers
 - `template_service.py` - GitHub template cloning and processing
-- `agent_client.py` - HTTP client for agent container communication (chat, session, injection)
+- `agent_client.py` - HTTP client for agent container communication (chat, session, injection). Includes a per-agent **circuit breaker** (`CircuitState`): opens after 3 `ConnectError`/`TimeoutException` failures within one cooldown window (30 s), blocks further calls until a 30 s cooldown expires (half-open probe). `ReadError`/`WriteError` (EPIPE, ECONNRESET — typically a dropped client pipe, not an agent health issue) are caught and logged but do **not** count toward the threshold. Failure count resets when the last failure is older than the cooldown window, preventing stale failures from compounding with a new burst.
 - `settings_service.py` - Centralized settings retrieval (API keys, ops config, agent quotas)
 
 *Execution & Scheduling:*
