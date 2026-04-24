@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from database import db
@@ -105,6 +105,73 @@ def _parse_expires(value: str) -> datetime:
     return dt
 
 
+async def _validate_download_request(
+    file_id: str,
+    request: Request,
+    sig: Optional[str],
+    download_token_alias: Optional[str],
+    session_token: Optional[str],
+) -> tuple:
+    """
+    Shared validation for GET and HEAD requests.
+
+    Returns ``(row, storage_path, headers, mime_type, client_ip)`` on success.
+    Raises HTTPException on any failure (401 / 404 / 410 / 500 / 429 / 403).
+    """
+    client_ip = _get_client_ip(request)
+    _check_file_download_rate_limit(client_ip)  # 429 on limit (C5 — dedicated bucket)
+
+    # Accept either `sig` (preferred) or `download_token` (legacy alias)
+    token = sig or download_token_alias
+    if not token:
+        raise HTTPException(status_code=401, detail="sig required")
+
+    row = db.get_agent_shared_file(file_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="not found")
+
+    # Constant-time compare to prevent timing oracles
+    if not secrets.compare_digest(token, row["download_token"]):
+        raise HTTPException(status_code=401, detail="invalid download_token")
+
+    if row["revoked_at"]:
+        raise HTTPException(status_code=410, detail="revoked")
+
+    try:
+        expires = _parse_expires(row["expires_at"])
+    except ValueError:
+        logger.error("[files] malformed expires_at on file_id=%s: %r", file_id, row.get("expires_at"))
+        raise HTTPException(status_code=500, detail="storage error")
+    if datetime.now(timezone.utc) > expires:
+        raise HTTPException(status_code=410, detail="expired")
+
+    # Per-agent channel-access policy gate — same as public chat
+    agent_name = row["agent_name"]
+    if _agent_requires_email(agent_name):
+        if not session_token:
+            raise HTTPException(status_code=401, detail="session_token required")
+        valid, _email = db.validate_agent_session(agent_name, session_token)
+        if not valid:
+            raise HTTPException(status_code=401, detail="invalid or expired session_token")
+
+    storage_path = os.path.join(STORAGE_ROOT, row["stored_filename"])
+    if not os.path.exists(storage_path):
+        logger.error(
+            "[files] orphan DB row for file_id=%s — stored_filename=%s missing on disk",
+            file_id, row["stored_filename"],
+        )
+        raise HTTPException(status_code=500, detail="storage error")
+
+    headers = {
+        "Content-Disposition": _format_disposition(row["filename"]),
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, no-store",
+        "Content-Length": str(row["size_bytes"]),
+    }
+    mime_type = row["mime_type"] or "application/octet-stream"
+    return row, storage_path, headers, mime_type, client_ip
+
+
 @router.get("/{file_id}")
 async def download_shared_file(
     file_id: str,
@@ -125,50 +192,10 @@ async def download_shared_file(
     pairs from agent responses, stripping the token in transit. New
     URLs emit `?sig=...`.
     """
-    client_ip = _get_client_ip(request)
-    _check_file_download_rate_limit(client_ip)  # 429 on limit (C5 — dedicated bucket)
-
-    # Accept either `sig` (preferred) or `download_token` (legacy alias)
-    token = sig or download_token
-    if not token:
-        raise HTTPException(status_code=401, detail="sig required")
-    download_token = token  # use same variable below
-
-    row = db.get_agent_shared_file(file_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="not found")
-
-    # Constant-time compare to prevent timing oracles
-    if not secrets.compare_digest(download_token, row["download_token"]):
-        raise HTTPException(status_code=401, detail="invalid download_token")
-
-    if row["revoked_at"]:
-        raise HTTPException(status_code=410, detail="revoked")
-
-    try:
-        expires = _parse_expires(row["expires_at"])
-    except ValueError:
-        logger.error("[files] malformed expires_at on file_id=%s: %r", file_id, row.get("expires_at"))
-        raise HTTPException(status_code=500, detail="storage error")
-    if datetime.now(timezone.utc) > expires:
-        raise HTTPException(status_code=410, detail="expired")
-
-    # Per-agent channel-access policy gate — same as public chat
+    row, storage_path, headers, mime_type, client_ip = await _validate_download_request(
+        file_id, request, sig, download_token, session_token,
+    )
     agent_name = row["agent_name"]
-    if _agent_requires_email(agent_name):
-        if not session_token:
-            raise HTTPException(status_code=401, detail="session_token required")
-        valid, email = db.validate_agent_session(agent_name, session_token)
-        if not valid:
-            raise HTTPException(status_code=401, detail="invalid or expired session_token")
-
-    storage_path = os.path.join(STORAGE_ROOT, row["stored_filename"])
-    if not os.path.exists(storage_path):
-        logger.error(
-            "[files] orphan DB row for file_id=%s — stored_filename=%s missing on disk",
-            file_id, row["stored_filename"],
-        )
-        raise HTTPException(status_code=500, detail="storage error")
 
     # Counters — best-effort
     try:
@@ -197,15 +224,31 @@ async def download_shared_file(
     except Exception as e:  # pragma: no cover
         logger.warning("[files] audit log failed for %s: %s", file_id, e)
 
-    headers = {
-        "Content-Disposition": _format_disposition(row["filename"]),
-        "X-Content-Type-Options": "nosniff",
-        "Cache-Control": "private, no-store",
-        "Content-Length": str(row["size_bytes"]),
-    }
-    mime_type = row["mime_type"] or "application/octet-stream"
     return StreamingResponse(
         _iter_file(storage_path),
         media_type=mime_type,
         headers=headers,
     )
+
+
+@router.head("/{file_id}")
+async def head_shared_file(
+    file_id: str,
+    request: Request,
+    sig: Optional[str] = None,
+    download_token: Optional[str] = None,
+    session_token: Optional[str] = None,
+):
+    """
+    HEAD handler for link previewers / CDNs that probe before GET.
+
+    Runs the same validation as GET (rate limit, token, expiry, revoke,
+    policy gate, storage presence) and returns the same headers —
+    but no body, no download counter bump, no audit row. Follows RFC 7231
+    §4.3.2: HEAD is identical to GET except the server MUST NOT return
+    a message-body.
+    """
+    _row, _storage_path, headers, mime_type, _client_ip = await _validate_download_request(
+        file_id, request, sig, download_token, session_token,
+    )
+    return Response(status_code=200, headers=headers, media_type=mime_type)
