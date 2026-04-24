@@ -29,8 +29,8 @@ from fastapi.responses import StreamingResponse
 from database import db
 from services.agent_shared_files_service import STORAGE_ROOT
 from services.platform_audit_service import AuditEventType, platform_audit_service
+from routers.auth import get_redis_client
 from routers.public import (
-    check_public_link_rate_limit,
     _get_client_ip,
     _agent_requires_email,
 )
@@ -40,6 +40,40 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/files", tags=["files"])
 
 _CHUNK_SIZE = 64 * 1024
+
+# C5: File-download rate limit has its OWN bucket so heavy download
+# traffic can't exhaust the shared public_link_lookups bucket used by
+# /api/public/* endpoints. Same 60/min per IP default; configurable via
+# redis key prefix.
+_DOWNLOAD_RATE_LIMIT = 60         # requests per window per IP
+_DOWNLOAD_RATE_WINDOW = 60        # window in seconds
+
+
+def _check_file_download_rate_limit(client_ip: str) -> None:
+    """
+    Rate-limit GETs to /api/files/{id} per client IP.
+
+    Fails open if Redis is unavailable (logs a warning) — same convention
+    as public-link rate limiting. Uses a dedicated `file_downloads:{ip}`
+    bucket so it can't starve other public endpoints.
+    """
+    r = get_redis_client()
+    if r is None:
+        logger.warning("File download rate limiting unavailable — Redis not connected")
+        return
+    key = f"file_downloads:{client_ip}"
+    try:
+        attempts = r.get(key)
+        if attempts and int(attempts) >= _DOWNLOAD_RATE_LIMIT:
+            raise HTTPException(status_code=429, detail="Too many requests. Please try again later.")
+        pipe = r.pipeline()
+        pipe.incr(key)
+        pipe.expire(key, _DOWNLOAD_RATE_WINDOW)
+        pipe.execute()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"File download rate limit check failed: {e}")
 
 
 def _iter_file(path: str):
@@ -92,7 +126,7 @@ async def download_shared_file(
     URLs emit `?sig=...`.
     """
     client_ip = _get_client_ip(request)
-    check_public_link_rate_limit(client_ip)  # 429 on limit
+    _check_file_download_rate_limit(client_ip)  # 429 on limit (C5 — dedicated bucket)
 
     # Accept either `sig` (preferred) or `download_token` (legacy alias)
     token = sig or download_token
