@@ -8,12 +8,11 @@
 
 ## Overview
 
-The Operating Room is the unified command center for all agent-to-operator communication. It consolidates the operator queue (approval/question/alert requests), agent notifications, and cost alerts into a single 4-tab interface. Agents communicate through a standardized file-based protocol (`~/.trinity/operator-queue.json`), which the platform syncs to a database and presents as actionable cards.
+The Operating Room is the unified command center for all agent-to-operator communication. It consolidates the operator queue (approval/question/alert requests) and agent notifications into a single 3-tab interface. Agents communicate through a standardized file-based protocol (`~/.trinity/operator-queue.json`), which the platform syncs to a database and presents as actionable cards.
 
-The four tabs cover:
+The three tabs cover:
 - **Needs Response** -- Operator queue items requiring action (approvals, questions, alerts)
 - **Notifications** -- Agent notifications with filtering, bulk actions, and acknowledgement (formerly the standalone Events page)
-- **Cost Alerts** -- Cost threshold alerts with severity indicators and dismiss controls (formerly the standalone Alerts page)
 - **Resolved** -- Completed operator queue items
 
 Three operator queue request types:
@@ -23,20 +22,19 @@ Three operator queue request types:
 
 ## User Story
 
-As an operator, I want a single inbox where I can see and respond to all agent requests, notifications, and cost alerts so that I can manage my fleet efficiently without switching between pages.
+As an operator, I want a single inbox where I can see and respond to all agent requests and notifications so that I can manage my fleet efficiently without switching between pages.
 
 ---
 
 ## Entry Points
 
-- **UI**: `src/frontend/src/views/OperatingRoom.vue` -- `/operating-room` route (4 tabs via `?tab=` query param)
+- **UI**: `src/frontend/src/views/OperatingRoom.vue` -- `/operating-room` route (3 tabs via `?tab=` query param)
 - **API**: `GET /api/operator-queue` -- List queue items
 - **API**: `POST /api/operator-queue/{id}/respond` -- Submit response
 - **API**: `GET /api/operator-queue/stats` -- Queue statistics
 - **API**: `GET /api/notifications` -- List agent notifications (used by Notifications tab)
-- **API**: `GET /api/alerts` -- List cost alerts (used by Cost Alerts tab)
-- **NavBar**: Combined badge on "Ops" link showing `pendingCount + notificationsStore.pendingCount + alertsStore.activeCount` (`src/frontend/src/components/NavBar.vue:40-53`)
-- **Legacy redirects**: `/events` redirects to `/operating-room?tab=notifications`, `/alerts` redirects to `/operating-room?tab=cost-alerts`
+- **NavBar**: Combined badge on "Ops" link showing `operatorQueueStore.pendingCount + notificationsStore.pendingCount` (`src/frontend/src/components/NavBar.vue:218-220`)
+- **Legacy redirects**: `/events` redirects to `/operating-room?tab=notifications`, `/alerts` still redirects to `/operating-room?tab=cost-alerts` (stale redirect -- tab no longer exists; lands on default tab)
 - **Agent**: Writes `~/.trinity/operator-queue.json` inside container
 
 ---
@@ -47,15 +45,14 @@ As an operator, I want a single inbox where I can see and respond to all agent r
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/frontend/src/views/OperatingRoom.vue` | 1-222 | Main page -- 4-tab layout (Needs Response / Notifications / Cost Alerts / Resolved), `?tab=` deep linking, combined subtitle, refresh button, polling lifecycle. Imports `useAgentsStore` and fetches agents on mount to provide avatar URLs |
+| `src/frontend/src/views/OperatingRoom.vue` | 1-195 | Main page -- 3-tab layout (Needs Response / Notifications / Resolved), `?tab=` deep linking, combined subtitle, refresh button, polling lifecycle. Imports `useAgentsStore` and fetches agents on mount to provide avatar URLs |
 | `src/frontend/src/components/operator/QueueCard.vue` | 1-253 | Expandable card -- `AgentAvatar` component (with real avatar images from agents store), markdown body, inline response controls |
 | `src/frontend/src/components/operator/ResolvedCard.vue` | 1-67 | Compact resolved item -- `AgentAvatar` component (with real avatar images), checkmark, response text, timestamp |
 | `src/frontend/src/components/operator/NotificationsPanel.vue` | 1-541 | Notification list with agent/type/priority/status filters, bulk actions (acknowledge/dismiss), stats row, expandable messages, empty state |
-| `src/frontend/src/components/operator/CostAlertsPanel.vue` | 1-174 | Cost alert list with status filter, active/total stats, severity icons, dismiss controls, empty state |
 | `src/frontend/src/components/operator/QueueList.vue` | 1-195 | Filterable list view (type, priority, agent, status) with priority indicators |
 | `src/frontend/src/components/operator/QueueStats.vue` | 1-88 | Stats sidebar -- pending by priority, today's total, avg response time, by agent |
 | `src/frontend/src/components/operator/QueueItemDetail.vue` | 1-286 | Detail panel -- full item view with response controls (approval/question/alert) |
-| `src/frontend/src/components/NavBar.vue` | 40-53, 192-194, 218-224 | "Ops" nav link with combined badge count (queue + notifications + alerts); imports all three stores |
+| `src/frontend/src/components/NavBar.vue` | 192-195, 218-224 | "Ops" nav link with combined badge count (queue + notifications); imports operatorQueue and notifications stores only |
 
 ### Route
 
@@ -63,13 +60,12 @@ As an operator, I want a single inbox where I can see and respond to all agent r
 /operating-room          -> OperatingRoom.vue (requiresAuth: true)
 /operating-room?tab=needs-response    -> Needs Response tab (default)
 /operating-room?tab=notifications     -> Notifications tab
-/operating-room?tab=cost-alerts       -> Cost Alerts tab
 /operating-room?tab=resolved          -> Resolved tab
 /events                  -> REDIRECT to /operating-room?tab=notifications
-/alerts                  -> REDIRECT to /operating-room?tab=cost-alerts
+/alerts                  -> REDIRECT to /operating-room?tab=cost-alerts  (STALE: tab removed; falls back to 'needs-response')
 ```
 
-Registered in `src/frontend/src/router/index.js:132-136`:
+Registered in `src/frontend/src/router/index.js:72-76`:
 ```javascript
 {
   path: '/operating-room',
@@ -79,28 +75,27 @@ Registered in `src/frontend/src/router/index.js:132-136`:
 }
 ```
 
-Legacy redirects (`src/frontend/src/router/index.js:111-118`):
+Legacy redirects (`src/frontend/src/router/index.js:63-70`):
 ```javascript
 // Legacy redirects: Events and Alerts consolidated into Operating Room
-{ path: '/alerts', redirect: '/operating-room?tab=cost-alerts' },
+{ path: '/alerts', redirect: '/operating-room?tab=cost-alerts' },  // tab no longer valid
 { path: '/events', redirect: '/operating-room?tab=notifications' },
 ```
 
-Tab selection uses `?tab=` query parameter. `OperatingRoom.vue` reads `route.query.tab` on mount and validates against `VALID_TABS = ['needs-response', 'notifications', 'cost-alerts', 'resolved']`. Defaults to `'needs-response'` if invalid or missing. Tab switches call `router.replace()` to update the URL without navigation (line 193-196).
+Tab selection uses `?tab=` query parameter. `OperatingRoom.vue` reads `route.query.tab` on mount and validates against `VALID_TABS = ['needs-response', 'notifications', 'resolved']`. Defaults to `'needs-response'` if invalid or missing. Tab switches call `router.replace()` to update the URL without navigation (line 168-170).
 
 ### State Management
 
 **Primary Store**: `src/frontend/src/stores/operatorQueue.js` (194 lines) -- Manages the operator queue (Needs Response + Resolved tabs)
 
-**Additional Stores** (used by Notifications and Cost Alerts tabs; see their own flow docs for full details):
+**Additional Stores** (used by Notifications tab; see its own flow doc for full details):
 - `src/frontend/src/stores/notifications.js` (315 lines) -- Manages notification list, filters, bulk actions, pending count. Used by `NotificationsPanel.vue`. Key getters: `pendingCount`, `hasUrgentPending`.
-- `src/frontend/src/stores/alerts.js` (183 lines) -- Manages cost alerts, active count. Used by `CostAlertsPanel.vue`. Key getters: `activeCount`, `hasActiveAlerts`.
 - `src/frontend/src/stores/agents.js` -- Provides agent data including `avatar_url`. Fetched on mount by `OperatingRoom.vue` if not already loaded. Used by `QueueCard.vue` and `ResolvedCard.vue` to resolve agent avatar images.
 
 **Operator Queue Store State:**
 - `items` (ref) -- Array of queue items from backend API
 - `expandedItemId` (ref) -- Currently expanded card (null = none)
-- `activeTab` (ref) -- Tab state (note: the 4-tab switching is now managed locally in OperatingRoom.vue, not in the store)
+- `activeTab` (ref) -- Tab state (note: the 3-tab switching is managed locally in OperatingRoom.vue, not in the store)
 - `loading` (ref) -- Loading state
 - `error` (ref) -- Error message
 
@@ -166,32 +161,31 @@ Event handling in the store (`handleWebSocketEvent`, line 137-157):
 
 ### NavBar Badge
 
-`src/frontend/src/components/NavBar.vue:40-53`:
+`src/frontend/src/components/NavBar.vue:192-224`:
 
-- Imports three stores: `useOperatorQueueStore` (line 194), `useNotificationsStore` (line 193), `useAlertsStore` (line 192)
-- **Combined count** (line 218-220): `combinedOpsCount = operatorQueueStore.pendingCount + notificationsStore.pendingCount + alertsStore.activeCount`
+- Imports two stores: `useOperatorQueueStore` (line 195), `useNotificationsStore` (line 194)
+- **Combined count** (line 218-220): `combinedOpsCount = operatorQueueStore.pendingCount + notificationsStore.pendingCount`
 - Badge shows `combinedOpsCount` with max display of "99+"
-- **Critical detection** (line 222-224): `hasCriticalOpsItem = operatorQueueStore.criticalCount > 0 || notificationsStore.hasUrgentPending || alertsStore.activeCount > 0`
+- **Critical detection** (line 222-224): `hasCriticalOpsItem = operatorQueueStore.criticalCount > 0 || notificationsStore.hasUrgentPending`
 - Color: `bg-red-500 animate-pulse` when `hasCriticalOpsItem`, otherwise `bg-orange-500`
 - Badge hidden when `combinedOpsCount === 0`
-- NavBar starts polling for alerts (60s) and notifications (60s) on mount (line 262-263), stops on unmount (line 278-279)
+- NavBar starts polling for notifications (60s) on mount (line 254), stops on unmount (line 269)
 - **Removed**: Standalone Events bell icon and Alerts bell icon that were previously in the NavBar
 
 ### UX Behaviors
 
-1. **4-tab layout** -- Needs Response, Notifications, Cost Alerts, Resolved. Each tab shows its own count badge when > 0 (line 24-68)
-2. **Deep linking** -- `?tab=` query parameter selects the active tab; `switchTab()` updates URL via `router.replace()` (line 193-196)
-3. **Dynamic subtitle** -- Shows combined summary like "3 pending responses, 2 notifications, 1 cost alert" or "All clear" (computed `subtitle`, line 176-191)
+1. **3-tab layout** -- Needs Response, Notifications, Resolved. Each tab shows its own count badge when > 0 (line 16-60)
+2. **Deep linking** -- `?tab=` query parameter selects the active tab; `switchTab()` updates URL via `router.replace()` (line 168-170)
+3. **Dynamic subtitle** -- Shows combined summary like "3 pending responses, 2 notifications" or "All clear" (computed `subtitle`, line 152-165)
 4. **Auto-expand first item** on page load -- `watch` on `openItems.length` in `OperatingRoom.vue:213-217`
 5. **Auto-advance** after responding -- next open item expands automatically (store `respondToItem` line 119-122)
 6. **Collapse on click** -- X button in QueueCard header (`@click.stop="store.toggleExpand(item.id)"` line 52)
 7. **Context collapsible** -- "Show details" toggle in QueueCard (line 70-94)
-8. **Combined badge in NavBar** -- Orange when any items pending, red+pulse when critical queue items, urgent notifications, or active cost alerts
-9. **Polling fallback** -- 10s interval from OperatingRoom.vue for queue items, 60s for alerts/notifications (via NavBar)
+8. **Combined badge in NavBar** -- Orange when any items pending, red+pulse when critical queue items or urgent notifications
+9. **Polling fallback** -- 10s interval from OperatingRoom.vue for queue items, 60s for notifications (via NavBar)
 10. **Form reset** -- `watch(isExpanded)` in QueueCard resets selectedOption, responseText, showContext on collapse (line 191-197)
-11. **Manual refresh** -- Refresh button next to tabs (`OperatingRoom.vue:82-97`). Shows spinning icon (`animate-spin`) while `store.loading` is true. Calls `store.fetchItems()`, `notificationsStore.fetchPendingCount()`, and `alertsStore.fetchActiveCount()`. Disabled during loading. Positioned via `ml-auto` to sit at the right edge of the tab bar.
+11. **Manual refresh** -- Refresh button next to tabs (`OperatingRoom.vue:63-79`). Shows spinning icon (`animate-spin`) while `store.loading` is true. Calls `store.fetchItems()` and `notificationsStore.fetchPendingCount()`. Disabled during loading. Positioned via `ml-auto` to sit at the right edge of the tab bar.
 12. **Notifications tab features** -- Agent/type/priority/status filters, show-dismissed toggle, bulk acknowledge/dismiss, select-all, expandable messages, load-more pagination, stats cards (pending/acknowledged/total/agents)
-13. **Cost Alerts tab features** -- Status filter (all/active/dismissed), active/total stats cards, severity icons, threshold details (type, amounts), dismiss button per alert
 
 ---
 
@@ -589,9 +583,9 @@ The `/api/trinity/inject` endpoint compares the source `prompt.md` (at `/trinity
 ```
 +--------------------------------------------------------------------+
 | Operating Room                                                      |
-| 3 pending responses, 2 notifications, 1 cost alert                 |
+| 3 pending responses, 2 notifications                               |
 |                                                                     |
-| [Needs Response (3)] [Notifications (2)] [Cost Alerts (1)] [Resolved]  [↻ Refresh] |
+| [Needs Response (3)] [Notifications (2)] [Resolved]  [↻ Refresh]  |
 |                                                                     |
 |  === Needs Response tab ===                                         |
 | +-- Card (expanded) --------------------+                           |
@@ -614,14 +608,6 @@ The `/api/trinity/inject` endpoint compares the source `prompt.md` (at `/trinity
 | | [ ] (!) agent-name . 5m ago              |                        |
 | |     [URGENT] Task completed              |   [pending] [✓] [✕]   |
 | +------------------------------------------+                        |
-|                                                                     |
-|  === Cost Alerts tab ===                                            |
-| [Status filter v]                                                   |
-| [Active: 1] [Total: 3]                                             |
-| +-- alert row -----------------------------+                        |
-| | (⚠) process-name  [Per Execution]        |   [active] [Dismiss]  |
-| |     Threshold: $5.00  Actual: $12.34      |                       |
-| +-------------------------------------------+                       |
 +--------------------------------------------------------------------+
 ```
 
@@ -631,14 +617,14 @@ The `/api/trinity/inject` endpoint compares the source `prompt.md` (at `/trinity
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Consolidation | 4-tab unified page | Reduce nav clutter; one place for all agent-to-operator communication. Removed standalone Events and Alerts pages |
+| Consolidation | 3-tab unified page | Reduce nav clutter; one place for all agent-to-operator communication. Removed standalone Events and Alerts pages; Cost Alerts tab removed with process engine deletion (#430) |
 | Layout | Single-column card feed | Calm, inbox-like -- not a dense operational dashboard |
 | Tab naming | "Needs Response" not "Open" | Clearer call-to-action; tells operator what's expected |
-| Combined NavBar badge | Sum of queue + notifications + alerts | Single badge reduces cognitive load; operator sees total attention items at a glance |
-| Critical detection | Any of: critical queue item, urgent notification, active cost alert | Red+pulse badge catches attention for any category of urgent item |
-| Legacy route redirects | `/events` and `/alerts` redirect to Operating Room tabs | No broken bookmarks; graceful migration |
+| Combined NavBar badge | Sum of queue + notifications | Single badge reduces cognitive load; operator sees total attention items at a glance |
+| Critical detection | Any of: critical queue item, urgent notification | Red+pulse badge catches attention for any category of urgent item |
+| Legacy route redirects | `/events` redirects to Operating Room; `/alerts` redirect is stale (tab removed) | Original migration; `/alerts` redirect not yet cleaned up after Cost Alerts removal |
 | Deep linking | `?tab=` query param | Shareable URLs for specific tabs; no hard page reloads |
-| Extracted panels | NotificationsPanel + CostAlertsPanel as components | Reusable; keeps OperatingRoom.vue small; each panel owns its own fetch/filter logic |
+| Extracted panels | NotificationsPanel as a component | Reusable; keeps OperatingRoom.vue small; panel owns its own fetch/filter logic |
 | Agent identity | Avatar + name on every card | Users associate items with agents, not types |
 | Response UX | Inline expand with auto-advance | Process items sequentially like messages |
 | Context display | Collapsible "Show details" | Keep cards clean, details on demand |
@@ -674,24 +660,24 @@ The `/api/trinity/inject` endpoint compares the source `prompt.md` (at `/trinity
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/frontend/src/views/OperatingRoom.vue` | 219 | Main page with 4 tabs, `?tab=` deep linking, combined subtitle, refresh, polling lifecycle |
+| `src/frontend/src/views/OperatingRoom.vue` | 195 | Main page with 3 tabs, `?tab=` deep linking, combined subtitle, refresh, polling lifecycle |
 | `src/frontend/src/stores/operatorQueue.js` | 194 | Pinia store for operator queue (state, getters, actions, WS handler) |
 | `src/frontend/src/stores/notifications.js` | 315 | Pinia store for notifications (filters, bulk actions, polling) |
-| `src/frontend/src/stores/alerts.js` | 183 | Pinia store for cost alerts (fetch, dismiss, threshold management, polling) |
 | `src/frontend/src/components/operator/QueueCard.vue` | 257 | Expandable card with response controls |
 | `src/frontend/src/components/operator/ResolvedCard.vue` | 68 | Compact resolved card |
 | `src/frontend/src/components/operator/NotificationsPanel.vue` | 541 | Notifications tab -- filters, bulk actions, stats, notification list with expand/dismiss/acknowledge |
-| `src/frontend/src/components/operator/CostAlertsPanel.vue` | 174 | Cost Alerts tab -- status filter, stats, alert list with severity icons and dismiss |
 | `src/frontend/src/components/operator/QueueList.vue` | 195 | Filterable list view |
 | `src/frontend/src/components/operator/QueueStats.vue` | 88 | Stats sidebar |
 | `src/frontend/src/components/operator/QueueItemDetail.vue` | 286 | Full item detail panel |
-| `src/frontend/src/components/NavBar.vue` | 40-53, 192-194, 218-224, 262-263 | "Ops" link + combined badge (3 stores), starts alert/notification polling |
-| `src/frontend/src/router/index.js` | 111-118, 132-136 | Legacy redirect routes + Operating Room route registration |
+| `src/frontend/src/components/NavBar.vue` | 192-195, 218-224, 254, 269 | "Ops" link + combined badge (2 stores), starts notification polling |
+| `src/frontend/src/router/index.js` | 63-70, 72-76 | Legacy redirect routes + Operating Room route registration |
 | `src/frontend/src/utils/websocket.js` | 4, 12, 96-98 | Import store, init store, dispatch WS events |
 
-**Deleted files** (consolidated into Operating Room):
+**Deleted files** (consolidated into Operating Room, then subsequently removed):
 - `src/frontend/src/views/Events.vue` -- Replaced by `NotificationsPanel.vue` in the Notifications tab
-- `src/frontend/src/views/Alerts.vue` -- Replaced by `CostAlertsPanel.vue` in the Cost Alerts tab
+- `src/frontend/src/views/Alerts.vue` -- Replaced by `CostAlertsPanel.vue` in the Cost Alerts tab (tab itself later removed in PR #430)
+- `src/frontend/src/components/operator/CostAlertsPanel.vue` -- Deleted in PR #430 (process engine deletion)
+- `src/frontend/src/stores/alerts.js` -- Deleted in PR #430 (process engine deletion)
 
 ---
 
@@ -710,7 +696,6 @@ The `/api/trinity/inject` endpoint compares the source `prompt.md` (at `/trinity
 
 - [Agent Notifications](agent-notifications.md) -- Backend notification system (NOTIF-001); UI now embedded as Notifications tab in Operating Room
 - [Events Page](events-page.md) -- Former standalone Events page; **consolidated** into Operating Room Notifications tab (view now redirects)
-- [Alerts Page](alerts-page.md) -- Former standalone Alerts page; **consolidated** into Operating Room Cost Alerts tab (view now redirects)
 - [Agent Terminal](agent-terminal.md) -- Direct agent interaction
 - [MCP Orchestration](mcp-orchestration.md) -- Agent-to-agent communication tools
 
@@ -720,6 +705,7 @@ The `/api/trinity/inject` endpoint compares the source `prompt.md` (at `/trinity
 
 | Date | Change |
 |------|--------|
+| 2026-04-24 | Cost Alerts tab removed (PR #430, process engine deletion). Deleted CostAlertsPanel.vue and alerts.js store. OperatingRoom is now a 3-tab interface. NavBar badge formula no longer includes alertsStore. `/alerts` redirect in router is now stale. |
 | 2026-03-08 | Consolidated Events page and Cost Alerts page into Operating Room as tabs. Added NotificationsPanel.vue, CostAlertsPanel.vue. Removed NavBar bell icons. Combined Ops badge count. Old routes redirect. |
 | 2026-03-08 | Restart-resilient sync, refresh button, stale prompt detection |
 | 2026-03-07 | Initial implementation (Phases 1-4): backend, sync service, frontend, meta-prompt |

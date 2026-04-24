@@ -258,7 +258,7 @@
 |------|----------|-------------|
 | Agent Notifications | [agent-notifications.md](feature-flows/agent-notifications.md) | Agent-to-platform notifications (NOTIF-001) |
 | Events Page UI | [events-page.md](feature-flows/events-page.md) | Consolidated into Operating Room Notifications tab |
-| Operating Room | [operating-room.md](feature-flows/operating-room.md) | Unified operator command center: queue, notifications, cost alerts (OPS-001) |
+| Operating Room | [operating-room.md](feature-flows/operating-room.md) | Unified operator command center: queue, notifications, resolved (OPS-001) |
 
 ### Configuration & Settings
 
@@ -297,7 +297,7 @@
 | Templates Page | [templates-page.md](feature-flows/templates-page.md) | `/templates` route for browsing |
 | API Keys Page | [api-keys-page.md](feature-flows/api-keys-page.md) | `/api-keys` page UI flow |
 | Agents Page UI | [agents-page-ui-improvements.md](feature-flows/agents-page-ui-improvements.md) | Horizontal row tiles with success rate bars, filtering, responsive breakpoints |
-| Alerts Page | [alerts-page.md](feature-flows/alerts-page.md) | Consolidated into Operating Room Cost Alerts tab |
+| Alerts Page | [alerts-page.md](feature-flows/alerts-page.md) | Removed in #430 (process engine deletion; cost alerts were PE-only) |
 
 ### Chat & Sessions
 
