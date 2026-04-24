@@ -2,7 +2,7 @@
 
 **Status**: Draft
 **Created**: 2026-04-24
-**Owner**: pavshulin@gmail.com
+**Owner**: @pavshulin
 **Scope**: Take the MVP outbound file sharing feature (Steps 1–6 of [amazing-file-outbound.md](amazing-file-outbound.md)) from "working on local" to "safe to ship".
 
 > Feature is **live and verified end-to-end on real Slack traffic** (see final commit of Step 6). This doc is the punch-list to get it from MVP to v1.0.

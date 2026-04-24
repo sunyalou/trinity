@@ -2,7 +2,7 @@
 
 **Status**: Draft — MVP-in-progress
 **Created**: 2026-04-21
-**Owner**: pavshulin@gmail.com
+**Owner**: @pavshulin
 **Scope**: Outbound file sharing (agent → user) via Trinity-hosted public URL
 
 > This is the running context doc for the feature. MVP defaults are locked (see §4). Open questions are tracked in §9 and resolved as we build/test. Update this file as decisions change.
