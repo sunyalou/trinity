@@ -1,7 +1,7 @@
 """
 Pydantic models for the Trinity backend API.
 """
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Dict, List, Optional
 from datetime import datetime
 from enum import Enum
@@ -414,9 +414,9 @@ class GithubPatPropagationResult(BaseModel):
 
 class ShareFileRequest(BaseModel):
     """Body for POST /api/internal/agent-files/share (internal, agent-server path)."""
-    agent_name: str
-    filename: str
-    display_name: Optional[str] = None
+    agent_name: str = Field(..., max_length=128)
+    filename: str = Field(..., min_length=1, max_length=255)
+    display_name: Optional[str] = Field(default=None, max_length=255)
     expires_in: Optional[int] = None
     # NOTE: `one_time` is deferred — the schema retains the columns
     # so we can re-enable it later without a migration.
@@ -428,8 +428,8 @@ class ShareFileMcpRequest(BaseModel):
     The agent_name lives in the URL, so the body only needs the
     per-share parameters.
     """
-    filename: str
-    display_name: Optional[str] = None
+    filename: str = Field(..., min_length=1, max_length=255)
+    display_name: Optional[str] = Field(default=None, max_length=255)
     expires_in: Optional[int] = None
 
 
