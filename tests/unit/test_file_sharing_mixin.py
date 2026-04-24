@@ -74,20 +74,40 @@ def mixin(tmp_db_conn):
     # Ensure the env-dependent module is reloaded per test
     sys.modules.pop("_ams_db_connection", None)
     _load("_ams_db_connection", _BACKEND / "db" / "connection.py")
-    # The mixin does `from db.connection import get_db_connection`, so
-    # register our freshly-loaded module under that dotted name too.
-    sys.modules["db"] = type(sys)("db")
+    # The mixin does `from db.connection import get_db_connection`. We register
+    # a `db` package pointing at the real src/backend/db directory so that
+    # (a) this test's `from db.connection import ...` finds our stub, and
+    # (b) later tests that do `from db.X import Y` can still resolve X from
+    # the real directory. Without __path__, sys.modules['db'] becomes a
+    # non-package and breaks sibling tests.
+    original_db = sys.modules.get("db")
+    original_db_connection = sys.modules.get("db.connection")
+    db_pkg = type(sys)("db")
+    db_pkg.__path__ = [str(_BACKEND / "db")]
+    sys.modules["db"] = db_pkg
     sys.modules["db.connection"] = sys.modules["_ams_db_connection"]
     fs_mod = _load(
         "_ams_file_sharing",
         _BACKEND / "db" / "agent_settings" / "file_sharing.py",
     )
-    # Return a bare instance — the mixin doesn't use self for anything
-    # beyond typing/namespacing.
+
     class _Wrapper(fs_mod.FileSharingMixin):
         pass
 
-    return _Wrapper()
+    wrapper = _Wrapper()
+
+    yield wrapper
+
+    # Restore sys.modules to avoid leaking our stub into later tests that
+    # import the real db package.
+    if original_db is not None:
+        sys.modules["db"] = original_db
+    else:
+        sys.modules.pop("db", None)
+    if original_db_connection is not None:
+        sys.modules["db.connection"] = original_db_connection
+    else:
+        sys.modules.pop("db.connection", None)
 
 
 def _insert_agent(conn, name, enabled=None):
