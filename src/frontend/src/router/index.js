@@ -59,11 +59,7 @@ const routes = [
     component: () => import('../views/Templates.vue'),
     meta: { requiresAuth: true }
   },
-  // Legacy redirects: Events and Alerts consolidated into Operating Room
-  {
-    path: '/alerts',
-    redirect: '/operating-room?tab=cost-alerts'
-  },
+  // Legacy redirect: Events consolidated into Operating Room Notifications tab
   {
     path: '/events',
     redirect: '/operating-room?tab=notifications'
