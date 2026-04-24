@@ -1096,74 +1096,12 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
 
 ## 18. Process Engine (Business Process Orchestration)
 
-> **Design Documents**: `docs/PROCESS_DRIVEN_PLATFORM/`
-> **Feature Flows**: `docs/memory/feature-flows/process-engine/`
+> **Status**: ❌ DELETED (2026-04-24, issue #430, PR #482)
+> **Archive**: `archive/process-engine` git branch preserves full history
+> **Reason**: The `agent_task` step handler bypassed `TaskExecutionService`, violating all orchestration invariants (slot accounting, activity tracking, backlog). Option B (delete) was chosen over Option A (fold through TES) to keep the execution stack clean.
+> **What replaced it**: Agent scheduling + `TaskExecutionService` is the standard execution primitive. Human-approval use cases can be served by the Operating Room operator queue.
 
-### 18.1 Process Definition & Storage
-- **Status**: ✅ Implemented (2026-01-16)
-- **Description**: YAML-based process definitions with validation and versioning
-- **Key Features**: JSON schema validation, semantic validation, version management
-- **Flow**: `docs/memory/feature-flows/process-engine/process-definition.md`
-
-### 18.2 Process Execution Engine
-- **Status**: ✅ Implemented (2026-01-16)
-- **Description**: Core engine orchestrating step execution with state machine
-- **Key Features**: Step handlers, dependency resolution, parallel branches, retry logic
-- **Flow**: `docs/memory/feature-flows/process-engine/process-execution.md`
-
-### 18.3 Process Monitoring
-- **Status**: ✅ Implemented (2026-01-16)
-- **Description**: Real-time execution monitoring via WebSocket events
-- **Key Features**: Live step progress, execution timeline, breadcrumb navigation
-- **Flow**: `docs/memory/feature-flows/process-engine/process-monitoring.md`
-
-### 18.4 Human Approval Gates
-- **Status**: ✅ Implemented (2026-01-16)
-- **Description**: Human-in-the-loop approval steps within processes
-- **Key Features**: Approval inbox, timeout handling, decision tracking
-- **Flow**: `docs/memory/feature-flows/process-engine/human-approval.md`
-
-### 18.5 Process Scheduling
-- **Status**: ✅ Implemented (2026-01-16)
-- **Description**: Cron-based schedule triggers and timer steps
-- **Key Features**: Cron presets, timezone support, timer delays
-- **Flow**: `docs/memory/feature-flows/process-engine/process-scheduling.md`
-
-### 18.6 Process Analytics & Cost Tracking
-- **Status**: ✅ Implemented (2026-01-16)
-- **Description**: Metrics, trends, and cost threshold alerts
-- **Key Features**: Success rates, duration trends, cost aggregation, alerts
-- **Flow**: `docs/memory/feature-flows/process-engine/process-analytics.md`
-
-### 18.7 Sub-Processes
-- **Status**: ✅ Implemented (2026-01-16)
-- **Description**: Calling other processes as steps with parent-child linking
-- **Key Features**: Input mapping, output capture, breadcrumb navigation
-- **Flow**: `docs/memory/feature-flows/process-engine/sub-processes.md`
-
-### 18.8 Agent Roles (EMI Pattern)
-- **Status**: ✅ Implemented (2026-01-16)
-- **Description**: Executor/Monitor/Informed role assignments for steps
-- **Key Features**: Role matrix UI, InformedAgentNotifier, NDJSON event persistence
-- **Flow**: `docs/memory/feature-flows/process-engine/agent-roles-emi.md`
-
-### 18.9 Process Templates
-- **Status**: ✅ Implemented (2026-01-16)
-- **Description**: Bundled and user-created process templates
-- **Key Features**: Template selector, category filtering, user templates
-- **Flow**: `docs/memory/feature-flows/process-engine/process-templates.md`
-
-### 18.10 Step Types
-The Process Engine supports six step types:
-
-| Step Type | Description | Handler |
-|-----------|-------------|---------|
-| `agent_task` | Execute task via AI agent | `AgentTaskHandler` |
-| `human_approval` | Pause for human decision | `HumanApprovalHandler` |
-| `gateway` | Conditional branching | `GatewayHandler` |
-| `timer` | Delay execution | `TimerHandler` |
-| `notification` | Send notifications | `NotificationHandler` |
-| `sub_process` | Call another process | `SubProcessHandler` |
+All subsections 18.1–18.10 were deleted with the code. Flow docs archived at `docs/memory/feature-flows/archive/process-dashboard.md`.
 
 ---
 
