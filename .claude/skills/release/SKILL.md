@@ -183,28 +183,42 @@ Validate tag format: `cli-v<semver>` if CLI scope changed, otherwise `v<semver>`
 
 ### Step 5: Draft Release Notes
 
-Generate from squash commits in range:
+**Primary source: issues labeled `status-in-dev`.**
+
+Every PR that lands on `dev` promotes its linked issues to `status-in-dev` (via `.github/workflows/issue-status-on-merge.yml`). That label set is the authoritative "what's shipping in this release" list. The commit range is used as a sanity check, not the primary source.
 
 ```bash
-git log "$RANGE" --format='- %s (%h)' --reverse
+# Authoritative shipping list — open issues labeled status-in-dev
+gh issue list --repo abilityai/trinity --state open \
+  --label status-in-dev --limit 100 \
+  --json number,title,labels,url
+
+# Sanity check: issue references in the commit range
+git log "$RANGE" --format='%s%n%b' \
+  | grep -oiE '(fix(es|ed)?|close[sd]?|resolve[sd]?) #[0-9]+' \
+  | grep -oE '#[0-9]+' | sort -u
 ```
 
-Group by conventional-commit prefix:
+Reconcile the two lists. Flag and discuss:
+- Issues in `status-in-dev` but NOT referenced in commits → label may be stale (leftover from a reverted change)
+- Issues referenced in commits but NOT in `status-in-dev` → the automation missed them (retroactively add the label, or include manually)
+
+Group release notes by issue type (read from issue labels `type-feature` / `type-bug` / `type-refactor` / `type-docs`):
 
 ```markdown
 # [VERSION]
 
 ## Features
-- feat: ... (#N) — [commit short sha]
+- #N Title (short description)
 
 ## Fixes
-- fix: ... (#N)
+- #N Title
 
 ## Refactors
-- refactor: ... (#N)
+- #N Title
 
 ## Documentation
-- docs: ... (#N)
+- #N Title
 
 ## Breaking Changes
 [if any from 2.8, list here]
@@ -213,17 +227,28 @@ Group by conventional-commit prefix:
 **Contributors**: [names]
 ```
 
+Include standalone commits (without a linked issue) under an "Other changes" heading if material.
+
 [APPROVAL GATE] — Present drafted notes. User edits or approves.
 
 ### Step 6: Open the Release PR
 
+The PR body MUST include a `Closes #N #M ...` line listing every issue in the release so GitHub auto-closes them when the release squash-merges to `main`. Build this from the `status-in-dev` list gathered in Step 5.
+
 ```bash
+# Build the "Closes" line from status-in-dev issues
+CLOSES_LINE=$(gh issue list --repo abilityai/trinity --state open \
+  --label status-in-dev --limit 100 --json number \
+  --jq '[.[].number] | map("#\(.)") | join(" ")')
+
 PR_BODY=$(cat <<EOF
 Release [VERSION] — cumulative changes since [LAST_TAG].
 
 [release notes]
 
 ---
+
+Closes ${CLOSES_LINE}
 
 Pre-release checklist passed [date]. Ready for squash-merge.
 
@@ -238,7 +263,7 @@ gh pr create --repo abilityai/trinity \
   --body "$PR_BODY"
 ```
 
-Capture the PR URL.
+Capture the PR URL. The `Closes` line ensures every `status-in-dev` issue auto-closes when the release lands on `main`.
 
 ### Step 7: Wait for CI
 

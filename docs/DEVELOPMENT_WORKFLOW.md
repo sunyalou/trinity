@@ -7,10 +7,10 @@
 
 ## Software Development Lifecycle (SDLC)
 
-Trinity follows a 4-stage lifecycle that maps 1:1 to the **Trinity Roadmap** GitHub Project board columns.
+Trinity follows a 4-stage lifecycle. Each stage maps 1:1 to an issue's location in the commit graph, tracked via `status-*` labels (the authoritative surface — `gh issue list --label status-in-dev` etc.). The GitHub Project board mirrors these for visual tracking but is optional.
 
 ```
- Todo → In Progress → Review → Done
+ Todo → In Progress → In Dev → Done
 ```
 
 ```
@@ -20,26 +20,32 @@ Trinity follows a 4-stage lifecycle that maps 1:1 to the **Trinity Roadmap** Git
 │          │                                                          │
 │ TODO     │  Issue created, triaged with priority + type labels      │
 │          │  Acceptance criteria defined before work begins           │
-│          │  GitHub Project: Todo                                    │
+│          │  Label: status-ready (optional) | Board: Todo            │
 │          │                                                          │
 ├──────────┼──────────────────────────────────────────────────────────┤
 │          │                                                          │
 │ IN       │  /claim → /autoplan → approve → /implement              │
 │ PROGRESS │  → /review → /cso --diff → /sync-feature-flows          │
-│          │  Label: status-in-progress                               │
-│          │  GitHub Project: In Progress                             │
+│          │  → open PR to dev, /validate-pr                          │
+│          │  Label: status-in-progress | Board: In Progress          │
+│          │  Code location: feature branch                           │
 │          │                                                          │
 ├──────────┼──────────────────────────────────────────────────────────┤
 │          │                                                          │
-│ REVIEW   │  PR opened, /review + /validate-pr pass                  │
-│          │  Code review approved, ready to merge                    │
-│          │  GitHub Project: In Progress                             │
+│ IN DEV   │  PR squash-merged to dev — feature is shippable          │
+│          │  Awaiting next release cut (dev → main)                  │
+│          │  Label: status-in-dev | Board: In Dev                    │
+│          │  Code location: origin/dev                               │
+│          │                                                          │
+│          │  Promoted automatically by                               │
+│          │  .github/workflows/issue-status-on-merge.yml             │
 │          │                                                          │
 ├──────────┼──────────────────────────────────────────────────────────┤
 │          │                                                          │
-│ DONE     │  PR merged to dev, issue closed                          │
-│          │  Docs up to date                                         │
-│          │  GitHub Project: Done                                    │
+│ DONE     │  Release PR (dev → main) squash-merged + tagged          │
+│          │  Issues auto-closed via `Closes #N` in release body      │
+│          │  Label: (none — issue closed) | Board: Done              │
+│          │  Code location: origin/main                              │
 │          │                                                          │
 └──────────┴──────────────────────────────────────────────────────────┘
 ```
@@ -304,13 +310,29 @@ Runs a scoped security audit on the branch changes only. Checks secrets, depende
 - Missing tests for new behavior
 - `requirements.md` not updated for new features
 
-### 4. Done
+### 4. In Dev (merged to dev, awaiting release)
 
-When the PR is approved and merged to `dev`:
+When the feature PR squash-merges to `dev`:
 
-1. Issue is **auto-closed** via `Fixes #N`
-2. Move to **Done** on the project board
-3. Remove status labels
+1. **Automation fires** (`.github/workflows/issue-status-on-merge.yml`)
+   - Parses `Fixes #N` / `Closes #N` from the PR body + title
+   - Adds `status-in-dev` to each referenced issue
+   - Removes `status-in-progress`
+2. Issue remains **open** — it ships when the next release cuts `dev` → `main`
+3. Board column (if used): **In Dev**
+
+Querying what's shipping in the next release:
+```bash
+gh issue list --repo abilityai/trinity --state open --label status-in-dev
+```
+
+### 4a. Done (released)
+
+The issue transitions to Done when the release PR squash-merges to `main` (see §4b):
+
+1. The release PR body includes `Closes #N #M ...` for every `status-in-dev` issue — GitHub auto-closes them on merge
+2. `status-in-dev` label remains on the closed issue (cosmetic, harmless — `--state open` queries ignore it)
+3. Board column: **Done**
 
 ### 4b. Release cut (`dev` → `main`)
 
@@ -370,15 +392,20 @@ The `publish-cli.yml` workflow automatically:
 
 ### Label ↔ Board Sync
 
-Keep these in sync at all times:
+Labels are the authoritative surface (`gh issue list --label ...`). The project board mirrors them:
 
-| Stage | Label | Board Column |
-|-------|-------|--------------|
-| Todo | *(none)* | Todo |
-| In Progress | `status-in-progress` | In Progress |
-| Blocked | `status-blocked` | In Progress |
-| Review | *(PR open)* | In Progress |
-| Done | *(none)* | Done |
+| Stage | Label | Board Column | Code location |
+|-------|-------|--------------|---------------|
+| Todo | *(none or `status-ready`)* | Todo | — |
+| In Progress | `status-in-progress` | In Progress | feature branch |
+| Blocked | `status-blocked` | In Progress | feature branch |
+| In Dev | `status-in-dev` | In Dev | `origin/dev` |
+| Done | *(issue closed)* | Done | `origin/main` |
+
+Transitions:
+- **Todo → In Progress**: `/claim` adds `status-in-progress` (via `.github/workflows/claim.yml`)
+- **In Progress → In Dev**: PR merge to `dev` adds `status-in-dev`, removes `status-in-progress` (via `.github/workflows/issue-status-on-merge.yml`)
+- **In Dev → Done**: Release PR (dev → main) includes `Closes #N` for each `status-in-dev` issue; GitHub auto-closes on merge
 
 ---
 
