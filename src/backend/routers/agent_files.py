@@ -477,11 +477,13 @@ async def list_agent_shared_files(
 ):
     """
     List active (non-revoked, non-expired) shared files for an agent.
-    Visible to owner, admin, and shared users — same rule as the agent
-    detail page that embeds this panel.
+    Restricted to owner + admin (C7) — the list includes full download
+    URLs with tokens, so anyone who can see the list can effectively
+    reuse the shares. That's a capability that belongs with `share_file`
+    and `revoke` (both owner-only), not with shared-user read access.
     """
-    if not db.can_user_access_agent(current_user.username, agent_name):
-        raise HTTPException(status_code=403, detail="Access denied")
+    if not db.can_user_share_agent(current_user.username, agent_name):
+        raise HTTPException(status_code=403, detail="Only the owner or admin can view shared files")
 
     rows = db.list_active_shared_files_for_agent(agent_name)
     files = [
