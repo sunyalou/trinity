@@ -60,13 +60,14 @@ class CleanupReport:
     stale_activities: int = 0
     stale_slots: int = 0
     stale_slot_executions: int = 0  # Issue #219: executions failed when their slot was reclaimed
+    shared_files_purged: int = 0  # C4 / FILES-001: expired or old-revoked file shares
 
     @property
     def total(self) -> int:
         return (self.orphaned_executions + self.auto_terminated +
                 self.stale_executions + self.no_session_executions +
                 self.orphaned_skipped + self.stale_activities + self.stale_slots +
-                self.stale_slot_executions)
+                self.stale_slot_executions + self.shared_files_purged)
 
     def to_dict(self) -> Dict:
         return {
@@ -78,6 +79,7 @@ class CleanupReport:
             "stale_activities": self.stale_activities,
             "stale_slots": self.stale_slots,
             "stale_slot_executions": self.stale_slot_executions,
+            "shared_files_purged": self.shared_files_purged,
             "total": self.total,
         }
 
@@ -216,6 +218,35 @@ class CleanupService:
                     logger.info(f"[Cleanup] Pruned {pruned} rate-limit events (>24h old)")
             except Exception as e:
                 logger.error(f"[Cleanup] Error pruning rate-limit events: {e}")
+
+        # 4b. Purge expired / old-revoked shared files (C4 / FILES-001).
+        # Every cycle — the set is usually small and both DB row + disk
+        # unlink are cheap. Grace period for revoked rows keeps them
+        # queryable for a day post-revoke (incident diagnosis).
+        try:
+            from pathlib import Path
+            stored_filenames = db.delete_expired_and_revoked_shared_files(
+                revoke_grace_hours=24
+            )
+            if stored_filenames:
+                storage_root = Path("/data/agent-files")
+                unlinked = 0
+                for sf in stored_filenames:
+                    try:
+                        p = storage_root / sf
+                        if p.exists():
+                            p.unlink()
+                            unlinked += 1
+                    except Exception as e:
+                        logger.warning(f"[Cleanup] failed to unlink {sf}: {e}")
+                report.shared_files_purged = len(stored_filenames)
+                logger.info(
+                    f"[Cleanup] Purged {len(stored_filenames)} shared-file "
+                    f"rows ({unlinked} files unlinked from /data/agent-files/)"
+                )
+        except Exception as e:
+            logger.error(f"[Cleanup] Error purging shared files: {e}")
+
         self._cycle_count += 1
 
         self.last_run_at = utc_now_iso()

@@ -481,6 +481,9 @@ class DatabaseManager:
     def delete_shared_files_for_agent(self, agent_name: str) -> list:
         return self._agent_shared_files_ops.delete_for_agent(agent_name)
 
+    def delete_expired_and_revoked_shared_files(self, revoke_grace_hours: int = 24) -> list:
+        return self._agent_shared_files_ops.delete_expired_and_revoked(revoke_grace_hours=revoke_grace_hours)
+
     # =========================================================================
     # Batch Metadata Query (N+1 Fix) - delegated to db/agents.py
     # =========================================================================

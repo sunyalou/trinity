@@ -126,6 +126,41 @@ class AgentSharedFilesOperations:
             conn.commit()
             return cursor.rowcount > 0
 
+    def delete_expired_and_revoked(self, revoke_grace_hours: int = 24) -> list:
+        """
+        Delete rows where the share is:
+          - expired (expires_at < now) — any state, OR
+          - revoked more than `revoke_grace_hours` ago
+
+        Returns a list of `stored_filename` values whose rows were
+        deleted, so the caller can unlink the on-disk files under
+        /data/agent-files/. Called by the cleanup service (C4 / Step 7).
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, stored_filename
+                  FROM agent_shared_files
+                 WHERE datetime(expires_at) < datetime('now')
+                    OR (revoked_at IS NOT NULL
+                        AND datetime(revoked_at) < datetime('now', ?))
+                """,
+                (f"-{revoke_grace_hours} hours",),
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                return []
+            stored = [row["stored_filename"] for row in rows]
+            ids = [row["id"] for row in rows]
+            placeholders = ",".join("?" * len(ids))
+            cursor.execute(
+                f"DELETE FROM agent_shared_files WHERE id IN ({placeholders})",
+                ids,
+            )
+            conn.commit()
+            return stored
+
     def delete_for_agent(self, agent_name: str) -> list:
         """
         Delete every shared-file row for an agent and return the
