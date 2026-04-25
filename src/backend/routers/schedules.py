@@ -8,7 +8,7 @@ defined BEFORE dynamic routes like /{name}/schedules to avoid FastAPI matching
 "scheduler" as an agent name.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
