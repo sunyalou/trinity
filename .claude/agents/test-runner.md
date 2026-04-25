@@ -186,7 +186,7 @@ The test suite covers:
 - **Watchdog Unit Tests** (test_watchdog_unit.py) - Reconciliation logic, orphan recovery, auto-terminate, per-agent TTL (#129, #226) [UNIT]
 - **Context Used Formula** (unit/test_context_used_formula.py) - Verify context_used = input_tokens only, not input+output (#56) [UNIT]
 - **OTel Trace Logging** (unit/test_otel_trace_logging.py) - Trace ID injection in logs, span context correlation (#305, RELIABILITY-002) [UNIT]
-- **File Upload** (unit/test_file_upload.py) - Telegram file extraction, download, message router validation, parse_message with files (#354) [UNIT]
+- **File Upload** (unit/test_file_upload.py) - Telegram file extraction, download, message router validation, parse_message with files (#354 Phase 1); workspace delivery — filename sanitization (NFKC, traversal, length, collision dedup), chat injection format `[File uploaded by {uploader}]`, all-writes-failed signaling, partial failure handling (#487 Phase 2) [UNIT]
 - **Telegram Voice** (unit/test_telegram_voice.py) - Voice transcription validation (duration/size limits), formatting, placeholder constants (#318) [UNIT]
 - **Inter-Agent Timeout** (test_inter_agent_timeout_unit.py) - FanOutRequest Optional timeout, per-subtask None dispatch, conditional asyncio.timeout wrap (#418) [UNIT]
 
@@ -360,7 +360,7 @@ Pure unit tests — mock `TaskExecutionService` and stub `database`/`models` mod
 | Test File | Description | Tests Added |
 |-----------|-------------|-------------|
 | `test_github_pat.py` | Per-agent GitHub PAT: GET/PUT/DELETE endpoints, encryption roundtrip (#347) | 9 tests |
-| `unit/test_file_upload.py` | Telegram file upload support: file extraction, download, MIME validation, parse_message (#354) | 11 tests |
+| `unit/test_file_upload.py` | Telegram file upload + workspace delivery: extraction, download, MIME validation, parse_message (#354 Phase 1); filename sanitization, collision dedup, injection format, write-failure handling (#487 Phase 2) | 27 tests |
 
 **GitHub PAT (#347)** (`test_github_pat.py`):
 
@@ -401,6 +401,30 @@ Pure unit tests — mock `TaskExecutionService` and stub `database`/`models` mod
 - **TestParseMessageWithFiles** (2 tests):
   - `test_parse_message_with_photo` — parse_message populates files for photos
   - `test_parse_message_file_only_no_text` — File-only messages work without caption
+
+**Phase 2 — Workspace Delivery (#487)** (same file):
+
+- **TestFilenameSanitization** (11 tests):
+  - `test_strips_path_traversal_unix` — `../../etc/passwd` → `passwd`
+  - `test_strips_absolute_path` — `/etc/passwd` → `passwd`
+  - `test_unicode_normalize_fullwidth` — fullwidth `．．／etc／passwd` cannot survive NFKC + basename
+  - `test_unicode_normalize_preserves_content` — `café.txt` keeps `.txt` extension
+  - `test_truncates_long_filename_preserving_extension` — 300-char name truncated to ≤200, `.txt` preserved
+  - `test_truncates_long_no_extension` — extensionless 300-char name truncated to ≤200
+  - `test_collision_dedup` — repeated `data.csv` → `data.csv`, `data-1.csv`, `data-2.csv`
+  - `test_collision_dedup_no_extension` — repeated `README` → `README`, `README-1`
+  - `test_empty_name_fallback` — empty string → `file_{file_id}`
+  - `test_dot_only_fallback` — `...` → `file_{file_id}`
+  - `test_strips_unsafe_chars` — angle brackets, `?` → `_`
+
+- **TestFileDeliveryFormat** (2 tests):
+  - `test_injection_includes_verified_email` — descriptions contain `[File uploaded by alice@example.com]: …`
+  - `test_injection_falls_back_to_source_id_without_email` — descriptions contain `[File uploaded by telegram:bot42:user99]`
+
+- **TestFileDeliveryFailures** (3 tests):
+  - `test_all_writes_fail_signals_abort` — every write fails → `all_writes_failed=True`, `[File upload failed]` markers present
+  - `test_partial_failure_keeps_descriptions_and_proceeds` — one ok, one fail → both descriptions, no abort
+  - `test_validation_only_failures_do_not_signal_abort` — download None (pre-write rejection) does not flip `all_writes_failed`
 
 ---
 

@@ -14,9 +14,11 @@ Uses the same execution path as web public chat (EXEC-024) for:
 
 import io
 import logging
+import os
 import re
 import tarfile
 import time
+import unicodedata
 from typing import List, Optional, Tuple
 from collections import defaultdict
 
@@ -178,6 +180,73 @@ def _format_file_size(size_bytes: int) -> str:
         return f"{size_bytes / 1024:.0f} KB"
     else:
         return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
+# Filename sanitization (Issue #487)
+_FILENAME_MAX_LENGTH = 200          # POSIX-safe; leaves room for collision suffix
+_FILENAME_SAFE_CHARS_RE = re.compile(r'[^\w.\-()]')  # keep word chars, dot, hyphen, parens
+
+
+def _sanitize_filename(name: str, file_id: str, used_names: set) -> str:
+    """
+    Sanitize a user-supplied filename for safe placement in the agent workspace.
+
+    Steps:
+    1. NFKC unicode normalize — collapses fullwidth/halfwidth and combining
+       sequences so path-traversal sequences encoded with unicode variants
+       can't slip past the basename check.
+    2. ``os.path.basename`` — drop any leading directories.
+    3. Strip non-safe chars to underscores (keep word chars, dot, hyphen, parens).
+    4. Fall back to ``file_{file_id}`` if the result is empty or pure dots/whitespace.
+    5. Truncate to 200 chars preserving the extension.
+    6. De-dupe against ``used_names`` by appending ``-1``, ``-2``, … before the
+       extension on collision.
+
+    The caller is responsible for adding the returned name to ``used_names``.
+    """
+    normalized = unicodedata.normalize("NFKC", name or "")
+    base = os.path.basename(normalized)
+    safe = _FILENAME_SAFE_CHARS_RE.sub('_', base)
+
+    # Reject names that are empty, dot-only/underscore-only, or hidden
+    # dotfiles (`.env`, `.gitignore`, …). Per-session upload dir already
+    # isolates uploads from the agent's own dotfiles, but rejecting hidden
+    # names preserves the existing security posture (#222) and avoids
+    # surprising agents whose Read tool sees a ``.env``-shaped file in
+    # their workspace.
+    stripped = safe.strip('._')
+    if not stripped or safe.startswith('.'):
+        safe = f"file_{file_id}"
+
+    # Truncate to length cap, preserving extension where possible.
+    if len(safe) > _FILENAME_MAX_LENGTH:
+        stem, dot, ext = safe.rpartition('.')
+        if dot and len(ext) <= 16:
+            keep = _FILENAME_MAX_LENGTH - len(ext) - 1
+            safe = f"{stem[:keep]}.{ext}"
+        else:
+            safe = safe[:_FILENAME_MAX_LENGTH]
+
+    # Collision dedup: append -1, -2, … before the extension.
+    if safe in used_names:
+        stem, dot, ext = safe.rpartition('.')
+        if not dot:
+            stem, ext = safe, ""
+        suffix_n = 1
+        while True:
+            suffix = f"-{suffix_n}"
+            candidate_stem = stem
+            # Trim stem so candidate stays within length cap.
+            max_stem = _FILENAME_MAX_LENGTH - len(suffix) - (len(ext) + 1 if ext else 0)
+            if len(candidate_stem) > max_stem:
+                candidate_stem = candidate_stem[:max_stem]
+            candidate = f"{candidate_stem}{suffix}.{ext}" if ext else f"{candidate_stem}{suffix}"
+            if candidate not in used_names:
+                safe = candidate
+                break
+            suffix_n += 1
+
+    return safe
 
 
 class ChannelMessageRouter:
@@ -392,16 +461,34 @@ class ChannelMessageRouter:
             context_prompt = db.build_public_chat_context(session_id, message.text)
         logger.debug(f"[ROUTER:{channel}] Step 7 - context built ({len(context_prompt)} chars, group={is_group})")
 
-        # 7b. Handle file uploads — download from Slack, copy into agent container
+        # 7b. Handle file uploads — download via adapter, copy into agent container.
+        # Issue #487: workspace-write failures abort execution and surface a
+        # channel-native error so the user knows the upload didn't land.
         upload_dir = None  # Track for cleanup
         if message.files:
-            file_descriptions, upload_dir = await self._handle_file_uploads(
-                adapter, message, agent_name, container, session_id
+            file_descriptions, upload_dir, all_writes_failed = await self._handle_file_uploads(
+                adapter, message, agent_name, container, session_id,
+                verified_email=verified_email,
             )
+            if all_writes_failed:
+                logger.warning(
+                    f"[ROUTER:{channel}] All file writes failed for {agent_name}; "
+                    f"replying with error and aborting execution"
+                )
+                await adapter.send_response(
+                    message.channel_id,
+                    ChannelResponse(
+                        text="Sorry, I couldn't save the file(s) you sent. Please try again in a moment.",
+                        metadata={"bot_token": bot_token, "agent_name": agent_name},
+                    ),
+                    thread_id=message.thread_id,
+                )
+                await self._cleanup_uploads(container, upload_dir)
+                return
             if file_descriptions:
                 file_block = "\n".join(file_descriptions)
-                context_prompt = f"{context_prompt}\n\n[Uploaded files]\n{file_block}"
-                logger.info(f"[ROUTER] Step 7b - {len(file_descriptions)} file(s) copied to agent")
+                context_prompt = f"{context_prompt}\n\n{file_block}"
+                logger.info(f"[ROUTER] Step 7b - {len(file_descriptions)} file(s) processed for agent")
 
         # 8. Show processing indicator (⏳ on Slack, typing on Telegram, etc.)
         await adapter.indicate_processing(message)
@@ -606,19 +693,21 @@ class ChannelMessageRouter:
         agent_name: str,
         container,
         session_id: str,
+        verified_email: Optional[str] = None,
     ) -> tuple:
         """
         Download files via adapter and either:
         - Images: embed as base64 data URI in the prompt (Claude vision)
         - Other files: copy into per-session dir in agent container
 
-        Returns (descriptions, upload_dir):
+        Returns (descriptions, upload_dir, all_writes_failed):
         - descriptions: list of context strings for prompt injection
         - upload_dir: container path to clean up after execution, or None
+        - all_writes_failed: True iff at least one file attempted a workspace
+          write but every such attempt failed; the caller should reply with
+          an explicit error and skip agent execution (Issue #487 AC6).
         """
         import base64
-        import os
-        import re
 
         MAX_FILE_SIZE = 10 * 1024 * 1024       # 10 MB per file
         MAX_IMAGE_SIZE = 5 * 1024 * 1024        # 5 MB per image for inline base64
@@ -634,6 +723,20 @@ class ChannelMessageRouter:
         descriptions = []
         dir_created = False
         total_image_bytes = 0
+        used_names: set = set()
+
+        # Uploader attribution for chat injection (Issue #487 AC3).
+        # Prefer the verified email; fall back to the channel-native source id
+        # so agents always see who sent the file.
+        uploader = verified_email or adapter.get_source_identifier(message)
+
+        # Track workspace-write outcomes. A "write" is a real attempt to
+        # persist bytes (mkdir / put_archive for files; base64 embed for
+        # images). Validation rejections (size/MIME/unsupported) do NOT count
+        # as write attempts — those are user errors and the agent should
+        # respond normally with the description block.
+        write_attempted = 0
+        write_succeeded = 0
 
         files = message.files
         for f in files[:MAX_FILES]:
@@ -645,11 +748,11 @@ class ChannelMessageRouter:
                 descriptions.append(f"{f.name} — unsupported format ({f.mimetype}). Text, CSV, JSON, and image files are supported.")
                 continue
 
-            # Sanitize filename: basename only, strip path traversal
-            safe_name = os.path.basename(f.name)
-            safe_name = re.sub(r'[^\w\s.\-()]', '_', safe_name)  # keep alphanumeric, dots, hyphens, parens
-            if not safe_name or safe_name.startswith('.'):
-                safe_name = f"file_{f.id}"
+            # Sanitize filename — unicode NFKC, basename, strip unsafe chars,
+            # truncate to 200 chars preserving extension, dedup collisions
+            # with -1/-2 suffixes (Issue #487 AC2).
+            safe_name = _sanitize_filename(f.name, f.id, used_names)
+            used_names.add(safe_name)
 
             # Size checks
             size_limit = MAX_IMAGE_SIZE if is_image else MAX_FILE_SIZE
@@ -717,9 +820,15 @@ class ChannelMessageRouter:
                     descriptions.append(f"{safe_name} ({size_str}) — skipped (total image size limit reached)")
                     continue
 
+                # Image embedding is the "write" for vision-mode files.
+                write_attempted += 1
                 total_image_bytes += len(data)
                 b64 = base64.b64encode(data).decode()
-                descriptions.append(f"![{safe_name}](data:{actual_mime};base64,{b64})")
+                descriptions.append(
+                    f"[File uploaded by {uploader}]: {safe_name} ({size_str}) — image attached inline\n"
+                    f"![{safe_name}](data:{actual_mime};base64,{b64})"
+                )
+                write_succeeded += 1
                 logger.info(f"[ROUTER] Embedded {safe_name} ({size_str}) as base64 for {agent_name}")
 
                 # Audit log for image upload
@@ -736,18 +845,24 @@ class ChannelMessageRouter:
                         "storage": "inline_base64",
                         "sender_id": message.sender_id,
                         "channel_id": message.channel_id,
+                        "uploader": uploader,
                     },
                 )
             else:
-                # Create per-session upload directory on first non-image file
+                # Create per-session upload directory on first non-image file.
+                # mkdir is the entry point for container writes — count it as
+                # one attempt for the file that triggered it.
                 if not dir_created:
+                    write_attempted += 1
                     try:
                         await container_exec_run(container, f"mkdir -p {upload_dir}", user="developer")
                         dir_created = True
                     except Exception as e:
                         logger.error(f"[ROUTER] Failed to create {upload_dir} in {agent_name}: {e}")
-                        descriptions.append(f"{safe_name} — copy to agent failed")
+                        descriptions.append(f"[File upload failed]: {safe_name} — could not create workspace upload directory")
                         continue
+                else:
+                    write_attempted += 1
 
                 try:
                     tar_buf = io.BytesIO()
@@ -763,11 +878,14 @@ class ChannelMessageRouter:
                     success = await container_put_archive(container, upload_dir, tar_buf.read())
                     if not success:
                         logger.error(f"[ROUTER] Failed to copy {safe_name} into {agent_name}")
-                        descriptions.append(f"{safe_name} — copy to agent failed")
+                        descriptions.append(f"[File upload failed]: {safe_name} — could not save to agent workspace")
                         continue
 
                     dest_path = f"{upload_dir}/{safe_name}"
-                    descriptions.append(f"{safe_name} ({size_str}, {actual_mime}) → {dest_path}")
+                    descriptions.append(
+                        f"[File uploaded by {uploader}]: {safe_name} ({size_str}) saved to {dest_path}"
+                    )
+                    write_succeeded += 1
                     logger.info(f"[ROUTER] Copied {safe_name} ({size_str}) to {agent_name}:{dest_path}")
 
                     # Audit log for file upload
@@ -785,17 +903,19 @@ class ChannelMessageRouter:
                             "dest_path": dest_path,
                             "sender_id": message.sender_id,
                             "channel_id": message.channel_id,
+                            "uploader": uploader,
                         },
                     )
 
                 except Exception as e:
                     logger.error(f"[ROUTER] Error copying {safe_name} to {agent_name}: {e}")
-                    descriptions.append(f"{safe_name} — copy error")
+                    descriptions.append(f"[File upload failed]: {safe_name} — workspace write error")
 
         if len(files) > MAX_FILES:
             descriptions.append(f"({len(files) - MAX_FILES} more file(s) skipped — max {MAX_FILES} per message)")
 
-        return descriptions, upload_dir if dir_created else None
+        all_writes_failed = write_attempted > 0 and write_succeeded == 0
+        return descriptions, upload_dir if dir_created else None, all_writes_failed
 
 
 # Singleton instance

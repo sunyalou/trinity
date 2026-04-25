@@ -319,3 +319,317 @@ class TestParseMessageWithFiles:
         assert len(result.files) == 1
         # Should have placeholder text for file-only messages
         assert result.text  # Not empty
+
+
+# =============================================================================
+# Phase 2 (Issue #487) — workspace delivery
+# =============================================================================
+
+
+class TestFilenameSanitization:
+    """Test the _sanitize_filename helper used during workspace delivery."""
+
+    def test_strips_path_traversal_unix(self):
+        from adapters.message_router import _sanitize_filename
+        used: set = set()
+        result = _sanitize_filename("../../etc/passwd", "fid1", used)
+        assert "/" not in result
+        assert ".." not in result
+        assert result == "passwd"
+
+    def test_strips_absolute_path(self):
+        from adapters.message_router import _sanitize_filename
+        used: set = set()
+        result = _sanitize_filename("/etc/passwd", "fid1", used)
+        assert "/" not in result
+        assert result == "passwd"
+
+    def test_unicode_normalize_fullwidth(self):
+        """Fullwidth unicode chars are normalized via NFKC."""
+        from adapters.message_router import _sanitize_filename
+        used: set = set()
+        # Fullwidth dot/slash/period sequences NFKC-normalize to ASCII.
+        # Ensure traversal attempts encoded with unicode variants don't survive.
+        traversal = "．．／etc／passwd"  # ＦＵＬＬＷＩＤＴＨ ../etc/passwd
+        result = _sanitize_filename(traversal, "fid1", used)
+        assert "/" not in result
+        assert ".." not in result
+
+    def test_unicode_normalize_preserves_content(self):
+        """Standard unicode names normalize cleanly."""
+        from adapters.message_router import _sanitize_filename
+        used: set = set()
+        result = _sanitize_filename("café.txt", "fid1", used)
+        # NFKC keeps café intact (é is already NFKC-normal)
+        assert result.endswith(".txt")
+        assert "caf" in result
+
+    def test_truncates_long_filename_preserving_extension(self):
+        from adapters.message_router import _sanitize_filename
+        used: set = set()
+        long_name = ("a" * 300) + ".txt"
+        result = _sanitize_filename(long_name, "fid1", used)
+        assert len(result) <= 200
+        assert result.endswith(".txt")
+
+    def test_truncates_long_no_extension(self):
+        from adapters.message_router import _sanitize_filename
+        used: set = set()
+        long_name = "x" * 300
+        result = _sanitize_filename(long_name, "fid1", used)
+        assert len(result) <= 200
+
+    def test_collision_dedup(self):
+        """Same sanitized name twice gets -1, -2 suffix before extension."""
+        from adapters.message_router import _sanitize_filename
+        used: set = set()
+        first = _sanitize_filename("data.csv", "fid1", used)
+        used.add(first)
+        second = _sanitize_filename("data.csv", "fid2", used)
+        used.add(second)
+        third = _sanitize_filename("data.csv", "fid3", used)
+
+        assert first == "data.csv"
+        assert second == "data-1.csv"
+        assert third == "data-2.csv"
+
+    def test_collision_dedup_no_extension(self):
+        from adapters.message_router import _sanitize_filename
+        used: set = set()
+        first = _sanitize_filename("README", "fid1", used)
+        used.add(first)
+        second = _sanitize_filename("README", "fid2", used)
+        assert first == "README"
+        assert second == "README-1"
+
+    def test_empty_name_fallback(self):
+        from adapters.message_router import _sanitize_filename
+        used: set = set()
+        assert _sanitize_filename("", "abc123", used) == "file_abc123"
+
+    def test_dot_only_fallback(self):
+        from adapters.message_router import _sanitize_filename
+        used: set = set()
+        assert _sanitize_filename("...", "abc123", used) == "file_abc123"
+
+    def test_hidden_dotfile_rejected(self):
+        """Dotfiles like .env / .gitignore fall back to file_{id} (#222 parity)."""
+        from adapters.message_router import _sanitize_filename
+        used: set = set()
+        assert _sanitize_filename(".env", "F001", used) == "file_F001"
+        used = set()
+        assert _sanitize_filename(".gitignore", "F002", used) == "file_F002"
+        used = set()
+        assert _sanitize_filename(".mcp.json", "F003", used) == "file_F003"
+
+    def test_strips_unsafe_chars(self):
+        from adapters.message_router import _sanitize_filename
+        used: set = set()
+        result = _sanitize_filename("my file<>?.txt", "fid1", used)
+        # Spaces and angle brackets get sanitized
+        assert "<" not in result
+        assert ">" not in result
+        assert "?" not in result
+        assert result.endswith(".txt")
+
+
+class TestFileDeliveryFormat:
+    """Test the chat injection format includes uploader attribution."""
+
+    @pytest.mark.asyncio
+    async def test_injection_includes_verified_email(self):
+        from adapters.message_router import ChannelMessageRouter
+        from adapters.base import FileAttachment, NormalizedMessage
+
+        adapter = MagicMock()
+        adapter.channel_type = "telegram"
+        adapter.get_source_identifier = MagicMock(return_value="telegram:bot:user")
+        adapter.download_file = AsyncMock(return_value=b"col1,col2\n1,2\n")
+
+        message = NormalizedMessage(
+            sender_id="user-123",
+            text="see attached",
+            channel_id="chat-456",
+            timestamp="1234567890",
+            files=[FileAttachment(id="fid1", name="data.csv", mimetype="text/csv", size=14, url="fid1")],
+            metadata={"agent_name": "test-agent"},
+        )
+
+        container = MagicMock()
+        router = ChannelMessageRouter()
+
+        with patch("adapters.message_router.container_exec_run", new=AsyncMock()), \
+             patch("adapters.message_router.container_put_archive", new=AsyncMock(return_value=True)), \
+             patch("adapters.message_router.platform_audit_service") as mock_audit:
+            mock_audit.log = AsyncMock()
+            descriptions, upload_dir, all_failed = await router._handle_file_uploads(
+                adapter, message, "test-agent", container, "session-abc",
+                verified_email="alice@example.com",
+            )
+
+        assert all_failed is False
+        assert upload_dir is not None
+        joined = "\n".join(descriptions)
+        assert "[File uploaded by alice@example.com]" in joined
+        assert "data.csv" in joined
+        assert "saved to /home/developer/uploads/" in joined
+
+    @pytest.mark.asyncio
+    async def test_injection_falls_back_to_source_id_without_email(self):
+        from adapters.message_router import ChannelMessageRouter
+        from adapters.base import FileAttachment, NormalizedMessage
+
+        adapter = MagicMock()
+        adapter.channel_type = "telegram"
+        adapter.get_source_identifier = MagicMock(return_value="telegram:bot42:user99")
+        adapter.download_file = AsyncMock(return_value=b"hello world")
+
+        message = NormalizedMessage(
+            sender_id="user-99",
+            text="",
+            channel_id="chat-1",
+            timestamp="1234567890",
+            files=[FileAttachment(id="fid1", name="note.txt", mimetype="text/plain", size=11, url="fid1")],
+            metadata={"agent_name": "test-agent"},
+        )
+
+        container = MagicMock()
+        router = ChannelMessageRouter()
+
+        with patch("adapters.message_router.container_exec_run", new=AsyncMock()), \
+             patch("adapters.message_router.container_put_archive", new=AsyncMock(return_value=True)), \
+             patch("adapters.message_router.platform_audit_service") as mock_audit:
+            mock_audit.log = AsyncMock()
+            descriptions, _, all_failed = await router._handle_file_uploads(
+                adapter, message, "test-agent", container, "session-x",
+                verified_email=None,
+            )
+
+        assert all_failed is False
+        joined = "\n".join(descriptions)
+        assert "[File uploaded by telegram:bot42:user99]" in joined
+        assert "note.txt" in joined
+
+
+class TestFileDeliveryFailures:
+    """Test workspace write failure handling (AC6)."""
+
+    @pytest.mark.asyncio
+    async def test_all_writes_fail_signals_abort(self):
+        """All container writes failing returns all_writes_failed=True."""
+        from adapters.message_router import ChannelMessageRouter
+        from adapters.base import FileAttachment, NormalizedMessage
+
+        adapter = MagicMock()
+        adapter.channel_type = "telegram"
+        adapter.get_source_identifier = MagicMock(return_value="telegram:bot:user")
+        adapter.download_file = AsyncMock(return_value=b"data")
+
+        message = NormalizedMessage(
+            sender_id="user",
+            text="",
+            channel_id="chat",
+            timestamp="1234567890",
+            files=[
+                FileAttachment(id="fid1", name="a.txt", mimetype="text/plain", size=4, url="fid1"),
+                FileAttachment(id="fid2", name="b.txt", mimetype="text/plain", size=4, url="fid2"),
+            ],
+            metadata={"agent_name": "test-agent"},
+        )
+
+        container = MagicMock()
+        router = ChannelMessageRouter()
+
+        with patch("adapters.message_router.container_exec_run", new=AsyncMock()), \
+             patch("adapters.message_router.container_put_archive", new=AsyncMock(return_value=False)), \
+             patch("adapters.message_router.platform_audit_service") as mock_audit:
+            mock_audit.log = AsyncMock()
+            descriptions, _, all_failed = await router._handle_file_uploads(
+                adapter, message, "test-agent", container, "session-y",
+                verified_email="user@example.com",
+            )
+
+        assert all_failed is True
+        # Failure markers present
+        assert any("[File upload failed]" in d for d in descriptions)
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_keeps_descriptions_and_proceeds(self):
+        """One file fails, one succeeds — all_writes_failed=False."""
+        from adapters.message_router import ChannelMessageRouter
+        from adapters.base import FileAttachment, NormalizedMessage
+
+        adapter = MagicMock()
+        adapter.channel_type = "telegram"
+        adapter.get_source_identifier = MagicMock(return_value="telegram:bot:user")
+        adapter.download_file = AsyncMock(return_value=b"data")
+
+        message = NormalizedMessage(
+            sender_id="user",
+            text="",
+            channel_id="chat",
+            timestamp="1234567890",
+            files=[
+                FileAttachment(id="fid1", name="ok.txt", mimetype="text/plain", size=4, url="fid1"),
+                FileAttachment(id="fid2", name="bad.txt", mimetype="text/plain", size=4, url="fid2"),
+            ],
+            metadata={"agent_name": "test-agent"},
+        )
+
+        container = MagicMock()
+        router = ChannelMessageRouter()
+
+        # First put_archive call succeeds, second fails
+        put_mock = AsyncMock(side_effect=[True, False])
+
+        with patch("adapters.message_router.container_exec_run", new=AsyncMock()), \
+             patch("adapters.message_router.container_put_archive", new=put_mock), \
+             patch("adapters.message_router.platform_audit_service") as mock_audit:
+            mock_audit.log = AsyncMock()
+            descriptions, _, all_failed = await router._handle_file_uploads(
+                adapter, message, "test-agent", container, "session-z",
+                verified_email="user@example.com",
+            )
+
+        assert all_failed is False
+        joined = "\n".join(descriptions)
+        assert "[File uploaded by user@example.com]: ok.txt" in joined
+        assert "[File upload failed]: bad.txt" in joined
+
+    @pytest.mark.asyncio
+    async def test_validation_only_failures_do_not_signal_abort(self):
+        """Pure validation rejections (download None) do NOT trigger all_writes_failed."""
+        from adapters.message_router import ChannelMessageRouter
+        from adapters.base import FileAttachment, NormalizedMessage
+
+        adapter = MagicMock()
+        adapter.channel_type = "telegram"
+        adapter.get_source_identifier = MagicMock(return_value="telegram:bot:user")
+        # download returns None — pre-write rejection, no write attempted
+        adapter.download_file = AsyncMock(return_value=None)
+
+        message = NormalizedMessage(
+            sender_id="user",
+            text="",
+            channel_id="chat",
+            timestamp="1234567890",
+            files=[FileAttachment(id="fid1", name="x.txt", mimetype="text/plain", size=4, url="fid1")],
+            metadata={"agent_name": "test-agent"},
+        )
+
+        container = MagicMock()
+        router = ChannelMessageRouter()
+
+        with patch("adapters.message_router.container_exec_run", new=AsyncMock()), \
+             patch("adapters.message_router.container_put_archive", new=AsyncMock(return_value=True)), \
+             patch("adapters.message_router.platform_audit_service") as mock_audit:
+            mock_audit.log = AsyncMock()
+            descriptions, _, all_failed = await router._handle_file_uploads(
+                adapter, message, "test-agent", container, "session-q",
+                verified_email=None,
+            )
+
+        # Download failed for the only file — no write attempted, so not "all writes failed".
+        # The agent will see a "download failed" description and respond normally.
+        assert all_failed is False
+        assert any("download failed" in d for d in descriptions)

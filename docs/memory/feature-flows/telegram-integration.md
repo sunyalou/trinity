@@ -691,9 +691,13 @@ gate admits (or issues access-request, per policy) → agent executes
 
 No changes to `src/backend/adapters/transports/telegram_webhook.py`. The transport already dispatches `/`-prefixed messages to `adapter.handle_command` before the router pipeline, so `/login`, `/logout`, and `/whoami` are picked up for free.
 
-## File Upload Support (#354)
+## File Upload Support (#354 Phase 1, #487 Phase 2)
 
-Phase 1 of issue #354 adds Telegram file upload support, allowing users to send photos and documents to agents via Telegram.
+Phases 1 and 2 of issue #354 deliver Telegram file upload end-to-end:
+Phase 1 (#355) shipped extraction, download, magic-byte MIME validation,
+size checks, and audit logging; Phase 2 (#487) wired the validated bytes
+into the agent workspace, hardened filename sanitization, and added
+explicit user-facing failure handling.
 
 ### File Types Supported
 
@@ -702,7 +706,8 @@ Phase 1 of issue #354 adds Telegram file upload support, allowing users to send 
 | Photos | `message.photo` | Array of sizes; extracts largest (last) as `photo.jpg` |
 | Documents | `message.document` | Preserves `file_name`, `mime_type` from Telegram |
 
-Voice/video/stickers not yet supported (tracked in #354 Phase 2).
+Voice messages are handled via Gemini transcription (#318). Video, video
+notes, and stickers are not yet supported.
 
 ### Adapter Changes (`src/backend/adapters/telegram_adapter.py`)
 
@@ -754,30 +759,110 @@ TelegramAdapter.parse_message()
     |- Build NormalizedMessage with files field
     v
 ChannelMessageRouter.handle_message()
-    |- For each file:
+    |- Resolve verified_email via adapter.resolve_verified_email()
+    |- _handle_file_uploads(verified_email=...):
     |     |- adapter.download_file(file, message)
     |     |- Size validation (TOCTOU)
     |     |- Magic-byte MIME validation (if available)
-    |     |- Audit log
-    |     |- [Future: write to agent workspace]
+    |     |- _sanitize_filename: NFKC + basename + safe-char regex +
+    |     |    200-char truncation + collision dedup (-1, -2, …)
+    |     |- container_put_archive → /home/developer/uploads/{session}/{name}
+    |     |- Audit log (includes uploader and dest_path)
+    |     |- Inject "[File uploaded by {uploader}]: {name} ({size}) saved to {path}"
+    |- If all writes failed: reply "Sorry, I couldn't save the file(s)…"
+    |    and skip agent execution (Issue #487 AC6)
     v
-Agent receives message with file metadata
-    |- [Phase 2: file content in context]
+Agent prompt includes file-upload notice → agent reads file with Read tool
+    |
+    v (after execution completes)
+_cleanup_uploads removes per-session directory
 ```
+
+### Phase 2 Delivery Details (#487)
+
+The shared, channel-agnostic `_handle_file_uploads` method in
+`src/backend/adapters/message_router.py` does the actual workspace
+delivery. Telegram inbound files use the same code path as Slack inbound
+files (#222).
+
+**Storage layout**: per-session directory at
+`/home/developer/uploads/{sanitized_session_id}/`. Files live only for
+the duration of the agent execution and are removed by `_cleanup_uploads`
+once the response is sent. This prevents cross-user contamination on
+shared agents and keeps the workspace clean between turns. If users need
+file persistence across conversations, they re-upload the file (matches
+the Slack pattern).
+
+**Filename sanitization** (`_sanitize_filename` in `message_router.py`):
+1. **NFKC unicode normalize** — collapses fullwidth/halfwidth and
+   combining sequences so unicode-encoded path-traversal attempts (e.g.
+   fullwidth `．．／`) cannot survive `os.path.basename`.
+2. **`os.path.basename`** — strips any leading directory components.
+3. **Safe-char regex** — replaces anything outside `\w.\-()` with `_`.
+4. **Empty/dot-only fallback** — defaults to `file_{file_id}`.
+5. **200-char truncation** — preserves the extension when possible
+   (`stem[:keep].ext`) so file type stays detectable.
+6. **Collision dedup** — appends `-1`, `-2`, … before the extension when
+   the sanitized name is already in the per-message set. Each
+   `_handle_file_uploads` call gets a fresh `used_names` set.
+
+**Chat injection format** (every channel, not just Telegram):
+- Successful file: `[File uploaded by {uploader}]: {filename} ({size}) saved to {dest_path}`
+- Successful image: `[File uploaded by {uploader}]: {filename} ({size}) — image attached inline` followed by `![{name}](data:{mime};base64,…)`
+- Workspace write failure: `[File upload failed]: {filename} — {reason}`
+
+`{uploader}` is the verified email when `adapter.resolve_verified_email`
+returned one (Issue #311), otherwise `adapter.get_source_identifier(message)`
+(e.g. `telegram:{bot_id}:{user_id}`). The prefix gives the agent
+human-readable provenance for any file in its workspace.
+
+**Failure modes**:
+- *Validation rejection* (unsupported MIME, size limit, MIME mismatch,
+  download error): logged in description block; agent runs and can
+  explain the rejection to the user. Does not count as a "write
+  attempt" so it never triggers the all-failed abort.
+- *Workspace write failure* (mkdir error, `container_put_archive` returns
+  False, tar pack exception): logged in description with `[File upload
+  failed]:` prefix.
+- *All writes failed* (every file that reached the write stage failed):
+  router replies "Sorry, I couldn't save the file(s) you sent. Please
+  try again in a moment." on the channel, runs cleanup, and returns
+  before agent execution. The agent never sees a half-broken upload
+  context.
+- *Partial failure* (some succeeded, some failed): agent runs with
+  mixed descriptions, can choose how to respond.
+
+**Audit log entries** (`platform_audit_service.log` with
+`event_type=EXECUTION`, `event_action="file_upload"`) include the final
+`dest_path`, `storage` (`container_file` or `inline_base64`), and
+`uploader` so the audit trail captures who uploaded what to which agent.
 
 ### Tests
 
-11 unit tests in `tests/unit/test_file_upload.py`:
-- `TestTelegramFileExtraction` (4 tests): Photo/document extraction, edge cases
-- `TestTelegramFileDownload` (3 tests): Bot API interaction, error paths
+27 unit tests in `tests/unit/test_file_upload.py`:
+- `TestTelegramFileExtraction` (4 tests): Photo/document extraction
+- `TestTelegramFileDownload` (3 tests): Bot API two-step download
 - `TestMessageRouterFileValidation` (2 tests): Size formatting, magic flag
-- `TestParseMessageWithFiles` (2 tests): Integration with parse_message
+- `TestParseMessageWithFiles` (2 tests): `parse_message` populates `files`
+- **`TestFilenameSanitization` (11 tests, #487)**: path traversal (unix +
+  unicode-encoded), absolute-path stripping, NFKC preservation, length
+  truncation with/without extension, collision dedup with/without
+  extension, empty/dot-only fallback, unsafe-char stripping
+- **`TestFileDeliveryFormat` (2 tests, #487)**: injection includes
+  verified email when present, falls back to `source_identifier`
+- **`TestFileDeliveryFailures` (3 tests, #487)**: all-failed signals
+  abort, partial failure proceeds with mixed descriptions, validation-
+  only rejections do not signal abort
 
-### Limitations (Phase 1)
+### Out of Scope
 
-- Files are validated and logged but **not yet delivered to agent workspace** — that's Phase 2
-- Videos, video notes, and stickers not supported (voice messages supported via Gemini transcription as of #318)
-- Slack file upload not yet implemented (tracked separately)
+- Per-user namespaced folders (one shared per-session dir per agent)
+- Storage quotas, retention, or cross-session persistence policies
+- Virus scanning of uploaded bytes
+- Voice/video/stickers (voice has its own Gemini path; rest unsupported)
+- Slack-specific upload behavior changes (the shared code path applies
+  uniformly; Slack inherits the Phase 2 hardening for free)
+- Web chat file upload (#364, separate flow)
 
 ## Related Flows
 - [unified-channel-access-control.md](unified-channel-access-control.md) — Cross-channel access primitive (policy, router gate, access requests, group_auth_mode) (#311)
@@ -798,3 +883,4 @@ Agent receives message with file metadata
 | 2026-04-15 | #349: Phase 1-3 enhancements. Sender identity in group messages (`_format_group_sender`). Observation mode (`trigger_mode: "observe"`) with `[NO_REPLY]` marker. Proactive group messaging endpoint with rate limiting. MCP tools `list_channel_groups` and `send_group_message`. |
 | 2026-04-16 | #354 Phase 1: Telegram file upload support. `_extract_files()` and `download_file()` in adapter. Post-download size/MIME validation in router. python-magic dependency. 11 unit tests. |
 | 2026-04-18 | #318: Voice transcription via Gemini. `process_voice()` in telegram_media.py, voice processing hook in message_router.py. Limits: 5 min duration, 10MB size. 22 unit tests. |
+| 2026-04-25 | #487 Phase 2: workspace delivery hardened. New `_sanitize_filename` helper (NFKC + basename + safe-chars + 200-char truncation + collision dedup). Chat injection format `[File uploaded by {uploader}]: {name} ({size}) saved to {path}`. All-writes-failed now replies via channel and aborts execution. Audit entries include `uploader`. 16 new tests (27 total in `test_file_upload.py`). |
