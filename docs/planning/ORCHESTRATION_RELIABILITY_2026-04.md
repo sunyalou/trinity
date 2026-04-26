@@ -1,6 +1,6 @@
 # Orchestration & Multi-Agent Reliability Plan
 
-**Date:** 2026-04-13 (revised 2026-04-20)
+**Date:** 2026-04-13 (revised 2026-04-20, 2026-04-26)
 **Status:** Proposed sequencing for execution-time orchestration, event subscriptions, and multi-agent reliability.
 
 **Progress:** Sprint A — **7/7 complete**. Sprint B — **1/1 complete**. Sprint C — **3/5 complete**: #260 (PR #316), #271 (PR #332), #264 (PR #334). **#294 closed** (pause rationale vindicated — see Sprint C row). **#291 now unblocked** (was pending #430; #430 now shipped). Sprint D — **2/4 complete: #306 + #430 shipped.** **Next: #428 (CAPACITY-CONSOLIDATE) after 2-week soak on #306.**
@@ -338,5 +338,5 @@ New triggers, all funnel into the same executor:
 10. ~~**Next (2026-04-20):** Pick up **#306**~~ — ✅ **Shipped.** Soak window started on merge date; track push success rate + orphan count.
 11. ~~**Follow-up:** Create and rank the three new issues from Tier 2.5~~ — Issues #428, #429, #430 exist; rank + tier assignment tracked in the Roadmap project board (groomed 2026-04-22).
 12. ~~**Next (current):** Pick up **#428 (CAPACITY-CONSOLIDATE)** once #306 has ≥2 weeks of clean soak (zero orphan recoveries, push success ≥99.9%). In parallel, pick up **#430 (PROCESS-ENGINE-DECISION)** — no soak dependency, unblocks #291.~~ ✅ **#430 shipped (2026-04-24)**: Option B (delete) executed. Process engine archived on `archive/process-engine` branch. **Next:** pick up **#291 (WEBHOOK-001)** — now unblocked — and **#428 (CAPACITY-CONSOLIDATE)** once soak completes.
-13. **Re-evaluate #408** — #306 is live, so the predicted dissolution condition now holds. Verify no long-running HTTP call remains in `TaskExecutionService` and close as dissolved (no direct code change needed).
+13. ~~**Re-evaluate #408**~~ — Re-audited 2026-04-26: long-running HTTP call still present at `services/task_execution_service.py:412-419` (`agent_post_with_retry` awaits full agent response with `timeout = timeout_seconds + 10`, up to ~2h under TIMEOUT-001). #306 changed only WebSocket transport, not backend→agent dispatch — it cannot dissolve #408 on its own. Confirms line 32: dissolution is gated on **#428 (CapacityManager + push-completion)**, not #306. #408 stays open until #428 ships.
 14. **Then:** #429 (CLEANUP-COLLAPSE) gated on #428 landing + continued clean soak — the riskiest step per §"Additive-first migration."
