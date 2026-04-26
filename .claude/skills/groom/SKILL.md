@@ -67,6 +67,26 @@ for f in d['fields']:
 
 ## Process
 
+### SDLC Context
+
+Trinity follows a **4-stage SDLC** (see `docs/DEVELOPMENT_WORKFLOW.md`):
+
+```
+ Todo → In Progress → In Dev → Done
+```
+
+| Stage | Label | Board Column | Code location |
+|-------|-------|--------------|---------------|
+| Todo | *(none or `status-ready`)* | Todo | — |
+| In Progress | `status-in-progress` | In Progress | feature branch |
+| In Dev | `status-in-dev` | In Dev | `origin/dev` (merged, awaiting release) |
+| Done | *(issue closed)* | Done | `origin/main` |
+
+**Key implications for grooming:**
+- `status-in-dev` issues are **shipping**, not stale — never propose closing them, never re-rank/re-tier them. They auto-close on release PR merge (dev → main).
+- `status-*` labels are authoritative; the board column is a mirror. Detect drift between them (Step 1b).
+- Grooming primarily acts on the **Todo** column. Leave In Progress/In Dev untouched unless filling missing Theme.
+
 ### Step 1: Audit Board Coverage
 
 Find open issues that are NOT on the project board.
@@ -98,6 +118,42 @@ Report findings:
 - Add missing issues to board before continuing
 
 **Verify** issues were added by re-querying the board before proceeding.
+
+### Step 1b: Reconcile status-* Labels with Board Column
+
+Labels are authoritative. If an issue has a `status-*` label but the board column doesn't match, fix the board (the auto-promotion workflow at `.github/workflows/issue-status-on-merge.yml` should keep them in sync — drift indicates a missed promotion).
+
+```bash
+gh issue list --repo abilityai/trinity --state open --limit 200 \
+  --json number,labels > /tmp/groom_labels.json
+
+python3 << 'EOF'
+import json
+labels = {x['number']: [l['name'] for l in x['labels']]
+          for x in json.load(open('/tmp/groom_labels.json'))}
+board = json.load(open('/tmp/groom_board.json'))
+
+LABEL_TO_COL = {
+    'status-in-progress': 'In Progress',
+    'status-in-dev': 'In Dev',
+}
+mismatches = []
+for item in board['items']:
+    n = item.get('content', {}).get('number')
+    if not n or n not in labels:
+        continue
+    col = item.get('status', '') or '(none)'
+    for lbl, expected in LABEL_TO_COL.items():
+        if lbl in labels[n] and col != expected:
+            mismatches.append((n, lbl, expected, col))
+
+print(f'Label↔board mismatches: {len(mismatches)}')
+for n, lbl, exp, actual in mismatches:
+    print(f'  #{n} has {lbl} but column is {actual!r} (expected {exp!r})')
+EOF
+```
+
+For each mismatch, propose moving the board column to match the label (auto-fix in Step 5).
 
 ### Step 2: Detect Unranked Items
 
@@ -242,10 +298,10 @@ for item in items:
 "
 ```
 
-Present observations:
+Present observations (Todo column only — never flag In Dev as stale):
 - Are P1a items ranked highest?
 - Are bugs ranked above features within the same tier?
-- Are there stale items that should be closed?
+- Are there stale items in Todo that should be closed? (Skip anything with `status-in-dev` — those are shipping in the next release.)
 - Are there items that seem mis-tiered?
 
 ### Step 4: Propose Changes (APPROVAL GATE)
@@ -257,7 +313,7 @@ Based on the audit, propose specific changes:
 3. **Epic assignments** for orphan items — match to existing epic or suggest new epic
 4. **Theme assignments** for items missing theme — categorize by strategic area
 5. **Re-ordering suggestions** for items that seem mis-prioritized
-6. **Close candidates** for stale or resolved items
+6. **Close candidates** for stale or resolved items in Todo only — **never** propose closing issues with `status-in-dev` (they auto-close at the next release cut per `docs/DEVELOPMENT_WORKFLOW.md` §4a)
 
 **Ranking strategy:**
 - Within each tier, prioritize: bugs > security > features > refactors
@@ -416,6 +472,8 @@ After applying, re-query and display the updated backlog to confirm.
 ## Completion Checklist
 
 - [ ] All open issues are on the project board
+- [ ] No `status-*` label drift between issue labels and board column (Step 1b)
+- [ ] No `status-in-dev` issue was re-ranked, re-tiered, or proposed for closure
 - [ ] All Todo items have a rank
 - [ ] All Todo items have a tier (P1a/P1b/P1c) or are intentionally untiered
 - [ ] All P1 items have an Epic assigned (or flagged as standalone)
