@@ -42,6 +42,12 @@ router = APIRouter(prefix="/api/agents", tags=["chat"])
 _websocket_manager = None
 
 
+# Sync HTTP long-poll primitives live in services/sync_waiter.py so they're
+# importable from tests without pulling in the full router/auth chain.
+# (Issue #498)
+from services.sync_waiter import signal_sync_waiter, wait_for_sync_terminal
+
+
 def set_websocket_manager(manager):
     """Set WebSocket manager for broadcasting collaboration events."""
     global _websocket_manager
@@ -591,157 +597,165 @@ async def _run_async_task_with_persistence(
     task_service = get_task_execution_service()
     triggered_by = "agent" if x_source_agent else "manual"
 
-    # Service tracks CHAT_START with parent_activity_id=collaboration_activity_id
-    # and merges extra_activity_details (parallel_mode/async_mode) so the Network
-    # view filter at src/frontend/src/stores/network.js:255 still includes this
-    # execution.
-    result = await task_service.execute_task(
-        agent_name=agent_name,
-        message=request.message,
-        triggered_by=triggered_by,
-        source_user_id=user_id,
-        source_user_email=user_email,
-        source_agent_name=x_source_agent,
-        model=request.model,
-        timeout_seconds=request.timeout_seconds,
-        resume_session_id=request.resume_session_id,
-        allowed_tools=request.allowed_tools,
-        system_prompt=request.system_prompt,
-        execution_id=execution_id,
-        subscription_id=subscription_id,
-        parent_activity_id=collaboration_activity_id,
-        extra_activity_details={
-            "parallel_mode": True,
-            "async_mode": True,
-            "model": request.model,
-            "timeout_seconds": request.timeout_seconds,
-        },
-        slot_already_held=True,  # Router pre-acquired to preserve 429-upfront contract
-    )
-
-    execution_time_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
-
-    # ---- Post-task: chat session persistence (THINK-001) ----
+    # Outer try/finally so a sync long-poll waiter (issue #498) is always
+    # signaled even if the post-task side effects below raise.
+    result = None
     chat_session_id = None
-    if request.save_to_session and user_id and user_email:
-        chat_session_id = await _persist_chat_session(
+    try:
+        # Service tracks CHAT_START with parent_activity_id=collaboration_activity_id
+        # and merges extra_activity_details (parallel_mode/async_mode) so the Network
+        # view filter at src/frontend/src/stores/network.js:255 still includes this
+        # execution.
+        result = await task_service.execute_task(
             agent_name=agent_name,
-            request=request,
-            result=result,
-            user_id=user_id,
-            user_email=user_email,
+            message=request.message,
+            triggered_by=triggered_by,
+            source_user_id=user_id,
+            source_user_email=user_email,
+            source_agent_name=x_source_agent,
+            model=request.model,
+            timeout_seconds=request.timeout_seconds,
+            resume_session_id=request.resume_session_id,
+            allowed_tools=request.allowed_tools,
+            system_prompt=request.system_prompt,
+            execution_id=execution_id,
             subscription_id=subscription_id,
-            execution_time_ms=execution_time_ms,
-        )
-        if chat_session_id and _websocket_manager:
-            try:
-                await _websocket_manager.broadcast(json.dumps({
-                    "type": "chat_response_ready",
-                    "execution_id": execution_id,
-                    "agent_name": agent_name,
-                    "chat_session_id": chat_session_id,
-                    "timestamp": utc_now_iso(),
-                }))
-            except Exception as e:
-                logger.warning(f"[Task Async] chat_response_ready broadcast failed: {e}")
-
-    # ---- Post-task: complete collaboration activity ----
-    if collaboration_activity_id:
-        try:
-            await activity_service.complete_activity(
-                activity_id=collaboration_activity_id,
-                status=(
-                    ActivityState.COMPLETED
-                    if result.status == TaskExecutionStatus.SUCCESS
-                    else ActivityState.FAILED
-                ),
-                details={
-                    "response_length": len(result.response or ""),
-                    "execution_time_ms": execution_time_ms,
-                    "execution_id": execution_id,
-                },
-                error=(result.error if result.status == TaskExecutionStatus.FAILED else None),
-            )
-        except Exception as e:
-            logger.warning(f"[Task Async] collaboration activity completion failed: {e}")
-
-    # ---- Post-task: complete self-task activity and inject result (SELF-EXEC-001) ----
-    if is_self_task and self_task_activity_id:
-        activity_status = (
-            ActivityState.COMPLETED
-            if result.status == TaskExecutionStatus.SUCCESS
-            else ActivityState.FAILED
+            parent_activity_id=collaboration_activity_id,
+            extra_activity_details={
+                "parallel_mode": True,
+                "async_mode": True,
+                "model": request.model,
+                "timeout_seconds": request.timeout_seconds,
+            },
+            slot_already_held=True,  # Router pre-acquired to preserve 429-upfront contract
         )
 
-        # Complete the self-task activity
-        try:
-            await activity_service.complete_activity(
-                activity_id=self_task_activity_id,
-                status=activity_status,
-                details={
-                    "response_length": len(result.response or ""),
-                    "execution_time_ms": execution_time_ms,
-                    "execution_id": execution_id,
-                    "inject_result": request.inject_result,
-                },
-                error=(result.error if result.status == TaskExecutionStatus.FAILED else None),
+        execution_time_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+
+        # ---- Post-task: chat session persistence (THINK-001) ----
+        if request.save_to_session and user_id and user_email:
+            chat_session_id = await _persist_chat_session(
+                agent_name=agent_name,
+                request=request,
+                result=result,
+                user_id=user_id,
+                user_email=user_email,
+                subscription_id=subscription_id,
+                execution_time_ms=execution_time_ms,
             )
-        except Exception as e:
-            logger.warning(f"[Task Async] self-task activity completion failed: {e}")
-
-        # Inject result into chat session if requested
-        if request.inject_result and request.chat_session_id and result.status == TaskExecutionStatus.SUCCESS:
-            try:
-                # Validate session exists and belongs to user
-                session = db.get_chat_session(request.chat_session_id)
-                if session and session.get("user_id") == user_id:
-                    # Add self-task result as a chat message
-                    db.add_chat_message(
-                        session_id=request.chat_session_id,
-                        agent_name=agent_name,
-                        user_id=user_id,
-                        user_email=user_email or "",
-                        role="assistant",
-                        content=result.response or "",
-                        cost=result.cost,
-                        context_used=result.context_used,
-                        context_max=result.context_max,
-                        execution_time_ms=execution_time_ms,
-                        source="self_task",  # Mark as self-task result
-                    )
-                    logger.info(f"[Self-Task] Injected result into chat session {request.chat_session_id}")
-                else:
-                    logger.warning(f"[Self-Task] Cannot inject result: session {request.chat_session_id} not found or not owned by user")
-            except Exception as e:
-                logger.warning(f"[Self-Task] Failed to inject result into chat session: {e}")
-
-        # Broadcast self-task completion event
-        if _websocket_manager:
-            try:
-                await _websocket_manager.broadcast(json.dumps({
-                    "type": "agent_activity",
-                    "agent_name": agent_name,
-                    "activity_type": "self_task",
-                    "activity_state": "completed" if result.status == TaskExecutionStatus.SUCCESS else "failed",
-                    "action": f"Background task completed",
-                    "timestamp": utc_now_iso(),
-                    "details": {
+            if chat_session_id and _websocket_manager:
+                try:
+                    await _websocket_manager.broadcast(json.dumps({
+                        "type": "chat_response_ready",
                         "execution_id": execution_id,
-                        "chat_session_id": request.chat_session_id,
-                        "cost_usd": result.cost,
-                        "execution_time_ms": execution_time_ms,
-                        "response_preview": (result.response or "")[:200],
-                        "inject_result": request.inject_result,
-                        "result_injected": request.inject_result and request.chat_session_id is not None,
-                    }
-                }))
-            except Exception as e:
-                logger.warning(f"[Self-Task] WebSocket broadcast failed: {e}")
+                        "agent_name": agent_name,
+                        "chat_session_id": chat_session_id,
+                        "timestamp": utc_now_iso(),
+                    }))
+                except Exception as e:
+                    logger.warning(f"[Task Async] chat_response_ready broadcast failed: {e}")
 
-    logger.info(
-        f"[Task Async] Completed background task for agent '{agent_name}', "
-        f"execution_id={execution_id}, status={result.status}"
-    )
+        # ---- Post-task: complete collaboration activity ----
+        if collaboration_activity_id:
+            try:
+                await activity_service.complete_activity(
+                    activity_id=collaboration_activity_id,
+                    status=(
+                        ActivityState.COMPLETED
+                        if result.status == TaskExecutionStatus.SUCCESS
+                        else ActivityState.FAILED
+                    ),
+                    details={
+                        "response_length": len(result.response or ""),
+                        "execution_time_ms": execution_time_ms,
+                        "execution_id": execution_id,
+                    },
+                    error=(result.error if result.status == TaskExecutionStatus.FAILED else None),
+                )
+            except Exception as e:
+                logger.warning(f"[Task Async] collaboration activity completion failed: {e}")
+
+        # ---- Post-task: complete self-task activity and inject result (SELF-EXEC-001) ----
+        if is_self_task and self_task_activity_id:
+            activity_status = (
+                ActivityState.COMPLETED
+                if result.status == TaskExecutionStatus.SUCCESS
+                else ActivityState.FAILED
+            )
+
+            # Complete the self-task activity
+            try:
+                await activity_service.complete_activity(
+                    activity_id=self_task_activity_id,
+                    status=activity_status,
+                    details={
+                        "response_length": len(result.response or ""),
+                        "execution_time_ms": execution_time_ms,
+                        "execution_id": execution_id,
+                        "inject_result": request.inject_result,
+                    },
+                    error=(result.error if result.status == TaskExecutionStatus.FAILED else None),
+                )
+            except Exception as e:
+                logger.warning(f"[Task Async] self-task activity completion failed: {e}")
+
+            # Inject result into chat session if requested
+            if request.inject_result and request.chat_session_id and result.status == TaskExecutionStatus.SUCCESS:
+                try:
+                    # Validate session exists and belongs to user
+                    session = db.get_chat_session(request.chat_session_id)
+                    if session and session.get("user_id") == user_id:
+                        # Add self-task result as a chat message
+                        db.add_chat_message(
+                            session_id=request.chat_session_id,
+                            agent_name=agent_name,
+                            user_id=user_id,
+                            user_email=user_email or "",
+                            role="assistant",
+                            content=result.response or "",
+                            cost=result.cost,
+                            context_used=result.context_used,
+                            context_max=result.context_max,
+                            execution_time_ms=execution_time_ms,
+                            source="self_task",  # Mark as self-task result
+                        )
+                        logger.info(f"[Self-Task] Injected result into chat session {request.chat_session_id}")
+                    else:
+                        logger.warning(f"[Self-Task] Cannot inject result: session {request.chat_session_id} not found or not owned by user")
+                except Exception as e:
+                    logger.warning(f"[Self-Task] Failed to inject result into chat session: {e}")
+
+            # Broadcast self-task completion event
+            if _websocket_manager:
+                try:
+                    await _websocket_manager.broadcast(json.dumps({
+                        "type": "agent_activity",
+                        "agent_name": agent_name,
+                        "activity_type": "self_task",
+                        "activity_state": "completed" if result.status == TaskExecutionStatus.SUCCESS else "failed",
+                        "action": f"Background task completed",
+                        "timestamp": utc_now_iso(),
+                        "details": {
+                            "execution_id": execution_id,
+                            "chat_session_id": request.chat_session_id,
+                            "cost_usd": result.cost,
+                            "execution_time_ms": execution_time_ms,
+                            "response_preview": (result.response or "")[:200],
+                            "inject_result": request.inject_result,
+                            "result_injected": request.inject_result and request.chat_session_id is not None,
+                        }
+                    }))
+                except Exception as e:
+                    logger.warning(f"[Self-Task] WebSocket broadcast failed: {e}")
+
+        logger.info(
+            f"[Task Async] Completed background task for agent '{agent_name}', "
+            f"execution_id={execution_id}, status={result.status}"
+        )
+    finally:
+        # Issue #498: signal any sync HTTP caller waiting on this execution.
+        # No-op when no waiter is registered (the common async path).
+        signal_sync_waiter(execution_id, result, chat_session_id)
 
 
 @router.post("/{name}/task")
@@ -990,7 +1004,144 @@ async def execute_parallel_task(
             "async_mode": True,
         }
 
-    # ---- Sync mode: delegate to TaskExecutionService (EXEC-024) ----
+    # ---- Sync mode: pre-acquire slot to mirror async branch (issue #498).
+    # On success, delegate to TaskExecutionService with slot_already_held=True
+    # so service finally still releases. On at-capacity, spill to the same
+    # backlog the async path uses and long-poll on this connection until the
+    # execution reaches a terminal status.
+    sync_slot_service = get_slot_service()
+    sync_max_parallel_tasks = db.get_max_parallel_tasks(name)
+    sync_effective_timeout = request.timeout_seconds
+    if sync_effective_timeout is None:
+        sync_effective_timeout = db.get_execution_timeout(name)
+
+    sync_slot_acquired = await sync_slot_service.acquire_slot(
+        agent_name=name,
+        execution_id=execution_id or f"temp-{datetime.utcnow().timestamp()}",
+        max_parallel_tasks=sync_max_parallel_tasks,
+        message_preview=request.message[:100] if request.message else "",
+        timeout_seconds=sync_effective_timeout,
+    )
+
+    if not sync_slot_acquired:
+        # Issue #498: spill sync calls to the SAME backlog the async path uses
+        # (BACKLOG-001), then await on the open HTTP connection. The drain
+        # callback fires _run_async_task_with_persistence; that helper signals
+        # _sync_waiters from its finally so we wake immediately on terminal.
+        from services.backlog_service import get_backlog_service
+        sync_backlog = get_backlog_service()
+        sync_enqueued = await sync_backlog.enqueue(
+            agent_name=name,
+            execution_id=execution_id,
+            request=request,
+            effective_timeout=sync_effective_timeout,
+            user_id=current_user.id,
+            user_email=current_user.email or current_user.username,
+            subscription_id=_task_subscription_id,
+            x_source_agent=x_source_agent,
+            x_mcp_key_id=x_mcp_key_id,
+            x_mcp_key_name=x_mcp_key_name,
+            triggered_by=triggered_by,
+            collaboration_activity_id=collaboration_activity_id,
+            is_self_task=is_self_task,
+            self_task_activity_id=self_task_activity_id,
+        )
+        if not sync_enqueued:
+            # Backlog ALSO full → preserve existing terminal-failure semantics.
+            if execution_id:
+                db.update_execution_status(
+                    execution_id=execution_id,
+                    status=TaskExecutionStatus.FAILED,
+                    error=f"Agent at capacity ({sync_max_parallel_tasks}/{sync_max_parallel_tasks} parallel tasks running) and backlog is full",
+                )
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Agent '{name}' is at capacity ({sync_max_parallel_tasks} parallel tasks) "
+                    f"and its backlog is full. Try again later."
+                ),
+            )
+
+        # Long-poll cap: queue wait + execution time, both bounded individually
+        # by effective_timeout via slot TTL and TaskExecutionService internals.
+        # Total connection hold ≤ 2 * effective_timeout (Policy B).
+        sync_wait_cap = 2 * sync_effective_timeout
+        logger.info(
+            f"[Task Sync] Agent '{name}' at capacity — execution {execution_id} "
+            f"queued to backlog; long-polling up to {sync_wait_cap}s"
+        )
+        try:
+            wait_payload = await wait_for_sync_terminal(
+                execution_id, timeout=sync_wait_cap
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=504,
+                detail=(
+                    f"Sync task on agent '{name}' did not complete within "
+                    f"{sync_wait_cap}s. Execution {execution_id} may still be "
+                    f"running; poll GET /api/agents/{name}/executions/{execution_id}."
+                ),
+            )
+
+        if wait_payload is not None and wait_payload.get("result") is not None:
+            # Drain happy path — full TaskExecutionResult is available.
+            result = wait_payload["result"]
+            sync_chat_session_id = wait_payload.get("chat_session_id")
+        else:
+            # Polling fallback caught a non-drain terminal flip (corrupt
+            # metadata, expire_stale, cleanup recovery). Reconstruct a
+            # minimal result from the row so the failure-translation block
+            # below still works.
+            row = db.get_execution(execution_id)
+            if row is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Execution {execution_id} disappeared while waiting",
+                )
+            from services.task_execution_service import TaskExecutionResult
+            result = TaskExecutionResult(
+                execution_id=execution_id,
+                status=row.status,
+                response=row.response or "",
+                cost=row.cost,
+                context_used=row.context_used,
+                context_max=row.context_max,
+                session_id=row.claude_session_id,
+                error=row.error,
+                raw_response={
+                    "response": row.response or "",
+                    "cost": row.cost,
+                    "execution_id": execution_id,
+                    "claude_session_id": row.claude_session_id,
+                },
+            )
+            sync_chat_session_id = None
+
+        # Side effects (collaboration activity, chat session persist) were
+        # handled by _run_async_task_with_persistence inside the drain — do
+        # NOT repeat them. Just translate failure and build the response.
+        if result.status == "failed":
+            if "at capacity" in (result.error or ""):
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Agent '{name}' is at capacity. Try again later.",
+                )
+            elif "timed out" in (result.error or ""):
+                raise HTTPException(status_code=504, detail=result.error)
+            else:
+                raise HTTPException(
+                    status_code=503,
+                    detail=result.error or "Failed to execute task. The agent may be unavailable.",
+                )
+
+        sync_response_data = result.raw_response or {}
+        if sync_chat_session_id:
+            sync_response_data["chat_session_id"] = sync_chat_session_id
+        sync_response_data["task_execution_id"] = execution_id
+        return sync_response_data
+
+    # ---- Slot acquired immediately — existing sync path (EXEC-024) ----
     task_execution_service = get_task_execution_service()
     result = await task_execution_service.execute_task(
         agent_name=name,
@@ -1007,6 +1158,7 @@ async def execute_parallel_task(
         allowed_tools=request.allowed_tools,
         system_prompt=request.system_prompt,
         execution_id=execution_id,
+        slot_already_held=True,  # Issue #498: router pre-acquired
     )
 
     # Complete collaboration activity based on result

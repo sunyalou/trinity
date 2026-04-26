@@ -1,20 +1,28 @@
 # Feature Flow: Persistent Task Backlog
 
-> **Requirement**: BACKLOG-001 — Persistent async task backlog for over-capacity requests
+> **Requirement**: BACKLOG-001 — Persistent task backlog for over-capacity requests
 > **Status**: Implemented
 > **Created**: 2026-04-13
-> **GitHub Issue**: [#260](https://github.com/abilityai/trinity/issues/260)
+> **GitHub Issue**: [#260](https://github.com/abilityai/trinity/issues/260), extended by [#498](https://github.com/abilityai/trinity/issues/498) (sync long-poll)
 > **Priority**: P1
 > **Related**: [parallel-capacity.md](parallel-capacity.md), [task-execution-service.md](task-execution-service.md), [parallel-headless-execution.md](parallel-headless-execution.md)
 
 ## Overview
 
-When `async_mode=true` arrives at `POST /api/agents/{name}/task` and all of the
-agent's parallel execution slots (CAPACITY-001) are occupied, the request is
-spilled into a durable SQLite-backed FIFO backlog instead of returning HTTP
-429. When a slot frees, the oldest queued item for that agent is drained
-automatically via a `SlotService` release callback. True HTTP 429 is only
-returned when the backlog itself is also at its configured depth.
+When a `POST /api/agents/{name}/task` request arrives and all of the agent's
+parallel execution slots (CAPACITY-001) are occupied, the request is spilled
+into a durable SQLite-backed FIFO backlog instead of returning HTTP 429. When
+a slot frees, the oldest queued item for that agent is drained automatically
+via a `SlotService` release callback. True HTTP 429 is only returned when the
+backlog itself is also at its configured depth.
+
+Both modes share the same backlog (issue #498):
+- **Async (`async_mode=true`)**: Caller gets HTTP 202 with `execution_id`
+  immediately and polls for the result. The backlog drains in the background.
+- **Sync (`async_mode=false`)**: Caller's HTTP connection is held open and
+  long-polls until the queued execution reaches a terminal status, then the
+  result is returned inline on the same connection. Total connection hold is
+  bounded by `2 × effective_timeout` (queue wait + execution).
 
 Queued rows survive backend restarts. A 60-second maintenance task in the
 backend process expires rows older than 24 hours and drains orphans left
@@ -22,20 +30,29 @@ behind when a release callback couldn't fire (e.g. process crash).
 
 ## Problem Statement
 
-Before this change, `async_mode=true` requests at capacity were dropped on
-the floor with a 429 response. Bursty MCP fan-out scenarios (agents
+Before BACKLOG-001 (#260), `async_mode=true` requests at capacity were dropped
+on the floor with a 429 response. Bursty MCP fan-out scenarios (agents
 orchestrating other agents via `chat_with_agent(async=true)`) routinely hit
 the 3-slot default cap and lost work. Clients had to implement their own
 retry-with-backoff logic, and there was no first-class backpressure signal.
 
+Before #498, sync calls (`async_mode=false`) bypassed the backlog entirely —
+hitting capacity returned a terminal 429 even though the backlog could have
+absorbed the overflow. Observed in production: ~40% terminal-failure rate
+from one MCP fan-out caller (214 capacity rejections / 24h, 0 enqueues from
+the same caller across 541 dispatches). #498 closed that gap by spilling
+sync calls to the same backlog and long-polling on the open HTTP connection.
+
 The backlog gives Trinity:
-- **Spill-over by default** for async mode — no lost requests below the
-  backlog depth cap
+- **Spill-over by default** for both sync and async — no lost requests below
+  the backlog depth cap
 - **Restart durability** — queued items survive backend restarts via SQLite
 - **Bounded resource envelope** — per-agent `max_backlog_depth` (default 50,
   hard cap 200) + 24h stale expiry
 - **Transparent to pollers** — existing `GET /api/agents/{name}/executions/{id}`
   returns `status=queued` while the row waits to drain
+- **Transparent to sync callers** — same response shape as immediate-slot path,
+  just with extra wait time
 
 ## Architecture Diagram
 
@@ -113,6 +130,46 @@ Parallel path (safety net):
                     │       their callback after a restart or crash
                     ▼
 ```
+
+### Sync long-poll path (issue #498)
+
+```
+                  POST /api/agents/{name}/task
+                         async_mode=false
+                                │
+                  router pre-acquires slot
+                                │
+             ┌──────────────────┴───────────────────┐
+             │                                      │
+     slot acquired                           slot full
+             │                                      │
+             ▼                                      ▼
+    execute_task(slot_already_held=True)    backlog.enqueue()
+    → return inline result                          │
+                                        ┌───────────┴───────────┐
+                                        │                       │
+                                  depth < cap             depth >= cap
+                                        │                       │
+                                        ▼                       ▼
+                              wait_for_sync_terminal       HTTP 429
+                              (event + 5s DB-poll fallback)
+                                        │
+                          ┌─────────────┼─────────────┐
+                          │             │             │
+                  signaled by      poll detects     timeout
+                  drain finally    terminal flip    (2 × effective_timeout)
+                          │             │             │
+                          ▼             ▼             ▼
+              return inline result   reconstruct     HTTP 504
+              (full TaskExecResult)  from DB row     (execution may
+                                     → return        still complete
+                                                      in background)
+```
+
+The drain machinery is shared with the async path — `_run_async_task_with_persistence`
+runs the queued task identically, then signals `_sync_waiters` from its `finally`
+block. Sync waiters wake on the same event the async chat-session-persistence
+broadcast fires on.
 
 ## Database Schema
 
@@ -295,6 +352,31 @@ asyncio.create_task(_backlog_maintenance_loop())
 After stopping the container and deleting schedules, the delete path calls
 `backlog.cancel_all_backlog(agent_name, reason="agent_deleted")` so orphan
 queued rows don't linger in the database.
+
+### Sync Waiter — `src/backend/services/sync_waiter.py` (NEW, #498)
+
+In-process registry that lets sync HTTP callers long-poll a queued execution
+on the same connection. Two primitives:
+
+- `signal_sync_waiter(execution_id, result, chat_session_id)` — called from
+  `_run_async_task_with_persistence` finally block. Looks up the registered
+  future and completes it with the rich `TaskExecutionResult`. No-op when no
+  waiter is registered (the normal async fire-and-forget path) or when the
+  caller already cancelled.
+- `wait_for_sync_terminal(execution_id, timeout)` — registers a future,
+  starts a 5s DB-poll fallback task, then `asyncio.wait(FIRST_COMPLETED)`s
+  on either signal. Returns the rich payload on signal, returns `None` on
+  poll-fallback hit (caller reconstructs from DB row), raises `TimeoutError`
+  if neither fires.
+
+The registry is in-process — multi-worker deployments would need pubsub to
+fan signals across processes; that's not the current backend shape (single
+worker).
+
+The poll fallback covers terminal-flip sites that don't go through the drain:
+corrupt-metadata in `_spawn_drain`, `expire_stale_queued`, `cancel_all_backlog`,
+and `cleanup_service` recovery. Latency cost is bounded at one poll interval
+(default 5s).
 
 ## Configuration
 

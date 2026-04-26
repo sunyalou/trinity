@@ -3,13 +3,14 @@
 > **Requirement**: 12.1 - Parallel Headless Execution
 > **Status**: Implemented
 > **Created**: 2025-12-22
-> **Updated**: 2026-04-20 (Issue #418 inter-agent timeout fix)
+> **Updated**: 2026-04-26 (Issue #498 sync long-poll on backlog)
 > **Verified**: 2026-02-05
 
 ## Revision History
 
 | Date | Changes |
 |------|---------|
+| 2026-04-26 | **Issue #498 - Sync long-poll on backlog**: Sync `/task` calls (`async_mode=false`) at capacity used to fail terminally with HTTP 429. They now spill to the same persistent backlog (BACKLOG-001) the async path uses and long-poll on the open HTTP connection until the queued execution reaches a terminal status. Total connection hold capped at `2 × effective_timeout` (queue wait + execution). Router (`chat.py:1007-1144`) pre-acquires the slot mirroring the async path, then on at-capacity calls `backlog.enqueue()` followed by `wait_for_sync_terminal()`. New module `services/sync_waiter.py` owns the in-process registry, `signal_sync_waiter()`, and `wait_for_sync_terminal()` (event + 5s DB-poll fallback). The drain reuses `_run_async_task_with_persistence` unchanged — it now calls `signal_sync_waiter` from its `finally` block to wake any sync waiter. See [persistent-task-backlog.md](persistent-task-backlog.md) for the full backlog flow. |
 | 2026-04-20 | **Issue #418 - Inter-agent timeout ceiling fix**: Removed hardcoded 600s timeout assumption from the MCP parallel/task path so per-agent `execution_timeout_seconds` (TIMEOUT-001, default 900s, max 7200s) is honored end-to-end. `src/mcp-server/src/tools/chat.ts` — `chat_with_agent` Zod schema no longer applies `.default(600)` to `timeout_seconds`; when callers omit it, `undefined` now flows through to the backend, which resolves the target agent's configured timeout. `src/mcp-server/src/client.ts:563-565` — `client.task()` HTTP fetch ceiling changed from `(timeout_seconds \|\| 600) + 10` to `(timeout_seconds ?? 7200) + 60`, so the fetch client doesn't abort before a long-running agent-configured task finishes. Async mode still uses a fixed 30s HTTP ceiling (unchanged). |
 | 2026-04-17 | **Issue #361 - Max-turns error fix**: Fixed max_turns termination being misclassified as authentication failure. Added detection for `terminal_reason="max_turns"` and `subtype="error_max_turns"` in result messages (`claude_code.py:329-336`). Max-turns errors now return HTTP 422 with clear "Task exceeded turn limit" message instead of HTTP 503 "Authentication failure". Also raised `max_turns_task` default from 20 to 50 in both `claude_code.py:52` and `guardrails-baseline.json:65`. |
 | 2026-03-26 | **Line number refresh**: Updated all file/line references to match current codebase after upstream shifts (~92 lines in backend `chat.py`, model extraction in `models.py`, agent server reorganisation). |
@@ -221,13 +222,14 @@ As of EXEC-024, the sync and async execution paths diverge:
 
 | Aspect | Sync (`async_mode=false`) | Async (`async_mode=true`) |
 |--------|---------------------------|---------------------------|
-| Execution logic | `TaskExecutionService.execute_task()` in `services/task_execution_service.py` | `_run_async_task_with_persistence()` inline in `routers/chat.py:438-650` |
-| Slot management | Service acquires/releases slots internally | Router acquires slot before spawning; background task releases in `finally` |
+| Execution logic | `TaskExecutionService.execute_task()` in `services/task_execution_service.py` | `_run_async_task_with_persistence()` inline in `routers/chat.py` |
+| Slot management | Router pre-acquires (issue #498); service releases in `finally` (`slot_already_held=True`) | Router pre-acquires; background task releases in `finally` |
+| At-capacity behavior | Spills to backlog (BACKLOG-001), long-polls on the open HTTP connection until terminal status (issue #498). Total hold ≤ `2 × effective_timeout`. | Spills to backlog, returns HTTP 202 with `execution_id`, caller polls. |
 | Activity tracking | Service tracks start/completion internally | Router tracks start; background task completes activities |
 | Result handling | Returns `TaskExecutionResult`; router translates to HTTP | Background task updates DB directly |
 | HTTP helper | `agent_post_with_retry()` defined in service, called internally | Same function imported from service into `chat.py` |
 
-The router (`chat.py:652-917`) still handles: container validation, execution record creation (early), collaboration tracking (WebSocket events), async mode branching, session persistence (`save_to_session`), and translating `TaskExecutionResult.status == "failed"` to HTTP error codes (429/504/503).
+The router (`chat.py`) still handles: container validation, execution record creation (early), collaboration tracking (WebSocket events), async mode branching, session persistence (`save_to_session`), and translating `TaskExecutionResult.status == "failed"` to HTTP error codes (429/504/503). For sync at-capacity, the router additionally calls `backlog.enqueue()` and `wait_for_sync_terminal()` (services/sync_waiter.py); on wake it either returns the inline result (drain happy path) or reconstructs a minimal `TaskExecutionResult` from the DB row (poll-fallback for non-drain terminal flips).
 
 ## API Specifications
 
