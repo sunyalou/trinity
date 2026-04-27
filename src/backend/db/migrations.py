@@ -47,6 +47,30 @@ from utils.helpers import utc_now_iso
 logger = logging.getLogger(__name__)
 
 
+def _safe_add_column(cursor, table: str, column: str, ddl: str, *, log_msg: str | None = None) -> bool:
+    """Idempotent, concurrent-safe ALTER TABLE ADD COLUMN.
+
+    Two uvicorn workers starting simultaneously can both pass the PRAGMA
+    check before either commits its ALTER (#456 / #389). Catch the
+    duplicate-column race and treat it as success.
+
+    Returns True if this caller added the column, False if it was already
+    present (either by a prior run or another worker winning the race).
+    """
+    cursor.execute(f"PRAGMA table_info({table})")
+    if column in {row[1] for row in cursor.fetchall()}:
+        return False
+    if log_msg:
+        print(log_msg)
+    try:
+        cursor.execute(ddl)
+        return True
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            return False
+        raise
+
+
 def run_all_migrations(cursor, conn):
     """Run all pending migrations in order. Called twice from init_database().
 
@@ -1395,51 +1419,47 @@ def _migrate_sync_health(cursor, conn):
     - agent_git_config gets auto_sync_enabled and freeze_schedules_if_sync_failing
       so operators can opt in to the 15-min heartbeat and pause schedules when
       sync breaks.
-    Idempotent: guards every change with PRAGMA table_info / table-existence checks.
+    Idempotent and concurrent-safe: ALTER TABLE goes through _safe_add_column
+    which catches the duplicate-column race between workers (#456); CREATE
+    TABLE uses IF NOT EXISTS, which SQLite handles atomically.
     """
     # 1. New columns on agent_git_config
-    cursor.execute("PRAGMA table_info(agent_git_config)")
-    cols = {row[1] for row in cursor.fetchall()}
-    if "auto_sync_enabled" not in cols:
-        print("Adding auto_sync_enabled column to agent_git_config for auto-sync cadence (#389)...")
-        cursor.execute(
-            "ALTER TABLE agent_git_config ADD COLUMN auto_sync_enabled INTEGER DEFAULT 0"
-        )
-    if "freeze_schedules_if_sync_failing" not in cols:
-        print(
-            "Adding freeze_schedules_if_sync_failing column to agent_git_config (#389)..."
-        )
-        cursor.execute(
-            "ALTER TABLE agent_git_config "
-            "ADD COLUMN freeze_schedules_if_sync_failing INTEGER DEFAULT 0"
-        )
-
-    # 2. New agent_sync_state table
-    cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_sync_state'"
+    _safe_add_column(
+        cursor,
+        "agent_git_config",
+        "auto_sync_enabled",
+        "ALTER TABLE agent_git_config ADD COLUMN auto_sync_enabled INTEGER DEFAULT 0",
+        log_msg="Adding auto_sync_enabled column to agent_git_config for auto-sync cadence (#389)...",
     )
-    if cursor.fetchone() is None:
-        print("Creating agent_sync_state table for sync-health observability (#389)...")
-        cursor.execute(
-            """
-            CREATE TABLE agent_sync_state (
-                agent_name TEXT PRIMARY KEY,
-                last_sync_at TEXT,
-                last_sync_status TEXT,
-                consecutive_failures INTEGER DEFAULT 0,
-                last_error_summary TEXT,
-                last_remote_sha_main TEXT,
-                last_remote_sha_working TEXT,
-                ahead_main INTEGER DEFAULT 0,
-                behind_main INTEGER DEFAULT 0,
-                ahead_working INTEGER DEFAULT 0,
-                behind_working INTEGER DEFAULT 0,
-                last_check_at TEXT,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY (agent_name) REFERENCES agent_ownership(agent_name)
-            )
-            """
+    _safe_add_column(
+        cursor,
+        "agent_git_config",
+        "freeze_schedules_if_sync_failing",
+        "ALTER TABLE agent_git_config ADD COLUMN freeze_schedules_if_sync_failing INTEGER DEFAULT 0",
+        log_msg="Adding freeze_schedules_if_sync_failing column to agent_git_config (#389)...",
+    )
+
+    # 2. New agent_sync_state table (CREATE TABLE IF NOT EXISTS is atomic)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_sync_state (
+            agent_name TEXT PRIMARY KEY,
+            last_sync_at TEXT,
+            last_sync_status TEXT,
+            consecutive_failures INTEGER DEFAULT 0,
+            last_error_summary TEXT,
+            last_remote_sha_main TEXT,
+            last_remote_sha_working TEXT,
+            ahead_main INTEGER DEFAULT 0,
+            behind_main INTEGER DEFAULT 0,
+            ahead_working INTEGER DEFAULT 0,
+            behind_working INTEGER DEFAULT 0,
+            last_check_at TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (agent_name) REFERENCES agent_ownership(agent_name)
         )
+        """
+    )
 
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_sync_state_status "
