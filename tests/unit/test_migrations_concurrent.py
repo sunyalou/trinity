@@ -123,6 +123,61 @@ def test_safe_add_column_returns_true_when_added(tmp_path):
     conn.close()
 
 
+def test_run_all_migrations_under_concurrent_workers(tmp_path):
+    """End-to-end stress: 6 connections all run `run_all_migrations` against a
+    fresh DB at the same instant. None must crash with `duplicate column name`
+    or any other exception (#456).
+
+    Mirrors the production cold-start race that motivated the helper sweep.
+    """
+    import threading
+
+    schema_mod = _load("db/schema.py", "_schema_concurrent")
+
+    db = tmp_path / "concurrent.db"
+    init = sqlite3.connect(str(db))
+    schema_mod.init_schema(init.cursor(), init)
+    init.close()
+
+    N = 6
+    errors: list[tuple[int, BaseException]] = []
+    barrier = threading.Barrier(N)
+
+    def worker(i: int) -> None:
+        try:
+            c = sqlite3.connect(str(db), timeout=10)
+            c.execute("PRAGMA busy_timeout = 30000")
+            cur = c.cursor()
+            barrier.wait()
+            _migrations.run_all_migrations(cur, c)
+            c.close()
+        except BaseException as e:  # noqa: BLE001 — capture for assertion
+            errors.append((i, e))
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(N)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, (
+        f"{len(errors)} of {N} concurrent workers crashed: "
+        + ", ".join(f"worker {i}={type(e).__name__}: {e}" for i, e in errors[:3])
+    )
+
+    final = sqlite3.connect(str(db))
+    fcur = final.cursor()
+    fcur.execute("PRAGMA table_info(agent_git_config)")
+    cols = {row[1] for row in fcur.fetchall()}
+    assert "auto_sync_enabled" in cols
+    assert "freeze_schedules_if_sync_failing" in cols
+    fcur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_sync_state'"
+    )
+    assert fcur.fetchone() is not None
+    final.close()
+
+
 def test_migrate_sync_health_idempotent_under_race(tmp_path):
     """`_migrate_sync_health` must not crash when re-run on an already-migrated
     schema — the production cold-start race lands the second worker in this
