@@ -184,17 +184,30 @@ class ExecutionSource(str, Enum):
 
 class TaskExecutionStatus(str, Enum):
     """
-    Canonical status values for task/schedule executions persisted to the database.
+    Canonical status values for task/schedule executions (RELIABILITY-005).
 
-    Used across: TaskExecutionService, db/schedules.py, scheduler/database.py, chat.py, cleanup_service.py.
-    NOT used by: ExecutionQueue (uses QueueItemStatus).
+    State machine — allowed transitions and authorized writers:
+
+        [create]  → QUEUED       writer: TaskExecutionService / BacklogService
+        QUEUED    → RUNNING      writer: BacklogService (drain) / TaskExecutionService
+        RUNNING   → SUCCESS      writer: TaskExecutionService (agent HTTP response — always wins)
+        RUNNING   → FAILED       writer: TaskExecutionService / CleanupService (guarded: no overwrite of terminal)
+        RUNNING   → CANCELLED    writer: terminate handler (guarded)
+        RUNNING   → PENDING_RETRY writer: scheduler retry handler (#271)
+        PENDING_RETRY → RUNNING  writer: scheduler retry dispatch
+        any       → SKIPPED      writer: TaskExecutionService (capacity overflow path)
+
+    CAS invariant (db/schedules.py update_execution_status): SUCCESS writes are
+    unconditional; all other terminal writes are blocked if the row is already
+    in a terminal state, preventing cleanup paths from overwriting a real completion.
     """
-    QUEUED = "queued"  # BACKLOG-001: Persisted async task waiting for a free slot
+    QUEUED = "queued"          # Persisted async task waiting for a free slot (BACKLOG-001)
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
     CANCELLED = "cancelled"
     SKIPPED = "skipped"
+    PENDING_RETRY = "pending_retry"  # Awaiting retry dispatch (#271)
 
 
 class BusinessStatus(str, Enum):

@@ -116,10 +116,10 @@ class TestRecoverOrphanedExecutions:
 
         assert result["recovered"] == 1
         assert result["still_running"] == 0
-        kw = _mock_db.update_execution_status.call_args[1]
+        # RELIABILITY-005: _recover_execution now uses the CAS-guarded writer.
+        kw = _mock_db.mark_execution_failed_by_watchdog.call_args[1]
         assert kw["execution_id"] == "exec-1"
-        assert kw["status"] == "failed"
-        assert "orphaned" in kw["error"]
+        assert "orphaned" in kw["error_message"]
         _mock_capacity.release.assert_awaited_once_with("agent-alpha", "exec-1")
 
     def test_not_in_registry_marks_orphaned(self):
@@ -147,7 +147,7 @@ class TestRecoverOrphanedExecutions:
 
         assert result["recovered"] == 0
         assert result["still_running"] == 1
-        _mock_db.update_execution_status.assert_not_called()
+        _mock_db.mark_execution_failed_by_watchdog.assert_not_called()
 
     def test_multiple_agents_mixed(self):
         _mock_db.get_running_executions.return_value = [
@@ -166,7 +166,7 @@ class TestRecoverOrphanedExecutions:
         # exec-b not in registry + exec-c container down = 2 recovered
         assert result["recovered"] == 2
         assert result["still_running"] == 1
-        assert _mock_db.update_execution_status.call_count == 2
+        assert _mock_db.mark_execution_failed_by_watchdog.call_count == 2
 
     def test_agent_unreachable_treats_as_orphaned(self):
         _mock_db.get_running_executions.return_value = [

@@ -761,10 +761,11 @@ async def recover_orphaned_executions() -> Dict:
 async def _recover_execution(execution: Dict, agent_name: str, capacity) -> bool:
     """Mark a single execution as orphaned and release its capacity. Returns True on success."""
     try:
-        db.update_execution_status(
+        # Use the guarded writer so a real completion that arrived during restart
+        # is not overwritten (RELIABILITY-005).
+        db.mark_execution_failed_by_watchdog(
             execution_id=execution["id"],
-            status=TaskExecutionStatus.FAILED,
-            error="Execution orphaned — recovered on backend restart",
+            error_message="Execution orphaned — recovered on backend restart",
         )
         await capacity.release(agent_name, execution["id"])
         return True
