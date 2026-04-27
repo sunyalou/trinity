@@ -63,8 +63,8 @@ The frontend displays slot usage as a vertical capacity meter bar on the Agents 
 │  │  1. Create execution record in database (chat.py:602-613)       │     │
 │  │  2. Router acquires slot directly (chat.py:644-651)             │     │
 │  │  3. If full → 429 response (chat.py:653-663)                   │     │
-│  │  4. Spawn _run_async_task_with_persistence() with release_slot=True     │     │
-│  │  5. Background task releases slot in finally (chat.py:554-557)  │     │
+│  │  4. Spawn _run_async_task_with_persistence() (router pre-acquired)│    │
+│  │  5. TaskExecutionService releases slot in finally (slot_already_held=True)│
 │  │                                                                  │     │
 │  │  PUBLIC path (public.py:315-322 → task_execution_service.py):   │     │
 │  │  1. Delegate to TaskExecutionService.execute_task()              │     │
@@ -139,7 +139,7 @@ POST /api/agents/{name}/task  (async)
   │ 1. db.get_max_parallel_tasks(name)              │
   │ 2. slot_service.acquire_slot(...)               │
   │ 3. If not acquired → 429 Too Many Requests     │
-  │ 4. Spawn background task with release_slot=True │
+  │ 4. Spawn `_run_async_task_with_persistence()`   │
   └─────────────────────────────────────────────────┘
 ```
 
