@@ -220,6 +220,8 @@ def parse_stream_json_output(output: str) -> tuple[str, List[ExecutionLogEntry],
             message_content = msg.get("message", {}).get("content", [])
 
             for content_block in message_content:
+                if not isinstance(content_block, dict):
+                    continue  # stream-json content arrays can contain plain strings
                 block_type = content_block.get("type")
 
                 if block_type == "tool_use":
@@ -397,6 +399,8 @@ def process_stream_line(line: str, execution_log: List[ExecutionLogEntry], metad
             logger.debug(f"Processing {msg_type} message with {len(message_content)} content blocks")
 
         for content_block in message_content:
+            if not isinstance(content_block, dict):
+                continue  # stream-json content arrays can contain plain strings
             block_type = content_block.get("type")
 
             if block_type == "tool_use":
