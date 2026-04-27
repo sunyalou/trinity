@@ -940,6 +940,7 @@ def _classify_signal_exit(
 def _classify_empty_result(
     metadata: Optional['ExecutionMetadata'] = None,
     raw_message_count: int = 0,
+    raw_messages: Optional[List[Dict]] = None,
 ) -> Optional[Tuple[int, str]]:
     """Classify a clean (return_code == 0) exit that produced no result message.
 
@@ -961,6 +962,10 @@ def _classify_empty_result(
     nullability could be a Claude format quirk; both-None is a strong
     signal that the terminal ``result`` message never arrived.
 
+    When the result line is lost, metadata.tool_count / num_turns are also
+    None (populated only by that line). Derive honest counts from
+    raw_messages when available so the 502 detail is accurate. (#531)
+
     Returns ``(status_code, detail)`` for empty-result exits, or ``None``
     if metadata looks well-formed (caller proceeds with the normal
     response-building path).
@@ -970,8 +975,18 @@ def _classify_empty_result(
     if metadata.cost_usd is not None or metadata.duration_ms is not None:
         return None
 
+    # tool_count is accumulated per-message during parsing (line ~1467), so
+    # it's reliable even when the result line is lost. num_turns is populated
+    # only by the result line — fall back to counting assistant messages in
+    # raw_messages when it's None. (#531)
     tool_count = metadata.tool_count or 0
-    num_turns = metadata.num_turns or 0
+    if metadata.num_turns is not None:
+        num_turns = metadata.num_turns
+    elif raw_messages:
+        num_turns = sum(1 for m in raw_messages if m.get("type") == "assistant")
+    else:
+        num_turns = 0
+
     detail = (
         f"Execution completed without a result message after {tool_count} tool calls "
         f"/ {num_turns} turns (raw_messages={raw_message_count}). "
@@ -1421,7 +1436,7 @@ async def execute_headless_task(
             # the agent-server log misleadingly claims "completed successfully".
             # Surface this as 502 so backend records it as FAILED with a useful
             # diagnostic rather than dispatching an empty 200.
-            empty_result = _classify_empty_result(metadata, raw_message_count=len(raw_messages))
+            empty_result = _classify_empty_result(metadata, raw_message_count=len(raw_messages), raw_messages=raw_messages)
             if empty_result is not None:
                 status_code, detail = empty_result
                 logger.error(f"[Headless Task] {detail}")
