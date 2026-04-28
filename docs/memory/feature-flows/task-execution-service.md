@@ -1,5 +1,7 @@
 # Feature: Task Execution Service (EXEC-024)
 
+> **Updated 2026-04-26 (#428):** Slot acquisition/release now goes through [`CapacityManager`](capacity-management.md) (`acquire(overflow_policy="reject")` + `release()`) rather than calling `SlotService` directly. The `slot_already_held` parameter still applies — routers pre-acquire via `CapacityManager` and pass `slot_already_held=True` so the service's `finally` block remains the single release point.
+
 ## Overview
 Service that encapsulates the task-execution lifecycle (execution record, slot management, activity tracking, agent HTTP call with retry, credential sanitization, response persistence). Used by most — but not all — execution paths.
 
@@ -58,7 +60,7 @@ Callers inspect `result.status` to decide HTTP response. Status values come from
 
 Moved from `routers/chat.py`. Module-level async function. Used by:
 - `TaskExecutionService.execute_task()` internally (line 249)
-- `routers/chat.py` for `/chat` endpoint (line 248) and `_execute_task_background` (line 477)
+- `routers/chat.py` for `/chat` endpoint and `_run_async_task_with_persistence` (the async-mode wrapper introduced by #95; previously named `_execute_task_background`)
 
 ```python
 async def agent_post_with_retry(
@@ -163,7 +165,7 @@ The endpoint handles:
 2. Determine `triggered_by` from headers (lines 686-691)
 3. Create execution record early (lines 694-705) -- passed to service as `execution_id`
 4. Collaboration tracking for agent-to-agent (lines 710-732) -- stays in router
-5. **Async mode branch** (lines 735-808) -- spawns `_execute_task_background()`, does NOT use service
+5. **Async mode branch** -- pre-acquires capacity slot, then spawns `_run_async_task_with_persistence()` which delegates to `task_execution_service.execute_task(slot_already_held=True)` (post-#95)
 6. **Sync mode branch** (lines 810-827) -- delegates to `task_execution_service.execute_task()`
 7. Collaboration activity completion (lines 830-839)
 8. Error translation to HTTP exceptions (lines 842-857)
@@ -288,6 +290,8 @@ The service catches all errors and returns `TaskExecutionResult` with `status=Ta
 |------------|---------------|--------------|----------------|
 | Slot not acquired | `status=FAILED, error="Agent at capacity..."` | 429 | 429 |
 | Agent timeout (#61) | Terminates agent process, then `status=FAILED, error="timed out...", error_code=TIMEOUT` | 504 | 504 |
+| Agent signal-killed (#516) | Agent classifies SIGINT/SIGKILL/SIGTERM exit and returns 504 with "Execution terminated by …" detail; service treats as `status=FAILED, error=detail` (no AUTH code) | 504 | 504 |
+| Agent empty result (#520) | Agent returns 502 when `return_code == 0` but `cost_usd` and `duration_ms` are both `None` (final `result` JSON line lost — typically a child subprocess inherited stdout); service treats as `status=FAILED, error=detail` (no AUTH code) | 502 | 502 |
 | Agent HTTP error | `status=FAILED, error=detail` | 503 | 502 |
 | Auth failure (#285) | `status=FAILED, error=detail, error_code=AUTH` | 503 | 503 |
 | Unexpected exception | `status=FAILED, error=str(e)` | 503 | 502 |
@@ -316,6 +320,10 @@ When subscription tokens expire, Claude Code sometimes hangs for up to an hour b
 1. **Error Code Detection** (line 415): When agent returns HTTP 503, sets `error_code=TaskExecutionErrorCode.AUTH`
 
 2. **Structured Result**: Returns `TaskExecutionResult` with `error_code=AUTH` so callers can handle auth failures specifically (e.g., prompt user to reconfigure subscription)
+
+**Signal-Kill Pre-Check (Issue #516)**: Two heuristics in the agent's auth-fallback block — string-match on the verbose transcript and "zero tokens processed" — used to fire on every external signal kill (timeout SIGKILL, OOM, parent SIGTERM, operator cancel) and surface a misleading "Subscription token may be expired" 503. Since #61 wired backend-driven `terminate_execution_on_agent()` into the timeout path, signal kills became the *common* case for any timeout. `_classify_signal_exit()` (`claude_code.py:894`) now runs *before* the auth heuristics; signal-killed exits raise HTTP 504 (not 503), so the backend's AUTH classifier at line 542 correctly skips them and they flow through to the generic FAILED path with a clear "killed by SIGKILL/SIGTERM/SIGINT — likely timeout, OOM, or operator cancel" detail. Critical when PR #508 (auth-class auto-switch) lands: prevents a misclassified timeout from triggering an unnecessary subscription rotation.
+
+**Empty-Result Pre-Check (Issue #520)**: Sibling of #516 on the *clean* exit path. When `return_code == 0` but the final `{"type":"result"}` JSON line was dropped before the reader thread captured it (cause: a child subprocess inherited stdout, kept the pipe open past claude exit, the reader thread leaked, the pgroup unwind closed the pipe), `metadata.cost_usd` and `metadata.duration_ms` stay `None`. The success path used to return HTTP 200 with empty diagnostics — agent-server logged "completed successfully" while backend silently reaped the execution as an orphan minutes later. `_classify_empty_result()` (`claude_code.py:935`) now runs *after* the `return_code != 0` block (#516 + auth) and *before* response building. When both `cost_usd` and `duration_ms` are `None`, it raises HTTP 502 with diagnostic context (tools, turns, raw_messages, cause hint). Backend's AUTH classifier only triggers on 503, so 502 falls through to the generic FAILED path — no backend changes needed. The two-field check is conservative: single-field nullability could be a Claude format quirk; both-None is a strong signal that the terminal `result` message never arrived. Pairs with the orchestration plan's #408 dissolution: even if the long-running HTTP transport closes mid-call, agent-side now emits a meaningful FAILED status instead of an empty 200 that the watchdog has to reconcile.
 
 **Result**: Auth failures now fast-fail in seconds instead of hanging for up to an hour.
 

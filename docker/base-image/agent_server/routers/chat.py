@@ -257,7 +257,10 @@ async def terminate_execution(execution_id: str):
     This allows Claude Code to finish its current operation gracefully.
     """
     registry = get_process_registry()
-    result = registry.terminate(execution_id)
+    # registry.terminate() does up to 7s of synchronous process.wait() (SIGINT grace + SIGKILL grace);
+    # run in the default executor so the event loop stays responsive to concurrent /health probes.
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, registry.terminate, execution_id)
 
     if result["success"]:
         logger.info(f"[Terminate] Execution {execution_id} terminated successfully")

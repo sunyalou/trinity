@@ -220,6 +220,8 @@ def parse_stream_json_output(output: str) -> tuple[str, List[ExecutionLogEntry],
             message_content = msg.get("message", {}).get("content", [])
 
             for content_block in message_content:
+                if not isinstance(content_block, dict):
+                    continue  # stream-json content arrays can contain plain strings
                 block_type = content_block.get("type")
 
                 if block_type == "tool_use":
@@ -397,6 +399,8 @@ def process_stream_line(line: str, execution_log: List[ExecutionLogEntry], metad
             logger.debug(f"Processing {msg_type} message with {len(message_content)} content blocks")
 
         for content_block in message_content:
+            if not isinstance(content_block, dict):
+                continue  # stream-json content arrays can contain plain strings
             block_type = content_block.get("type")
 
             if block_type == "tool_use":
@@ -686,8 +690,13 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
                     f"[Chat] Outer timeout on session {execution_id} "
                     f"— killing process group as last resort"
                 )
-                _terminate_process_group(process, graceful_timeout=2, pgid=process_pgid)
-                _safe_close_pipes(process)
+                # _terminate_process_group does up to 4s of process.wait() (SIGTERM grace + SIGKILL grace);
+                # off-load to the executor so the event loop stays responsive while we tear down.
+                await loop.run_in_executor(
+                    None,
+                    lambda: _terminate_process_group(process, graceful_timeout=2, pgid=process_pgid),
+                )
+                await loop.run_in_executor(None, _safe_close_pipes, process)
                 raise HTTPException(
                     status_code=504,
                     detail=f"Chat execution timed out after {timeout_seconds} seconds"
@@ -877,6 +886,121 @@ def _diagnose_exit_failure(return_code: int, metadata: Optional['ExecutionMetada
         143: "Process terminated (SIGTERM).",
     }
     return hints.get(return_code, f"Process exited with code {return_code}. Check agent container logs.")
+
+
+# Signals that indicate external termination of the claude subprocess
+# (timeout SIGKILL, OOM-kill, parent SIGTERM, operator cancel).
+# Python subprocess returns these as negative numbers; shell wrappers
+# may surface them as 128 + signum (130, 137, 143).
+_SIGNAL_EXIT_NAMES = {
+    2: "SIGINT",
+    9: "SIGKILL",
+    15: "SIGTERM",
+}
+_SHELL_ENCODED_SIGNAL_EXITS = {130, 137, 143}
+
+
+def _classify_signal_exit(
+    return_code: int,
+    metadata: Optional['ExecutionMetadata'] = None,
+) -> Optional[Tuple[int, str]]:
+    """Classify a non-zero subprocess exit as an external signal kill.
+
+    Issue #516: When claude is killed by SIGKILL/SIGTERM/SIGINT (schedule
+    timeout, OOM-kill, parent cancel), the subprocess never emits its final
+    `result` message and `process.wait()` returns a negative or 128+N exit
+    code. Without this classification, the downstream auth-fallback heuristic
+    misreads "zero tokens processed" as an expired subscription token and
+    surfaces a confusing "Generate a new one with claude setup-token" error
+    on every cron tick — masking the real cause (timeout/OOM/cancel).
+
+    Mirrors the #361 max-turns special-case pattern: classify *before* the
+    auth heuristics get a chance to misclassify.
+
+    Returns ``(status_code, detail)`` for signal exits, or ``None`` if the
+    return code is not a recognized signal termination (caller proceeds
+    with normal error classification).
+    """
+    if return_code < 0:
+        signum = -return_code
+    elif return_code in _SHELL_ENCODED_SIGNAL_EXITS:
+        signum = return_code - 128
+    else:
+        return None
+
+    sig_name = _SIGNAL_EXIT_NAMES.get(signum, f"signal {signum}")
+    tool_count = metadata.tool_count if metadata else 0
+    num_turns = metadata.num_turns if (metadata and metadata.num_turns) else 0
+    detail = (
+        f"Execution terminated by {sig_name} after {tool_count} tool calls "
+        f"/ {num_turns} turns (exit code {return_code}). "
+        f"Likely cause: schedule/agent timeout exceeded, OOM kill, or operator cancel. "
+        f"Increase the schedule's timeout_seconds, raise agent memory, "
+        f"or split the skill into smaller steps."
+    )
+    return (504, detail)
+
+
+def _classify_empty_result(
+    metadata: Optional['ExecutionMetadata'] = None,
+    raw_message_count: int = 0,
+    raw_messages: Optional[List[Dict]] = None,
+) -> Optional[Tuple[int, str]]:
+    """Classify a clean (return_code == 0) exit that produced no result message.
+
+    Issue #520: When the claude subprocess exits 0 but the final
+    ``{"type":"result"}`` JSON line was dropped before the reader thread
+    captured it (typical cause: an MCP tool / child subprocess inherited
+    stdout, kept the pipe open past claude's exit, the reader leaked,
+    pgroup unwind closed the pipe, the result line went with it), the
+    metadata fields populated *only* by the result message — ``cost_usd``
+    and ``duration_ms`` — stay ``None``. Returning HTTP 200 here would
+    have agent-server log "completed successfully" while backend silently
+    reaps the execution as an orphan minutes later, masking the real
+    failure with misleading diagnostics.
+
+    Sibling of ``_classify_signal_exit`` (issue #516): both classify
+    "subprocess plumbing dropped the result" cases that the success path
+    would otherwise mishandle. The two-field check (``cost_usd`` AND
+    ``duration_ms`` both ``None``) is conservative — single-field
+    nullability could be a Claude format quirk; both-None is a strong
+    signal that the terminal ``result`` message never arrived.
+
+    When the result line is lost, metadata.tool_count / num_turns are also
+    None (populated only by that line). Derive honest counts from
+    raw_messages when available so the 502 detail is accurate. (#531)
+
+    Returns ``(status_code, detail)`` for empty-result exits, or ``None``
+    if metadata looks well-formed (caller proceeds with the normal
+    response-building path).
+    """
+    if metadata is None:
+        return None
+    if metadata.cost_usd is not None or metadata.duration_ms is not None:
+        return None
+
+    # tool_count is accumulated per-message during parsing (line ~1467), so
+    # it's reliable even when the result line is lost. num_turns is populated
+    # only by the result line — fall back to counting assistant messages in
+    # raw_messages when it's None. (#531)
+    tool_count = metadata.tool_count or 0
+    if metadata.num_turns is not None:
+        num_turns = metadata.num_turns
+    elif raw_messages:
+        num_turns = sum(1 for m in raw_messages if m.get("type") == "assistant")
+    else:
+        num_turns = 0
+
+    detail = (
+        f"Execution completed without a result message after {tool_count} tool calls "
+        f"/ {num_turns} turns (raw_messages={raw_message_count}). "
+        f"Likely cause: a tool or child subprocess inherited stdout and prevented "
+        f"the claude reader thread from capturing the final result block. "
+        f"Check agent-server logs for 'Reader thread(s) stuck after process exit' or "
+        f"'I/O operation on closed file' near this execution. "
+        f"This is a transient infrastructure failure; retry the task."
+    )
+    return (502, detail)
 
 
 def get_execution_lock():
@@ -1193,8 +1317,13 @@ async def execute_headless_task(
                     f"[Headless Task] Outer timeout on task {task_session_id} "
                     f"— killing process group as last resort"
                 )
-                _terminate_process_group(process, graceful_timeout=2, pgid=process_pgid)
-                _safe_close_pipes(process)
+                # _terminate_process_group does up to 4s of process.wait() (SIGTERM grace + SIGKILL grace);
+                # off-load to the executor so the event loop stays responsive while we tear down.
+                await loop.run_in_executor(
+                    None,
+                    lambda: _terminate_process_group(process, graceful_timeout=2, pgid=process_pgid),
+                )
+                await loop.run_in_executor(None, _safe_close_pipes, process)
                 raise HTTPException(
                     status_code=504,
                     detail=f"Task execution timed out after {timeout_seconds} seconds"
@@ -1252,6 +1381,18 @@ async def execute_headless_task(
 
             # Check for errors
             if return_code != 0:
+                # Issue #516: Signal terminations (timeout SIGKILL, OOM, parent SIGTERM,
+                # operator cancel) must be classified before the auth heuristics, which
+                # would otherwise misread "zero tokens processed" as an expired token.
+                # Same shape as the #361 max-turns special-case above. The #61 path
+                # (backend-driven terminate_execution_on_agent → process_registry's
+                # SIGINT→SIGKILL) makes this the common case for any timeout.
+                signal_exit = _classify_signal_exit(return_code, metadata)
+                if signal_exit is not None:
+                    status_code, detail = signal_exit
+                    logger.warning(f"[Headless Task] {detail}")
+                    raise HTTPException(status_code=status_code, detail=detail)
+
                 error_preview = verbose_transcript[:500] if verbose_transcript else ""
                 if not error_preview:
                     # Try to provide a meaningful fallback based on common failure patterns
@@ -1266,9 +1407,11 @@ async def execute_headless_task(
                         detail=f"Authentication failure: {error_preview[:300]}. Check subscription token or API key configuration."
                     )
 
-                # Issue #285: Heuristic fallback — if exit code != 0 AND zero tokens processed,
-                # likely an auth failure even if we didn't see the exact pattern
-                if metadata.input_tokens == 0 and metadata.output_tokens == 0:
+                # Issue #285: Heuristic fallback — if exit code > 0 AND zero tokens processed,
+                # likely an auth failure even if we didn't see the exact pattern.
+                # Issue #516: require return_code > 0 — signal exits are handled above and
+                # would otherwise produce a false positive here (zero tokens after kill).
+                if return_code > 0 and metadata.input_tokens == 0 and metadata.output_tokens == 0:
                     logger.warning(
                         f"[Headless Task] Zero tokens processed with exit code {return_code} — "
                         f"likely auth failure. Stderr: {error_preview[:200]}"
@@ -1289,6 +1432,19 @@ async def execute_headless_task(
                     status_code=500,
                     detail=f"Task execution failed (exit code {return_code}): {error_preview[:300]}"
                 )
+
+            # Issue #520: Clean exit (return_code == 0) but the final `result` JSON
+            # line never reached the reader thread — typically because a child
+            # subprocess inherited stdout. metadata.cost_usd / duration_ms stay
+            # None, the watchdog ends up reaping the execution minutes later, and
+            # the agent-server log misleadingly claims "completed successfully".
+            # Surface this as 502 so backend records it as FAILED with a useful
+            # diagnostic rather than dispatching an empty 200.
+            empty_result = _classify_empty_result(metadata, raw_message_count=len(raw_messages), raw_messages=raw_messages)
+            if empty_result is not None:
+                status_code, detail = empty_result
+                logger.error(f"[Headless Task] {detail}")
+                raise HTTPException(status_code=status_code, detail=detail)
 
             # Build final response text
             response_text = "\n".join(response_parts) if response_parts else ""

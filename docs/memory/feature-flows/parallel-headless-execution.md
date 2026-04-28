@@ -3,13 +3,17 @@
 > **Requirement**: 12.1 - Parallel Headless Execution
 > **Status**: Implemented
 > **Created**: 2025-12-22
-> **Updated**: 2026-04-20 (Issue #418 inter-agent timeout fix)
+> **Updated**: 2026-04-27 (#531: `drain_reader_threads` reordered to preserve kernel pipe buffer before close)
 > **Verified**: 2026-02-05
 
 ## Revision History
 
 | Date | Changes |
 |------|---------|
+| 2026-04-27 | **Issue #531 - drain_reader_threads closes stdout pipe before reader can drain backlog**: Root cause of the HTTP 502 "Execution completed without a result message" on long agentic tasks (>5 min, dozens of tool calls). In `drain_reader_threads` (`subprocess_pgroup.py`), the old sequence was: kill grandchildren → `safe_close_pipes()` → join reader (2s). Closing the read end of the pipe before the reader finished discarded the kernel pipe buffer — including the final `{"type":"result"}` JSON line written by claude just before exit. This caused `metadata.cost_usd` and `metadata.duration_ms` to stay `None`, which #521's `_classify_empty_result` correctly identified as a 502. Fix: reorder to kill grandchildren → join reader with `post_kill_grace=30s` (natural drain: grandchildren dead → kernel delivers EOF → reader sees buffered tail → exits cleanly) → `safe_close_pipes()` only as a last resort for genuine wedges. Also: `_classify_empty_result(metadata, raw_message_count, raw_messages)` now accepts `raw_messages` list and derives `num_turns` from it when `metadata.num_turns is None` (which is the case when the result line is lost), so the 502 detail shows an honest turn count. `metadata.tool_count` is accumulated per-message during parsing (not from the result line) and remains reliable. New parameter `post_kill_grace=30` added to `drain_reader_threads`; all call sites use the default. Regression test: `test_buffered_data_preserved_after_grandchild_kill` in `tests/unit/test_subprocess_pgroup.py`. Related: #520 (symptom), #521 (502 classification), #523 (FD_CLOEXEC complement, future). |
+| 2026-04-26 | **Issue #520 - Empty-result misreported as success**: When the claude subprocess exits cleanly (`return_code == 0`) but the final `{"type":"result"}` JSON line is dropped before the reader thread captures it (typical cause: a child subprocess inherited stdout, kept the pipe open past claude exit, the reader thread leaked, the pgroup unwind closed the pipe and the result line went with it), `metadata.cost_usd` and `metadata.duration_ms` stay `None`. The success path used to return HTTP 200 anyway — agent-server logged "completed successfully" while backend silently reaped the execution as an orphan minutes later, masking the real failure with a misleading "completed on agent but recovered by watchdog" message. Sibling of #516 (signal-kill path). Added `_classify_empty_result(metadata, raw_message_count)` (`claude_code.py:935-980`) consulted *after* the `return_code != 0` block (#516 + auth heuristics) and *before* response building; when both `cost_usd` and `duration_ms` are `None`, raises HTTP 502 with diagnostic context (tool count, turn count, raw_messages, cause hint). Backend's auth classifier only triggers on 503, so 502 flows through as plain FAILED with the helpful detail preserved — no backend changes. The two-field check is conservative: single-field nullability could be a Claude format quirk; both-None is a strong signal that the terminal `result` message never arrived. 9 unit tests in `tests/unit/test_empty_result_classification.py`. |
+| 2026-04-26 | **Issue #516 - Signal kills misclassified as auth failure**: External signal terminations of the claude subprocess (timeout SIGKILL, OOM-kill, parent SIGTERM, operator cancel) used to fall into the auth-fallback heuristics at `claude_code.py:1262-1278` and surface as a misleading "Subscription token may be expired" 503 — same shape as #361 but a different exit path. Added `_classify_signal_exit(return_code, metadata)` helper (`claude_code.py:882-931`) consulted *before* the auth heuristics; it matches Python-native signal exits (`return_code < 0`) and shell-encoded forms (`130, 137, 143` for SIGINT/SIGKILL/SIGTERM) and raises HTTP 504 with a clear "killed by SIGKILL/SIGTERM/SIGINT — likely timeout, OOM, or operator cancel" message. Tightened the zero-token heuristic with `return_code > 0` so signal exits cannot reach it. Backend's `task_execution_service.py:542` only flags AUTH on 503, so 504 falls through to the generic FAILED path — no backend changes needed. The bug became routinely reproducible after #61 (PR #326) added backend-driven `terminate_execution_on_agent()` which makes signal-killed claude subprocesses the common case for any timeout. 21 unit tests in `tests/unit/test_signal_exit_classification.py`. |
+| 2026-04-26 | **Issue #498 - Sync long-poll on backlog**: Sync `/task` calls (`async_mode=false`) at capacity used to fail terminally with HTTP 429. They now spill to the same persistent backlog (BACKLOG-001) the async path uses and long-poll on the open HTTP connection until the queued execution reaches a terminal status. Total connection hold capped at `2 × effective_timeout` (queue wait + execution). Router (`chat.py:1007-1144`) pre-acquires the slot mirroring the async path, then on at-capacity calls `backlog.enqueue()` followed by `wait_for_sync_terminal()`. New module `services/sync_waiter.py` owns the in-process registry, `signal_sync_waiter()`, and `wait_for_sync_terminal()` (event + 5s DB-poll fallback). The drain reuses `_run_async_task_with_persistence` unchanged — it now calls `signal_sync_waiter` from its `finally` block to wake any sync waiter. See [persistent-task-backlog.md](persistent-task-backlog.md) for the full backlog flow. |
 | 2026-04-20 | **Issue #418 - Inter-agent timeout ceiling fix**: Removed hardcoded 600s timeout assumption from the MCP parallel/task path so per-agent `execution_timeout_seconds` (TIMEOUT-001, default 900s, max 7200s) is honored end-to-end. `src/mcp-server/src/tools/chat.ts` — `chat_with_agent` Zod schema no longer applies `.default(600)` to `timeout_seconds`; when callers omit it, `undefined` now flows through to the backend, which resolves the target agent's configured timeout. `src/mcp-server/src/client.ts:563-565` — `client.task()` HTTP fetch ceiling changed from `(timeout_seconds \|\| 600) + 10` to `(timeout_seconds ?? 7200) + 60`, so the fetch client doesn't abort before a long-running agent-configured task finishes. Async mode still uses a fixed 30s HTTP ceiling (unchanged). |
 | 2026-04-17 | **Issue #361 - Max-turns error fix**: Fixed max_turns termination being misclassified as authentication failure. Added detection for `terminal_reason="max_turns"` and `subtype="error_max_turns"` in result messages (`claude_code.py:329-336`). Max-turns errors now return HTTP 422 with clear "Task exceeded turn limit" message instead of HTTP 503 "Authentication failure". Also raised `max_turns_task` default from 20 to 50 in both `claude_code.py:52` and `guardrails-baseline.json:65`. |
 | 2026-03-26 | **Line number refresh**: Updated all file/line references to match current codebase after upstream shifts (~92 lines in backend `chat.py`, model extraction in `models.py`, agent server reorganisation). |
@@ -221,13 +225,14 @@ As of EXEC-024, the sync and async execution paths diverge:
 
 | Aspect | Sync (`async_mode=false`) | Async (`async_mode=true`) |
 |--------|---------------------------|---------------------------|
-| Execution logic | `TaskExecutionService.execute_task()` in `services/task_execution_service.py` | `_run_async_task_with_persistence()` inline in `routers/chat.py:438-650` |
-| Slot management | Service acquires/releases slots internally | Router acquires slot before spawning; background task releases in `finally` |
+| Execution logic | `TaskExecutionService.execute_task()` in `services/task_execution_service.py` | `_run_async_task_with_persistence()` inline in `routers/chat.py` |
+| Slot management | Router pre-acquires (issue #498); service releases in `finally` (`slot_already_held=True`) | Router pre-acquires; background task releases in `finally` |
+| At-capacity behavior | Spills to backlog (BACKLOG-001), long-polls on the open HTTP connection until terminal status (issue #498). Total hold ≤ `2 × effective_timeout`. | Spills to backlog, returns HTTP 202 with `execution_id`, caller polls. |
 | Activity tracking | Service tracks start/completion internally | Router tracks start; background task completes activities |
 | Result handling | Returns `TaskExecutionResult`; router translates to HTTP | Background task updates DB directly |
 | HTTP helper | `agent_post_with_retry()` defined in service, called internally | Same function imported from service into `chat.py` |
 
-The router (`chat.py:652-917`) still handles: container validation, execution record creation (early), collaboration tracking (WebSocket events), async mode branching, session persistence (`save_to_session`), and translating `TaskExecutionResult.status == "failed"` to HTTP error codes (429/504/503).
+The router (`chat.py`) still handles: container validation, execution record creation (early), collaboration tracking (WebSocket events), async mode branching, session persistence (`save_to_session`), and translating `TaskExecutionResult.status == "failed"` to HTTP error codes (429/504/503). For sync at-capacity, the router additionally calls `backlog.enqueue()` and `wait_for_sync_terminal()` (services/sync_waiter.py); on wake it either returns the inline result (drain happy path) or reconstructs a minimal `TaskExecutionResult` from the DB row (poll-fallback for non-drain terminal flips).
 
 ## API Specifications
 
@@ -565,41 +570,36 @@ async def _run_async_task_with_persistence(
     agent_name: str,
     request: ParallelTaskRequest,
     execution_id: str,
-    task_activity_id: str,
     collaboration_activity_id: Optional[str],
     x_source_agent: Optional[str],
-    release_slot: bool = False,
     user_id: Optional[int] = None,
-    user_email: Optional[str] = None
+    user_email: Optional[str] = None,
+    subscription_id: Optional[str] = None,
+    is_self_task: bool = False,
+    self_task_activity_id: Optional[str] = None,
 ):
     """
-    Background task execution for async mode.
-    Runs the task and updates execution record/activities when complete.
-    Note: This still uses inline logic (not TaskExecutionService) because
-    async mode needs to manage its own activity IDs and collaboration tracking.
+    Async /task background wrapper (issue #95).
+
+    Delegates the full execution lifecycle to TaskExecutionService (single
+    path for slot / activity / sanitization / retry / release with
+    `slot_already_held=True`) and layers on chat-endpoint-specific post-task
+    side effects: chat session persistence (THINK-001), `chat_response_ready`
+    WebSocket broadcast, collaboration activity completion, and SELF-EXEC-001
+    `inject_result` handling.
     """
-    try:
-        # Call agent container (agent_post_with_retry imported from task_execution_service)
-        response = await agent_post_with_retry(agent_name, "/api/task", payload, ...)
+    # Delegate slot+activity+execution lifecycle to the service
+    result = await task_service.execute_task(
+        agent_name=agent_name,
+        message=request.message,
+        execution_id=execution_id,
+        slot_already_held=True,  # caller (router or backlog drain) pre-acquired
+        parent_activity_id=collaboration_activity_id,
+        # ... other passthrough fields
+    )
 
-        # Sanitize + update execution record with success
-        db.update_execution_status(execution_id=execution_id, status="success", ...)
-
-        # Persist to chat session if requested (THINK-001)
-        # Complete activities
-        await activity_service.complete_activity(task_activity_id, ...)
-
-    except Exception as e:
-        # Update execution record with failure
-        db.update_execution_status(execution_id=execution_id, status="failed", error=str(e))
-
-        # Complete activities with failure
-        await activity_service.complete_activity(task_activity_id, status="failed", ...)
-
-    finally:
-        # Release slot when task completes (CAPACITY-001)
-        if slot_service and release_slot:
-            await slot_service.release_slot(agent_name, execution_id)
+    # Post-task: chat session persistence, WS broadcast, collab completion,
+    # self-task activity completion + result injection (if is_self_task).
 ```
 
 **Endpoint Logic — Async branch** (`src/backend/routers/chat.py:735-808`):

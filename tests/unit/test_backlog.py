@@ -23,6 +23,9 @@ Covered:
 - BacklogService.drain_next: slot-first acquire, failed-claim releases slot,
   corrupt metadata marks FAILED, happy path spawns background task
 - on_slot_released callback hook fires without blocking
+- #496: lazy-import target `_run_async_task_with_persistence` exists in the
+  real `routers/chat.py` source (AST-based — catches test-drift where a
+  SimpleNamespace mock would inject the missing symbol back in).
 """
 
 from __future__ import annotations
@@ -562,7 +565,6 @@ class TestBacklogEnqueue:
             x_mcp_key_name=None,
             triggered_by="manual",
             collaboration_activity_id=None,
-            task_activity_id=None,
         )
         assert ok is True
         stored = json.loads(fake_db.queued["exec-1"])
@@ -595,10 +597,50 @@ class TestBacklogEnqueue:
             x_mcp_key_name=None,
             triggered_by="manual",
             collaboration_activity_id=None,
-            task_activity_id=None,
         )
         assert ok is False
         assert "exec-1" not in fake_db.queued
+
+    async def test_enqueue_captures_self_task_fields(self, fake_db, fake_slots):
+        """#496: SELF-EXEC-001 (#264) inject_result must survive backlog
+        spillover. enqueue stores is_self_task + self_task_activity_id +
+        request.inject_result so _spawn_drain can rehydrate the request
+        and pass them to _run_async_task_with_persistence.
+        """
+        from services.backlog_service import BacklogService
+        from models import ParallelTaskRequest
+
+        svc = BacklogService()
+        fake_db.queued_count_value = 0
+        fake_db.backlog_depth = 50
+
+        request = ParallelTaskRequest(
+            message="self-task at capacity",
+            async_mode=True,
+            inject_result=True,
+        )
+        ok = await svc.enqueue(
+            agent_name="alpha",
+            execution_id="exec-self-1",
+            request=request,
+            effective_timeout=300,
+            user_id=7,
+            user_email="u@example.com",
+            subscription_id="sub-1",
+            x_source_agent="alpha",  # source == target = self-task
+            x_mcp_key_id=None,
+            x_mcp_key_name=None,
+            triggered_by="self_task",
+            collaboration_activity_id=None,
+            is_self_task=True,
+            self_task_activity_id="act-self-9",
+        )
+        assert ok is True
+        stored = json.loads(fake_db.queued["exec-self-1"])
+        assert stored["is_self_task"] is True
+        assert stored["self_task_activity_id"] == "act-self-9"
+        assert stored["inject_result"] is True
+        assert stored["x_source_agent"] == "alpha"
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +707,11 @@ class TestBacklogDrain:
     async def test_drain_happy_path_spawns_background(
         self, fake_db, fake_slots, monkeypatch
     ):
+        """#496: drain spawns _run_async_task_with_persistence (post-#95
+        replacement for the deleted _execute_task_background). Asserts the
+        new kwarg surface and that self-task metadata round-trips through
+        the drain so SELF-EXEC-001 (#264) survives backlog spillover.
+        """
         from services.backlog_service import BacklogService
 
         spawned = {}
@@ -673,8 +720,11 @@ class TestBacklogDrain:
             spawned.update(kwargs)
 
         # Install a fake routers.chat module so the late import inside
-        # _spawn_drain picks up our stub instead of the real one.
-        fake_chat = types.SimpleNamespace(_execute_task_background=_fake_bg)
+        # _spawn_drain picks up our stub instead of the real one. The
+        # AST-based regression test (TestLazyImportTarget) separately
+        # asserts the real routers/chat.py defines this symbol — together
+        # they catch the test-drift class that produced #496.
+        fake_chat = types.SimpleNamespace(_run_async_task_with_persistence=_fake_bg)
         monkeypatch.setitem(sys.modules, "routers.chat", fake_chat)
 
         metadata = {
@@ -684,6 +734,11 @@ class TestBacklogDrain:
             "user_id": 5,
             "user_email": "u@example.com",
             "subscription_id": "sub-x",
+            "collaboration_activity_id": "collab-1",
+            "x_source_agent": "beta",
+            "is_self_task": False,
+            "self_task_activity_id": None,
+            "inject_result": False,
         }
         fake_db.queued_count_value = 1
         fake_db.claim_next_return = {
@@ -700,8 +755,133 @@ class TestBacklogDrain:
         await asyncio.sleep(0)
         assert spawned["agent_name"] == "alpha"
         assert spawned["execution_id"] == "exec-7"
-        assert spawned["release_slot"] is True
         assert spawned["user_id"] == 5
+        assert spawned["user_email"] == "u@example.com"
+        assert spawned["subscription_id"] == "sub-x"
+        assert spawned["collaboration_activity_id"] == "collab-1"
+        assert spawned["x_source_agent"] == "beta"
+        assert spawned["is_self_task"] is False
+        assert spawned["self_task_activity_id"] is None
+
+    async def test_drain_threads_self_task_fields(
+        self, fake_db, fake_slots, monkeypatch
+    ):
+        """#496: when a queued row was a self-task at enqueue time, drain
+        rehydrates is_self_task + self_task_activity_id + inject_result
+        on the request, so _run_async_task_with_persistence completes the
+        SELF-EXEC-001 activity and injects the result.
+        """
+        from services.backlog_service import BacklogService
+
+        spawned = {}
+
+        async def _fake_bg(**kwargs):
+            spawned.update(kwargs)
+            spawned["request_inject_result"] = kwargs["request"].inject_result
+
+        fake_chat = types.SimpleNamespace(_run_async_task_with_persistence=_fake_bg)
+        monkeypatch.setitem(sys.modules, "routers.chat", fake_chat)
+
+        metadata = {
+            "message": "self-task at capacity",
+            "timeout_seconds": 300,
+            "user_id": 5,
+            "user_email": "u@example.com",
+            "subscription_id": "sub-x",
+            "x_source_agent": "alpha",  # source == target
+            "is_self_task": True,
+            "self_task_activity_id": "act-self-9",
+            "inject_result": True,
+        }
+        fake_db.queued_count_value = 1
+        fake_db.claim_next_return = {
+            "id": "exec-self-7",
+            "agent_name": "alpha",
+            "message": "self-task at capacity",
+            "backlog_metadata": json.dumps(metadata),
+        }
+
+        svc = BacklogService()
+        assert await svc.drain_next("alpha") is True
+        await asyncio.sleep(0)
+        assert spawned["is_self_task"] is True
+        assert spawned["self_task_activity_id"] == "act-self-9"
+        assert spawned["request_inject_result"] is True
+
+
+# ---------------------------------------------------------------------------
+# Lazy-import target validation (#496 — test-drift regression guard)
+# ---------------------------------------------------------------------------
+
+
+class TestLazyImportTarget:
+    """Static (AST-based) check that BacklogService._spawn_drain's lazy-import
+    target exists in the real routers/chat.py source.
+
+    History: #95 deleted `_execute_task_background` from routers/chat.py and
+    replaced it with `_run_async_task_with_persistence`, but the lazy import
+    in services/backlog_service.py was missed. The exception was swallowed
+    at the call site, so backlog drain silently failed for weeks. The
+    pre-existing happy-path test injected a SimpleNamespace stub of
+    routers.chat into sys.modules with whatever attribute name the test
+    expected, masking the bug.
+
+    This test parses the real routers/chat.py without importing it (the
+    module pulls in FastAPI, the database singleton, etc., which is too
+    heavy for unit tests) and asserts the symbol is still defined.
+    Same idea works for any future rename — keep this in sync with the
+    lazy import in services/backlog_service.py._spawn_drain.
+    """
+
+    LAZY_IMPORT_TARGETS = ("_run_async_task_with_persistence",)
+
+    def test_routers_chat_defines_lazy_import_targets(self):
+        import ast
+
+        chat_src = _BACKEND / "routers" / "chat.py"
+        assert chat_src.exists(), f"routers/chat.py not found at {chat_src}"
+
+        tree = ast.parse(chat_src.read_text(), filename=str(chat_src))
+        defined = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+        }
+        for target in self.LAZY_IMPORT_TARGETS:
+            assert target in defined, (
+                f"BacklogService._spawn_drain lazy-imports `{target}` from "
+                f"routers.chat, but the symbol is not defined there. This is "
+                f"the failure mode that produced #496 — update either the "
+                f"lazy import or this allow-list."
+            )
+
+    def test_backlog_service_lazy_import_matches_target_list(self):
+        """Belt-and-suspenders: the lazy import string in
+        services/backlog_service.py must reference one of the targets
+        validated above. Catches the inverse drift (someone renames the
+        symbol in routers/chat.py and forgets to update backlog_service.py
+        — production breaks; this test catches it).
+        """
+        import re
+
+        backlog_src = _BACKEND / "services" / "backlog_service.py"
+        text = backlog_src.read_text()
+        # Match: from routers.chat import <name>
+        matches = re.findall(
+            r"from\s+routers\.chat\s+import\s+([A-Za-z_][A-Za-z0-9_]*)",
+            text,
+        )
+        assert matches, (
+            "Expected at least one `from routers.chat import ...` in "
+            "services/backlog_service.py — has the lazy-import scheme changed?"
+        )
+        for imported in matches:
+            assert imported in self.LAZY_IMPORT_TARGETS, (
+                f"services/backlog_service.py lazy-imports `{imported}` from "
+                f"routers.chat, but it's not in the validated allow-list "
+                f"{self.LAZY_IMPORT_TARGETS}. Update the allow-list or fix "
+                f"the lazy import."
+            )
 
 
 # ---------------------------------------------------------------------------

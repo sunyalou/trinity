@@ -136,8 +136,9 @@
       "file": "unit/test_backlog.py",
       "feature": "BACKLOG-001",
       "added": "2026-04-13",
+      "updated": "2026-04-25",
       "categories": ["backend", "unit", "backlog", "async", "executions"],
-      "description": "Unit tests for persistent async task backlog (#260): TaskExecutionStatus.QUEUED enum, migration (queued_at/backlog_metadata/max_backlog_depth/partial index), ScheduleOperations claim FIFO atomicity, cancel paths, stale expiry, BacklogService enqueue depth-cap, drain slot-first acquire + corrupt metadata failure, SlotService release callback fan-out."
+      "description": "Unit tests for persistent async task backlog (#260): TaskExecutionStatus.QUEUED enum, migration (queued_at/backlog_metadata/max_backlog_depth/partial index), ScheduleOperations claim FIFO atomicity, cancel paths, stale expiry, BacklogService enqueue depth-cap, drain slot-first acquire + corrupt metadata failure, SlotService release callback fan-out. #496: AST-based regression guards for the lazy-import target in services/backlog_service.py (catches the test-drift class that masked the broken drain), self-task field capture and round-trip through queueing for SELF-EXEC-001 (#264)."
     },
     {
       "file": "test_validation.py",
