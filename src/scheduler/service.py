@@ -723,13 +723,57 @@ class SchedulerService:
             logger.info(f"Schedule {schedule_id} skipped: agent {schedule.agent_name} autonomy is disabled")
             return
 
+        # Agent-owned pre-check hook (#454). Only for cron-triggered invocations:
+        # manual triggers from the UI represent an explicit operator decision and
+        # must always fire. Fail-open: any None return means the agent has no
+        # pre-check or the call errored — fall through to normal firing.
+        effective_message = schedule.message
+        if triggered_by == "schedule":
+            decision = await self._run_pre_check(schedule.agent_name)
+            if decision is not None:
+                if not decision.get("fire", True):
+                    reason = decision.get("reason") or "pre-check returned fire=false"
+                    skipped = self.db.create_skipped_execution(
+                        schedule_id=schedule.id,
+                        agent_name=schedule.agent_name,
+                        message=schedule.message,
+                        triggered_by=triggered_by,
+                        skip_reason=f"pre-check: {reason}",
+                    )
+                    logger.info(
+                        f"Schedule {schedule.name} skipped by pre-check: {reason}"
+                    )
+                    now = datetime.utcnow()
+                    next_run = self._get_next_run_time(
+                        schedule.cron_expression, schedule.timezone
+                    )
+                    self.db.update_schedule_run_times(
+                        schedule.id, last_run_at=now, next_run_at=next_run
+                    )
+                    await self._publish_event({
+                        "type": "schedule_execution_skipped",
+                        "agent": schedule.agent_name,
+                        "schedule_id": schedule.id,
+                        "execution_id": skipped.id if skipped else None,
+                        "schedule_name": schedule.name,
+                        "reason": reason,
+                    })
+                    return
+                override = decision.get("message")
+                if override and isinstance(override, str):
+                    effective_message = override
+                    logger.info(
+                        f"Schedule {schedule.name} pre-check overrode message "
+                        f"({len(override)} chars)"
+                    )
+
         logger.info(f"Executing schedule: {schedule.name} for agent {schedule.agent_name} (triggered_by={triggered_by})")
 
         # Create execution record
         execution = self.db.create_execution(
             schedule_id=schedule.id,
             agent_name=schedule.agent_name,
-            message=schedule.message,
+            message=effective_message,
             triggered_by=triggered_by,
             model_used=schedule.model
         )
@@ -755,7 +799,7 @@ class SchedulerService:
         try:
             result = await self._call_backend_execute_task(
                 agent_name=schedule.agent_name,
-                message=schedule.message,
+                message=effective_message,
                 triggered_by=triggered_by,
                 model=schedule.model,
                 timeout_seconds=schedule.timeout_seconds,
@@ -853,6 +897,80 @@ class SchedulerService:
                 "status": actual_status,
                 "error": error_msg if actual_status == ExecutionStatus.FAILED else None
             })
+
+    async def _run_pre_check(self, agent_name: str) -> Optional[dict]:
+        """Run the agent's optional pre-check hook (#454, SCHED-COND-001).
+
+        Calls the backend's internal endpoint, which `docker exec`s the
+        executable ``~/.trinity/pre-check`` file inside the agent
+        container (same primitive as the persistent-state allowlist in
+        ``services/git_service.py``). The hook is language-agnostic —
+        Trinity execs the path directly, so the interpreter is chosen
+        by the file's shebang. The scheduler never opens its own HTTP
+        edge to agents — backend remains the orchestrator.
+
+        Contract translation (backend → caller):
+          - ``hook_present == False``               → return ``None`` (fire as usual)
+          - ``exit_code != 0``                       → return ``None`` (fail-open + log)
+          - ``exit_code == 0`` & empty stdout        → return ``{"fire": False, "reason": ...}``
+          - ``exit_code == 0`` & non-empty stdout    → return ``{"fire": True, "message": stdout}``
+
+        Returning ``None`` means "no decision, fire the schedule as today."
+        Fail-open is structural — a broken hook or unreachable backend must
+        never silently suppress scheduled work.
+        """
+        headers = {}
+        if config.internal_api_secret:
+            headers["X-Internal-Secret"] = config.internal_api_secret
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{config.backend_url}/api/internal/agents/{agent_name}/pre-check",
+                    headers=headers,
+                    timeout=70.0,  # agent-side timeout is 60s, give us headroom
+                )
+        except Exception as e:
+            logger.warning(
+                f"[pre-check] backend call for {agent_name} failed ({e}) — fail-open"
+            )
+            return None
+
+        if response.status_code == 404:
+            logger.warning(
+                f"[pre-check] backend says agent {agent_name} not found — fail-open"
+            )
+            return None
+        if response.status_code != 200:
+            logger.warning(
+                f"[pre-check] backend returned {response.status_code} for {agent_name} — fail-open"
+            )
+            return None
+
+        try:
+            data = response.json()
+        except Exception as e:
+            logger.warning(
+                f"[pre-check] malformed backend response for {agent_name} ({e}) — fail-open"
+            )
+            return None
+
+        if not data.get("hook_present"):
+            return None  # template has no hook — backward compat
+
+        exit_code = data.get("exit_code", 1)
+        if exit_code != 0:
+            stderr = (data.get("stderr") or data.get("stdout") or "")[:500]
+            logger.warning(
+                f"[pre-check] hook for {agent_name} exited {exit_code}: "
+                f"{stderr!r} — fail-open"
+            )
+            return None
+
+        stdout = (data.get("stdout") or "").strip()
+        if not stdout:
+            return {"fire": False, "reason": "pre-check returned empty stdout"}
+        return {"fire": True, "message": stdout}
 
     async def _call_backend_execute_task(
         self,

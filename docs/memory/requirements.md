@@ -373,6 +373,23 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
   - Configurable `POLL_INTERVAL` env var (default 10s)
 - **Root Cause**: TCP connection drops after 15-30 min on long-running scheduled tasks, causing false `failed` status even though agent work completed successfully
 
+### 10.6.1 Conditional Schedule Pre-Check (SCHED-COND-001)
+- **Status**: ✅ Implemented (2026-04-22)
+- **Requirement ID**: SCHED-COND-001
+- **GitHub Issue**: #454
+- **Description**: Optional template-supplied hook that lets a scheduled cron tick be skipped deterministically — the scheduler calls a new internal backend endpoint which `docker exec`s the executable `~/.trinity/pre-check` file inside the target agent container; non-empty stdout becomes the chat prompt, empty stdout + exit 0 records a skipped execution. The hook is language-agnostic (interpreter chosen by shebang). Eliminates Claude token cost on empty polls for poll-driven agents (PR reviewers, inbox monitors, alert routers, RSS watchers).
+- **Key Features**:
+  - Contract: agent templates drop an executable `~/.trinity/pre-check` file with a shebang (`#!/usr/bin/env python3`, `#!/bin/bash`, …). Trinity execs it directly — no `python3` prefix, no language assumption. Stdout is the chat prompt; empty stdout + exit 0 = skip; non-zero exit = fail-open.
+  - Backend endpoint: `POST /api/internal/agents/{name}/pre-check` (X-Internal-Secret gated) runs the script via `execute_command_in_container` — the same primitive used by `git_service.py` (persistent-state allowlist, #384 S3), `ssh_service.py`, `agent_service/terminal.py`, `adapters/message_router.py`, `routers/system_agent.py`, `routers/voice.py`.
+  - Fail-open: script absent, non-zero exit, timeout, backend 5xx / malformed response → scheduler fires as usual. A broken pre-check never silently suppresses scheduled work.
+  - Message override: non-empty stdout replaces `schedule.message` for that one invocation — lets the agent inject real work items (e.g. the PR list) into the chat prompt.
+  - Skip record: empty stdout writes a row to `schedule_executions` with `status='skipped'`, reason, and zero cost — visible in the Trinity UI alongside successful runs.
+  - Manual triggers bypass pre-check entirely (explicit operator intent always fires).
+  - Zero DB schema change (reuses existing `ExecutionStatus.SKIPPED` + `create_skipped_execution`).
+  - **No new HTTP edge**: scheduler calls backend, backend `docker exec`s into agent. Topology stays "scheduler → backend → agent" (Invariant #11).
+- **Test plan**: 13 unit tests covering backend-response translation (hook absent / non-zero exit / empty stdout / fire-with-message / 404 / 5xx / connection error / malformed JSON) + scheduler branch behaviors (skip, override, fail-open, manual-bypass). Full 162-test scheduler suite passes.
+- **Root Cause**: No platform primitive for "deterministic gate before LLM invocation." Previously required per-template daemons backgrounded inside agent containers — invisible to Trinity UI, reimplemented per template, no skip metrics.
+
 ### 10.7 Per-Agent Execution Timeout (TIMEOUT-001)
 - **Status**: ✅ Implemented (2026-03-12)
 - **Requirement ID**: TIMEOUT-001

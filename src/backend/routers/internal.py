@@ -59,6 +59,27 @@ async def internal_health():
     return {"status": "ok"}
 
 
+# ---------------------------------------------------------------------------
+# Scheduler pre-check (#454, SCHED-COND-001)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/agents/{agent_name}/pre-check")
+async def internal_agent_pre_check(agent_name: str):
+    """Run the agent's optional pre-check hook (SCHED-COND-001 / #454).
+
+    Thin passthrough — all logic lives in
+    ``services/pre_check_service.py`` (Invariant #1: Router → Service
+    → DB). See that module for the full contract.
+    """
+    from services.pre_check_service import run_pre_check, AgentNotFound
+
+    try:
+        return await run_pre_check(agent_name)
+    except AgentNotFound:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+
 @router.get("/agents/{agent_name}/sync-health-status")
 async def internal_agent_sync_health(agent_name: str):
     """#389: lightweight read used by the dedicated scheduler before dispatching.
