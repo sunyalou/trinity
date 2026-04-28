@@ -129,17 +129,11 @@
         class="flex-1 px-6"
       >
         <template #empty>
-          <div class="text-center py-12">
-            <div class="w-16 h-16 bg-indigo-100 dark:bg-indigo-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
-              <svg class="w-8 h-8 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-              </svg>
-            </div>
-            <h3 class="text-lg font-medium text-gray-900 dark:text-white mb-2">Start a Conversation</h3>
-            <p class="text-gray-500 dark:text-gray-400 text-sm max-w-md mx-auto">
-              Chat with your agent using a simple interface. All activity is tracked in the Dashboard timeline.
-            </p>
-          </div>
+          <ChatEmptyState
+            :playbooks="playbooks"
+            subheading="Pick a quick action below or type your own message. All activity is tracked in the Dashboard timeline."
+            @select="onEmptyStateSelect"
+          />
         </template>
       </ChatMessages>
 
@@ -177,7 +171,7 @@
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
-import { ChatMessages, ChatInput } from './chat'
+import { ChatMessages, ChatInput, ChatEmptyState } from './chat'
 import VoiceOverlay from './chat/VoiceOverlay.vue'
 import ModelSelector from './ModelSelector.vue'
 import { getStatusFromStreamEvent, MIN_LABEL_DISPLAY_MS, HEARTBEAT_TIMEOUT_MS } from '../utils/execution-status'
@@ -275,6 +269,29 @@ const focusChatInput = () => {
 
 // Model selection
 const selectedModel = ref(localStorage.getItem('trinity_chat_model') || '')
+
+// Playbooks (for empty-state quick actions)
+const playbooks = ref([])
+const loadPlaybooks = async () => {
+  if (!props.agentName || props.agentStatus !== 'running') return
+  try {
+    const response = await axios.get(
+      `/api/agents/${props.agentName}/playbooks`,
+      { headers: authStore.authHeader }
+    )
+    playbooks.value = response.data.skills || []
+  } catch {
+    playbooks.value = []
+  }
+}
+const onEmptyStateSelect = ({ text, sendImmediately }) => {
+  if (sendImmediately) {
+    sendMessage(text)
+  } else {
+    message.value = text
+    nextTick(() => chatInputRef.value?.focus())
+  }
+}
 
 // SSE state (THINK-001)
 let heartbeatTimer = null
@@ -708,6 +725,7 @@ watch(() => props.agentStatus, (newStatus) => {
   if (newStatus === 'running') {
     loadSessions()
     checkVoiceAvailability()
+    loadPlaybooks()
   }
 })
 
@@ -732,6 +750,7 @@ watch(() => props.agentName, () => {
   closeSSE()
   if (props.agentStatus === 'running') {
     loadSessions()
+    loadPlaybooks()
   }
 })
 
@@ -741,6 +760,7 @@ onMounted(() => {
   if (props.agentStatus === 'running') {
     loadSessions()
     checkVoiceAvailability()
+    loadPlaybooks()
   }
 })
 

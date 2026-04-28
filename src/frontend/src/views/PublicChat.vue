@@ -235,6 +235,17 @@
           </template>
         </ChatMessages>
 
+        <!-- Quick-action buttons (#363) — render alongside intro until first user message -->
+        <ChatEmptyState
+          v-if="showQuickActions"
+          :playbooks="playbooks"
+          :show-icon="false"
+          heading=""
+          subheading=""
+          @select="onEmptyStateSelect"
+          class="mb-2"
+        />
+
         <!-- Error message -->
         <div v-if="chatError" class="mb-4 p-3 bg-red-100 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg">
           <p class="text-sm text-red-600 dark:text-red-400">{{ chatError }}</p>
@@ -257,7 +268,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
-import { ChatMessages, ChatInput } from '../components/chat'
+import { ChatMessages, ChatInput, ChatEmptyState } from '../components/chat'
 import { getStatusFromStreamEvent, MIN_LABEL_DISPLAY_MS, HEARTBEAT_TIMEOUT_MS } from '../utils/execution-status'
 
 const route = useRoute()
@@ -299,6 +310,26 @@ let streamReader = null
 const introLoading = ref(false)
 const introError = ref(null)
 const introFetched = ref(false)
+
+// Playbooks (for empty-state quick actions)
+const playbooks = ref([])
+const userMessageCount = computed(() => messages.value.filter(m => m.role === 'user').length)
+const showQuickActions = computed(() => userMessageCount.value === 0 && !introLoading.value)
+const loadPlaybooks = async () => {
+  try {
+    const response = await axios.get(`/api/public/playbooks/${token.value}`)
+    playbooks.value = response.data.skills || []
+  } catch {
+    playbooks.value = []
+  }
+}
+const onEmptyStateSelect = ({ text, sendImmediately }) => {
+  if (sendImmediately) {
+    sendMessage(text)
+  } else {
+    message.value = text
+  }
+}
 
 // Load link info
 const loadLinkInfo = async () => {
@@ -766,6 +797,8 @@ onMounted(async () => {
       } else {
         introFetched.value = true // Mark intro as done since we have history
       }
+
+      loadPlaybooks()
     }
   }
 })
