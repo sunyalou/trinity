@@ -402,6 +402,7 @@ Services that run continuously in the backend process:
 | **Monitoring Service** | `monitoring_service.py` | Fleet-wide health checks on configurable interval. (MON-001) |
 | **Scheduler Service** | `scheduler_service.py` | APScheduler-based cron job execution. Async fire-and-forget with DB polling for status. On each cron-triggered fire, optionally invokes the agent's executable `~/.trinity/pre-check` (interpreter chosen by shebang) via the backend's `POST /api/internal/agents/{name}/pre-check` (which `docker exec`s into the agent container). Empty stdout + exit 0 records a skipped execution and does not invoke Claude (SCHED-COND-001, #454). |
 | **Capacity Maintenance** | `capacity_manager.py` | Calls `CapacityManager.run_maintenance()` every 60s — expires stale queued tasks (>24h) and drains orphans after restart. (BACKLOG-001 / CAPACITY-CONSOLIDATE #428) |
+| **Audit Retention** | `audit_retention_service.py` | Daily APScheduler job at 04:15 UTC that DELETEs `audit_log` rows past the retention window. Configured via `AUDIT_LOG_RETENTION_DAYS` (default 365, floored at 365 — the `audit_log_no_delete` trigger refuses younger rows). Pruning ages out hash-chain history past the cutoff by design. (#552) |
 
 The **agent server** also runs a 15-min `auto_sync` heartbeat loop (gated
 by `GIT_SYNC_AUTO` env var; default-on for non-source-mode GitHub-template

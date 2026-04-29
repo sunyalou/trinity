@@ -101,6 +101,9 @@ from services.system_agent_service import system_agent_service
 # Import log archive service
 from services.log_archive_service import log_archive_service
 
+# Import audit retention service (#552)
+from services.audit_retention_service import audit_retention_service
+
 # Import operator queue sync service
 from services.operator_queue_service import operator_queue_service, set_websocket_manager as set_opqueue_sync_ws_manager
 from services.sync_health_service import sync_health_service
@@ -366,6 +369,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Error starting log archive service: {e}")
 
+    # Initialize audit retention service (#552)
+    try:
+        audit_retention_service.start()
+        print("Audit retention service started")
+    except Exception as e:
+        print(f"Error starting audit retention service: {e}")
+
     # PERF-269: Stagger background services to reduce SQLite write contention
     # Start operator queue sync service (OPS-001) — polls every 5s
     try:
@@ -549,6 +559,13 @@ async def lifespan(app: FastAPI):
         print("Log archive service stopped")
     except Exception as e:
         print(f"Error stopping log archive service: {e}")
+
+    # Shutdown audit retention service (#552)
+    try:
+        audit_retention_service.stop()
+        print("Audit retention service stopped")
+    except Exception as e:
+        print(f"Error stopping audit retention service: {e}")
 
     # Shutdown cleanup service
     try:

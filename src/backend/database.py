@@ -1833,6 +1833,10 @@ class DatabaseManager:
         """Aggregate counts by event_type and actor_type for the dashboard."""
         return self._audit_ops.get_audit_stats(start_time=start_time, end_time=end_time)
 
+    def prune_audit_log(self, retention_days: int) -> int:
+        """Delete audit_log entries older than ``retention_days``. Returns count removed."""
+        return self._audit_ops.prune_audit_log(retention_days)
+
 
 # Global database manager instance
 db = DatabaseManager()
