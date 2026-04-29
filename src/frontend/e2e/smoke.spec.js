@@ -26,4 +26,12 @@ test.describe('smoke', () => {
     await page.goto('/templates')
     await expect(page.getByText(/template/i).first()).toBeVisible({ timeout: 10000 })
   })
+
+  test('monitoring page loads', async ({ page }) => {
+    await page.goto('/monitoring')
+    // Header, summary cards, or empty state — any of these confirms the route mounted.
+    await expect(
+      page.getByText(/monitoring|fleet|healthy|degraded|no agents/i).first()
+    ).toBeVisible({ timeout: 10000 })
+  })
 })
