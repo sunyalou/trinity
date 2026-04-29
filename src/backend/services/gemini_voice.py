@@ -76,6 +76,7 @@ class VoiceSession:
     _gemini_session: object = field(default=None, repr=False)
     _send_task: object = field(default=None, repr=False)
     _receive_task: object = field(default=None, repr=False)
+    _timeout_task: object = field(default=None, repr=False)
     _audio_in_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
     _pending_tool_tasks: dict = field(default_factory=dict)  # call_id → asyncio.Task
     _active: bool = False
@@ -191,7 +192,7 @@ class GeminiVoiceService:
                     session._receive_task = tg.create_task(
                         self._receive_audio_loop(session)
                     )
-                    session._send_task = tg.create_task(
+                    session._timeout_task = tg.create_task(
                         self._timeout_watchdog(session)
                     )
 
@@ -404,8 +405,8 @@ class GeminiVoiceService:
                 task.cancel()
         session._pending_tool_tasks.clear()
 
-        # Cancel send/receive tasks
-        for task in [session._send_task, session._receive_task]:
+        # Cancel send/receive/timeout tasks
+        for task in [session._send_task, session._receive_task, session._timeout_task]:
             if task and not task.done():
                 task.cancel()
 
