@@ -272,7 +272,13 @@ export const useNetworkStore = defineStore('network', () => {
               activity_type: activity.activity_type,
               triggered_by: activity.triggered_by,
               schedule_name: details.schedule_name || null,
-              error: activity.error
+              error: activity.error,
+              // #514: previews surfaced on timeline hover. Backend stores
+              // first 100 chars of command in details.message_preview at
+              // activity start; first 200 chars of sanitized response in
+              // details.response_preview on completion.
+              command_preview: details.message_preview || '',
+              response_preview: details.response_preview || ''
             }
           } catch (e) {
             console.warn('Failed to parse activity details:', e)
