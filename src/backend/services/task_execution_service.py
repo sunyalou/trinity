@@ -481,6 +481,8 @@ class TaskExecutionService:
                         "cost_usd": metadata.get("cost_usd"),
                         "execution_time_ms": execution_time_ms,
                         "tool_count": len(response_data.get("execution_log", [])),
+                        # #514: short preview surfaced on dashboard timeline hover
+                        "response_preview": (sanitized_resp or "")[:200],
                     },
                 )
 
