@@ -209,6 +209,13 @@
       "added": "2026-04-29",
       "categories": ["backend", "api", "public", "chat"],
       "description": "Tests for GET /api/public/sessions/{token} and GET /api/public/sessions/{token}/{session_id} — auth requirements, 404 on invalid tokens, response shape, limit param"
+    },
+    {
+      "file": "unit/test_voice_tools.py",
+      "feature": "VOICE-001 / Issue #581",
+      "added": "2026-04-29",
+      "categories": ["backend", "unit", "voice", "gemini", "tools"],
+      "description": "Unit tests for voice tool call support (#581): _execute_tool (success, empty prompt, truncation to 2000 chars, agent not reachable, task error), _execute_and_respond (success path with callbacks, timeout → error response, inactive session skips send), tool declaration (_RUN_TASK_TOOL name + required prompt), end_session cancels pending tool tasks (12 tests)"
     }
   ]
 }
