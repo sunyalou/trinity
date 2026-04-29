@@ -360,7 +360,7 @@ docker exec trinity-vector sh -c "tail -50 /data/logs/agents.json" | jq .
 **Internal Server:** `agent-server.py`
 - FastAPI app on port 8000
 - `/api/chat` - Claude Code execution (messages persisted to database)
-- `/api/health` - Health check
+- `/health` - Health check
 - `/api/credentials/update` - Hot-reload credentials
 - `/api/chat/session` - Context window stats
 - `/api/files` - List workspace files (recursive tree structure)
@@ -620,7 +620,7 @@ picks up on its next poll. (#389 S1a)
 | DELETE | `/api/mcp/keys/{id}` | Delete API key |
 | GET | `/oauth/{provider}/authorize` | Start OAuth |
 | GET | `/oauth/{provider}/callback` | OAuth callback |
-| GET | `/api/health` | Health check |
+| GET | `/health` | Health check (unauthenticated, top-level — no `/api/` prefix) |
 
 ### Fleet Sync Audit (#390 / S6)
 
