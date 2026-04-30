@@ -16,6 +16,7 @@ from models import User, ChatMessageRequest, ModelChangeRequest, ParallelTaskReq
 from dependencies import get_current_user, get_authorized_agent, get_owned_agent
 from services.docker_service import get_agent_container
 from services.activity_service import activity_service
+from services.upload_service import process_file_uploads, decode_web_file, WEB_MAX_FILES, WEB_MAX_FILE_SIZE, WEB_MAX_IMAGE_SIZE, WEB_MAX_TOTAL_IMAGE_SIZE
 from services.capacity_manager import (
     CapacityFull,
     PersistentTaskPayload,
@@ -616,6 +617,7 @@ async def _run_async_task_with_persistence(
     subscription_id: Optional[str] = None,
     is_self_task: bool = False,
     self_task_activity_id: Optional[str] = None,
+    images: Optional[list] = None,
 ):
     """
     Async /task background wrapper (issue #95).
@@ -666,6 +668,7 @@ async def _run_async_task_with_persistence(
                 "timeout_seconds": request.timeout_seconds,
             },
             slot_already_held=True,  # Router pre-acquired to preserve 429-upfront contract
+            images=images or [],
         )
 
         execution_time_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
@@ -852,6 +855,44 @@ async def execute_parallel_task(
         source = ExecutionSource.USER
         triggered_by = "manual"
 
+    # (#364) File upload processing — done synchronously before the async/sync
+    # fork so bytes are decoded and written to the container before we return
+    # execution_id (async) or before execute_task runs (sync).
+    _upload_dir = None
+    _image_data: list = []
+    if request.files:
+        uploader = current_user.email or current_user.username
+        raw_files = [
+            {
+                "name": f.name,
+                "mimetype": f.mimetype,
+                "size": f.size,
+                "data": decode_web_file(f.dict()),
+                "id": f"f{i}",
+            }
+            for i, f in enumerate(request.files)
+        ]
+        file_descs, _upload_dir, all_writes_failed, _image_data = await process_file_uploads(
+            raw_files=raw_files,
+            agent_name=name,
+            container=container,
+            session_id=str(current_user.id),
+            uploader=uploader,
+            source="web",
+            max_files=WEB_MAX_FILES,
+            max_file_size=WEB_MAX_FILE_SIZE,
+            max_image_size=WEB_MAX_IMAGE_SIZE,
+            max_total_image_size=WEB_MAX_TOTAL_IMAGE_SIZE,
+        )
+        if all_writes_failed:
+            raise HTTPException(
+                status_code=502,
+                detail="File upload failed: could not write to agent workspace."
+            )
+        if file_descs:
+            file_block = "\n".join(file_descs)
+            request.message = f"{request.message}\n\n{file_block}"
+
     # SUB-004: Look up subscription for usage tracking (best-effort)
     try:
         _task_subscription_id = db.get_agent_subscription_id(name)
@@ -1032,6 +1073,7 @@ async def execute_parallel_task(
                 subscription_id=_task_subscription_id,
                 is_self_task=is_self_task,
                 self_task_activity_id=self_task_activity_id,
+                images=_image_data,
             )
         )
         bg_task.add_done_callback(_on_task_done)
@@ -1203,6 +1245,7 @@ async def execute_parallel_task(
         system_prompt=request.system_prompt,
         execution_id=execution_id,
         slot_already_held=True,  # Issue #498: router pre-acquired
+        images=_image_data,
     )
 
     # Complete collaboration activity based on result

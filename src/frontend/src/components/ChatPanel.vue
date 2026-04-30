@@ -603,8 +603,8 @@ const pollExecution = async (executionId) => {
 }
 
 // Send message
-const sendMessage = async (userMessage) => {
-  if (!userMessage || loading.value || props.agentStatus !== 'running') return
+const sendMessage = async (userMessage, files = []) => {
+  if ((!userMessage && files.length === 0) || loading.value || props.agentStatus !== 'running') return
 
   error.value = null
 
@@ -633,7 +633,8 @@ const sendMessage = async (userMessage) => {
       create_new_session: !currentSessionId.value,
       chat_session_id: currentSessionId.value || undefined,
       async_mode: true,
-      model: selectedModel.value || undefined
+      model: selectedModel.value || undefined,
+      files: files.length > 0 ? files : undefined,
     }
 
     // EXEC-023: Include resume_session_id for ALL messages in resume mode

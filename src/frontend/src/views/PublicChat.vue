@@ -742,8 +742,8 @@ const pollExecution = async (executionId) => {
 }
 
 // Send chat message
-const sendMessage = async (userMessage) => {
-  if (!userMessage || chatLoading.value) return
+const sendMessage = async (userMessage, files = []) => {
+  if ((!userMessage && files.length === 0) || chatLoading.value) return
 
   chatError.value = null
 
@@ -762,7 +762,8 @@ const sendMessage = async (userMessage) => {
   try {
     const payload = {
       message: userMessage,
-      async_mode: true
+      async_mode: true,
+      files: files.length > 0 ? files : undefined,
     }
 
     // Include session token if email verification was required

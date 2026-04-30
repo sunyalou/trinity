@@ -7,6 +7,7 @@ from datetime import datetime
 from enum import Enum
 
 from utils.helpers import to_utc_iso
+from db_models import WebFileUpload  # noqa: F401 — re-exported for router imports
 
 
 class AgentConfig(BaseModel):
@@ -95,6 +96,7 @@ class ParallelTaskRequest(BaseModel):
     chat_session_id: Optional[str] = None  # Explicit chat session ID to save messages to (for continuing existing sessions)
     resume_session_id: Optional[str] = None  # Claude Code session ID to resume (EXEC-023)
     inject_result: Optional[bool] = False  # If true and self-task, inject result as message in originating chat session (SELF-EXEC-001)
+    files: Optional[List[WebFileUpload]] = None  # File attachments (#364)
 
 
 # ============================================================================

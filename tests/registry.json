@@ -216,6 +216,13 @@
       "added": "2026-04-29",
       "categories": ["backend", "unit", "voice", "gemini", "tools"],
       "description": "Unit tests for voice tool call support (#581): _execute_tool (success, empty prompt, truncation to 2000 chars, agent not reachable, task error), _execute_and_respond (success path with callbacks, timeout → error response, inactive session skips send), tool declaration (_RUN_TASK_TOOL name + required prompt), end_session cancels pending tool tasks (12 tests)"
+    },
+    {
+      "file": "unit/test_web_file_upload.py",
+      "feature": "Issue #364",
+      "added": "2026-04-29",
+      "categories": ["backend", "unit", "upload", "files", "chat"],
+      "description": "Unit tests for web chat file upload (#364): sanitize_filename (path traversal, unicode, dedup, truncation), decode_web_file (data: URI prefix stripping, raw base64, empty/bad input), process_file_uploads (empty list, download failure, unsupported MIME, oversized file, image vision block collection, text file container write, max_files cap) — 14 tests"
     }
   ]
 }
