@@ -283,6 +283,7 @@ curl -X POST http://localhost:8000/api/agents \
 | Repository | Description |
 |------------|-------------|
 | [abilityai/trinity](https://github.com/abilityai/trinity) | This repository - Autonomous Agent Orchestration Platform |
+| [abilityai/trinity-ops-public](https://github.com/abilityai/trinity-ops-public) | **Claude Code ops agent** — manage any Trinity instance (health, updates, logs, rollback, provisioning) |
 | [abilityai/abilities](https://github.com/abilityai/abilities) | **Canonical agent development toolkit** — plugins for the full autonomous agent lifecycle (scaffolding, onboarding, deployment, scheduling, ops) |
 
 ### Abilities (agent development toolkit)
@@ -291,11 +292,11 @@ The **[abilities](https://github.com/abilityai/abilities)** repo is the canonica
 
 | Plugin | What it does |
 |--------|-------------|
-| **create-agent** | 12 wizards for agent scaffolding (prospector, chief-of-staff, webmaster, recon, receptionist, ghostwriter, kb-agent, website, custom, clone, adjust) |
-| **agent-dev** | Add skills, memory systems, GitHub backlog workflow, autonomous work loops |
-| **trinity** | Deploy to Trinity platform: connect, onboard, sync |
-| **dev-methodology** | 14 skills for implementation, testing, security, and PR validation |
-| **utilities** | Ops: incident investigation, safe deployment, Docker ops, batch processing |
+| **create-agent** | 12 wizards for agent scaffolding (create, prospector, chief-of-staff, webmaster, recon, receptionist, ghostwriter, kb-agent, website, custom, clone, adjust) |
+| **agent-dev** | 15 skills: add skills, memory systems, git-sync hooks, GitHub backlog workflow, grooming, sprints, autonomous work loops |
+| **trinity** | 5 skills: connect, onboard, deploy, sync, create-dashboard |
+| **dev-methodology** | 24 skills: implementation, testing, security (CSO audit), PR validation, release, architecture/schema/config validation, feature flows, user doc generation |
+| **utilities** | 7 skills: incident investigation, safe deployment, Docker ops, batch processing, conversation export, bug reports, ops knowledge sync |
 
 **Installation:**
 ```bash

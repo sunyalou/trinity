@@ -15,13 +15,27 @@ Documentation-driven development methodology for any codebase. Enforces a struct
 | `/dev-methodology:init` | Scaffold methodology into your project |
 | `/dev-methodology:read-docs` | Load project context at session start |
 | `/dev-methodology:implement` | End-to-end feature implementation |
+| `/dev-methodology:autoplan` | Analyze an issue and produce an implementation plan before coding |
+| `/dev-methodology:sprint` | Full development cycle — pick issue, plan, review, implement, PR |
 | `/dev-methodology:validate-pr` | Validate PR against methodology |
+| `/dev-methodology:review` | Pre-landing PR review — analyzes branch diff for quality |
 | `/dev-methodology:commit` | Create well-formatted commits |
+| `/dev-methodology:release` | Cut a release — changelog, version bump, tag, merge |
 | `/dev-methodology:security-check` | Quick security scan |
-| `/dev-methodology:security-analysis` | Deep security analysis |
+| `/dev-methodology:security-analysis` | Deep OWASP-based security analysis |
+| `/dev-methodology:cso` | Chief Security Officer audit — infrastructure-wide security review |
 | `/dev-methodology:add-testing` | Add tests to existing code |
 | `/dev-methodology:tidy` | Clean up code |
-| `/dev-methodology:roadmap` | Generate project roadmap |
+| `/dev-methodology:roadmap` | Query issues for roadmap priorities |
+| `/dev-methodology:groom` | Backlog grooming — audit coverage, rank priorities |
+| `/dev-methodology:update-docs` | Update project documentation after making changes |
+| `/dev-methodology:generate-user-docs` | Generate user-facing docs from source code |
+| `/dev-methodology:feature-flow-analysis` | Create or update a feature flow document |
+| `/dev-methodology:sync-feature-flows` | Analyze code changes and update affected feature flows |
+| `/dev-methodology:validate-architecture` | Detect drift between architecture docs and code |
+| `/dev-methodology:validate-config` | Validate config hygiene — docker-compose, env vars |
+| `/dev-methodology:validate-schema` | Validate database schema consistency |
+| `/dev-methodology:refactor-audit` | Review changed code for reuse, quality, and efficiency |
 
 ## How It Works
 

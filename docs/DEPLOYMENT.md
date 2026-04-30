@@ -2,8 +2,7 @@
 
 This guide covers setting up Trinity for local development.
 
-> **Note**: Production deployment is handled by a separate deployment agent.
-> See `docs/archive/deployment/` for archived production deployment documentation.
+> **Deploying to a server?** Use the [trinity-ops-public](https://github.com/abilityai/trinity-ops-public) ops agent — a Claude Code agent that manages any Trinity instance (health checks, updates, rollback, log triage, provisioning guides for Hetzner / GCP / AWS / DigitalOcean).
 
 ## Prerequisites
 

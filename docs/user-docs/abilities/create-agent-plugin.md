@@ -12,6 +12,7 @@ Create new Claude Code agents with domain-specific wizards. Each wizard is a dom
 
 | Wizard | Command | What it creates |
 |--------|---------|-----------------|
+| **create** | `/create-agent:create` | Discovery entry point — shows all wizards and lets you pick interactively |
 | **prospector** | `/create-agent:prospector` | B2B SaaS sales research — company research, ICP scoring, CRM integration |
 | **chief-of-staff** | `/create-agent:chief-of-staff` | Executive assistant — daily briefings, meeting prep, decision tracking |
 | **webmaster** | `/create-agent:webmaster` | Website management — scaffolds and deploys Next.js 15 sites to Vercel |
@@ -28,7 +29,7 @@ Create new Claude Code agents with domain-specific wizards. Each wizard is a dom
 
 ### Discovery Entry Point
 
-Run `/create-agent:create` to see all available wizards and select one interactively.
+Run `/create-agent:create` to see all 12 available wizards and select one interactively.
 
 ### Wizard Flow
 

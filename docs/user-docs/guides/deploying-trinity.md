@@ -225,6 +225,32 @@ docker run --rm -v trinity_trinity-data:/data -v /your/backup/path:/backup alpin
 
 Retain 14 daily backups. The DB contains agent state, schedules, chat history, and credentials metadata.
 
+## Managing a Running Instance (Ops Agent)
+
+Once Trinity is running — locally or on a server — the **[trinity-ops-public](https://github.com/abilityai/trinity-ops-public)** repo gives you a Claude Code ops agent for day-to-day operations.
+
+```bash
+git clone https://github.com/abilityai/trinity-ops-public.git
+cd trinity-ops-public
+
+cp .env.example .env
+# Set SSH_HOST (leave blank if Trinity runs on this machine)
+
+claude  # launch the ops agent
+```
+
+| Skill | What it does |
+|-------|-------------|
+| `/status` | Health check — backend, containers, Redis, version |
+| `/logs <service>` | View logs for any service or agent |
+| `/restart [service\|all]` | Restart services with health verification |
+| `/update` | Pull latest, rebuild, restart, verify |
+| `/diagnose` | Full error scan — logs, restarts, disk, DB integrity |
+| `/rollback` | Rollback to previous commit + optional DB restore |
+| `/cleanup` | Prune Docker images, build cache, old backups |
+
+**Provisioning guides** (for new server setup): Hetzner, GCP, AWS, DigitalOcean, and localhost — all in `provision/`.
+
 ## Next Steps
 
 - [Building Agents](building-agents.md) — Create and deploy with Claude Code + abilities
@@ -234,3 +260,4 @@ Retain 14 daily backups. The DB contains agent state, schedules, chat history, a
 
 - [Quick Start](../getting-started/quick-start.md) — 5-minute agent creation
 - [Trinity CLI](../cli/trinity-cli.md) — Command-line deployment
+- [trinity-ops-public](https://github.com/abilityai/trinity-ops-public) — Ops agent for managing instances

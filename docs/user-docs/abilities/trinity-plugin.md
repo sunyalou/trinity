@@ -14,7 +14,9 @@ Connect, deploy, and sync agents to the Trinity platform. Three skills covering 
 |-------|-------------|
 | `/trinity:connect` | One-time: authenticate and configure MCP connection |
 | `/trinity:onboard` | Per-agent: compatibility check, file creation, deploy |
+| `/trinity:deploy` | Deploy current agent to Trinity (lighter-weight than onboard) |
 | `/trinity:sync` | Ongoing: sync changes between local and remote |
+| `/trinity:create-dashboard` | Create or update the agent's `dashboard.yaml` |
 
 ## How It Works
 
