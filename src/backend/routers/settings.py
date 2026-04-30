@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-from models import User
+from models import User, AgentDefaultResourcesUpdate
 from database import db, SystemSetting, SystemSettingUpdate
 from dependencies import get_current_user
 from services.platform_audit_service import platform_audit_service, AuditEventType
@@ -1222,11 +1222,6 @@ async def update_agent_quotas(
 
 VALID_CPU_VALUES = ["1", "2", "4", "8", "16"]
 VALID_MEMORY_VALUES = ["1g", "2g", "4g", "8g", "16g", "32g"]
-
-
-class AgentDefaultResourcesUpdate(BaseModel):
-    cpu: Optional[str] = None
-    memory: Optional[str] = None
 
 
 @router.get("/agent-defaults/resources")
