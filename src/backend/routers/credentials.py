@@ -29,8 +29,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["credentials"])
 
 # Allowlist of credential file paths that can be injected into agents.
-# Blocks arbitrary file writes (pentest 3.2.6 / #183).
-ALLOWED_CREDENTIAL_PATHS = {".env", ".mcp.json", ".mcp.json.template", ".credentials.enc"}
+# Blocks arbitrary file writes (pentest 3.2.6 / #183) AND the .mcp.json
+# RCE escalation (AISEC-C2 / #590): raw .mcp.json/.mcp.json.template content
+# is attacker-controlled JSON that defines tool `command:` fields, so any
+# user-facing inject of those files = RCE-by-config. The platform-internal
+# `/api/credentials/update` flow on the agent-server still owns the legit
+# regenerate-from-template path, and platform services (template_service,
+# credential_encryption, github_pat_propagation) call the agent-server
+# endpoint directly with its own (broader) allowlist.
+ALLOWED_CREDENTIAL_PATHS = {".env", ".credentials.enc"}
 
 
 # ============================================================================
