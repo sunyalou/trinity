@@ -218,6 +218,13 @@
       "description": "Unit tests for voice tool call support (#581): _execute_tool (success, empty prompt, truncation to 2000 chars, agent not reachable, task error), _execute_and_respond (success path with callbacks, timeout → error response, inactive session skips send), tool declaration (_RUN_TASK_TOOL name + required prompt), end_session cancels pending tool tasks (12 tests)"
     },
     {
+      "file": "test_files_guardrail_bypass.py",
+      "feature": "Issue #590 / AISEC-C2",
+      "added": "2026-04-30",
+      "categories": ["backend", "api", "security", "files", "credentials"],
+      "description": "Integration tests for the .mcp.json RCE-by-config bypass closure: AISEC-C2 exact reproduction (PUT /files?path=.mcp.json + credentials/inject vectors), full path_deny coverage (15 protected paths), path traversal variants (8), credentials inject allowlist (rejected paths + .env/.credentials.enc regression), defense-in-depth verification (block at backend layer for stopped agents), file-state proof (content unchanged after blocked write). Pairs with tests/unit/test_files_protected_paths.py (32 unit tests)."
+    },
+    {
       "file": "unit/test_web_file_upload.py",
       "feature": "Issue #364",
       "added": "2026-04-29",
