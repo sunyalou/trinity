@@ -562,9 +562,14 @@ Note: Async mode on the `/api/agents/{name}/task` endpoint does **not** use `Tas
 class ParallelTaskRequest(BaseModel):
     # ... existing fields ...
     async_mode: Optional[bool] = False  # If true, return immediately with execution_id
+    files: Optional[List[WebFileUpload]] = None  # File attachments (#364)
 ```
 
-**Background Task Handler** (`src/backend/routers/chat.py:438-650`):
+**File upload** (#364): `execute_parallel_task` decodes files synchronously (before async/sync fork)
+via `upload_service.process_file_uploads()`. Images become vision blocks in `execute_task(images=)`;
+text files are written to `/home/developer/uploads/{user_id}/` before the execution ID is returned.
+
+**Background Task Handler** (`src/backend/routers/chat.py:608-800`):
 ```python
 async def _run_async_task_with_persistence(
     agent_name: str,
@@ -577,6 +582,7 @@ async def _run_async_task_with_persistence(
     subscription_id: Optional[str] = None,
     is_self_task: bool = False,
     self_task_activity_id: Optional[str] = None,
+    images: Optional[list] = None,  # (#364) pre-decoded vision blocks
 ):
     """
     Async /task background wrapper (issue #95).

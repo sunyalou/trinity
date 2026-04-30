@@ -360,7 +360,7 @@ docker exec trinity-vector sh -c "tail -50 /data/logs/agents.json" | jq .
 **Internal Server:** `agent-server.py`
 - FastAPI app on port 8000
 - `/api/chat` - Claude Code execution (messages persisted to database)
-- `/api/health` - Health check
+- `/health` - Health check
 - `/api/credentials/update` - Hot-reload credentials
 - `/api/chat/session` - Context window stats
 - `/api/files` - List workspace files (recursive tree structure)
@@ -620,7 +620,7 @@ picks up on its next poll. (#389 S1a)
 | DELETE | `/api/mcp/keys/{id}` | Delete API key |
 | GET | `/oauth/{provider}/authorize` | Start OAuth |
 | GET | `/oauth/{provider}/callback` | OAuth callback |
-| GET | `/api/health` | Health check |
+| GET | `/health` | Health check (unauthenticated, top-level — no `/api/` prefix) |
 
 ### Fleet Sync Audit (#390 / S6)
 
@@ -1505,9 +1505,17 @@ Agent starts → If .credentials.enc exists → Decrypt → Write files
 
 Internal endpoints (`/api/internal/`) used by the scheduler and agent containers require shared-secret authentication via `X-Internal-Secret` header. Falls back to `SECRET_KEY` if `INTERNAL_API_SECRET` env var is not set.
 
-### WebSocket Security (C-002)
+### WebSocket Security (C-002, #550)
 
-The `/ws` endpoint requires JWT authentication. Token provided via `?token=` query parameter or as first message (`Bearer <token>`, 5s timeout). Unauthenticated connections are rejected. The `/ws/events` endpoint requires MCP API key authentication (unchanged).
+The `/ws` endpoint uses **single-use opaque tickets** instead of a JWT in the URL. Browser flow:
+
+1. Authenticated client `POST /api/ws/ticket` (JWT in `Authorization` header) → backend mints a 32-byte urlsafe ticket, stores it in Redis with a 30s TTL, and returns it.
+2. Client connects to `/ws?ticket=<opaque>`. Backend atomically `GETDEL`s the Redis key (Redis 6.2+) — single-use — resolves it to the authenticated subject, and only then accepts the WebSocket.
+3. Reconnects re-mint a fresh ticket; the JWT never enters the WebSocket URL.
+
+This closes the JWT-leak surface flagged by the April 2026 remediation pentest (finding 3.2.1): nginx access logs, browser history, and upstream proxies no longer see the JWT. CSWSH is mitigated because the ticket endpoint requires the JWT in an `Authorization` header — a malicious page can't mint a ticket on the victim's behalf without an explicit cross-origin request, which CORS rejects. Implementation lives in `services/ws_ticket_service.py` + `routers/ws_tickets.py`.
+
+The `/ws/events` endpoint still uses `?token=trinity_mcp_xxx` (MCP API key) for compatibility with documented external scripts (`websocat`, `wscat`); MCP keys are scoped, named, and revocable so the leak surface is bounded relative to a JWT.
 
 **Reconnect replay (RELIABILITY-003, #306):** Both `/ws` and `/ws/events` accept an optional `?last-event-id=<stream_id>` query param. The value is regex-gated (`^\d+-\d+$`) by `validate_last_event_id()` in `services/event_bus.py` before reaching `XRANGE`; malformed input is ignored (no catchup). Catchup is capped at `REPLAY_GAP_LIMIT=5000` entries — a larger gap returns `{"type": "resync_required", "reason": "gap_too_large"}` instead of an unbounded `XRANGE`. Authorization (`accessible_agents` for `/ws/events`) is re-applied on replay, not just on live fan-out.
 

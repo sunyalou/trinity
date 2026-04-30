@@ -12,6 +12,9 @@
 | Date | ID | Feature | Flow |
 |------|-----|---------|------|
 | 2026-04-29 | #584 | feat(slack): UI + API to change Slack DM-default agent — `set_slack_dm_default()` DB method (single-tx clear-then-set), `PUT /api/agents/{name}/slack/channel/dm-default` (owner-only, audit-logged), "Make default" button + tooltip in `SlackChannelPanel.vue`, unbind refuses 409 when target is DM default with siblings remaining | [slack-channel-routing.md](feature-flows/slack-channel-routing.md) |
+| 2026-04-30 | #598 | sec: AISEC-C2 Layer 2 — restored `.mcp.json` post-deploy editing via structure validation (`services.mcp_validator`). Closed schema, command/transport allowlists, SSRF guard for http/sse, reserved env-ref blocklist, literal-secret detection. 88 unit tests + 22 integration tests. UI placeholder updated; `trinity` server name reserved. | [credential-injection.md](feature-flows/credential-injection.md) |
+| 2026-04-30 | #590 | sec: AISEC-C2 Layer 1 — backend `ALLOWED_CREDENTIAL_PATHS` tightened; backend `update_agent_file_logic` adds defense-in-depth deny check before proxy; agent-server `EDIT_PROTECTED_PATHS` adds `.mcp.json` and `.credentials.enc`. | [credential-injection.md](feature-flows/credential-injection.md), [file-browser.md](feature-flows/file-browser.md) |
+| 2026-04-30 | #364 | Web chat file upload — drag-drop/picker in ChatPanel and PublicChat; base64 JSON encoding; shared upload_service; images via vision blocks, non-images via Docker put_archive | [web-chat-file-upload.md](feature-flows/web-chat-file-upload.md) |
 | 2026-04-27 | #539 | fix: public chat context duplication — `build_public_chat_context()` now called before `add_public_chat_message(role="user")`, preventing current message appearing twice in every agent prompt | [public-agent-links.md](feature-flows/public-agent-links.md) |
 | 2026-04-26 | #428 | CapacityManager facade — single public surface for capacity (admit / release / overflow policy / status / reclaim) replacing ExecutionQueue + SlotService + BacklogService trio | [capacity-management.md](feature-flows/capacity-management.md) |
 | 2026-04-26 | #516, #520 | Agent error classification — `_classify_signal_exit()` (504 for SIGINT/SIGKILL/SIGTERM, was misread as 503 auth) and `_classify_empty_result()` (502 when clean exit drops the final result message, was silent 200 + watchdog reap) | [parallel-headless-execution.md](feature-flows/parallel-headless-execution.md), [task-execution-service.md](feature-flows/task-execution-service.md) |
@@ -311,6 +314,12 @@
 | API Keys Page | [api-keys-page.md](feature-flows/api-keys-page.md) | `/api-keys` page UI flow |
 | Agents Page UI | [agents-page-ui-improvements.md](feature-flows/agents-page-ui-improvements.md) | Horizontal row tiles with success rate bars, filtering, responsive breakpoints |
 | Alerts Page | [alerts-page.md](feature-flows/alerts-page.md) | Removed in #430 (process engine deletion; cost alerts were PE-only) |
+
+### File Management
+
+| Flow | Document | Description |
+|------|----------|-------------|
+| Web Chat File Upload | [web-chat-file-upload.md](feature-flows/web-chat-file-upload.md) | Drag-drop/picker for authenticated and public chat; shared upload_service (#364) |
 
 ### Chat & Sessions
 

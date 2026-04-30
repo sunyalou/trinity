@@ -91,6 +91,7 @@ from routers.users import router as users_router
 from routers.debug import router as debug_router  # #306 soak instrumentation
 from routers.messages import router as messages_router  # Proactive Messaging (#321)
 from routers.webhooks import router as webhooks_router  # Webhook triggers (WEBHOOK-001, #291)
+from routers.ws_tickets import router as ws_tickets_router  # /ws ticket auth (#550)
 
 # Import activity service
 from services.activity_service import activity_service
@@ -746,51 +747,50 @@ app.include_router(event_subscriptions_router)  # Agent Event Subscriptions (EVT
 app.include_router(users_router)  # User Management (ROLE-001)
 app.include_router(debug_router)  # #306 soak dashboard
 app.include_router(webhooks_router)  # Webhook Triggers (WEBHOOK-001, #291)
+app.include_router(ws_tickets_router)  # WebSocket auth tickets (#550)
 
 
 # WebSocket endpoint
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    token: str = Query(default=None),
+    ticket: str = Query(default=None),
     last_event_id: Optional[str] = Query(default=None, alias="last-event-id"),
 ):
     """
     WebSocket endpoint for real-time updates.
 
-    Security (#178, C-002): Authentication is REQUIRED before accepting the
-    connection. The JWT token MUST be provided via query parameter:
-      /ws?token=<jwt_token>
+    Security (#178/C-002 + #550): authentication is REQUIRED before
+    ``websocket.accept()``. Clients first call ``POST /api/ws/ticket``
+    to mint a single-use 30-second opaque ticket, then connect to:
 
-    Connections without a valid token are rejected before websocket.accept()
-    to prevent any unauthenticated data leakage.
+        /ws?ticket=<opaque_ticket>
+
+    Switching from a long-lived JWT in the URL to an opaque single-use
+    ticket closes the JWT-leak surface (nginx logs, browser history,
+    upstream proxies) flagged by the April 2026 remediation pentest
+    (finding 3.2.1) and mitigates CSWSH — a malicious page can't mint
+    a ticket on the victim's behalf because the ticket endpoint requires
+    the JWT in an ``Authorization`` header.
 
     Reconnect replay (#306): clients may pass ``last-event-id=<stream_id>``
     to receive events missed during a disconnect. Malformed or too-old ids
-    produce a ``{"type": "resync_required"}`` message — the client must then
-    fetch current state via REST.
+    produce a ``{"type": "resync_required"}`` message — the client must
+    then fetch current state via REST.
     """
-    from jose import JWTError, jwt as jose_jwt
-    from config import SECRET_KEY, ALGORITHM
     from services.event_bus import validate_last_event_id
+    from services.ws_ticket_service import consume_ticket
 
-    # Reject immediately if no token provided — before accept()
-    if not token:
-        await websocket.close(code=4001, reason="Authentication required: provide ?token=<jwt>")
+    if not ticket:
+        await websocket.close(code=4001, reason="Authentication required: provide ?ticket=<opaque>")
         return
 
-    # Validate token before accepting the connection
-    try:
-        payload = jose_jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username = payload.get("sub")
-        if not username:
-            await websocket.close(code=4001, reason="Invalid token: missing subject")
-            return
-    except JWTError:
-        await websocket.close(code=4001, reason="Invalid authentication token")
+    payload = consume_ticket(ticket)
+    if not payload or not payload.get("sub"):
+        await websocket.close(code=4001, reason="Invalid or expired WebSocket ticket")
         return
 
-    # Token validated — now accept the connection
+    # Ticket validated — now accept the connection
     await manager.connect(websocket, last_event_id=validate_last_event_id(last_event_id))
 
     try:
