@@ -13,8 +13,10 @@ Uses the same execution path as web public chat (EXEC-024) for:
 """
 
 import logging
+import os
 import re
 import time
+import unicodedata
 from typing import List, Optional, Tuple
 from collections import defaultdict
 
@@ -166,6 +168,73 @@ def _format_file_size(size_bytes: int) -> str:
 
 def _sanitize_filename(name: str, file_id: str, used_names: set) -> str:
     return sanitize_filename(name, file_id, used_names)
+
+
+# Filename sanitization (Issue #487)
+_FILENAME_MAX_LENGTH = 200          # POSIX-safe; leaves room for collision suffix
+_FILENAME_SAFE_CHARS_RE = re.compile(r'[^\w.\-()]')  # keep word chars, dot, hyphen, parens
+
+
+def _sanitize_filename(name: str, file_id: str, used_names: set) -> str:
+    """
+    Sanitize a user-supplied filename for safe placement in the agent workspace.
+
+    Steps:
+    1. NFKC unicode normalize — collapses fullwidth/halfwidth and combining
+       sequences so path-traversal sequences encoded with unicode variants
+       can't slip past the basename check.
+    2. ``os.path.basename`` — drop any leading directories.
+    3. Strip non-safe chars to underscores (keep word chars, dot, hyphen, parens).
+    4. Fall back to ``file_{file_id}`` if the result is empty or pure dots/whitespace.
+    5. Truncate to 200 chars preserving the extension.
+    6. De-dupe against ``used_names`` by appending ``-1``, ``-2``, … before the
+       extension on collision.
+
+    The caller is responsible for adding the returned name to ``used_names``.
+    """
+    normalized = unicodedata.normalize("NFKC", name or "")
+    base = os.path.basename(normalized)
+    safe = _FILENAME_SAFE_CHARS_RE.sub('_', base)
+
+    # Reject names that are empty, dot-only/underscore-only, or hidden
+    # dotfiles (`.env`, `.gitignore`, …). Per-session upload dir already
+    # isolates uploads from the agent's own dotfiles, but rejecting hidden
+    # names preserves the existing security posture (#222) and avoids
+    # surprising agents whose Read tool sees a ``.env``-shaped file in
+    # their workspace.
+    stripped = safe.strip('._')
+    if not stripped or safe.startswith('.'):
+        safe = f"file_{file_id}"
+
+    # Truncate to length cap, preserving extension where possible.
+    if len(safe) > _FILENAME_MAX_LENGTH:
+        stem, dot, ext = safe.rpartition('.')
+        if dot and len(ext) <= 16:
+            keep = _FILENAME_MAX_LENGTH - len(ext) - 1
+            safe = f"{stem[:keep]}.{ext}"
+        else:
+            safe = safe[:_FILENAME_MAX_LENGTH]
+
+    # Collision dedup: append -1, -2, … before the extension.
+    if safe in used_names:
+        stem, dot, ext = safe.rpartition('.')
+        if not dot:
+            stem, ext = safe, ""
+        suffix_n = 1
+        while True:
+            suffix = f"-{suffix_n}"
+            candidate_stem = stem
+            # Trim stem so candidate stays within length cap.
+            max_stem = _FILENAME_MAX_LENGTH - len(suffix) - (len(ext) + 1 if ext else 0)
+            if len(candidate_stem) > max_stem:
+                candidate_stem = candidate_stem[:max_stem]
+            candidate = f"{candidate_stem}{suffix}.{ext}" if ext else f"{candidate_stem}{suffix}"
+            if candidate not in used_names:
+                safe = candidate
+                break
+            suffix_n += 1
+
+    return safe
 
 
 class ChannelMessageRouter:
