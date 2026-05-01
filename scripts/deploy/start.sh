@@ -36,6 +36,26 @@ if ! docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "trinity-agent-
     echo ""
 fi
 
+# Detect stale platform images (#557): rebuild services whose Dockerfile or
+# pinned dependency files have been modified after the current image was
+# built. Without this, source-only pulls that add new Python/Node deps fail
+# at startup with `ModuleNotFoundError` while compose keeps respawning the
+# crash-looping worker — and `up -d` reports success.
+if command -v python3 >/dev/null 2>&1; then
+    echo "Checking for stale platform images..."
+    STALE_SERVICES=$(python3 scripts/deploy/_check_stale_images.py)
+    if [ -n "$STALE_SERVICES" ]; then
+        echo ""
+        echo "Rebuilding stale platform images: $(echo $STALE_SERVICES | tr '\n' ' ')"
+        # shellcheck disable=SC2086
+        docker compose build $STALE_SERVICES
+        echo ""
+    fi
+else
+    echo "⚠️  python3 not found on PATH; skipping stale-image detection (#557)."
+    echo "   If services fail to start with import errors, run 'docker compose build' manually."
+fi
+
 echo "Starting services..."
 docker compose up -d
 

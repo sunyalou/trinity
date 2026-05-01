@@ -24,6 +24,8 @@ cp .env.example .env
 ./scripts/deploy/build-base-image.sh
 
 # 4. Start all services
+# (auto-rebuilds platform images whose Dockerfile or pinned deps changed since
+#  the last build — see "Stale-image detection" below)
 ./scripts/deploy/start.sh
 
 # 5. Access the platform
@@ -156,6 +158,17 @@ docker logs agent-myagent
 **Agent creation fails**
 - Check if `trinity-agent-base` image exists: `docker images | grep trinity-agent-base`
 - Rebuild: `./scripts/deploy/build-base-image.sh`
+
+**Stale platform images after a `git pull`**
+`start.sh` runs `scripts/deploy/_check_stale_images.py` before bringing
+services up. It compares each platform image's creation time against the
+mtime of its Dockerfile and pinned dependency files
+(`requirements.txt`, `package.json`, `package-lock.json`); any service
+whose tracked files are newer than its image is rebuilt automatically.
+If you see a `ModuleNotFoundError` on startup despite `up -d` reporting
+success, it means the detector couldn't run (Python 3 missing on PATH)
+— rebuild manually with `docker compose build <service>` and re-run
+`start.sh`.
 
 **Redis connection errors**
 - Ensure Redis is running: `docker compose ps redis`
