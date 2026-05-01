@@ -28,8 +28,9 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 import threading
-from typing import Optional
+from typing import IO, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,93 @@ def safe_close_pipes(process: subprocess.Popen) -> None:
             pass
 
 
+def _kill_pipe_write_holders(pipes: Iterable[Optional[IO]]) -> int:
+    """SIGKILL processes holding the write end of any of ``pipes`` open.
+
+    Issue #548: Async Stop hooks (Claude Code's ``async: true`` Stop hooks)
+    and some MCP launchers spawn detached children via ``setsid()``. Those
+    children land in a brand-new session/process-group, invisible to
+    ``killpg(pgid, ...)`` — so the prior ``terminate_process_group()`` does
+    not reach them. They keep our stdout/stderr write-ends open and the
+    reader's ``readline()`` never sees EOF.
+
+    Recovery: enumerate ``/proc/*/fd``, find any process (other than self)
+    holding a writable handle to a pipe whose inode matches one of ours,
+    and SIGKILL it. Inode keying makes this race-safe across concurrent
+    executions in the same container — every ``Popen`` allocates a fresh
+    pipe with a unique inode, so we only ever kill writers of the specific
+    stuck execution's pipes.
+
+    Linux only (depends on ``/proc``). Returns the number of processes
+    killed; returns 0 silently on macOS/Windows or if nothing is found.
+    """
+    if not sys.platform.startswith("linux"):
+        return 0
+
+    inodes: set[str] = set()
+    for pipe in pipes:
+        if pipe is None:
+            continue
+        try:
+            if getattr(pipe, "closed", False):
+                continue
+            ino = os.fstat(pipe.fileno()).st_ino
+        except (OSError, ValueError):
+            continue
+        inodes.add(f"pipe:[{ino}]")
+
+    if not inodes:
+        return 0
+
+    try:
+        pid_entries = os.listdir("/proc")
+    except OSError:
+        return 0
+
+    our_pid = os.getpid()
+    killed = 0
+    for entry in pid_entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == our_pid:
+            continue
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            fd_names = os.listdir(fd_dir)
+        except OSError:
+            continue  # process exited mid-scan or no permission
+
+        for fd_name in fd_names:
+            try:
+                target = os.readlink(f"{fd_dir}/{fd_name}")
+            except OSError:
+                continue
+            if target not in inodes:
+                continue
+
+            access_mode = None
+            try:
+                with open(f"/proc/{pid}/fdinfo/{fd_name}") as fh:
+                    for line in fh:
+                        if line.startswith("flags:"):
+                            access_mode = int(line.split()[1], 8) & 0o3
+                            break
+            except OSError:
+                continue
+            if not access_mode:  # 0 == O_RDONLY (the reader); skip
+                continue
+
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed += 1
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            break  # one match per process is enough
+
+    return killed
+
+
 def drain_reader_threads(
     process: subprocess.Popen,
     *threads: Optional[threading.Thread],
@@ -174,6 +262,18 @@ def drain_reader_threads(
         process.pid, len(stuck), post_kill_grace,
     )
     terminate_process_group(process, graceful_timeout=1, pgid=pgid)
+
+    # Issue #548: catch setsid() escapees that the group kill missed
+    # (e.g. ssh spawned by git-push from an async Stop hook). They live in
+    # their own session, invisible to killpg, and keep our pipe write-end
+    # open. SIGKILL them by inode match so the kernel can EOF the read end.
+    escapees_killed = _kill_pipe_write_holders((process.stdout, process.stderr))
+    if escapees_killed:
+        logger.warning(
+            "[Subprocess] Killed %d setsid-escapee process(es) holding pipe "
+            "write-end after group kill (pid=%s)",
+            escapees_killed, process.pid,
+        )
 
     # Grandchildren are gone → kernel will EOF the pipe as the last write
     # FD is reaped → reader's readline() returns '' once it drains the

@@ -38,6 +38,7 @@ if _agent_utils_path not in sys.path:
 
 import subprocess_pgroup  # noqa: E402
 from subprocess_pgroup import (  # noqa: E402
+    _kill_pipe_write_holders,
     capture_pgid,
     drain_reader_threads,
     safe_close_pipes,
@@ -389,6 +390,148 @@ sys.exit(0)
                 terminate_process_group(proc, graceful_timeout=1, pgid=pgid)
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Issue #548: setsid() escapees that survive the process-group kill.
+# ---------------------------------------------------------------------------
+
+# Parent forks a grandchild that immediately calls setsid() — it leaves the
+# parent's session/process-group entirely. The grandchild keeps stdout open
+# (heartbeats) and the parent exits. killpg(pgid) does NOT reach the
+# grandchild because it now belongs to its own process group, exactly like
+# `ssh` spawned by `git push` from an async Stop hook.
+_HARNESS_SCRIPT_SETSID_ESCAPE = r"""
+import os
+import sys
+import time
+
+sys.stdin.readline()
+
+pid = os.fork()
+if pid == 0:
+    # Grandchild: detach into a new session/process-group — invisible to
+    # the parent's killpg().
+    os.setsid()
+    try:
+        for _ in range(600):  # up to 60s of heartbeats
+            sys.stdout.write("hb\n")
+            sys.stdout.flush()
+            time.sleep(0.1)
+    finally:
+        try:
+            sys.stdout.close()
+        except Exception:
+            pass
+    os._exit(0)
+
+sys.exit(0)
+"""
+
+
+def _spawn_setsid_escape_harness() -> subprocess.Popen:
+    return subprocess.Popen(
+        [sys.executable, "-u", "-c", _HARNESS_SCRIPT_SETSID_ESCAPE],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="/proc-based pipe-writer scan is Linux-only",
+)
+class TestKillPipeWriteHolders:
+    """Issue #548: catch processes that escaped the group via setsid()."""
+
+    def test_kills_setsid_escapee_holding_pipe(self):
+        """drain_reader_threads must reach a grandchild that setsid()'d
+        out of the process group and is keeping stdout open.
+
+        Without _kill_pipe_write_holders, drain would wait the full
+        post_kill_grace then force-close (losing buffered data). With it,
+        the kernel EOFs the pipe within milliseconds and the reader
+        unwinds naturally.
+        """
+        proc = _spawn_setsid_escape_harness()
+        pgid = capture_pgid(proc)
+        assert pgid is not None
+
+        captured: list[str] = []
+
+        def read_stdout():
+            assert proc.stdout is not None
+            try:
+                for line in iter(proc.stdout.readline, ""):
+                    if not line:
+                        break
+                    captured.append(line)
+            except (ValueError, OSError):
+                pass
+
+        t = threading.Thread(target=read_stdout, daemon=True)
+        t.start()
+
+        # Trigger the fork+setsid+exit dance.
+        assert proc.stdin is not None
+        proc.stdin.write("go\n")
+        proc.stdin.flush()
+        proc.stdin.close()
+
+        proc.wait(timeout=5)
+        # Confirm grandchild is alive in its OWN session — the parent's
+        # pgid is empty (or already gone), so killpg(pgid) is a no-op for
+        # the grandchild. We give the grandchild a moment to write at
+        # least one heartbeat so we know it's running.
+        time.sleep(0.3)
+        assert t.is_alive(), (
+            "stdout reader should still be running — setsid grandchild "
+            "is holding the pipe open"
+        )
+
+        # Drain. With grace=0 we go straight to the stuck path; the
+        # post_kill_grace gives the helper time to scan /proc and SIGKILL
+        # the escapee, after which the kernel EOFs and the reader exits.
+        start = time.monotonic()
+        drain_reader_threads(proc, t, grace=0, post_kill_grace=4, pgid=pgid)
+        elapsed = time.monotonic() - start
+
+        assert not t.is_alive(), (
+            "reader thread still alive — _kill_pipe_write_holders did not "
+            "reach the setsid escapee"
+        )
+        # If the helper worked, drain finishes well before post_kill_grace.
+        assert elapsed < 3.0, (
+            f"drain took {elapsed:.2f}s — setsid escapee was probably not "
+            "killed; reader unwound only after force-close"
+        )
+
+    def test_returns_zero_on_no_writers(self):
+        """A pipe with only the read end (we own it) yields zero kills."""
+        r_fd, w_fd = os.pipe()
+        os.close(w_fd)  # nobody is writing
+        with os.fdopen(r_fd, "rb") as r:
+            assert _kill_pipe_write_holders([r]) == 0
+
+    def test_handles_none_and_closed_pipes(self):
+        """None/closed entries are skipped silently."""
+        r_fd, w_fd = os.pipe()
+        os.close(r_fd)
+        os.close(w_fd)
+        # Build a closed file object on a closed fd — skip path.
+
+        class ClosedPipe:
+            closed = True
+
+            def fileno(self):
+                raise ValueError("I/O operation on closed file")
+
+        assert _kill_pipe_write_holders([None, ClosedPipe()]) == 0
 
 
 @pytest.mark.unit
