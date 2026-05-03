@@ -12,6 +12,7 @@ Error matrix:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse, RedirectResponse
 
+from config import SITE_PORT
 from database import db
 from routers.auth import get_redis_client
 from routers.public import _get_client_ip, INVALID_LINK_MESSAGE
@@ -28,8 +30,6 @@ from services.platform_audit_service import AuditEventType, platform_audit_servi
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["site"])
-
-SITE_PORT = 3000  # Fixed convention — agent web servers listen on this port (SITE-001)
 
 # Rate limits — two independent buckets to handle DDoS and token enumeration separately
 _RATE_LIMIT_IP = 120       # requests/min per IP (generous — site assets count)
@@ -78,13 +78,12 @@ def _check_site_rate_limit(client_ip: str, link_id: str) -> None:
             (f"site_ip:{client_ip}", _RATE_LIMIT_IP),
             (f"site_token:{link_id}", _RATE_LIMIT_TOKEN),
         ):
-            count = r.get(key)
-            if count and int(count) >= limit:
-                raise HTTPException(status_code=429, detail="Too many requests")
             pipe = r.pipeline()
             pipe.incr(key)
             pipe.expire(key, _RATE_WINDOW)
-            pipe.execute()
+            new_count, _ = pipe.execute()
+            if new_count > limit:
+                raise HTTPException(status_code=429, detail="Too many requests")
     except HTTPException:
         raise
     except Exception as e:
@@ -184,8 +183,8 @@ async def proxy_site(token: str, path: str, request: Request):
                     if k.lower() not in _STRIP_RESPONSE_HEADERS
                 }
 
-                # Fire-and-forget audit log
-                await platform_audit_service.log(
+                # Fire-and-forget audit log — must not delay the streaming response
+                asyncio.create_task(platform_audit_service.log(
                     AuditEventType.SITE_ACCESS,
                     "site_link_visit",
                     source="api",
@@ -197,7 +196,7 @@ async def proxy_site(token: str, path: str, request: Request):
                         "path": f"/{path}",
                         "status_code": upstream_response.status_code,
                     },
-                )
+                ))
 
                 return StreamingResponse(
                     upstream_response.aiter_bytes(),

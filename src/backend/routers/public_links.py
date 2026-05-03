@@ -13,7 +13,7 @@ from models import User
 from database import db, PublicLinkCreate, PublicLinkUpdate, PublicLinkWithUrl
 from dependencies import get_current_user, OwnedAgentByName, CurrentUser
 from services.docker_service import get_agent_container
-from config import FRONTEND_URL
+from config import FRONTEND_URL, SITE_PORT
 from services.settings_service import get_public_chat_url
 
 router = APIRouter(prefix="/api/agents", tags=["public-links"])
@@ -26,9 +26,6 @@ def set_websocket_manager(ws_manager):
     """Set the WebSocket manager for broadcasting events."""
     global manager
     manager = ws_manager
-
-
-SITE_PORT = 3000  # SITE-001: fixed convention for agent web servers
 
 
 def _build_public_url(token: str, link_type: str = "chat") -> str:
