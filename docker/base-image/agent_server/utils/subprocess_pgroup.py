@@ -30,6 +30,7 @@ import signal
 import stat as _stat
 import subprocess
 import threading
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -238,6 +239,7 @@ def drain_reader_threads(
     if not stuck:
         return
 
+    drain_start = time.monotonic()
     logger.warning(
         "[Subprocess] Reader thread(s) still busy after process exit "
         "(pid=%s, stuck_count=%s) — killing process group, then waiting "
@@ -253,39 +255,69 @@ def drain_reader_threads(
     # The orphan keeps the write FD open so the kernel never delivers EOF to
     # our reader.  Killing it releases all its FDs (stdout AND stderr write
     # ends), unblocking both reader threads simultaneously.
+    #
+    # Issue #649: run in a daemon thread with a hard 10-second timeout.
+    # Iterating /proc can block indefinitely when a process is in D state
+    # (uninterruptible sleep), causing the drain to stall for tens of minutes
+    # instead of the expected ~30 seconds.
     if process.stdout is not None and not process.stdout.closed:
         try:
-            orphans = _kill_orphan_pipe_writers(process.stdout.fileno(), pgid)
-            if orphans:
+            stdout_fd = process.stdout.fileno()
+        except Exception:
+            stdout_fd = None
+        if stdout_fd is not None:
+            _orphan_result: list[int] = [0]
+
+            def _run_orphan_killer() -> None:
+                try:
+                    _orphan_result[0] = _kill_orphan_pipe_writers(stdout_fd, pgid)
+                except Exception:
+                    pass  # best-effort; never fail the drain path
+
+            _orphan_thread = threading.Thread(target=_run_orphan_killer, daemon=True)
+            _orphan_thread.start()
+            _orphan_thread.join(timeout=10)
+
+            if _orphan_thread.is_alive():
+                logger.warning(
+                    "[Subprocess] _kill_orphan_pipe_writers still running after "
+                    "10s (pid=%s) — /proc scan may be blocked on a D-state process",
+                    process.pid,
+                )
+            elif _orphan_result[0]:
                 logger.info(
                     "[Subprocess] Killed %s orphan stdout pipe-writer(s) "
                     "outside pgid=%s (pid=%s) — likely npx MCP server(s)",
-                    orphans, pgid, process.pid,
+                    _orphan_result[0], pgid, process.pid,
                 )
-        except Exception:
-            pass  # best-effort; never fail the drain path
 
-    # All writers are now dead → kernel will EOF the pipe once the buffered
-    # tail is consumed → reader's readline() returns '' and the thread exits.
+    # All writers are now dead (or we timed out trying to kill them).
+    # Use wall-clock accounting: subtract time already spent so the caller's
+    # post_kill_grace budget is measured from when the warning fired, not from
+    # after the orphan scan.  If the orphan scan itself consumed more than
+    # post_kill_grace, clamp to 1 second so we still attempt a natural drain.
+    elapsed = time.monotonic() - drain_start
+    join_timeout = max(1.0, post_kill_grace - elapsed)
     for t in stuck:
-        t.join(timeout=post_kill_grace)
+        t.join(timeout=join_timeout)
 
     still_stuck = [t for t in stuck if t.is_alive()]
     if not still_stuck:
         logger.info(
             "[Subprocess] Reader thread(s) drained naturally after "
-            "grandchild termination (pid=%s)",
-            process.pid,
+            "grandchild termination (pid=%s, elapsed=%.1fs)",
+            process.pid, time.monotonic() - drain_start,
         )
         return
 
     # Genuine wedge — reader did not return even after grandchildren died
     # and the kernel should have EOF'd. Force-close and accept data loss.
+    elapsed = time.monotonic() - drain_start
     logger.error(
-        "[Subprocess] Reader thread(s) still stuck after %ss post-kill "
+        "[Subprocess] Reader thread(s) still stuck after %.1fs post-kill "
         "grace — force-closing pipes; some buffered data may be lost "
         "(pid=%s, stuck_count=%s)",
-        post_kill_grace, process.pid, len(still_stuck),
+        elapsed, process.pid, len(still_stuck),
     )
     safe_close_pipes(process)
     for t in still_stuck:
