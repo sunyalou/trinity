@@ -486,6 +486,77 @@ class TestSignalProcessTree:
 
 
 @pytest.mark.unit
+class TestDrainOrphanKillerTimeout:
+    """Issue #649: drain_reader_threads must complete in bounded time even when
+    _kill_orphan_pipe_writers is slow (e.g. blocked on a D-state /proc entry)."""
+
+    def test_drain_bounded_when_orphan_killer_blocks(self, monkeypatch):
+        """Monkeypatch the orphan killer to simulate a blocked /proc scan.
+
+        Without the fix the drain would block for the orphan killer's full
+        sleep duration (100s).  With it, the 10-second daemon-thread cap
+        ensures drain_reader_threads returns in < 20 seconds regardless.
+
+        The reader thread simulates "stuck in processing" (a time.sleep) rather
+        than blocked on I/O, so safe_close_pipes completes without contending
+        on the BufferedReader lock — the scenario that exercises the orphan-
+        killer timeout specifically.
+        """
+        import subprocess_pgroup as spg
+
+        orphan_killer_started = threading.Event()
+
+        def _slow_orphan_killer(fd: int, our_pgid) -> int:
+            orphan_killer_started.set()
+            time.sleep(100)  # simulate /proc scan blocked on D-state process
+            return 0
+
+        monkeypatch.setattr(spg, "_kill_orphan_pipe_writers", _slow_orphan_killer)
+
+        # Process with a stdout pipe (needed so safe_close_pipes has a FD to close
+        # and the orphan-killer branch runs).
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        pgid = capture_pgid(proc)
+        assert pgid is not None
+
+        # Reader that simulates being stuck in long CPU/processing work (not I/O
+        # blocked on the pipe), so safe_close_pipes does not contend on the
+        # BufferedReader lock and can complete without waiting.
+        def slow_processor():
+            time.sleep(120)
+
+        t = threading.Thread(target=slow_processor, daemon=True)
+        t.start()
+
+        try:
+            start = time.monotonic()
+            # grace=0 → immediately enters the stuck-reader path.
+            drain_reader_threads(proc, t, grace=0, post_kill_grace=5, pgid=pgid)
+            elapsed = time.monotonic() - start
+
+            # Orphan killer must have been called.
+            assert orphan_killer_started.is_set(), "_kill_orphan_pipe_writers was not called"
+
+            # Drain must complete within: 10s orphan timeout + 1s join + 2s join + 3s slack.
+            assert elapsed < 20.0, (
+                f"drain took {elapsed:.2f}s — orphan killer 10s cap not enforced"
+            )
+            # Thread is leaked (still sleeping) — that is the expected wedge outcome.
+            # The important assertion is that drain_reader_threads itself returned.
+        finally:
+            try:
+                terminate_process_group(proc, graceful_timeout=1, pgid=pgid)
+            except Exception:
+                pass
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(sys.platform != "linux", reason="_kill_orphan_pipe_writers uses /proc (Linux only)")
 class TestKillOrphanPipeWriters:
     """_kill_orphan_pipe_writers() handles Issue #618: npx MCP servers in a
