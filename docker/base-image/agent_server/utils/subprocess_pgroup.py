@@ -135,6 +135,52 @@ def safe_close_pipes(process: subprocess.Popen) -> None:
             pass
 
 
+def _read_proc_field(pid: int, field: str) -> Optional[str]:
+    """Read a single field from /proc/{pid}/status. Returns None on any error.
+
+    Used by the orphan-killer to capture identity for diagnostics before
+    SIGKILL erases /proc/{pid}.
+    """
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith(f"{field}:"):
+                    parts = line.split(None, 1)
+                    return parts[1].strip() if len(parts) == 2 else ""
+    except OSError:
+        return None
+    return None
+
+
+def _read_proc_cmdline(pid: int, max_len: int = 200) -> str:
+    """Read /proc/{pid}/cmdline as a printable, length-capped string.
+
+    Argv NULs become spaces; missing/permission-denied returns ``"?"``. The
+    length cap protects log lines when an orphan was launched with a huge
+    argv (some npx wrappers expand to a long absolute path). Captured by the
+    orphan-killer before SIGKILL — after the kill, /proc/{pid} is gone.
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            raw = f.read()
+    except OSError:
+        return "?"
+    if not raw:
+        return "?"
+    text = raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+    if len(text) > max_len:
+        text = text[: max_len - 1] + "…"
+    return text
+
+
+# Cap log volume from the orphan-killer. Beyond this many distinct orphan
+# pids per drain, we log a count-only summary line instead of one line per
+# pid — protects the log from flooding when a runaway MCP fan-out leaves
+# dozens of stragglers, while still surfacing the typical 1–3 pid case
+# with full identity. (#640 follow-up to #618.)
+_ORPHAN_LOG_DETAIL_CAP = 10
+
+
 def _kill_orphan_pipe_writers(pipe_read_fd: int, our_pgid: Optional[int]) -> int:
     """Kill any process outside *our_pgid* that holds the same pipe's write end open.
 
@@ -144,8 +190,14 @@ def _kill_orphan_pipe_writers(pipe_read_fd: int, our_pgid: Optional[int]) -> int
     to our reader thread.
 
     We identify the target pipe by its inode (shared by both ends of the pipe)
-    and confirm write access via ``/proc/{pid}/fdinfo/{fd}`` flags.  All errors
-    are silently swallowed — this is best-effort cleanup inside the drain path.
+    and confirm write access via ``/proc/{pid}/fdinfo/{fd}`` flags.
+
+    Diagnostic logging (#640): captures cmdline / ppid / pgid for each orphan
+    *before* SIGKILL and emits one INFO line per pid (capped at
+    ``_ORPHAN_LOG_DETAIL_CAP`` lines, then a count-only summary) so operators
+    can identify the leaking package next time this fires in production. The
+    write-end inode confirmation already happened above; the failures of
+    /proc reads here are tolerated silently — diagnostics are best-effort.
 
     Only meaningful on Linux (requires ``/proc`` filesystem).
 
@@ -196,11 +248,30 @@ def _kill_orphan_pipe_writers(pipe_read_fd: int, our_pgid: Optional[int]) -> int
                     continue
                 flags = int(fdinfo.split("flags:")[1].split()[0], 8)
                 if flags & os.O_ACCMODE:  # O_WRONLY=1 or O_RDWR=2, not O_RDONLY=0
+                    if killed < _ORPHAN_LOG_DETAIL_CAP:
+                        cmdline = _read_proc_cmdline(pid)
+                        ppid = _read_proc_field(pid, "PPid") or "?"
+                        try:
+                            pgid_str = str(os.getpgid(pid))
+                        except OSError:
+                            pgid_str = "?"
+                        logger.info(
+                            "[Subprocess] Orphan pipe-writer SIGKILL: "
+                            "pid=%s ppid=%s pgid=%s cmd=%s",
+                            pid, ppid, pgid_str, cmdline,
+                        )
                     os.kill(pid, signal.SIGKILL)
                     killed += 1
                     break  # no need to inspect other FDs of this pid
             except OSError:
                 continue
+
+    if killed > _ORPHAN_LOG_DETAIL_CAP:
+        logger.info(
+            "[Subprocess] Orphan pipe-writer SIGKILL: %s additional pid(s) "
+            "killed (detail logging capped at %s)",
+            killed - _ORPHAN_LOG_DETAIL_CAP, _ORPHAN_LOG_DETAIL_CAP,
+        )
 
     return killed
 
