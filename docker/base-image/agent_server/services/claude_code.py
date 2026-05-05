@@ -950,16 +950,16 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
                     f"— killing process group"
                 )
                 _terminate_process_group(process, graceful_timeout=5, pgid=process_pgid)
-                _drain_reader_threads(
+                asyncio.run(_drain_reader_threads(
                     process, stdout_thread, stderr_thread,
                     grace=3, pgid=process_pgid,
-                )
+                ))
                 raise
 
-            _drain_reader_threads(
+            asyncio.run(_drain_reader_threads(
                 process, stdout_thread, stderr_thread,
                 grace=5, pgid=process_pgid,
-            )
+            ))
 
             stderr = ''.join(stderr_lines)
             stderr = sanitize_text(stderr) if stderr else stderr
@@ -1743,19 +1743,19 @@ async def execute_headless_task(
                     f"— killing process group"
                 )
                 _terminate_process_group(process, graceful_timeout=5, pgid=process_pgid)
-                _drain_reader_threads(
+                asyncio.run(_drain_reader_threads(
                     process, stdout_thread, stderr_thread,
                     grace=3, pgid=process_pgid,
-                )
+                ))
                 raise
 
             # Subprocess exited. Drain readers — if a hook grandchild still
             # holds a pipe, the helper will close the pipe FDs so the
             # reader threads can exit.
-            _drain_reader_threads(
+            asyncio.run(_drain_reader_threads(
                 process, stdout_thread, stderr_thread,
                 grace=5, pgid=process_pgid,
-            )
+            ))
 
             # Re-raise permission-mode failure captured by stdout thread
             if stdout_exc:

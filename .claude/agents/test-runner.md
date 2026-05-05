@@ -172,6 +172,7 @@ The test suite covers:
 - **Local Deployment** (test_deploy_local.py) - Deploy local agents via MCP (Req 11.2)
 - **Public Links** (test_public_links.py) - Public agent sharing; email verification is driven by agent-level access policy (#311 follow-up, 2026-04-13) (Req 11.3)
 - **Public User Memory** (test_public_user_memory.py) - Per-user persistent memory for email-verified public sessions (MEM-001) [SMOKE]
+- **Site Proxy** (test_site_proxy.py) - Agent website proxy via /site/{token}/{path}; link_type field, URL format, token validation, 502 on no web server, redirect (SITE-001, #633)
 
 ### Operations & Observability
 - **Fleet Operations** (test_ops.py) - Fleet status/health, restart/stop, schedule list/pause/resume, emergency stop, alerts, costs [SLOW]
@@ -233,7 +234,7 @@ The test suite covers:
 
 ## Test Suite Statistics
 
-**Total Tests**: ~2,262 tests across 124 test files
+**Total Tests**: ~2,271 tests across 125 test files
 **Smoke Tests**: ~578 tests (fast, no agent creation)
 **Unit Tests**: ~170 tests (no backend needed, rate limit detection, watchdog logic, context formula, OTel trace logging, file upload, voice transcription, inter-agent timeout, scheduler sync loop, team-share gate, WhatsApp adapter (67), subprocess pgroup (11), empty result classification (13))
 **Core Tests (not slow)**: ~2,112 tests
@@ -265,6 +266,14 @@ Use these thresholds to assess test health (based on **executed** tests, not inc
 - **Warning**: 75-90% pass rate, <5 failures
 - **Critical**: <75% pass rate or >5 failures
 
+## Recent Test Additions (2026-05-05)
+
+| Test File | Description | Tests Added |
+|-----------|-------------|-------------|
+| `unit/test_subprocess_pgroup.py` | #657 — `drain_reader_threads` async refactor: updated all 5 `drain_reader_threads(...)` call sites to `asyncio.run(drain_reader_threads(...))` following the function being converted to `async def`. All 12 existing tests pass. No new tests required — the existing `TestDrainOrphanKillerTimeout.test_drain_bounded_when_orphan_killer_blocks` was already the regression test for the deadlock scenario; after the fix it completes in ~14s instead of 100s. | 0 new, 12 updated call sites |
+
+---
+
 ## Recent Test Additions (2026-05-04)
 
 | Test File | Description | Tests Added |
@@ -274,6 +283,12 @@ Use these thresholds to assess test health (based on **executed** tests, not inc
 **Webhook facade-delegation fix (#647)** — `src/backend/database.py`:
 
 Root cause of all `POST/GET/DELETE /api/agents/{name}/schedules/{id}/webhook` and `POST /api/webhooks/{token}` returning 500 on a live stack since #291 (Nov 2025). WEBHOOK-001 added the four methods to `ScheduleOperations` but never added the matching pass-throughs on the `DatabaseManager` facade — and there's no `__getattr__` proxy. The integration test from PR #643 would have caught it but doesn't run in CI. New unit test runs in any Python (no live stack), would have caught the regression at PR-time.
+
+## Recent Test Additions (2026-05-03)
+
+| Test File | Description | Tests Added |
+|-----------|-------------|-------------|
+| `test_site_proxy.py` | SITE-001 (#633) — agent website proxy: `test_create_chat_link_default_type`, `test_create_site_link` (URL uses `/site/`), `test_create_invalid_link_type_rejected`, `test_list_links_includes_type`, `test_invalid_token_returns_401`, `test_chat_token_rejected_at_site_endpoint`, `test_valid_site_token_502_when_agent_not_running`, `test_disabled_link_returns_401`, `test_root_path_without_trailing_slash_redirects` | 9 new tests |
 
 ---
 

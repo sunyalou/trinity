@@ -24,6 +24,7 @@ unit-tested without loading the rest of ``agent_server``.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import signal
@@ -205,7 +206,7 @@ def _kill_orphan_pipe_writers(pipe_read_fd: int, our_pgid: Optional[int]) -> int
     return killed
 
 
-def drain_reader_threads(
+async def drain_reader_threads(
     process: subprocess.Popen,
     *threads: Optional[threading.Thread],
     grace: int = 5,
@@ -230,10 +231,24 @@ def drain_reader_threads(
     Callers that have already reaped the parent via ``process.wait()``
     must pass ``pgid`` — after reaping, the pid is gone and we'd
     otherwise lose the ability to signal grandchildren.
+
+    This function is ``async`` so every ``t.join()`` runs off the event-loop
+    thread via ``asyncio.to_thread``.  ``asyncio.wait_for`` enforces the
+    deadline at the event-loop level, preventing the asyncio event loop from
+    blocking even when orphan subprocesses consume all available CPUs and
+    starve ordinary OS-level thread timeouts.  Sync callers (e.g. executor
+    thread functions) must wrap this with ``asyncio.run(drain_reader_threads(…))``.
+    Issue #657.
     """
     alive_threads = [t for t in threads if t is not None]
+
+    # Initial grace-period joins — each runs in a worker thread so the event
+    # loop enforces the deadline even under CPU pressure from orphan processes.
     for t in alive_threads:
-        t.join(timeout=grace)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(t.join, grace), timeout=grace + 1)
+        except asyncio.TimeoutError:
+            pass
 
     stuck = [t for t in alive_threads if t.is_alive()]
     if not stuck:
@@ -256,10 +271,10 @@ def drain_reader_threads(
     # our reader.  Killing it releases all its FDs (stdout AND stderr write
     # ends), unblocking both reader threads simultaneously.
     #
-    # Issue #649: run in a daemon thread with a hard 10-second timeout.
-    # Iterating /proc can block indefinitely when a process is in D state
-    # (uninterruptible sleep), causing the drain to stall for tens of minutes
-    # instead of the expected ~30 seconds.
+    # Issue #649 / #657: the /proc scan runs in a daemon thread.  We wait on
+    # a threading.Event (via asyncio.to_thread) rather than joining the thread
+    # directly — event.wait(10) always returns within 10 seconds, so
+    # asyncio.run()'s shutdown_default_executor() never blocks on a slow scan.
     if process.stdout is not None and not process.stdout.closed:
         try:
             stdout_fd = process.stdout.fileno()
@@ -267,18 +282,30 @@ def drain_reader_threads(
             stdout_fd = None
         if stdout_fd is not None:
             _orphan_result: list[int] = [0]
+            _orphan_done = threading.Event()
 
             def _run_orphan_killer() -> None:
                 try:
                     _orphan_result[0] = _kill_orphan_pipe_writers(stdout_fd, pgid)
                 except Exception:
                     pass  # best-effort; never fail the drain path
+                finally:
+                    _orphan_done.set()
 
-            _orphan_thread = threading.Thread(target=_run_orphan_killer, daemon=True)
-            _orphan_thread.start()
-            _orphan_thread.join(timeout=10)
+            threading.Thread(target=_run_orphan_killer, daemon=True).start()
 
-            if _orphan_thread.is_alive():
+            # asyncio.to_thread(event.wait, 10) runs event.wait(10) in the
+            # executor; it always returns within 10s so asyncio.run()
+            # shutdown_default_executor() exits promptly even when the
+            # daemon thread is still scanning /proc.
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(_orphan_done.wait, 10), timeout=11
+                )
+            except asyncio.TimeoutError:
+                pass
+
+            if not _orphan_done.is_set():
                 logger.warning(
                     "[Subprocess] _kill_orphan_pipe_writers still running after "
                     "10s (pid=%s) — /proc scan may be blocked on a D-state process",
@@ -298,8 +325,16 @@ def drain_reader_threads(
     # post_kill_grace, clamp to 1 second so we still attempt a natural drain.
     elapsed = time.monotonic() - drain_start
     join_timeout = max(1.0, post_kill_grace - elapsed)
+
+    # Natural-drain joins — run off the event loop so asyncio.wait_for enforces
+    # the deadline even when the reader thread is blocked by a CPU-heavy orphan.
     for t in stuck:
-        t.join(timeout=join_timeout)
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(t.join, join_timeout), timeout=join_timeout + 1
+            )
+        except asyncio.TimeoutError:
+            pass
 
     still_stuck = [t for t in stuck if t.is_alive()]
     if not still_stuck:
@@ -320,8 +355,12 @@ def drain_reader_threads(
         elapsed, process.pid, len(still_stuck),
     )
     safe_close_pipes(process)
+
     for t in still_stuck:
-        t.join(timeout=2)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(t.join, 2), timeout=3)
+        except asyncio.TimeoutError:
+            pass
 
     leaked = [t for t in still_stuck if t.is_alive()]
     if leaked:
