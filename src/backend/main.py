@@ -704,15 +704,43 @@ async def add_request_id(request: Request, call_next):
 
 
 # Security headers middleware — covers API responses when accessed directly (dev mode)
-# or through nginx proxy. X-Frame-Options is omitted here to avoid conflicting with
-# nginx's SAMEORIGIN value on proxied responses.
+# or through nginx proxy.
+#
+# Issue #549 (UnderDefense pentest 3.4.2): FastAPI responses lacked
+# X-Frame-Options, Cross-Origin-Opener-Policy, and HSTS. The frontend
+# proxy adds those for HTML/asset responses, but API responses shown to
+# tools like Swagger UI / direct curl were unprotected. Add them here so
+# API responses match the frontend baseline. CSP is intentionally NOT
+# set on API responses — they're JSON, not rendered, and a strict CSP
+# can spuriously block legitimate Swagger / docs interactions.
+#
+# HSTS is gated on the connection actually being HTTPS (request scheme
+# or X-Forwarded-Proto from a trusted reverse proxy) so local HTTP dev
+# still works without forcing browsers to upgrade and pin a stale
+# header.
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
     response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+
+    # HSTS only when we know the wire is HTTPS — checking both the
+    # direct scheme and the X-Forwarded-Proto header set by upstream
+    # reverse proxies (uvicorn launched with --proxy-headers honours it).
+    is_https = (
+        request.url.scheme == "https"
+        or request.headers.get("x-forwarded-proto", "").lower() == "https"
+    )
+    if is_https:
+        # 1 year, includeSubDomains. preload intentionally omitted —
+        # opting in is a one-way commitment that ops should make
+        # explicitly via the load balancer rather than at the app.
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
     return response
 
 
