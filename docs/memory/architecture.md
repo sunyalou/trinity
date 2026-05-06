@@ -211,7 +211,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 
 *Slack:*
 - `slack_adapter.py` - Slack adapter: DMs, @mentions, thread replies, agent identity via `chat:write.customize`
-- `transports/slack_socket.py` - Socket Mode transport (WebSocket, auto-reconnect, default)
+- `transports/slack_socket.py` - Socket Mode transport: N concurrent WebSockets per `SLACK_SOCKET_CONNECTION_COUNT` env var (default 2, range 1–10), per-client watchdog, envelope-ID dedup ring against possible cross-connection duplicate delivery (#244)
 - `transports/slack_webhook.py` - HTTP webhook transport (fallback for production)
 
 *Telegram:*
