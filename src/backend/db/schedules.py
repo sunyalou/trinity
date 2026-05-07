@@ -101,7 +101,10 @@ class ScheduleOperations:
             # Validation configuration (VALIDATE-001)
             validation_enabled=bool(row["validation_enabled"]) if "validation_enabled" in row_keys and row["validation_enabled"] is not None else False,
             validation_prompt=row["validation_prompt"] if "validation_prompt" in row_keys else None,
-            validation_timeout_seconds=row["validation_timeout_seconds"] if "validation_timeout_seconds" in row_keys and row["validation_timeout_seconds"] is not None else 120
+            validation_timeout_seconds=row["validation_timeout_seconds"] if "validation_timeout_seconds" in row_keys and row["validation_timeout_seconds"] is not None else 120,
+            # Webhook trigger (WEBHOOK-001 / #647 follow-up)
+            webhook_enabled=bool(row["webhook_enabled"]) if "webhook_enabled" in row_keys and row["webhook_enabled"] is not None else False,
+            webhook_token=row["webhook_token"] if "webhook_token" in row_keys else None,
         )
 
     @staticmethod

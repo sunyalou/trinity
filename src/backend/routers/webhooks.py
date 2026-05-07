@@ -329,12 +329,15 @@ async def trigger_webhook(
             detail="Scheduler service unavailable — try again later",
         )
 
-    # Audit trail (SEC-001)
+    # Audit trail (SEC-001). Webhook callers are unauthenticated — the URL
+    # token IS the credential — so no actor_user / actor_agent_name. The
+    # service derives actor_type internally; passing it explicitly is a
+    # TypeError (#647 follow-up). Caller IP is the only attributable signal.
     await platform_audit_service.log(
         event_type=AuditEventType.EXECUTION,
         event_action="task_triggered",
         source="api",
-        actor_type="system",
+        actor_ip=caller_ip,
         target_type="agent",
         target_id=schedule.agent_name,
         endpoint=f"/api/webhooks/{webhook_token[:8]}…",
