@@ -27,7 +27,7 @@ psutil>=6.1.0
 aiofiles>=24.1.0
 python-magic>=0.4.27
 slack_sdk[socket-mode]>=3.41.0
-slackify-markdown
+slackify-markdown>=0.2.0
 twilio>=9.10.0
 Pillow>=11.1.0
 tenacity>=9.0.0
