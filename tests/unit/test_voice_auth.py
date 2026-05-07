@@ -83,16 +83,15 @@ def _stub_voice_service():
         def __init__(self):
             self._sessions: dict = {}
             self.is_available = MagicMock(return_value=True)
-            self.create_session = MagicMock()
+            self.create_session = AsyncMock()
             self.connect_and_stream = AsyncMock()
             self.send_audio = AsyncMock()
-            self.remove_session = MagicMock(side_effect=lambda sid: self._sessions.pop(sid, None))
+            # get_session and remove_session are now async (fix for #704)
+            self.remove_session = AsyncMock(side_effect=lambda sid: self._sessions.pop(sid, None))
+            self.get_session = AsyncMock(side_effect=lambda sid: self._sessions.get(sid))
 
         def add(self, session):
             self._sessions[session.session_id] = session
-
-        def get_session(self, sid):
-            return self._sessions.get(sid)
 
         async def end_session(self, sid):
             return self._sessions.get(sid)
@@ -380,3 +379,43 @@ class TestVoicePanelAuth:
             current_user=_FakeUser(99, role="admin"),
         ))
         assert result["type"] == "html"
+
+
+# ── Audit attribution tests (#705) ──────────────────────────────────────────
+
+class TestVoiceAuditAttribution:
+    """
+    Tests that on_tool_call uses actor_user= (SimpleNamespace) not the legacy
+    actor_type/actor_id/actor_email kwargs that caused TypeError (fix for #705).
+    """
+
+    def test_on_tool_call_audit_uses_actor_user_not_legacy_kwargs(self):
+        """
+        Fix #705: the on_tool_call closure inside voice_websocket must pass
+        actor_user= to audit.log(), not the legacy actor_type=/actor_id=/actor_email=
+        kwargs that caused a TypeError and silently suppressed audit records.
+
+        Tests the source directly — the regression was a kwargs mismatch; source
+        inspection is the most reliable check and avoids async scheduling complexity.
+        """
+        import inspect
+        source = inspect.getsource(voice_router.voice_websocket)
+
+        # Must NOT contain the legacy invalid kwargs
+        assert "actor_type=" not in source, (
+            "Legacy actor_type= kwarg found in voice_websocket — this causes TypeError (#705)"
+        )
+        assert "actor_id=" not in source, (
+            "Legacy actor_id= kwarg found in voice_websocket — this causes TypeError (#705)"
+        )
+        assert "actor_email=" not in source, (
+            "Legacy actor_email= kwarg found in voice_websocket — this causes TypeError (#705)"
+        )
+
+        # Must use the correct actor_user= kwarg
+        assert "actor_user=" in source, (
+            "actor_user= is missing from audit.log() call in voice_websocket"
+        )
+        assert "SimpleNamespace" in source, (
+            "SimpleNamespace wrapper is missing from actor_user= in voice_websocket"
+        )

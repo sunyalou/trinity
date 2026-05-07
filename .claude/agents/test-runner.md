@@ -205,6 +205,8 @@ The test suite covers:
 - **Web Terminal** (test_web_terminal.py) - WebSocket terminal sessions
 - **Execution Streaming** (test_execution_streaming.py) - SSE streaming for execution logs
 - **Trinity Connect** (test_trinity_connect.py) - [NOT YET IMPLEMENTED] /ws/events endpoint, MCP key auth, filtered event broadcasts (Req SYNC-001)
+- **Voice Tool Execution** (unit/test_voice_tools.py) - `_execute_tool`, `_execute_and_respond`, tool declarations, panel tools (show_markdown/update_panel/append_to_panel/clear_panel), 512KB content cap, routing guard, session cancellation [UNIT] (19 tests)
+- **Voice Auth & Panel Ownership** (unit/test_voice_auth.py) - WS ownership gate (no-token/invalid-token/unknown-session/wrong-user/owner/admin), voice_stop auth, GET /panel ownership (missing-session/owner/wrong-agent/wrong-user/admin) [UNIT] (18 tests)
 
 ### Direct Agent Tests
 - **Agent Server Direct** (agent_server/) - Direct agent server tests [SKIPPED unless TEST_AGENT_NAME set]
@@ -234,10 +236,10 @@ The test suite covers:
 
 ## Test Suite Statistics
 
-**Total Tests**: ~2,271 tests across 125 test files
+**Total Tests**: ~2,283 tests across 125 test files
 **Smoke Tests**: ~578 tests (fast, no agent creation)
-**Unit Tests**: ~170 tests (no backend needed, rate limit detection, watchdog logic, context formula, OTel trace logging, file upload, voice transcription, inter-agent timeout, scheduler sync loop, team-share gate, WhatsApp adapter (67), subprocess pgroup (11), empty result classification (13))
-**Core Tests (not slow)**: ~2,112 tests
+**Unit Tests**: ~190 tests (no backend needed, rate limit detection, watchdog logic, context formula, OTel trace logging, file upload, voice transcription, voice tools+auth (45: 26 tools + 19 auth), inter-agent timeout, scheduler sync loop, team-share gate, WhatsApp adapter (67), subprocess pgroup (11), empty result classification (13))
+**Core Tests (not slow)**: ~2,124 tests
 **Slow Tests**: ~99 tests (chat execution, fleet ops, system agent ops, execution termination, WhatsApp live-backend integration)
 **WebSocket Tests**: ~10 tests (web terminal, execution streaming)
 
@@ -265,6 +267,30 @@ Use these thresholds to assess test health (based on **executed** tests, not inc
 - **Healthy**: >90% pass rate, 0 critical failures
 - **Warning**: 75-90% pass rate, <5 failures
 - **Critical**: <75% pass rate or >5 failures
+
+## Recent Test Additions (2026-05-07)
+
+| Test File | Description | Tests Added |
+|-----------|-------------|-------------|
+| `unit/test_voice_tools.py` | Voice Redis cross-worker fix (#704) — `TestRedisSessionFallback`: in-memory hit skips Redis, cross-worker Redis fallback reconstructs session, Redis miss returns None, Redis error degrades gracefully, remove_session deletes Redis key, create_session writes metadata with correct TTL, create_session Redis failure raises + clears memory; `REDIS_URL` added to config stub | +7 tests (file total 26) |
+| `unit/test_voice_auth.py` | Voice audit attribution fix (#705) — `TestVoiceAuditAttribution`: source-inspect regression guard verifying `actor_user=SimpleNamespace(...)` and absence of legacy `actor_type=`/`actor_id=`/`actor_email=` kwargs; `_FakeVoiceService` updated to use `AsyncMock` for `get_session`, `remove_session`, `create_session` (now async) | +1 test (file total 19) |
+| `unit/test_voice_tools.py` | Voice workspace (#699) — `TestExecutePanelTool`: all 4 panel tool handlers (`show_markdown`, `update_panel`, `append_to_panel`, `clear_panel`), 512 KB content cap on `append_to_panel`, routing guard (panel tools must not reach `_execute_tool`); config stub extended with `SECRET_KEY`, `ALGORITHM`, `VOICE_ENABLED` for cross-session stability | +7 tests (file total 19) |
+| `unit/test_voice_auth.py` | Voice workspace (#699) — `TestVoicePanelAuth`: missing session → 200 empty state (no 404 during teardown), owner access, wrong-agent 403, wrong-user 403, admin bypass; `_FakeVoiceSession` extended with `panel_state`; stub extended with `WORKSPACE_PANEL_INSTRUCTIONS` | +5 tests (file total 18) |
+
+**Voice Workspace Panel Tests (#699)** — panel tool execution and endpoint auth:
+
+Panel tools (`show_markdown`, `update_panel`, `append_to_panel`, `clear_panel`) are executed in-process via `_execute_panel_tool()` without touching the agent container. Key behaviors tested:
+- Each handler sets `panel_state["type"]` and `"content"` correctly
+- `append_to_panel` accumulates content and caps at `_PANEL_CONTENT_MAX = 524_288` (512 KB), keeping the tail
+- The `_execute_and_respond` routing guard verifies panel tools never reach `_execute_tool` (the agent container call)
+- `GET /panel` returns empty state (200, not 404) for a non-existent `session_id` — avoids poll errors during the teardown window when the session has just been removed
+- Ownership checks: `session.agent_name != name` → 403; `session.user_id != current_user.id` → 403; admin role bypasses ownership
+
+Run via: `pytest tests/unit/test_voice_tools.py tests/unit/test_voice_auth.py -v` (must run in this order — auth file depends on config stub from tools file).
+
+**Known cross-session collision (pre-existing, not introduced by #699)**: the 3 tests `TestToolDeclaration::test_run_task_declared`, `test_prompt_required`, `TestExecuteAndRespond::test_timeout_sends_error_response` fail when both files run together. Root cause: `test_voice_auth.py` replaces `sys.modules["services.gemini_voice"]` with a minimal stub during collection, dropping `_RUN_TASK_TOOL` and `asyncio` from the already-imported module. The 34 remaining tests all pass. New panel tests (7 + 5) all pass regardless.
+
+---
 
 ## Recent Test Additions (2026-05-05)
 

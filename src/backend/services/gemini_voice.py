@@ -10,6 +10,7 @@ Architecture:
 """
 
 import asyncio
+import json
 import logging
 import secrets
 from dataclasses import dataclass, field
@@ -19,7 +20,7 @@ from typing import Optional, Callable, Awaitable
 from google import genai
 from google.genai import types as genai_types
 
-from config import GEMINI_API_KEY, VOICE_MODEL, VOICE_MAX_DURATION
+from config import GEMINI_API_KEY, VOICE_MODEL, VOICE_MAX_DURATION, REDIS_URL
 
 logger = logging.getLogger(__name__)
 
@@ -168,12 +169,22 @@ class VoiceSession:
     _on_tool_result: Optional[Callable] = field(default=None, repr=False)  # (name, result) → None
 
 
+_REDIS_SESSION_TTL = VOICE_MAX_DURATION + 60  # grace buffer beyond max session length
+
+
 class GeminiVoiceService:
     """Manages Gemini Live API voice sessions."""
 
     def __init__(self):
         self._client: Optional[genai.Client] = None
         self._sessions: dict[str, VoiceSession] = {}
+        self._redis = None  # lazy-init async Redis client
+
+    async def _get_redis(self):
+        if self._redis is None:
+            import redis.asyncio as aioredis
+            self._redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+        return self._redis
 
     def is_available(self) -> bool:
         """Check if Gemini voice is configured."""
@@ -187,7 +198,7 @@ class GeminiVoiceService:
             self._client = genai.Client(api_key=GEMINI_API_KEY)
         return self._client
 
-    def create_session(
+    async def create_session(
         self,
         agent_name: str,
         chat_session_id: str,
@@ -210,6 +221,28 @@ class GeminiVoiceService:
             workspace_mode=workspace_mode,
         )
         self._sessions[session_id] = session
+
+        # Persist metadata to Redis so any Uvicorn worker can validate the session.
+        # The active streaming state (Gemini connection, asyncio tasks) stays in-process.
+        metadata = {
+            "session_id": session_id,
+            "agent_name": agent_name,
+            "chat_session_id": chat_session_id,
+            "user_id": user_id,
+            "user_email": user_email,
+            "voice_name": voice_name,
+            "workspace_mode": workspace_mode,
+            "system_prompt": system_prompt,
+        }
+        try:
+            r = await self._get_redis()
+            await r.setex(f"voice_session:{session_id}", _REDIS_SESSION_TTL, json.dumps(metadata))
+        except Exception as e:
+            # Fail loudly: better to 500 at /voice/start than issue a session_id
+            # that will intermittently 403 when the WebSocket lands on another worker.
+            self._sessions.pop(session_id, None)
+            raise RuntimeError(f"Failed to persist voice session metadata to Redis: {e}") from e
+
         logger.info(f"Voice session created: {session_id} for agent {agent_name}")
         return session
 
@@ -534,13 +567,50 @@ class GeminiVoiceService:
         logger.info(f"Voice session {session_id} ended")
         return session
 
-    def get_session(self, session_id: str) -> Optional[VoiceSession]:
-        """Get a voice session by ID."""
-        return self._sessions.get(session_id)
+    async def get_session(self, session_id: str) -> Optional[VoiceSession]:
+        """Get a voice session by ID.
 
-    def remove_session(self, session_id: str):
-        """Remove a session from tracking."""
+        Checks in-process memory first. If not found (cross-worker scenario),
+        falls back to Redis metadata and reconstructs a VoiceSession so the
+        WebSocket handler on any worker can validate ownership and stream.
+        """
+        session = self._sessions.get(session_id)
+        if session is not None:
+            return session
+
+        # Cross-worker fallback: reconstruct from Redis metadata
+        try:
+            r = await self._get_redis()
+            raw = await r.get(f"voice_session:{session_id}")
+            if not raw:
+                return None
+            meta = json.loads(raw)
+        except Exception as e:
+            logger.warning(f"Redis fallback failed for voice session {session_id}: {e}")
+            return None
+
+        session = VoiceSession(
+            session_id=meta["session_id"],
+            agent_name=meta["agent_name"],
+            chat_session_id=meta["chat_session_id"],
+            user_id=meta["user_id"],
+            user_email=meta["user_email"],
+            system_prompt=meta["system_prompt"],
+            voice_name=meta.get("voice_name", "Kore"),
+            workspace_mode=meta.get("workspace_mode", False),
+        )
+        self._sessions[session_id] = session
+        logger.info(f"Voice session {session_id} reconstructed from Redis on worker")
+        return session
+
+    async def remove_session(self, session_id: str):
+        """Remove a session from tracking and clean up Redis metadata."""
         self._sessions.pop(session_id, None)
+        try:
+            r = await self._get_redis()
+            await r.delete(f"voice_session:{session_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete voice session Redis key {session_id}: {e}")
 
 
 # Singleton

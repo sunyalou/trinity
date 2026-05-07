@@ -199,6 +199,28 @@ Button hidden entirely when `voiceAvailable=false`.
 | Method | Truncation of last N messages injected into system prompt |
 | Fallback | Voice system prompt alone if no prior messages |
 
+### VOICE-009: Multi-Worker Session Reliability (#704)
+
+**Status**: ✅ Implemented (2026-05-07)
+
+Uvicorn runs `--workers 2` in production. HTTP requests (REST `/voice/start`, `/voice/stop`) and WebSocket connections round-robin across OS processes. Without a cross-worker session store, the WebSocket worker would have an empty `_sessions` dict and reject with 403.
+
+**Fix: Redis dual-write pattern**
+
+| Layer | Store | Purpose |
+|-------|-------|---------|
+| In-memory `_sessions` dict | Live state | Gemini connection, asyncio tasks, panel_state (unserializable) |
+| Redis key `voice_session:{id}` | Serializable metadata | Cross-worker auth lookup (agent_name, user_id, user_email, …) |
+
+- `create_session()` (now `async`) writes JSON metadata to Redis with TTL = `VOICE_MAX_DURATION + 60` (360s). If Redis write fails, in-memory state is rolled back and `RuntimeError` is raised — the client gets 500 at `/voice/start` rather than a session ID that will intermittently 403.
+- `get_session()` (now `async`) checks `_sessions` first; on cache miss, falls back to Redis, reconstructs a `VoiceSession` from the stored metadata, and registers it in the worker's `_sessions` for subsequent calls. Redis errors degrade gracefully to `None`.
+- `remove_session()` (now `async`) deletes the Redis key and pops from `_sessions`.
+- `_redis` client is lazy-initialized as `redis.asyncio` (async, non-blocking) reusing the existing platform Redis URL (`config.REDIS_URL`).
+
+**Key implementation:** `src/backend/services/gemini_voice.py` — `_get_redis()`, `_REDIS_SESSION_TTL`, async `create_session`/`get_session`/`remove_session`.
+
+---
+
 ### VOICE-007: Tool Calling (run_task)
 
 **Status**: ✅ Implemented (Phase 3 — shipped early)
@@ -212,7 +234,7 @@ Button hidden entirely when `voiceAvailable=false`.
 | Empty prompt | Falls back to "No prompt" |
 | Session tracking | `_pending_tool_tasks` dict on `VoiceSession`; all cancelled on `end_session()` |
 | WS events | `{type: "tool_call", tool_name: "run_task"}` and `{type: "tool_result", ...}` frames |
-| Audit | Platform audit log written on each tool call via `on_tool_call` callback |
+| Audit | Platform audit log written on each tool call via `on_tool_call` callback; `actor_user=types.SimpleNamespace(id=..., email=...)` pattern (#705 — legacy `actor_type=`/`actor_id=`/`actor_email=` kwargs caused silent TypeError) |
 
 ### VOICE-008: Workspace Mode + Canvas Panel (BETA)
 
@@ -338,8 +360,8 @@ Returns current canvas panel state. Returns empty state (not 404) for non-existe
 | **Frontend** | `src/frontend/src/composables/useVoiceSession.js` | `start(sessionId, voiceName, workspaceMode)` — passes `workspace_mode` to backend |
 | **Frontend** | `src/frontend/src/stores/sessions.js` | `voiceAvailable` state from feature flags |
 | **Frontend** | `src/frontend/src/utils/audio.js` | AudioWorklet-first capture/playback, `getAmplitude()` via `AnalyserNode` |
-| **Tests** | `tests/unit/test_voice_tools.py` | 19 unit tests: tool execution, panel tool handlers, content cap, routing guard |
-| **Tests** | `tests/unit/test_voice_auth.py` | 18 unit tests: WS auth, stop auth, panel ownership (owner/admin/wrong-user/wrong-agent/missing-session) |
+| **Tests** | `tests/unit/test_voice_tools.py` | 26 unit tests: tool execution, panel tool handlers, content cap, routing guard, Redis session fallback (#704) |
+| **Tests** | `tests/unit/test_voice_auth.py` | 19 unit tests: WS auth, stop auth, panel ownership, audit attribution kwargs (#705) |
 
 ---
 
