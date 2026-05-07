@@ -153,7 +153,7 @@ async def get_fleet_status(
 
     # Filter to accessible agents (unless admin)
     if current_user.role != "admin":
-        accessible = get_accessible_agents(current_user.email, all_agent_names)
+        accessible = get_accessible_agents(current_user)
         accessible_names = {a["name"] for a in accessible}
         agent_names = [n for n in all_agent_names if n in accessible_names]
     else:
