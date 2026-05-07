@@ -45,6 +45,20 @@ class _StubChannelTransport:
         pass
 
 
+# Snapshot any real `adapters*` modules currently in sys.modules so we can
+# restore them after this file's collection completes. Without this, the
+# stubs below leak across pytest's session and break later tests that
+# actually need the real `adapters.message_router`, `adapters.base`,
+# `adapters.telegram_adapter`, etc. (#660 — root cause of test_file_upload
+# cascade in the full unit suite).
+_SHADOWED_NAMES = (
+    "adapters",
+    "adapters.transports",
+    "adapters.transports.base",
+    "adapters.transports.slack_socket",
+)
+_REAL_MODULES = {name: sys.modules.get(name) for name in _SHADOWED_NAMES}
+
 # Insert stubs before importing the module under test
 _adapters = types.ModuleType("adapters")
 _transports = types.ModuleType("adapters.transports")
@@ -75,6 +89,23 @@ _spec = importlib.util.spec_from_file_location(
 _mod = importlib.util.module_from_spec(_spec)
 sys.modules["adapters.transports.slack_socket"] = _mod
 _spec.loader.exec_module(_mod)
+
+# Restore (or remove) the real `adapters*` modules immediately after
+# slack_socket has been loaded. The slack_socket module already resolved its
+# `ChannelTransport` base class during exec, so restoring sys.modules now
+# does NOT affect this file's tests but keeps the rest of the pytest session
+# clean — without this, later collected modules (e.g. test_file_upload,
+# test_telegram_voice) see the stubbed `adapters` and `from adapters.X import
+# Y` raises ImportError. (#660)
+for _name in _SHADOWED_NAMES:
+    _real = _REAL_MODULES.get(_name)
+    if _real is not None:
+        sys.modules[_name] = _real
+    else:
+        sys.modules.pop(_name, None)
+# slack_socket itself can stay in sys.modules under its real name so other
+# tests that lazy-import it pick up our test instance.
+sys.modules["adapters.transports.slack_socket"] = _mod
 
 SlackSocketTransport = _mod.SlackSocketTransport
 WATCHDOG_INTERVAL_SECONDS = _mod.WATCHDOG_INTERVAL_SECONDS

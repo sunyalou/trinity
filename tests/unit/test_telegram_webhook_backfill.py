@@ -31,6 +31,7 @@ _STUBBED_MODULE_NAMES = [
     "dependencies",
     "services",
     "services.settings_service",
+    "services.platform_audit_service",
     "adapters",
     "adapters.transports",
     "adapters.transports.telegram_webhook",
@@ -97,6 +98,12 @@ def _load_settings_module():
     )
 
     _stub("dependencies", get_current_user=MagicMock())
+
+    _stub(
+        "services.platform_audit_service",
+        platform_audit_service=AsyncMock(),
+        AuditEventType=MagicMock(),
+    )
 
     _stub(
         "services.settings_service",
