@@ -77,6 +77,7 @@ def _stub_voice_service():
             self.chat_session_id = "cs_test"
             self.transcript = []
             self._duration_seconds = 0.0
+            self.panel_state = {"type": "empty", "content": "", "title": None, "updated_at": None}
 
     class _FakeVoiceService:
         def __init__(self):
@@ -98,6 +99,7 @@ def _stub_voice_service():
 
     mod.VoiceSession = _FakeVoiceSession
     mod.voice_service = _FakeVoiceService()
+    mod.WORKSPACE_PANEL_INSTRUCTIONS = ""
     sys.modules["services.gemini_voice"] = mod
     return mod.voice_service, _FakeVoiceSession
 
@@ -316,3 +318,65 @@ class TestVoiceStopAuth:
         monkeypatch.setattr(voice_router, "_save_transcript", lambda s: 0)
         result = _run(voice_router.voice_stop(req, name="alice-agent", current_user=_FakeUser(99, role="admin")))
         assert result.messages_saved == 0
+
+
+# ── GET /panel ownership tests ───────────────────────────────────────────────
+
+class TestVoicePanelAuth:
+    """Tests for GET /api/agents/{name}/voice/{session_id}/panel ownership gate."""
+
+    def test_missing_session_returns_empty_state(self, monkeypatch):
+        """Non-existent session_id returns empty state (200), not 404."""
+        result = _run(voice_router.get_voice_panel(
+            session_id="vs_does_not_exist",
+            name="alice-agent",
+            current_user=_FakeUser(1),
+        ))
+        assert result["type"] == "empty"
+        assert result["content"] == ""
+
+    def test_owner_gets_panel_state(self, alice_session, monkeypatch):
+        """Session owner gets the panel state back."""
+        # Inject some panel state on the fake session
+        alice_session.panel_state = {
+            "type": "markdown", "content": "# Hello", "title": None, "updated_at": "ts"
+        }
+        result = _run(voice_router.get_voice_panel(
+            session_id="vs_alice",
+            name="alice-agent",
+            current_user=_FakeUser(1),
+        ))
+        assert result["type"] == "markdown"
+        assert result["content"] == "# Hello"
+
+    def test_wrong_agent_name_403(self, alice_session, monkeypatch):
+        """Session belongs to alice-agent but path says bob-agent — reject."""
+        with pytest.raises(HTTPException) as exc:
+            _run(voice_router.get_voice_panel(
+                session_id="vs_alice",
+                name="bob-agent",
+                current_user=_FakeUser(1),
+            ))
+        assert exc.value.status_code == 403
+
+    def test_other_user_403(self, alice_session, monkeypatch):
+        """Bob cannot read Alice's panel state."""
+        with pytest.raises(HTTPException) as exc:
+            _run(voice_router.get_voice_panel(
+                session_id="vs_alice",
+                name="alice-agent",
+                current_user=_FakeUser(2),
+            ))
+        assert exc.value.status_code == 403
+
+    def test_admin_reads_any_panel(self, alice_session, monkeypatch):
+        """Admin can read any user's panel state."""
+        alice_session.panel_state = {
+            "type": "html", "content": "<b>data</b>", "title": "T", "updated_at": "ts"
+        }
+        result = _run(voice_router.get_voice_panel(
+            session_id="vs_alice",
+            name="alice-agent",
+            current_user=_FakeUser(99, role="admin"),
+        ))
+        assert result["type"] == "html"

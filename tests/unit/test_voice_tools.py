@@ -87,6 +87,10 @@ def _stub_config():
     config_mod.VOICE_MAX_DURATION = 300
     config_mod.DEFAULT_GITHUB_TEMPLATE_REPOS = []
     config_mod.GITHUB_PAT_CREDENTIAL_ID = "github-pat-templates"
+    # Required by dependencies.py when test_voice_auth.py runs in the same session
+    config_mod.SECRET_KEY = "test-secret-key-for-unit-tests"
+    config_mod.ALGORITHM = "HS256"
+    config_mod.VOICE_ENABLED = True
     sys.modules["config"] = config_mod
 
 
@@ -114,7 +118,9 @@ _stub_config()
 _stub_services_package()
 
 # Now we can import the service
-from services.gemini_voice import GeminiVoiceService, VoiceSession, _TOOL_PROMPT_MAX  # noqa: E402
+from services.gemini_voice import (  # noqa: E402
+    GeminiVoiceService, VoiceSession, _TOOL_PROMPT_MAX, _PANEL_CONTENT_MAX,
+)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -331,6 +337,84 @@ class TestToolDeclaration:
         from services.gemini_voice import _RUN_TASK_TOOL
         fd = _RUN_TASK_TOOL.function_declarations[0]
         assert "prompt" in (fd.parameters.required or [])
+
+
+# ── Tests: _execute_panel_tool ────────────────────────────────────────────────
+
+class TestExecutePanelTool:
+    """Tests for in-process panel tool execution (workspace mode canvas)."""
+
+    def test_show_markdown_sets_state(self, svc):
+        session = _make_session()
+        result = svc._execute_panel_tool(session, "show_markdown", {"content": "# Hello"})
+        assert result == "Panel updated."
+        assert session.panel_state["type"] == "markdown"
+        assert session.panel_state["content"] == "# Hello"
+        assert session.panel_state["title"] is None
+        assert session.panel_state["updated_at"] is not None
+
+    def test_show_markdown_with_title(self, svc):
+        session = _make_session()
+        svc._execute_panel_tool(session, "show_markdown", {"content": "body", "title": "My Title"})
+        assert session.panel_state["title"] == "My Title"
+
+    def test_update_panel_sets_html(self, svc):
+        session = _make_session()
+        svc._execute_panel_tool(session, "update_panel", {"html": "<b>bold</b>", "title": "Report"})
+        assert session.panel_state["type"] == "html"
+        assert session.panel_state["content"] == "<b>bold</b>"
+        assert session.panel_state["title"] == "Report"
+
+    def test_append_to_panel_concatenates(self, svc):
+        session = _make_session()
+        session.panel_state = {"type": "html", "content": "A", "title": None, "updated_at": None}
+        svc._execute_panel_tool(session, "append_to_panel", {"html": "B"})
+        assert session.panel_state["content"] == "AB"
+        assert session.panel_state["type"] == "html"
+
+    def test_append_to_panel_caps_at_max(self, svc):
+        session = _make_session()
+        # Pre-fill content just under the limit, then append enough to exceed it
+        session.panel_state = {
+            "type": "html",
+            "content": "x" * (_PANEL_CONTENT_MAX - 10),
+            "title": None,
+            "updated_at": None,
+        }
+        svc._execute_panel_tool(session, "append_to_panel", {"html": "y" * 100})
+        assert len(session.panel_state["content"]) == _PANEL_CONTENT_MAX
+        # The tail of the content should end with the appended "y"s
+        assert session.panel_state["content"].endswith("y" * 10)
+
+    def test_clear_panel_resets_state(self, svc):
+        session = _make_session()
+        session.panel_state = {"type": "html", "content": "old", "title": "t", "updated_at": "ts"}
+        svc._execute_panel_tool(session, "clear_panel", {})
+        assert session.panel_state["type"] == "empty"
+        assert session.panel_state["content"] == ""
+        assert session.panel_state["title"] is None
+
+    def test_panel_tool_routed_not_forwarded_to_agent(self, svc):
+        """Panel tools must not reach _execute_tool (no agent container call)."""
+        session = _make_session()
+        session._active = True
+        gemini_session = MagicMock()
+        gemini_session.send_tool_response = AsyncMock()
+        session._gemini_session = gemini_session
+        session._on_tool_call = None
+        session._on_tool_result = None
+
+        fc = MagicMock()
+        fc.id = "fc_panel"
+        fc.name = "show_markdown"
+        fc.args = {"content": "# Test"}
+
+        with patch.object(svc, "_execute_tool", AsyncMock()) as mock_exec:
+            _run(svc._execute_and_respond(session, "fc_panel", fc))
+            mock_exec.assert_not_awaited()
+
+        assert session.panel_state["type"] == "markdown"
+        gemini_session.send_tool_response.assert_awaited_once()
 
 
 # ── Tests: end_session cancels pending tool tasks ─────────────────────────────

@@ -45,6 +45,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/agents/:name/workspace',
+    name: 'AgentWorkspace',
+    component: () => import('../views/AgentWorkspace.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/agents/:name/executions/:executionId',
     name: 'ExecutionDetail',
     component: () => import('../views/ExecutionDetail.vue'),

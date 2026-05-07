@@ -13,6 +13,7 @@ import asyncio
 import logging
 import secrets
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional, Callable, Awaitable
 
 from google import genai
@@ -28,6 +29,80 @@ OUTPUT_SAMPLE_RATE = 24000  # 24kHz PCM output from Gemini
 
 # Max chars for tool call prompts (prevent injection via very long args)
 _TOOL_PROMPT_MAX = 2000
+# Max bytes stored in panel_state["content"] to bound memory per session
+_PANEL_CONTENT_MAX = 524_288  # 512 KB
+
+_PANEL_TOOL_NAMES = {"show_markdown", "update_panel", "append_to_panel", "clear_panel"}
+
+_PANEL_TOOLS = genai_types.Tool(
+    function_declarations=[
+        genai_types.FunctionDeclaration(
+            name="show_markdown",
+            description=(
+                "Display markdown content in the visual canvas panel visible to the user. "
+                "Use for notes, summaries, analysis, action items, frameworks. "
+                "This is your default panel tool — use it most often."
+            ),
+            parameters=genai_types.Schema(
+                type=genai_types.Type.OBJECT,
+                properties={
+                    "content": genai_types.Schema(type=genai_types.Type.STRING, description="Markdown content to display"),
+                    "title": genai_types.Schema(type=genai_types.Type.STRING, description="Optional panel title"),
+                },
+                required=["content"],
+            ),
+        ),
+        genai_types.FunctionDeclaration(
+            name="update_panel",
+            description="Replace the canvas panel with custom HTML for richer layouts, tables, or structured data.",
+            parameters=genai_types.Schema(
+                type=genai_types.Type.OBJECT,
+                properties={
+                    "html": genai_types.Schema(type=genai_types.Type.STRING, description="HTML content to display"),
+                    "title": genai_types.Schema(type=genai_types.Type.STRING, description="Optional panel title"),
+                },
+                required=["html"],
+            ),
+        ),
+        genai_types.FunctionDeclaration(
+            name="append_to_panel",
+            description="Append HTML to the existing panel without clearing it. Use to build content incrementally.",
+            parameters=genai_types.Schema(
+                type=genai_types.Type.OBJECT,
+                properties={
+                    "html": genai_types.Schema(type=genai_types.Type.STRING, description="HTML to append to the panel"),
+                },
+                required=["html"],
+            ),
+        ),
+        genai_types.FunctionDeclaration(
+            name="clear_panel",
+            description="Clear the canvas panel when moving to a new topic.",
+            parameters=genai_types.Schema(
+                type=genai_types.Type.OBJECT,
+                properties={},
+            ),
+        ),
+    ]
+)
+
+WORKSPACE_PANEL_INSTRUCTIONS = """
+## Visual Canvas
+
+You have a visual canvas panel visible to the user on the right side of the screen. Use it proactively alongside your voice responses.
+
+Panel tools:
+- `show_markdown(content, title?)` — Render markdown. Use most often for notes, summaries, action items, analysis.
+- `update_panel(html, title?)` — Replace panel with HTML for richer layouts.
+- `append_to_panel(html)` — Add to existing panel without clearing.
+- `clear_panel()` — Clear when shifting to a new topic.
+
+Guidelines:
+- The panel is a persistent whiteboard — voice is transient, the panel is the artefact.
+- Use `show_markdown` by default. Reach for `update_panel` only when structure genuinely adds value.
+- Don't mirror every voice response in the panel — use it when structured content helps.
+- Clear when the topic changes significantly.
+"""
 
 # Single tool declaration for all voice sessions
 _RUN_TASK_TOOL = genai_types.Tool(
@@ -72,7 +147,11 @@ class VoiceSession:
     user_email: str
     system_prompt: str
     voice_name: str = "Kore"
+    workspace_mode: bool = False
     transcript: list = field(default_factory=list)
+    panel_state: dict = field(default_factory=lambda: {
+        "type": "empty", "content": "", "title": None, "updated_at": None
+    })
     _gemini_session: object = field(default=None, repr=False)
     _send_task: object = field(default=None, repr=False)
     _receive_task: object = field(default=None, repr=False)
@@ -116,6 +195,7 @@ class GeminiVoiceService:
         user_email: str,
         system_prompt: str,
         voice_name: str = "Kore",
+        workspace_mode: bool = False,
     ) -> VoiceSession:
         """Create a new voice session (does not connect yet)."""
         session_id = f"vs_{secrets.token_urlsafe(16)}"
@@ -127,6 +207,7 @@ class GeminiVoiceService:
             user_email=user_email,
             system_prompt=system_prompt,
             voice_name=voice_name,
+            workspace_mode=workspace_mode,
         )
         self._sessions[session_id] = session
         logger.info(f"Voice session created: {session_id} for agent {agent_name}")
@@ -161,6 +242,10 @@ class GeminiVoiceService:
 
         client = self._get_client()
 
+        tools = [_RUN_TASK_TOOL]
+        if session.workspace_mode:
+            tools.append(_PANEL_TOOLS)
+
         config = genai_types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             system_instruction=session.system_prompt,
@@ -171,7 +256,7 @@ class GeminiVoiceService:
                     )
                 )
             ),
-            tools=[_RUN_TASK_TOOL],
+            tools=tools,
         )
 
         try:
@@ -310,6 +395,39 @@ class GeminiVoiceService:
                 VoiceTranscriptEntry(role="assistant", text=current_assistant_text.strip())
             )
 
+    def _execute_panel_tool(self, session: VoiceSession, tool_name: str, args: dict) -> str:
+        """Handle panel tools in-process (no agent container call)."""
+        now = datetime.now(timezone.utc).isoformat()
+        if tool_name == "show_markdown":
+            session.panel_state = {
+                "type": "markdown",
+                "content": args.get("content", ""),
+                "title": args.get("title"),
+                "updated_at": now,
+            }
+        elif tool_name == "update_panel":
+            session.panel_state = {
+                "type": "html",
+                "content": args.get("html", ""),
+                "title": args.get("title"),
+                "updated_at": now,
+            }
+        elif tool_name == "append_to_panel":
+            combined = session.panel_state.get("content", "") + args.get("html", "")
+            if len(combined) > _PANEL_CONTENT_MAX:
+                combined = combined[-_PANEL_CONTENT_MAX:]
+            session.panel_state = {
+                "type": session.panel_state.get("type", "html"),
+                "content": combined,
+                "title": session.panel_state.get("title"),
+                "updated_at": now,
+            }
+        elif tool_name == "clear_panel":
+            session.panel_state = {
+                "type": "empty", "content": "", "title": None, "updated_at": now,
+            }
+        return "Panel updated."
+
     async def _execute_and_respond(self, session: VoiceSession, call_id: str, fc):
         """Execute a Gemini tool call and send the response back. Runs as a background task."""
         tool_name = getattr(fc, 'name', 'run_task')
@@ -319,10 +437,13 @@ class GeminiVoiceService:
             if session._on_tool_call:
                 await session._on_tool_call(tool_name, args)
 
-            result = await asyncio.wait_for(
-                self._execute_tool(session.agent_name, tool_name, args),
-                timeout=30.0,
-            )
+            if tool_name in _PANEL_TOOL_NAMES:
+                result = self._execute_panel_tool(session, tool_name, args)
+            else:
+                result = await asyncio.wait_for(
+                    self._execute_tool(session.agent_name, tool_name, args),
+                    timeout=30.0,
+                )
         except asyncio.TimeoutError:
             result = "Tool execution timed out after 30 seconds."
             logger.warning(f"Voice tool call timed out: {tool_name} session={session.session_id}")

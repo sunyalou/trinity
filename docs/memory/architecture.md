@@ -518,6 +518,15 @@ picks up on its next poll. (#389 S1a)
 
 **Note**: Route ordering is critical. `/context-stats` and `/autonomy-status` must be defined BEFORE `/{name}` catch-all route to avoid 404 errors.
 
+### Voice (5 endpoints)
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/agents/{name}/voice/start` | Start Gemini Live voice session; accepts `workspace_mode` to enable panel tools |
+| POST | `/api/agents/{name}/voice/stop` | Stop active voice session |
+| GET | `/api/agents/{name}/voice/prompt` | Get per-agent voice system prompt |
+| PUT | `/api/agents/{name}/voice/prompt` | Set per-agent voice system prompt |
+| GET | `/api/agents/{name}/voice/{session_id}/panel` | Canvas panel state for workspace mode (ownership-gated; returns empty state when session gone, #699) |
+
 ### Activities (1 endpoint)
 | Method | Path | Description |
 |--------|------|-------------|
@@ -714,7 +723,7 @@ Rate limiting: dual-bucket (120 req/min per IP + 300 req/min per token). Request
 | GET | `/api/settings/mcp-url` | Get configured MCP server URL (any auth user) |
 | PUT | `/api/settings/mcp-url` | Set MCP server URL (admin-only) |
 | DELETE | `/api/settings/mcp-url` | Reset to auto-detect (admin-only) |
-| GET | `/api/settings/feature-flags` | Public-safe feature flags for UI gating (any auth user). Currently exposes `session_tab_enabled` (SESSION_TAB Phase 3). |
+| GET | `/api/settings/feature-flags` | Public-safe feature flags for UI gating (any auth user). Exposes `session_tab_enabled` (SESSION_TAB Phase 3) and `voice_available` (`VOICE_ENABLED && bool(GEMINI_API_KEY)`, #699). |
 | GET | `/api/settings/agent-defaults/resources` | Get fleet-wide default CPU/memory for new containers (admin-only, RES-001) |
 | PUT | `/api/settings/agent-defaults/resources` | Set fleet-wide default CPU/memory; valid CPU: 1/2/4/8/16; valid memory: 1g–32g (admin-only, RES-001) |
 

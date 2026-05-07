@@ -22,7 +22,7 @@ from models import User
 from dependencies import get_current_user, get_authorized_agent
 from database import db
 from config import GEMINI_API_KEY, VOICE_ENABLED
-from services.gemini_voice import voice_service
+from services.gemini_voice import voice_service, WORKSPACE_PANEL_INSTRUCTIONS
 from services.docker_service import get_agent_container
 from services.platform_audit_service import platform_audit_service, AuditEventType, AuditActorType
 
@@ -36,6 +36,7 @@ router = APIRouter(tags=["voice"])
 class VoiceStartRequest(BaseModel):
     session_id: Optional[str] = None  # Existing chat session to continue
     voice_name: Optional[str] = None  # Gemini voice name (e.g. "Kore", "Puck")
+    workspace_mode: bool = False       # Enable canvas panel tools
 
 
 class VoiceStartResponse(BaseModel):
@@ -94,6 +95,8 @@ async def voice_start(
     combined_prompt = voice_prompt
     if context_summary:
         combined_prompt += f"\n\n## Conversation so far:\n{context_summary}"
+    if request.workspace_mode:
+        combined_prompt += WORKSPACE_PANEL_INSTRUCTIONS
 
     voice_name = request.voice_name or _get_voice_name(name)
 
@@ -104,6 +107,7 @@ async def voice_start(
         user_email=current_user.email or current_user.username,
         system_prompt=combined_prompt,
         voice_name=voice_name,
+        workspace_mode=request.workspace_mode,
     )
 
     return VoiceStartResponse(
@@ -163,6 +167,27 @@ async def voice_status(
         "available": voice_service.is_available(),
         "voice_prompt_set": bool(db.get_voice_system_prompt(name)),
     }
+
+
+@router.get("/api/agents/{name}/voice/{session_id}/panel")
+async def get_voice_panel(
+    session_id: str,
+    name: str = Depends(get_authorized_agent),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the current canvas panel state for a workspace voice session.
+
+    Returns empty state (not 404) when session has ended so the frontend
+    poll loop doesn't raise errors during the teardown window.
+    """
+    session = voice_service.get_session(session_id)
+    if not session:
+        return {"type": "empty", "content": "", "title": None, "updated_at": None}
+    if session.agent_name != name:
+        raise HTTPException(status_code=403, detail="Session does not belong to this agent")
+    if session.user_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized for this voice session")
+    return session.panel_state
 
 
 @router.get("/api/agents/{name}/voice/prompt")
