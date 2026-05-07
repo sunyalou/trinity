@@ -75,6 +75,7 @@
 | 2026-03-25 | #148 | Fix silent subscription registration failure — encryption key auto-generation, status endpoint, frontend warning | [subscription-management.md](feature-flows/subscription-management.md) |
 | 2026-03-25 | #76 | Configurable MCP Server URL in Admin Settings | [platform-settings.md](feature-flows/platform-settings.md), [api-keys-page.md](feature-flows/api-keys-page.md) |
 | 2026-03-25 | #74 | Auto-assign subscription to new agents (round-robin, rate-limit aware) | [subscription-management.md](feature-flows/subscription-management.md) |
+| 2026-05-07 | #699 | Voice Workspace (BETA) — full-page workspace with orb + canvas panel; panel tools (show_markdown/update_panel/append_to_panel/clear_panel); `voice_available` feature flag | [voice-chat.md](feature-flows/voice-chat.md) |
 | 2026-03-23 | VOICE-001 | Voice Chat — real-time voice conversations with agents via Gemini Live API | [voice-chat.md](feature-flows/voice-chat.md) |
 | 2026-03-23 | SLACK-002 | Channel adapter abstraction + multi-agent Slack routing | [slack-channel-routing.md](feature-flows/slack-channel-routing.md) |
 | 2026-03-21 | SUB-003 | Auto-switch subscriptions on repeated rate-limit errors — setting, tracking, orchestration | [subscription-auto-switch.md](feature-flows/subscription-auto-switch.md) |
@@ -190,7 +191,7 @@
 | Playbooks Tab | [playbooks-tab.md](feature-flows/playbooks-tab.md) | Invoke agent skills from UI (PLAYBOOK-001) |
 | Authenticated Chat Tab | [authenticated-chat-tab.md](feature-flows/authenticated-chat-tab.md) | Simple chat UI with dynamic status labels (CHAT-001, THINK-001) |
 | Playbook Autocomplete | [playbook-autocomplete.md](feature-flows/playbook-autocomplete.md) | Slash-command autocomplete for playbooks in chat input |
-| Voice Chat | [voice-chat.md](feature-flows/voice-chat.md) | Real-time voice conversations via Gemini Live API (VOICE-001) |
+| Voice Chat + Workspace | [voice-chat.md](feature-flows/voice-chat.md) | Voice conversations via Gemini Live API; Workspace mode with canvas panel tools (BETA) |
 | Execution Log Viewer | [execution-log-viewer.md](feature-flows/execution-log-viewer.md) | Modal for viewing execution transcripts |
 | Execution Detail Page | [execution-detail-page.md](feature-flows/execution-detail-page.md) | Dedicated page for execution details |
 | Continue Execution as Chat | [continue-execution-as-chat.md](feature-flows/continue-execution-as-chat.md) | Resume executions as interactive chat (EXEC-023) |
