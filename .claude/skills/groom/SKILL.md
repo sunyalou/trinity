@@ -26,13 +26,15 @@ Ensure all open issues are on the board with correct rank, tier, Epic, and Theme
 ### Project Constants
 
 ```
-PROJECT_ID     = PVT_kwDOB8r7us4BRY6-
-PROJECT_NUM    = 6
-RANK_FIELD_ID  = PVTF_lADOB8r7us4BRY6-zg_O1jU
-TIER_FIELD_ID  = PVTSSF_lADOB8r7us4BRY6-zg_O1kA
-EPIC_FIELD_ID  = PVTSSF_lADOB8r7us4BRY6-zhKSsd8
-THEME_FIELD_ID = PVTSSF_lADOB8r7us4BRY6-zhKSr-g
+PROJECT_ID          = PVT_kwDOB8r7us4BRY6-
+PROJECT_NUM         = 6
+RANK_FIELD_ID       = PVTF_lADOB8r7us4BRY6-zg_O1jU
+TIER_FIELD_ID       = PVTSSF_lADOB8r7us4BRY6-zg_O1kA
+EPIC_FIELD_ID       = PVTSSF_lADOB8r7us4BRY6-zhKSsd8
+THEME_FIELD_ID      = PVTSSF_lADOB8r7us4BRY6-zhKSr-g
+COMPLEXITY_FIELD_ID = PVTF_lADOB8r7us4BRY6-zhSPP8I
 ```
+
 
 ### Current Epic Options
 
@@ -237,6 +239,26 @@ for item in data['items']:
 "
 ```
 
+Also detect items missing a Complexity estimate (Todo and In Progress):
+
+```bash
+gh project item-list 6 --owner abilityai --format json --limit 200 | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+missing = []
+for item in data['items']:
+    c = item.get('content', {})
+    status = item.get('status', '')
+    complexity = item.get('complexity')
+    if status in ('Todo', 'In Progress') and complexity is None and c.get('number'):
+        missing.append((c['number'], status, c.get('title', '')[:65]))
+missing.sort(key=lambda x: x[0])
+print(f'Missing Complexity: {len(missing)} items')
+for num, status, title in missing:
+    print(f'  #{num} [{status}] {title}')
+"
+```
+
 ### Step 2b: Detect Orphans (Missing Epic/Theme)
 
 Find items without Epic or Theme assigned — these need categorization.
@@ -389,6 +411,22 @@ Present the proposal as a table and **wait for user approval or adjustments** be
 | Issue | Current Rank | Proposed Rank | Rationale |
 |-------|-------------|---------------|-----------|
 
+### Complexity Assignments (N items)
+
+Agent-set field — not human-entered. Use this rubric to assess each unestimated Todo/In Progress issue based on what is known about the issue and the codebase:
+
+| Points | Signal |
+|--------|--------|
+| 1 | Config change, one-liner, pure docs |
+| 2 | Single file, clear path, no new patterns |
+| 3 | Multi-file, touches router + service, some design decisions |
+| 5 | Cross-service, new DB columns, integration work, significant tests |
+| 8 | New subsystem or component, major schema change, multi-service coordination |
+| 13 | Spans multiple epics or features — should probably be split |
+
+| Issue | Title | Proposed | Rationale |
+|-------|-------|----------|-----------|
+
 ### Close Candidates (N items)
 | Issue | Reason |
 |-------|--------|
@@ -470,6 +508,19 @@ gh api graphql -f query='mutation {
 }'
 ```
 
+**Set Complexity (number field):**
+
+```bash
+gh api graphql -f query='mutation {
+  updateProjectV2ItemFieldValue(input: {
+    projectId: "PVT_kwDOB8r7us4BRY6-",
+    itemId: "ITEM_NODE_ID",
+    fieldId: "COMPLEXITY_FIELD_ID",
+    value: {number: COMPLEXITY_VALUE}
+  }) { projectV2Item { id } }
+}'
+```
+
 **Batch mutations** (up to 10 per GraphQL call):
 
 ```bash
@@ -513,6 +564,7 @@ After applying, re-query and display the updated backlog to confirm.
 - [ ] All items have a Theme assigned
 - [ ] P1a items ranked highest, then P1b, then P1c
 - [ ] Bugs ranked above features within same tier
+- [ ] All Todo and In Progress items have a Complexity estimate (1/2/3/5/8/13)
 - [ ] User approved all changes before they were applied
 - [ ] Final backlog displayed for confirmation
 

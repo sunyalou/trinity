@@ -29,10 +29,11 @@ Automate issue creation with:
 ### Project Constants
 
 ```
-PROJECT_ID     = PVT_kwDOB8r7us4BRY6-
-PROJECT_NUM    = 6
-EPIC_FIELD_ID  = PVTSSF_lADOB8r7us4BRY6-zhKSsd8
-THEME_FIELD_ID = PVTSSF_lADOB8r7us4BRY6-zhKSr-g
+PROJECT_ID          = PVT_kwDOB8r7us4BRY6-
+PROJECT_NUM         = 6
+EPIC_FIELD_ID       = PVTSSF_lADOB8r7us4BRY6-zhKSsd8
+THEME_FIELD_ID      = PVTSSF_lADOB8r7us4BRY6-zhKSr-g
+COMPLEXITY_FIELD_ID = PVTF_lADOB8r7us4BRY6-zhSPP8I
 ```
 
 ## Process
@@ -104,6 +105,19 @@ Analyze title, description, and conversation context to match:
 | cloudflare, tunnel, public | #303 Cloudflare |
 
 If no match, leave Epic blank (orphan — `/groom` will catch it).
+
+**Complexity inference** (agent-set, not human-entered):
+
+| Points | Signal |
+|--------|--------|
+| 1 | Config change, one-liner, pure docs |
+| 2 | Single file, clear path, no new patterns |
+| 3 | Multi-file, touches router + service, some design decisions |
+| 5 | Cross-service, new DB columns, integration work, significant tests |
+| 8 | New subsystem or component, major schema change, multi-service coordination |
+| 13 | Spans multiple epics or features — should probably be split |
+
+Assess based on the issue title, description, and what is known about the affected area of the codebase. Default to 3 when uncertain.
 
 ### Step 4: Generate Issue Body
 
@@ -184,6 +198,18 @@ gh api graphql -f query='mutation {
 }'
 ```
 
+Set Complexity:
+```bash
+gh api graphql -f query='mutation {
+  updateProjectV2ItemFieldValue(input: {
+    projectId: "PVT_kwDOB8r7us4BRY6-",
+    itemId: "'"$ITEM_ID"'",
+    fieldId: "COMPLEXITY_FIELD_ID",
+    value: {number: '"$COMPLEXITY"'}
+  }) { projectV2Item { id } }
+}'
+```
+
 ### Step 8: Report Result
 
 ```
@@ -195,6 +221,7 @@ gh api graphql -f query='mutation {
 **Labels**: priority-[p], type-[t]
 **Epic**: [epic or "—"]
 **Theme**: [theme or "—"]
+**Complexity**: [N] — [label]
 
 Added to Trinity Roadmap board (Todo).
 ```

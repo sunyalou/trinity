@@ -61,6 +61,17 @@ Trinity follows a 4-stage lifecycle. Each stage maps 1:1 to an issue's location 
 
 Within P1, the **Tier** field on the project board provides sub-prioritization: **P1a** (highest) → **P1b** → **P1c**.
 
+The **Complexity** field (Fibonacci: 1/2/3/5/8/13) is a story-point estimate assigned during grooming. It feeds velocity calculations in `/metrics`. Assigned by Claude during `/groom`; never entered by hand.
+
+| Points | Signal |
+|--------|--------|
+| 1 | Config change, one-liner, pure docs |
+| 2 | Single file, clear path, no new patterns |
+| 3 | Multi-file, touches router + service, some design decisions |
+| 5 | Cross-service, new DB columns, integration work, significant tests |
+| 8 | New subsystem or component, major schema change, multi-service coordination |
+| 13 | Spans multiple epics — should probably be split |
+
 **Rule**: Work P0 first, then P1 by Tier (P1a → P1b → P1c), then by Rank (lowest number first).
 
 ### Epics and Themes
@@ -83,7 +94,7 @@ The project board uses two additional **single-select** fields for strategic gro
 
 #### Backlog Grooming
 
-Run `/groom` periodically to keep the backlog healthy. It audits board coverage, detects unranked items, reviews priority ordering, and applies rank updates after approval. Key checks:
+Run `/groom` periodically to keep the backlog healthy. It audits board coverage, detects unranked items, reviews priority ordering, assigns Complexity estimates, and applies rank updates after approval. Key checks:
 
 - All open issues are on the project board
 - All Todo items have a Rank and Tier assigned
@@ -450,6 +461,7 @@ Agents are invoked automatically by Claude Code when appropriate. The `/test-run
 | `/validate-architecture` | Validate codebase against 16 architectural invariants | Weekly / Review |
 | `/validate-schema` | Check schema.py vs migrations.py vs architecture.md for drift | Weekly |
 | `/validate-config` | Check env vars across docker-compose, .env.example, and code | Weekly |
+| `/metrics [mode] [--weeks N] [--deep]` | Engineering analytics — velocity, cycle time, bug ratio, backlog health | Weekly |
 | `/groom` | Backlog grooming — audit board, rank issues, review priorities | Todo |
 | `/sprint [issue-number]` | Full dev cycle (orchestrates all above) | All |
 | `/release [version-tag]` | Cut a release — pre-release checklist, version bump, notes, `dev` → `main` merge, tag push | Release (§4b) |
@@ -534,6 +546,7 @@ Skills in `.claude/skills/` define HOW to approach specific tasks:
 
 **Weekly maintenance:**
 
+- [ ] `/metrics` — engineering analytics: velocity, cycle time, bug ratio, backlog health
 - [ ] `/validate-architecture` — check codebase against architectural invariants
 - [ ] `/validate-schema` — check schema.py vs migrations.py vs architecture.md for drift
 - [ ] `/validate-config` — check env vars across docker-compose, .env.example, and code
