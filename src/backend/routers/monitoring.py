@@ -333,7 +333,21 @@ async def trigger_health_check(
     Trigger an immediate health check for an agent.
 
     Admin only. Forces a fresh health check regardless of schedule.
+
+    #631 — this endpoint is the documented manual recovery path out of the
+    dormant circuit state. Reset the circuit before running the check so the
+    probe actually executes (rather than being short-circuited by the
+    dormant guard in perform_health_check).
     """
+    try:
+        from services.agent_client import reset_circuit
+        reset_circuit(agent_name)
+    except Exception as exc:
+        # Best-effort. If Redis is down the dormant guard fail-opens anyway.
+        import logging
+        logging.getLogger(__name__).warning(
+            "Manual /check could not reset circuit for %s: %s", agent_name, exc
+        )
 
     # Perform health check
     result = await perform_health_check(agent_name, DEFAULT_CONFIG, store_results=True)

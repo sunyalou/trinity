@@ -99,6 +99,23 @@ async def set_autonomy_status_logic(
             db.set_schedule_enabled(schedule_id, enabled)
             updated_count += 1
 
+    # #631 — disabling autonomy must also stop circuit-breaker probing for
+    # this agent. Otherwise background services (monitoring, sync-health,
+    # operator-queue) keep poking a known-down agent on a 30s cadence even
+    # though the user explicitly turned off scheduled work. Re-enabling
+    # autonomy resets the circuit so a fresh real failure decides state.
+    try:
+        from services.agent_client import force_circuit_dormant, reset_circuit
+        if enabled:
+            reset_circuit(agent_name)
+        else:
+            force_circuit_dormant(agent_name, reason="autonomy_disabled")
+    except Exception as exc:
+        # Best-effort: never let a Redis blip block the autonomy toggle.
+        logger.warning(
+            f"Autonomy circuit-state hook failed for {agent_name}: {exc}"
+        )
+
     logger.info(
         f"Autonomy {'enabled' if enabled else 'disabled'} for agent {agent_name} "
         f"by {current_user.username}. Updated {updated_count} schedules."
