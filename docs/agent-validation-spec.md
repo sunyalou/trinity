@@ -105,6 +105,11 @@
 | X-006 | INFO | AI | Consistency | The agent's stated use cases are achievable given its declared tools and MCP servers |
 | X-007 | SOFT | AI | Consistency | Scheduled task messages (cron prompts) align with skills that exist in this agent |
 | X-008 | INFO | AI | Consistency | Resource allocation (`cpu`/`memory`) is appropriate for the agent's stated workload |
+| I-001 | SOFT | AI | Composability | If the agent is callable by others (declares Trinity MCP or `permissions`), it documents its output format in `template.yaml` or `CLAUDE.md` |
+| I-002 | SOFT | AI | Composability | Scheduled/autonomous tasks write structured output to a file or shared folder, not only as a chat response |
+| I-003 | SOFT | AI | Composability | If the agent produces data for downstream consumers, an output schema or format is documented |
+| I-004 | SOFT | AI | Composability | Agent has a clear "interface" — what goes in, what comes out — not just a description of what it does |
+| I-005 | INFO | STATIC | Composability | `~/.trinity/post-check` exists if the agent declares output contracts (validates own output before delivery) |
 
 ---
 
@@ -525,6 +530,32 @@ If `schedules[].message` is `/some-command`, verify `.claude/commands/some-comma
 **X-008** — Resource allocation appropriate for workload  
 Severity: INFO | Type: AI  
 Prompt: "Given this agent's stated purpose and use cases, is the resource allocation (cpu: X, memory: Yg) appropriate? Flag obvious mismatches: a video-processing agent with 512m memory, or a simple Q&A agent over-provisioned with 16 CPUs."
+
+---
+
+### Category: Composability
+
+These checks evaluate whether an agent is designed to participate in a multi-agent system reliably. The guiding principle: agents should exchange data (structured files, queues, typed outputs) rather than chain conversations. An agent with no declared output contract is a black box to any system that depends on it.
+
+**I-001** — Callable agents declare their output format  
+Severity: SOFT | Type: AI  
+If the agent's `template.yaml` or `CLAUDE.md` indicates it is intended to be called by other agents (references Trinity MCP, `agent_permissions`, or describes itself as a "worker" or "specialist"), it must document what format its responses take. Prompt: "Does this agent document what format or schema callers should expect in its output? A passing answer includes an explicit output format, schema reference, or structured example. A failing answer describes only what the agent *does*, not what it *returns*."
+
+**I-002** — Scheduled tasks produce structured, consumable output  
+Severity: SOFT | Type: AI  
+Autonomous tasks that feed downstream agents or systems should write structured output (JSON file, CSV, markdown report to a known path, shared folder write) rather than relying solely on the chat response text. Prompt: "Do this agent's scheduled tasks or autonomous skills produce output in a structured, file-based form that another agent or system could consume without parsing a conversation? Flag skills that only produce chat responses with no file or structured output."
+
+**I-003** — Output schema documented for data-producing agents  
+Severity: SOFT | Type: AI  
+If the agent's purpose includes producing reports, datasets, or structured content for downstream use, the output schema or format must be documented somewhere in the agent (CLAUDE.md, a `schemas/` directory, or `template.yaml`). Prompt: "If this agent produces structured data or reports intended for downstream consumption, is the output schema or format documented? Answer YES/NO and cite where."
+
+**I-004** — Agent has a clear interface declaration  
+Severity: SOFT | Type: AI  
+An agent designed for composition should explicitly state what it accepts as input and what it produces as output — not just its general purpose. Prompt: "Does this agent clearly document its 'interface': what input it expects (message format, required context, parameters) and what output callers will receive? This is separate from what the agent does — it's about the contract at the boundary. Answer YES/NO."
+
+**I-005** — `post-check` hook exists when output contracts are declared  
+Severity: INFO | Type: STATIC  
+If the agent documents an output format or schema (detected by presence of `schemas/` directory, `output_format:` key in `template.yaml`, or `output contract` / `output format` in CLAUDE.md), a `~/.trinity/post-check` hook should exist to validate outputs before delivery. Without it, the declared contract is aspirational rather than enforced.
 
 ---
 
