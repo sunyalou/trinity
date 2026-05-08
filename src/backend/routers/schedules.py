@@ -85,6 +85,9 @@ class ScheduleUpdateRequest(BaseModel):
     timeout_seconds: Optional[int] = None
     allowed_tools: Optional[List[str]] = None
     model: Optional[str] = None  # Model override (MODEL-001)
+    # Retry configuration (RETRY-001)
+    max_retries: Optional[int] = None
+    retry_delay_seconds: Optional[int] = None
     # Validation configuration (VALIDATE-001)
     validation_enabled: Optional[bool] = None
     validation_prompt: Optional[str] = None
