@@ -38,17 +38,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # `pull_request` checks out the synthetic merge commit by default
-          # (perfect for `side: head`). For `side: base` we explicitly fetch
-          # and detach onto the target-branch tip below.
+          # `pull_request` checks out the synthetic merge commit by default.
+          # We capture the diff script before any branch switch so it
+          # survives the base-side checkout below (where scripts/ci/ may
+          # not yet exist on the target branch).
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Switch to base branch tip (when side=base)
-        if: matrix.side == 'base'
+      - name: Stash diff script (survives branch switch)
         run: |
-          git fetch --depth=1 origin "${{ github.base_ref || 'dev' }}"
-          git switch --detach FETCH_HEAD
+          mkdir -p "$HOME/.ci-tools"
+          cp scripts/ci/diff-pytest-failures.py "$HOME/.ci-tools/diff-pytest-failures.py"
 
       - uses: actions/setup-python@v5
         with:
@@ -66,7 +66,13 @@ jobs:
           pip install -r tests/requirements-test.txt 'pytest-randomly>=3.15.0'
 
       - name: Diff-script self-test
-        run: python scripts/ci/diff-pytest-failures.py --self-test
+        run: python "$HOME/.ci-tools/diff-pytest-failures.py" --self-test
+
+      - name: Switch to base branch tip (when side=base)
+        if: matrix.side == 'base'
+        run: |
+          git fetch --depth=1 origin "${{ github.base_ref || 'dev' }}"
+          git switch --detach FETCH_HEAD
 
       - name: Run unit suite
         # || true: the existing 34 failures + 17 errors documented in #660
