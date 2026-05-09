@@ -88,6 +88,18 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Stash trusted diff script (pre-merge)
+        # Workspace is unmodified origin/dev at this point. Copy the
+        # diff utility to a stable path BEFORE the merge so that a
+        # malicious PR modifying scripts/ci/diff-pytest-failures.py
+        # can't make the gate silently green by always-exit-0.
+        # CSO finding (defense-in-depth): nightly comments are the
+        # cross-PR signal reviewers consume, so the diff script must
+        # be tamper-evident relative to the PR being tested.
+        run: |
+          mkdir -p "$HOME/.ci-tools"
+          cp scripts/ci/diff-pytest-failures.py "$HOME/.ci-tools/diff-pytest-failures.py"
+
       - name: Fetch PR head via fork-safe ref
         # `pull/N/head` is GitHub's internal ref that works for both
         # same-repo and fork PRs. `origin/<headRefName>` would only work
@@ -119,8 +131,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r tests/requirements-test.txt 'pytest-randomly>=3.15.0'
 
-      - name: Diff-script self-test
-        run: python scripts/ci/diff-pytest-failures.py --self-test
+      - name: Diff-script self-test (trusted copy)
+        run: python "$HOME/.ci-tools/diff-pytest-failures.py" --self-test
 
       - name: Run unit suite (base = origin/dev, head = merge commit)
         if: steps.merge.outputs.merge_conflict == 'false'
@@ -147,12 +159,12 @@ jobs:
                 --tb=no -q || true )
           done
 
-      - name: Run regression diff
+      - name: Run regression diff (trusted copy)
         if: steps.merge.outputs.merge_conflict == 'false'
         id: diff
         run: |
           set +e
-          python scripts/ci/diff-pytest-failures.py \
+          python "$HOME/.ci-tools/diff-pytest-failures.py" \
             --base junit-base-pr${{ matrix.pr_number }}-*.xml \
             --head junit-head-pr${{ matrix.pr_number }}-*.xml \
             --out "diff-pr${{ matrix.pr_number }}.md"
