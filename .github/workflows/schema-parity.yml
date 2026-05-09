@@ -5,6 +5,13 @@ name: Schema Parity Gate
 # tests/unit/test_schema_parity.py pytest suite, which builds two in-memory
 # SQLite snapshots (schema-only vs full init_database lifecycle) and diffs
 # tables/columns/indexes/triggers.
+#
+# MAINTAINER NOTE: do NOT add this job to required-status-checks in branch
+# protection until it has been green for ~1 week of normal PR traffic.
+# Otherwise any path-filter false-negative (e.g. a future module move that
+# bypasses the filter) would brick PRs that don't touch DB files. The
+# workflow self-skips on unrelated PRs (no path match -> no run -> no
+# required check needed) so leaving it optional is safe.
 
 on:
   pull_request:
