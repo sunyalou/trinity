@@ -36,7 +36,7 @@ import pytest
 
 # tests/unit/conftest.py preloads the real agent_server package; just import.
 from agent_server.models import ExecutionMetadata  # noqa: E402
-from agent_server.services.claude_code import (  # noqa: E402
+from agent_server.services.error_classifier import (  # noqa: E402
     _classify_empty_result,
     _recover_metadata_from_raw_messages,
 )
@@ -138,6 +138,50 @@ class TestRecoverMetadata:
         # Token defaults preserved when usage missing
         assert m.input_tokens == 0
         assert m.output_tokens == 0
+
+    def test_prefers_per_call_assistant_usage_over_cumulative_result_usage(self):
+        """#122 finding 3: when raw_messages contains both assistant per-call
+        usage and a result event with cumulative usage, recovery must use the
+        per-call values. result.usage is cumulative across every internal API
+        call this turn made — leaking it into metadata.* breaks the
+        context-window-pressure metric. Mirrors the streaming parser's
+        invariant (see L657-671 comment block in stream_parser.py)."""
+        m = ExecutionMetadata()
+        raw = [
+            {"type": "assistant", "message": {"usage": {
+                "input_tokens": 120_000,
+                "cache_read_input_tokens": 110_000,
+                "output_tokens": 4_000,
+                "cache_creation_input_tokens": 0,
+            }}},
+            {"type": "result",
+             "total_cost_usd": 1.234, "duration_ms": 90_000, "num_turns": 18,
+             "usage": {
+                 "input_tokens": 2_160_000,
+                 "cache_read_input_tokens": 1_980_000,
+                 "output_tokens": 72_000,
+                 "cache_creation_input_tokens": 0,
+             },
+             "modelUsage": {"claude-sonnet-4-6": {
+                 "inputTokens": 2_160_000,
+                 "cacheReadInputTokens": 1_980_000,
+                 "contextWindow": 200_000,
+             }}},
+        ]
+
+        assert _recover_metadata_from_raw_messages(m, raw) is True
+
+        # Result-only fields come from the result event
+        assert m.cost_usd == 1.234
+        assert m.duration_ms == 90_000
+        assert m.num_turns == 18
+        assert m.context_window == 200_000
+
+        # Tokens come from the per-call assistant usage, NOT result.usage cumulative
+        assert m.input_tokens == 120_000, "result.usage cumulative tokens leaked into metadata"
+        assert m.cache_read_tokens == 110_000
+        assert m.output_tokens == 4_000
+        assert m.cache_creation_tokens == 0
 
 
 # ── _classify_empty_result wired with recovery ─────────────────────────────

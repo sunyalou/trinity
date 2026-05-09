@@ -214,7 +214,8 @@ class ProcessRegistry:
         """
         Publish a log entry to all subscribers for an execution.
 
-        Called from claude_code.py as each line is processed.
+        Called from claude_code.py (chat path) and headless_executor.py
+        (task path) as each stdout line is processed.
         Non-blocking: if a subscriber's queue is full, the entry is dropped for that subscriber.
 
         Args:

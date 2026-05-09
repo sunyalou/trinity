@@ -31,7 +31,7 @@ import pytest
 
 
 # conftest.py preloads the real agent_server package; just import.
-from agent_server.services.claude_code import (  # noqa: E402
+from agent_server.services.subprocess_lifecycle import (  # noqa: E402
     _drain_bounded,
     _DRAIN_BUDGET_SECONDS,
 )
@@ -59,11 +59,11 @@ def test_drain_bounded_returns_within_budget_when_drain_hangs(monkeypatch):
         await asyncio.sleep(600)  # simulate indefinite block
 
     monkeypatch.setattr(
-        "agent_server.services.claude_code._drain_reader_threads",
+        "agent_server.services.subprocess_lifecycle._drain_reader_threads",
         _hanging_drain,
     )
     monkeypatch.setattr(
-        "agent_server.services.claude_code._DRAIN_BUDGET_SECONDS",
+        "agent_server.services.subprocess_lifecycle._DRAIN_BUDGET_SECONDS",
         2,
     )
 
@@ -91,7 +91,7 @@ def test_drain_bounded_completes_fast_when_drain_is_quick(monkeypatch):
         call_log.append("drain_called")
 
     monkeypatch.setattr(
-        "agent_server.services.claude_code._drain_reader_threads",
+        "agent_server.services.subprocess_lifecycle._drain_reader_threads",
         _fast_drain,
     )
 
@@ -125,7 +125,7 @@ def test_drain_bounded_forwards_grace_and_pgid(monkeypatch):
         received["pgid"] = pgid
 
     monkeypatch.setattr(
-        "agent_server.services.claude_code._drain_reader_threads",
+        "agent_server.services.subprocess_lifecycle._drain_reader_threads",
         _recording_drain,
     )
 

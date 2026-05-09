@@ -94,10 +94,18 @@ def tmp_db(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
 
-    for mod in ("db.connection", "db.schedules"):
-        sys.modules.pop(mod, None)
+    def _evict():
+        for mod in ("db.connection", "db.schedules", "database"):
+            sys.modules.pop(mod, None)
 
-    yield db_path
+    _evict()
+    try:
+        yield db_path
+    finally:
+        # Mirror test_backlog.py's pattern (#660): also pop on teardown so
+        # the next unit file (e.g. test_file_upload) doesn't load
+        # `database.db` against this fixture's partial schema.
+        _evict()
 
 
 @pytest.fixture

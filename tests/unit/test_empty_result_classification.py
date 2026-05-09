@@ -13,7 +13,7 @@ Sibling of #516 / ``_classify_signal_exit`` — that one handles
 == 0`` lost-result-line shape.
 
 Module under test:
-    docker/base-image/agent_server/services/claude_code.py::_classify_empty_result
+    docker/base-image/agent_server/services/error_classifier.py::_classify_empty_result
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ if "agent_server" not in sys.modules:
     sys.modules["agent_server"] = _stub
 
 from agent_server.models import ExecutionMetadata  # noqa: E402
-from agent_server.services.claude_code import _classify_empty_result  # noqa: E402
+from agent_server.services.error_classifier import _classify_empty_result  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

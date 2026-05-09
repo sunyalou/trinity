@@ -29,11 +29,11 @@ if "agent_server" not in sys.modules:
     sys.modules["agent_server"] = _stub
 
 # Module under test
-from agent_server.services.claude_code import (  # noqa: E402
+from agent_server.services.jsonl_recovery import (  # noqa: E402
     _recover_response_from_jsonl,
     _extract_compact_events_from_jsonl,
 )
-from agent_server.services import claude_code as _cc_module  # noqa: E402
+from agent_server.services import jsonl_recovery as _jsonl_module  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@ def jsonl_dir(tmp_path, monkeypatch):
     """Redirect _JSONL_PROJECTS_DIR to tmp_path for the duration of the test."""
     target = tmp_path / "projects" / "-home-developer"
     target.mkdir(parents=True)
-    monkeypatch.setattr(_cc_module, "_JSONL_PROJECTS_DIR", str(target))
+    monkeypatch.setattr(_jsonl_module, "_JSONL_PROJECTS_DIR", str(target))
     return target
 
 

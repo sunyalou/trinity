@@ -460,21 +460,19 @@ class TaskExecutionService:
             # uncached), cache_creation_tokens (newly cached this turn),
             # cache_read_tokens (re-read from a prior turn's cache).
             #
-            # We can't simply sum them. The agent-server in claude_code.py
-            # overrides metadata.input_tokens with `modelUsage.inputTokens`
-            # (an aggregated total across all internal API calls this turn)
-            # whenever the latter is larger — which is virtually always
-            # true on tool-call turns. So input_tokens is sometimes the
-            # disjoint fresh value and sometimes the aggregated total, and
-            # summing it with cache_* double-counts in the second case.
+            # We can't simply sum them. The agent-server's stream parser
+            # (services/stream_parser.py::process_stream_line) populates
+            # metadata.input_tokens from the LATEST per-API-call usage on
+            # an assistant message — that value covers cached + fresh
+            # together, so summing with cache_* would double-count the
+            # cached portion.
             #
             # Stable approach: rely on cache_read + cache_creation, which
-            # are NEVER touched by the override and monotonically track
-            # the size of the cached conversation prefix. This is exactly
-            # what "context-window fullness" means for a --resume session.
-            # Fall back to input_tokens only when caching isn't engaged
-            # (cold turns with caching disabled, or the very first turn
-            # before the cache breakpoint has fired).
+            # monotonically track the size of the cached conversation
+            # prefix. This is exactly what "context-window fullness" means
+            # for a --resume session. Fall back to input_tokens only when
+            # caching isn't engaged (cold turns with caching disabled, or
+            # the very first turn before the cache breakpoint has fired).
             cache_read = metadata.get("cache_read_tokens") or 0
             cache_create = metadata.get("cache_creation_tokens") or 0
             if cache_read + cache_create > 0:

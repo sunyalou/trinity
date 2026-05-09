@@ -55,11 +55,13 @@ ExecutionMetadata = _agent_models.ExecutionMetadata
 def _extract_functions_from_source():
     """Extract _is_rate_limit_message and _format_rate_limit_error from source.
 
-    Reads claude_code.py as text, extracts the two function definitions,
+    Reads error_classifier.py as text, extracts the two function definitions,
     and exec's them in a namespace that has ExecutionMetadata available.
     This avoids importing the full module with its Docker-only dependencies.
+
+    Source moved from claude_code.py to error_classifier.py per #122 module split.
     """
-    source_path = os.path.join(_AGENT_SERVER_DIR, "services", "claude_code.py")
+    source_path = os.path.join(_AGENT_SERVER_DIR, "services", "error_classifier.py")
     with open(source_path) as f:
         source = f.read()
 

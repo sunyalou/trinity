@@ -27,14 +27,12 @@ from pathlib import Path
 import pytest
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_CLAUDE_CODE_PY = (
-    _PROJECT_ROOT
-    / "docker"
-    / "base-image"
-    / "agent_server"
-    / "services"
-    / "claude_code.py"
+_AGENT_SERVICES = (
+    _PROJECT_ROOT / "docker" / "base-image" / "agent_server" / "services"
 )
+_CLAUDE_CODE_PY = _AGENT_SERVICES / "claude_code.py"
+# _DEFAULT_EXECUTION_TIMEOUT_SEC moved to _runtime_config.py per #122 module split.
+_RUNTIME_CONFIG_PY = _AGENT_SERVICES / "_runtime_config.py"
 
 
 @pytest.fixture(scope="module")
@@ -46,6 +44,12 @@ def source() -> str:
 @pytest.fixture(scope="module")
 def tree(source: str) -> ast.Module:
     return ast.parse(source)
+
+
+@pytest.fixture(scope="module")
+def runtime_config_tree() -> ast.Module:
+    assert _RUNTIME_CONFIG_PY.is_file(), f"missing {_RUNTIME_CONFIG_PY}"
+    return ast.parse(_RUNTIME_CONFIG_PY.read_text())
 
 
 def _find_function(tree: ast.Module, name: str) -> ast.AsyncFunctionDef:
@@ -65,9 +69,12 @@ def _function_source(source: str, func: ast.AsyncFunctionDef) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_default_timeout_constant_is_30_minutes(tree: ast.Module) -> None:
-    """The default wall-clock cap is 30 minutes (1800 s) per issue spec."""
-    for node in ast.walk(tree):
+def test_default_timeout_constant_is_30_minutes(runtime_config_tree: ast.Module) -> None:
+    """The default wall-clock cap is 30 minutes (1800 s) per issue spec.
+
+    Constant moved to services/_runtime_config.py per #122 module split.
+    """
+    for node in ast.walk(runtime_config_tree):
         if (
             isinstance(node, ast.Assign)
             and len(node.targets) == 1
@@ -77,7 +84,7 @@ def test_default_timeout_constant_is_30_minutes(tree: ast.Module) -> None:
             assert isinstance(node.value, ast.Constant), "default must be literal"
             assert node.value.value == 1800, f"expected 1800, got {node.value.value!r}"
             return
-    raise AssertionError("_DEFAULT_EXECUTION_TIMEOUT_SEC constant not defined")
+    raise AssertionError("_DEFAULT_EXECUTION_TIMEOUT_SEC constant not defined in _runtime_config.py")
 
 
 # ---------------------------------------------------------------------------
