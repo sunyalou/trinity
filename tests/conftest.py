@@ -30,6 +30,26 @@ _os_589.environ.setdefault("REDIS_PASSWORD", "test")
 _os_589.environ.setdefault("REDIS_BACKEND_PASSWORD", "test")
 
 # ---------------------------------------------------------------------------
+# Issue #754 (C-003): Load SECRET_KEY and INTERNAL_API_SECRET from the
+# project .env file so internal API tests can authenticate against the
+# running backend without requiring the caller to export these manually.
+# Uses setdefault so explicitly-provided env vars always win.
+# dotenv_values handles duplicate keys by returning the last value.
+# ---------------------------------------------------------------------------
+import pathlib as _pathlib754
+_dot_env_754 = _pathlib754.Path(__file__).resolve().parent.parent / ".env"
+if _dot_env_754.exists():
+    try:
+        from dotenv import dotenv_values as _dotenv_values_754
+        _env_vals_754 = _dotenv_values_754(_dot_env_754)
+        for _k754 in ("INTERNAL_API_SECRET", "SECRET_KEY"):
+            _v754 = _env_vals_754.get(_k754)
+            if _v754:
+                _os_589.environ.setdefault(_k754, _v754)
+    except ImportError:
+        pass  # python-dotenv not installed; env vars must be set manually
+
+# ---------------------------------------------------------------------------
 # Pre-load src/backend/models as the canonical `models` in sys.modules
 # BEFORE any test file is collected.
 #
