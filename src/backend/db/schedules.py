@@ -1714,6 +1714,11 @@ class ScheduleOperations:
         Uses a conditional update (WHERE status='running') to prevent overwriting
         a normal completion that happened between the watchdog check and this update.
 
+        completed_at is capped at started_at + effective_timeout so that backend
+        restart recovery does not inflate duration_ms when the execution was mid-flight
+        at restart time. Timeout resolution: schedule.timeout_seconds →
+        agent_ownership.execution_timeout_seconds → 900 s default.
+
         Args:
             execution_id: The execution to mark as failed.
             error_message: Descriptive error message for the failure.
@@ -1726,18 +1731,29 @@ class ScheduleOperations:
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
-            # Get started_at for duration calculation
-            cursor.execute(
-                "SELECT started_at FROM schedule_executions WHERE id = ?",
-                (execution_id,)
-            )
+            # Fetch started_at and effective timeout in one JOIN — same resolution
+            # logic as get_running_executions_with_agent_info.
+            cursor.execute("""
+                SELECT e.started_at,
+                       COALESCE(s.timeout_seconds, ao.execution_timeout_seconds, 900) AS timeout_seconds
+                FROM schedule_executions e
+                LEFT JOIN agent_schedules s ON s.id = e.schedule_id
+                LEFT JOIN agent_ownership ao ON ao.agent_name = e.agent_name
+                WHERE e.id = ?
+            """, (execution_id,))
             row = cursor.fetchone()
             if not row:
                 return False
 
-            completed_at = parse_iso_timestamp(now)
             started_at = parse_iso_timestamp(row["started_at"])
-            duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+            timeout_seconds = row["timeout_seconds"] or 900
+            now_dt = parse_iso_timestamp(now)
+            # Cap completed_at so restart recovery never reports a duration longer
+            # than the execution's own timeout ceiling.
+            max_completed_dt = started_at + timedelta(seconds=timeout_seconds)
+            completed_at_dt = min(now_dt, max_completed_dt)
+            completed_at = completed_at_dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            duration_ms = int((completed_at_dt - started_at).total_seconds() * 1000)
 
             cursor.execute("""
                 UPDATE schedule_executions
@@ -1748,7 +1764,7 @@ class ScheduleOperations:
                 WHERE id = ? AND status = ?
             """, (
                 TaskExecutionStatus.FAILED,
-                now,
+                completed_at,
                 duration_ms,
                 error_message,
                 execution_id,
