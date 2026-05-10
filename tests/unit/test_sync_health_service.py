@@ -16,6 +16,7 @@ import asyncio
 import importlib.util
 import sqlite3
 import sys
+import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -61,8 +62,18 @@ def tmp_db(tmp_path, monkeypatch):
     # DatabaseManager singleton especially) sees the new DB path.
     for modname in list(sys.modules):
         if modname == "database" or modname.startswith("db.") \
-                or modname == "services.sync_health_service":
+                or modname == "services.sync_health_service" \
+                or modname == "services.agent_client":
             sys.modules.pop(modname, None)
+    # Install a stub for services.agent_client. The real module requires
+    # docker/redis; all tests patch _fetch_git_status so AgentClient is never
+    # actually called. Using monkeypatch ensures the stub is removed after each
+    # test, preventing contamination of subsequent test files.
+    monkeypatch.setitem(
+        sys.modules,
+        "services.agent_client",
+        types.SimpleNamespace(AgentClient=MagicMock()),
+    )
     yield db_path
 
 

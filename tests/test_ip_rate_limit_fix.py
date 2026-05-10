@@ -26,11 +26,16 @@ BASE_URL = "http://localhost:8000"
 # Helpers to load the router module without a full FastAPI app
 # ---------------------------------------------------------------------------
 
-def _load_public_router():
-    """Import the public router and return its module."""
-    # Add backend to path
-    backend_path = os.path.join(os.path.dirname(__file__), "..", "src", "backend")
-    backend_path = os.path.abspath(backend_path)
+def _load_public_router(monkeypatch):
+    """Import the public router and return its module.
+
+    Uses ``monkeypatch`` for every ``sys.modules`` mutation so that pytest
+    automatically restores the original module state after each test.  Without
+    this, the minimal fastapi stub (which lacks ``status``, ``security``, etc.)
+    would leak into subsequent test files and cause ImportErrors in any module
+    that does ``from fastapi import status``.
+    """
+    backend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src", "backend"))
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
@@ -46,12 +51,12 @@ def _load_public_router():
         routers_pkg = types.ModuleType("routers")
         routers_pkg.__path__ = [os.path.join(backend_path, "routers")]
         routers_pkg.__package__ = "routers"
-        sys.modules["routers"] = routers_pkg
+        monkeypatch.setitem(sys.modules, "routers", routers_pkg)
 
-    # Stub fastapi unconditionally so that response_model= annotations on
-    # router decorators in routers/public.py don't trigger real Pydantic
-    # validation when loaded in a combined pytest session (where
-    # test_inter_agent_timeout_unit.py already imported the real FastAPI).
+    # Stub fastapi. routers/public.py only needs APIRouter, Depends,
+    # HTTPException, and Request at module load time.  We stub `dependencies`
+    # directly (below) so the transitive chain that needs fastapi.status and
+    # fastapi.security never runs.
     fastapi_mod = types.ModuleType("fastapi")
     fastapi_mod.APIRouter = MagicMock(return_value=MagicMock())
     fastapi_mod.HTTPException = Exception
@@ -59,21 +64,20 @@ def _load_public_router():
     fastapi_mod.Depends = MagicMock()
     fastapi_mod.exceptions = types.ModuleType("fastapi.exceptions")
     fastapi_mod.routing = types.ModuleType("fastapi.routing")
-    sys.modules["fastapi"] = fastapi_mod
-    sys.modules["fastapi.exceptions"] = fastapi_mod.exceptions
+    monkeypatch.setitem(sys.modules, "fastapi", fastapi_mod)
+    monkeypatch.setitem(sys.modules, "fastapi.exceptions", fastapi_mod.exceptions)
 
     fr_mod = types.ModuleType("fastapi.responses")
     fr_mod.StreamingResponse = MagicMock()
-    sys.modules["fastapi.responses"] = fr_mod
+    monkeypatch.setitem(sys.modules, "fastapi.responses", fr_mod)
 
-    # Application-level stubs.
-    # Use setdefault for most stubs (don't overwrite stubs other test files
-    # installed for their own purposes), EXCEPT for `database` which must
-    # always be a MagicMock so that `from database import X` works when
-    # loading routers/public.py.  test_inter_agent_timeout_unit.py installs
-    # a types.SimpleNamespace (not a MagicMock) via setdefault, which does
-    # not support attribute-access style imports.
-    sys.modules["database"] = MagicMock()
+    # Stub application modules that routers/public.py imports directly.
+    # `database` and `dependencies` must be unconditional (not setdefault)
+    # because other test files may have installed incompatible stubs.
+    monkeypatch.setitem(sys.modules, "database", MagicMock())
+    monkeypatch.setitem(sys.modules, "dependencies", MagicMock())
+    monkeypatch.setitem(sys.modules, "models", MagicMock())
+
     stubs = {
         "routers.auth": MagicMock(
             check_login_rate_limit=MagicMock(),
@@ -84,13 +88,17 @@ def _load_public_router():
         "services.task_execution_service": MagicMock(),
         "services.platform_prompt_service": MagicMock(),
         "services.settings_service": MagicMock(),
+        "services.upload_service": MagicMock(),
     }
     for name, stub in stubs.items():
-        sys.modules.setdefault(name, stub)
+        # Use unconditional setitem (not setdefault) so that module-level stubs
+        # installed by other test files at import time don't shadow our stubs.
+        # monkeypatch restores the original value after each test.
+        monkeypatch.setitem(sys.modules, name, stub)
 
     # Force a fresh load of routers.public every call so module-level state
     # (e.g. _trusted_proxy_networks) is reset cleanly.
-    sys.modules.pop("routers.public", None)
+    monkeypatch.delitem(sys.modules, "routers.public", raising=False)
     import routers.public as pub  # noqa: E402
     return pub
 
@@ -103,8 +111,8 @@ class TestIsTrustedProxy:
     """Test the trusted-proxy network matching logic."""
 
     @pytest.fixture(autouse=True)
-    def load_module(self):
-        self.pub = _load_public_router()
+    def load_module(self, monkeypatch):
+        self.pub = _load_public_router(monkeypatch)
         # Reset cached networks so env changes are picked up
         self.pub._trusted_proxy_networks = None
 
@@ -163,8 +171,8 @@ class TestGetClientIp:
     """Test the _get_client_ip function against the pentest scenario."""
 
     @pytest.fixture(autouse=True)
-    def load_module(self):
-        self.pub = _load_public_router()
+    def load_module(self, monkeypatch):
+        self.pub = _load_public_router(monkeypatch)
         self.pub._trusted_proxy_networks = None
 
     def test_direct_connection_ignores_xff(self):
@@ -231,12 +239,14 @@ def auth_headers():
 class TestPerTokenRateLimit:
     """Verify the per-token secondary rate limit constant is configured."""
 
+    @pytest.fixture(autouse=True)
+    def load_module(self, monkeypatch):
+        self.pub = _load_public_router(monkeypatch)
+
     def test_max_messages_per_token_constant_exists(self):
-        pub = _load_public_router()
-        assert hasattr(pub, "MAX_CHAT_MESSAGES_PER_TOKEN")
-        assert pub.MAX_CHAT_MESSAGES_PER_TOKEN > 0
+        assert hasattr(self.pub, "MAX_CHAT_MESSAGES_PER_TOKEN")
+        assert self.pub.MAX_CHAT_MESSAGES_PER_TOKEN > 0
 
     def test_rate_limit_constants_reasonable(self):
         """Per-token limit must be >= per-IP limit (token covers all IPs)."""
-        pub = _load_public_router()
-        assert pub.MAX_CHAT_MESSAGES_PER_TOKEN >= pub.MAX_CHAT_MESSAGES_PER_IP
+        assert self.pub.MAX_CHAT_MESSAGES_PER_TOKEN >= self.pub.MAX_CHAT_MESSAGES_PER_IP
