@@ -132,6 +132,13 @@ def _load_lifecycle():
     read_only_mod = Mock(inject_read_only_hooks=AsyncMock(return_value={"success": True}))
     file_sharing_mod = Mock(check_public_folder_mount_matches=Mock(return_value=True))
 
+    # Names that downstream tests import from `services.agent_service`. Adding
+    # them here prevents this stub package — which persists for the rest of
+    # the pytest session — from breaking later tests with ImportError.
+    pkg.get_accessible_agents = Mock(return_value=[])
+    pkg.get_agent_owner_id = Mock(return_value=1)
+    pkg.list_agents_data = Mock(return_value=[])
+
     sys.modules[f"{pkg_name}.helpers"] = helpers_mod
     sys.modules[f"{pkg_name}.read_only"] = read_only_mod
     sys.modules[f"{pkg_name}.file_sharing"] = file_sharing_mod
@@ -150,6 +157,18 @@ def _load_lifecycle():
     # imports lazily inside the function body (e.g. ``from database import
     # db`` is evaluated at call-time, after the patch context has exited).
     # Install once and let later test calls hit the cached mocks.
+    #
+    # Snapshot the real modules so we can restore them after the import.
+    # Once lifecycle.py has captured the names it needs (HTTPException,
+    # docker_client, container_start, etc.) into its own module globals,
+    # the rest of the test session no longer needs sys.modules to point at
+    # our Mocks — leaving them mocked would pollute downstream tests
+    # (test_voice_auth needs real FastAPI; test_file_upload needs the real
+    # services.docker_service / services.docker_utils so its workspace-
+    # delivery code paths await coroutines instead of plain Mocks).
+    _snapshot: dict[str, object] = {
+        name: sys.modules.get(name) for name in _SYS_MOCKS.keys()
+    }
     sys.modules.update(_SYS_MOCKS)
 
     spec = importlib.util.spec_from_file_location(
@@ -158,6 +177,13 @@ def _load_lifecycle():
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+
+    # Restore the real modules (or evict our Mock if the slot was empty).
+    for name, original in _snapshot.items():
+        if original is not None:
+            sys.modules[name] = original  # type: ignore[assignment]
+        else:
+            sys.modules.pop(name, None)
     return mod
 
 
@@ -177,6 +203,14 @@ def _reset():
     _mock_db.reset_mock()
     # Default: not a subscription agent.
     _mock_db.get_agent_subscription_id.return_value = None
+    # lifecycle.inject_assigned_credentials lazy-imports `from database import db`
+    # at call time. Other unit files (test_backlog uses an evict-on-teardown
+    # fixture that pops sys.modules["database"]) can leave this slot empty by
+    # the time our tests run, causing a fresh `database.py` to load against
+    # the real DB instead of our mock — and our subscription-mode short-circuit
+    # silently misses. Re-stamp the slot for every test so the lazy import
+    # resolves to _mock_db regardless of what other files did to sys.modules.
+    sys.modules["database"] = _SYS_MOCKS["database"]
 
 
 # ── Subscription-mode short-circuit (#612) ───────────────────────────────

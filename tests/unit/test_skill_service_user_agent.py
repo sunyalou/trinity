@@ -62,7 +62,18 @@ for mod_name, attrs in [
     ),
     (
         "services.agent_client",
-        {"get_agent_client": MagicMock(), "AgentClientError": Exception},
+        {
+            "get_agent_client": MagicMock(),
+            "AgentClientError": Exception,
+            # Names that downstream backend modules (sync_health_service etc.)
+            # import. Including them prevents this stub — which can persist
+            # for the rest of the pytest session if it lands first — from
+            # contaminating later tests with ImportError.
+            "AgentClient": MagicMock(),
+            "AgentNotReachableError": Exception,
+            "AgentRequestError": Exception,
+            "get_all_circuit_states": MagicMock(return_value={}),
+        },
     ),
     # sys.modules["utils"] points to tests/utils/ (needed for api_client/cleanup),
     # not src/backend/utils/, so url_validation.py isn't found automatically.

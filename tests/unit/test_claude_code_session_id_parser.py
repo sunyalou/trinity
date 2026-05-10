@@ -9,7 +9,7 @@ matched (Claude Code emits ``type="system", subtype="init"``), so
 execution id with an ``EX-`` prefix — caching that broke ``--resume``.
 
 Module under test:
-    docker/base-image/agent_server/services/claude_code.py
+    docker/base-image/agent_server/services/stream_parser.py
         ::parse_stream_json_output  (batch parser)
         ::process_stream_line       (streaming parser)
 """
@@ -32,7 +32,7 @@ if "agent_server" not in sys.modules:
     sys.modules["agent_server"] = _stub
 
 from agent_server.models import ExecutionMetadata  # noqa: E402
-from agent_server.services.claude_code import (  # noqa: E402
+from agent_server.services.stream_parser import (  # noqa: E402
     parse_stream_json_output,
     process_stream_line,
 )
@@ -158,10 +158,13 @@ def test_permission_mode_validation_uses_system_subtype_init():
     kill-on-misconfigured-permission-mode silently failed open.
 
     AST/source-level guard (the function itself spawns subprocesses and
-    isn't suitable for a unit-test execution path)."""
+    isn't suitable for a unit-test execution path).
+
+    Source moved to headless_executor.py per #122 module split.
+    """
     src = (
         Path(__file__).resolve().parents[2]
-        / "docker" / "base-image" / "agent_server" / "services" / "claude_code.py"
+        / "docker" / "base-image" / "agent_server" / "services" / "headless_executor.py"
     ).read_text()
 
     # The check must use system+init, not the legacy bare init shape.
@@ -299,3 +302,107 @@ def test_compact_event_round_trips_through_model_dump():
     assert isinstance(dumped["compact_events"], list)
     assert len(dumped["compact_events"]) == 1
     assert dumped["compact_events"][0]["pre_tokens"] == 170_325
+
+
+# ---------------------------------------------------------------------------
+# Token-accounting invariant — see #122 plan §4.
+#
+# result.usage and modelUsage.inputTokens are CUMULATIVE across every internal
+# API call this turn made (a tool-using turn with 18 iterations has
+# cache_read in result.usage = 18 × per-call cache_read = 1M+ tokens). The
+# parsers must NOT overwrite metadata.* with those — context-window-pressure
+# metrics would balloon past the 200K wall on every tool-heavy turn.
+# Per-call usage on the LATEST assistant message is the authoritative source.
+# ---------------------------------------------------------------------------
+
+
+def test_process_stream_line_does_not_overwrite_tokens_from_result_usage():
+    """Regression: result.usage is cumulative across a tool-using turn;
+    metadata.* must reflect the LATEST per-assistant-message values, not the
+    result event's totals."""
+    metadata = ExecutionMetadata()
+    response_parts: list[str] = []
+    execution_log: list = []
+    tool_starts: dict = {}
+
+    # Synthetic 18-iteration tool-using turn:
+    # final assistant message reports per-call usage of input=120k, cache_read=110k
+    # result event reports cumulative input=2_160_000, cache_read=1_980_000
+    final_assistant = json.dumps({
+        "type": "assistant",
+        "message": {"usage": {
+            "input_tokens": 120_000,
+            "cache_read_input_tokens": 110_000,
+            "output_tokens": 4_000,
+            "cache_creation_input_tokens": 0,
+        }},
+    })
+    result_event = json.dumps({
+        "type": "result", "subtype": "success",
+        "usage": {
+            "input_tokens": 2_160_000,
+            "cache_read_input_tokens": 1_980_000,
+            "output_tokens": 72_000,
+            "cache_creation_input_tokens": 0,
+        },
+        "modelUsage": {"claude-sonnet-4-6": {
+            "inputTokens": 2_160_000,
+            "cacheReadInputTokens": 1_980_000,
+            "contextWindow": 200_000,
+        }},
+        "total_cost_usd": 1.234, "duration_ms": 90_000, "num_turns": 18,
+    })
+
+    process_stream_line(final_assistant, execution_log, metadata, tool_starts, response_parts)
+    process_stream_line(result_event, execution_log, metadata, tool_starts, response_parts)
+
+    # result event must update cost/duration/turns/context_window only
+    assert metadata.cost_usd == 1.234
+    assert metadata.duration_ms == 90_000
+    assert metadata.num_turns == 18
+    assert metadata.context_window == 200_000
+
+    # tokens must reflect the LATEST assistant per-call values, NOT cumulative result.usage
+    assert metadata.input_tokens == 120_000, "result.usage cumulative tokens leaked into metadata"
+    assert metadata.cache_read_tokens == 110_000
+    assert metadata.output_tokens == 4_000
+    assert metadata.cache_creation_tokens == 0
+
+
+def test_parse_stream_json_output_does_not_overwrite_tokens_from_result_usage():
+    """Same invariant for the batch parser. Aligns parse_stream_json_output
+    with process_stream_line per #122 finding 3."""
+    output = "\n".join([
+        json.dumps({
+            "type": "assistant",
+            "message": {"usage": {
+                "input_tokens": 120_000,
+                "cache_read_input_tokens": 110_000,
+                "output_tokens": 4_000,
+                "cache_creation_input_tokens": 0,
+            }},
+        }),
+        json.dumps({
+            "type": "result", "subtype": "success",
+            "usage": {
+                "input_tokens": 2_160_000,
+                "cache_read_input_tokens": 1_980_000,
+                "output_tokens": 72_000,
+                "cache_creation_input_tokens": 0,
+            },
+            "modelUsage": {"claude-sonnet-4-6": {
+                "inputTokens": 2_160_000,
+                "cacheReadInputTokens": 1_980_000,
+                "contextWindow": 200_000,
+            }},
+            "total_cost_usd": 1.234, "duration_ms": 90_000, "num_turns": 18,
+        }),
+    ])
+
+    _, _, metadata = parse_stream_json_output(output)
+
+    assert metadata.cost_usd == 1.234
+    assert metadata.context_window == 200_000
+    assert metadata.input_tokens == 120_000, "result.usage cumulative tokens leaked into metadata"
+    assert metadata.cache_read_tokens == 110_000
+    assert metadata.output_tokens == 4_000

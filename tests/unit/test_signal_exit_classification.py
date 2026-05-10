@@ -12,7 +12,7 @@ the auth heuristics. These tests pin its contract so the misclassification
 cannot regress.
 
 Module under test:
-    docker/base-image/agent_server/services/claude_code.py::_classify_signal_exit
+    docker/base-image/agent_server/services/error_classifier.py::_classify_signal_exit
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ if "agent_server" not in sys.modules:
     sys.modules["agent_server"] = _stub
 
 from agent_server.models import ExecutionMetadata  # noqa: E402
-from agent_server.services.claude_code import _classify_signal_exit  # noqa: E402
+from agent_server.services.error_classifier import _classify_signal_exit  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

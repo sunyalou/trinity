@@ -116,6 +116,23 @@ def _stub_services_package():
 
 
 _stub_genai()
+
+# Snapshot real modules before installing the stubs that gemini_voice's
+# import chain needs. After gemini_voice has imported, restore the originals
+# so we don't pollute later unit files. Examples of breakage we'd otherwise
+# leak:
+#   * `config` stub omits EMAIL_PROVIDER → test_file_upload's
+#     telegram_adapter → services.email_service import fails.
+#   * services.docker_service / services.template_service stubs replace real
+#     coroutines with plain Mocks → workspace-delivery awaits explode.
+_voice_tools_pre_stub = {
+    name: sys.modules.get(name)
+    for name in (
+        "config",
+        "services.docker_service",
+        "services.template_service",
+    )
+}
 _stub_config()
 _stub_services_package()
 
@@ -128,6 +145,15 @@ sys.modules.pop("services.gemini_voice", None)
 from services.gemini_voice import (  # noqa: E402
     GeminiVoiceService, VoiceSession, _TOOL_PROMPT_MAX, _PANEL_CONTENT_MAX,
 )
+
+# gemini_voice has captured what it needed from the docker/template stubs.
+# Restore the real modules so other unit files (e.g. test_file_upload) see
+# the real services.docker_service whose methods are real coroutines.
+for _name, _orig in _voice_tools_pre_stub.items():
+    if _orig is not None:
+        sys.modules[_name] = _orig
+    else:
+        sys.modules.pop(_name, None)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -151,6 +177,27 @@ def svc():
 # ── Tests: _execute_tool ──────────────────────────────────────────────────────
 
 class TestExecuteTool:
+
+    @pytest.fixture(autouse=True)
+    def _restore_agent_client(self):
+        """Snapshot and restore sys.modules['services.agent_client'] per test.
+
+        Each test below installs an *incomplete* `services.agent_client` stub
+        (e.g. missing the `AgentClient` class). Without teardown, the next
+        unit-suite file that does `from services.agent_client import AgentClient`
+        (sync_health_service, fleet status helpers, etc.) imports the polluted
+        stub and fails. Snapshotting per test keeps the contamination scoped
+        to the body of each individual test.
+        """
+        sentinel = object()
+        original = sys.modules.get("services.agent_client", sentinel)
+        try:
+            yield
+        finally:
+            if original is sentinel:
+                sys.modules.pop("services.agent_client", None)
+            else:
+                sys.modules["services.agent_client"] = original
 
     def test_success(self, svc):
         """Patching _execute_tool itself returns the expected value."""

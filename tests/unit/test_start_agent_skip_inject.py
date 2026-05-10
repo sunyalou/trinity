@@ -102,6 +102,13 @@ def _load_lifecycle():
     sys.modules[f"{pkg_name}.read_only"] = read_only_mod
     sys.modules[f"{pkg_name}.file_sharing"] = file_sharing_mod
 
+    # Names that downstream tests import from `services.agent_service`. Adding
+    # them here prevents this stub package — which can persist for the rest of
+    # the pytest session — from contaminating later tests with ImportError.
+    pkg.get_accessible_agents = Mock(return_value=[])
+    pkg.get_agent_owner_id = Mock(return_value=1)
+    pkg.list_agents_data = Mock(return_value=[])
+
     # Also register under the import path used by lifecycle.py
     sys.modules['services.agent_service'] = pkg
     sys.modules['services.agent_service.helpers'] = helpers_mod

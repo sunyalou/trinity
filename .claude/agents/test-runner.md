@@ -193,6 +193,13 @@ The test suite covers:
 - **Inter-Agent Timeout** (test_inter_agent_timeout_unit.py) - FanOutRequest Optional timeout, per-subtask None dispatch, conditional asyncio.timeout wrap (#418) [UNIT]
 - **Subprocess PGroup** (unit/test_subprocess_pgroup.py) - Process-group lifecycle: terminate, drain_reader_threads (natural-drain ordering #531, buffered-data preservation), safe_close_pipes, signal_process_tree (#407, #531) [UNIT]
 - **Empty Result Classification** (unit/test_empty_result_classification.py) - Clean exit with lost result line → 502, two-field null check, raw_messages num_turns fallback, populated-metadata pass-through (#520, #521, #531) [UNIT]
+- **Chat Wallclock Timeout** (unit/test_chat_wallclock_timeout.py) - AST/source pinning that the headless executor enforces a wallclock budget on the Claude subprocess (#122 module split: source moved from claude_code.py to headless_executor.py) [UNIT]
+- **Claude Code Result Recovery** (unit/test_claude_code_result_recovery.py) - JSONL recovery path when the result line is lost mid-stream — covers `_recover_result_from_jsonl`, raw_messages fallback, partial-line handling (#520, #531) [UNIT]
+- **Claude Code Session ID Parser** (unit/test_claude_code_session_id_parser.py) - Parses the `--session-id` UUID Claude actually ran under from headless stdout/stderr; required for `agent_session_messages.claude_session_id` audit (SESSION_TAB Phase 1) [UNIT]
+- **Drain Bounded** (unit/test_drain_bounded.py) - `_drain_bounded` caps executor-thread block time to `_DRAIN_BUDGET_SECONDS` (90s); deadlock guard for safe_close_pipes/readline lock contention; grace+pgid forwarding (#728) [UNIT]
+- **JSONL Recovery** (unit/test_jsonl_recovery.py) - Claude Code session JSONL parser: recovers final result + tool-call summary from the per-session JSONL when the streamed result line is lost; pinning for the SESSION_TAB-style `--resume` path [UNIT]
+- **Session Persistence Flag** (unit/test_session_persistence_flag.py) - `persist_session` plumbing across the executor → runtime ABC → ParallelTaskRequest → chat router → `task_execution_service.execute_task` chain; AST + live signature checks (#122 module split, SESSION_TAB Phase 1.4/1.5) [UNIT]
+- **Signal Exit Classification** (unit/test_signal_exit_classification.py) - Signal-terminated subprocess (SIGTERM/SIGKILL/SIGSEGV) exit codes are classified as the right ExecutionMetadata error category, not as silent empty results (#531-adjacent) [UNIT]
 
 ### Avatars & Image Generation
 - **Avatars** (test_avatars.py) - Avatar serving, generation, regeneration, deletion, emotions, identity prompts, default generation (AVATAR-001/002/003) [SMOKE + Agent]

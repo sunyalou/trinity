@@ -3,13 +3,13 @@ Phase 1.4 / 1.5 regression tests for the ``persist_session`` flag.
 
 Two surfaces verify that flow:
 
-1. ``docker/base-image/agent_server/services/claude_code.py``
+1. ``docker/base-image/agent_server/services/headless_executor.py``
    ``execute_headless_task`` must gate ``--no-session-persistence`` on
    ``not persist_session`` so a Session-tab cold turn writes the JSONL the
    next ``--resume`` will need. We pin this with AST/source assertions
    because the function is heavily side-effectful (subprocesses, asyncio
    readers) and the existing pattern in test_chat_wallclock_timeout.py
-   does the same.
+   does the same. Source moved from claude_code.py per #122 module split.
 
 2. ``src/backend/services/task_execution_service.py`` ``execute_task`` must
    thread ``persist_session`` (default False) into the agent payload — so
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.unit
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _CLAUDE_CODE_PY = (
-    _PROJECT_ROOT / "docker" / "base-image" / "agent_server" / "services" / "claude_code.py"
+    _PROJECT_ROOT / "docker" / "base-image" / "agent_server" / "services" / "headless_executor.py"
 )
 _TASK_EXEC_PY = (
     _PROJECT_ROOT / "src" / "backend" / "services" / "task_execution_service.py"
@@ -103,19 +103,22 @@ def test_execute_headless_task_accepts_persist_session_default_false():
 def test_execute_headless_task_gates_no_session_persistence():
     """The flag must be added only when persist_session is False — otherwise
     the JSONL stays empty and turn 2's --resume errors with 'No conversation
-    found' (the spike's central failure mode)."""
+    found' (the spike's central failure mode).
+
+    Per #122 module split, the command-building lives in
+    ``_setup_headless_command`` inside the same file as
+    ``execute_headless_task`` (headless_executor.py). We pin the contract at
+    the file level so the assertion holds whichever helper owns the gate."""
     src = _read(_CLAUDE_CODE_PY)
-    tree = ast.parse(src)
-    body = _function_source(src, _find_function(tree, "execute_headless_task"))
 
     # The append must be conditional on `not persist_session`.
     assert re.search(
         r"if\s+not\s+persist_session\s*:\s*\n\s*cmd\.append\(\s*['\"]--no-session-persistence['\"]",
-        body,
+        src,
     ), "--no-session-persistence must be gated on `if not persist_session:`"
 
     # And there must be no unconditional append left over.
-    unconditional = re.findall(r"cmd\.append\(\s*['\"]--no-session-persistence['\"]\)", body)
+    unconditional = re.findall(r"cmd\.append\(\s*['\"]--no-session-persistence['\"]\)", src)
     # Exactly one occurrence — the gated one above.
     assert len(unconditional) == 1, (
         f"expected a single (gated) --no-session-persistence append, found {len(unconditional)}"
@@ -123,7 +126,7 @@ def test_execute_headless_task_gates_no_session_persistence():
 
     # --session-id must still be passed even when persist_session=True so
     # cold Session turns get a unique JSONL namespace.
-    assert "--session-id" in body, "--session-id must be passed for cold turns"
+    assert "--session-id" in src, "--session-id must be passed for cold turns"
 
 
 # ---------------------------------------------------------------------------

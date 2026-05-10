@@ -20,6 +20,19 @@ os.environ.setdefault("REDIS_URL", "redis://test:test@redis:6379")
 os.environ.setdefault("REDIS_PASSWORD", "test")
 os.environ.setdefault("REDIS_BACKEND_PASSWORD", "test")
 
+# database.py instantiates `db = DatabaseManager()` at import, which calls
+# init_database() and tries to mkdir(/data). On the host that path is
+# read-only, so any unit test importing backend services would fail unless
+# an earlier test happens to set TRINITY_DB_PATH first. Pin a tmp path
+# here so every unit test's import path is self-sufficient. Tests that
+# need a real fixture DB still override via monkeypatch.setenv.
+import tempfile as _tempfile  # noqa: E402
+
+os.environ.setdefault(
+    "TRINITY_DB_PATH",
+    str(Path(_tempfile.gettempdir()) / "trinity-unit-tests.db"),
+)
+
 # Ensure src/backend is importable before test modules are collected.
 #
 # BACKLOG-001: tests/unit/test_backlog.py does `from models import ...`, which
