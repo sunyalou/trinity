@@ -40,6 +40,43 @@ from utils.helpers import utc_now_iso
 
 DEFAULT_CONFIG = MonitoringConfig()
 
+
+def _is_circuit_dormant(agent_name: str) -> bool:
+    """Return True when the agent's circuit breaker is parked dormant (#631).
+
+    Imported lazily so a circular import (services.agent_client →
+    services.monitoring_service) can never form even if reachability ever
+    flips.
+    """
+    try:
+        from services.agent_client import CircuitState
+        return CircuitState(agent_name).state == "dormant"
+    except Exception:
+        # Treat any failure to read circuit state as 'not dormant' — the
+        # historical behaviour (probe + write) is the safe fallback when we
+        # can't tell. Worst case is we flood DB on a Redis blip; that's
+        # already what pre-#631 code did.
+        return False
+
+
+def _dormant_health_detail(agent_name: str) -> "AgentHealthDetail":
+    """Synthesise an AgentHealthDetail for a dormant agent without DB I/O."""
+    return AgentHealthDetail(
+        agent_name=agent_name,
+        aggregate_status="unhealthy",
+        last_check_at=utc_now_iso(),
+        docker=None,
+        network=None,
+        business=None,
+        issues=[
+            "Agent circuit dormant — too many consecutive failed probes. "
+            "Awaiting container restart or manual /api/monitoring/agents/{name}/check."
+        ],
+        recent_alerts=[],
+        uptime_percent_24h=None,
+        avg_latency_24h_ms=None,
+    )
+
 # Initialize Docker client
 try:
     docker_client = docker.from_env()
@@ -141,15 +178,36 @@ async def check_network_health(
     - HTTP reachability to agent's /health endpoint
     - Response time (latency)
     - HTTP status code
+
+    #631 — feed the result into the per-agent circuit breaker. Monitoring
+    used to talk to agents through raw httpx and never recorded its failures
+    on the circuit, so a dead agent kept generating health-check rows
+    forever (the SQLite-contention source). With this hookup, ~3 failures
+    flip the circuit to open, ~10 more flip it to dormant, and dormant
+    short-circuits the whole `perform_health_check` (no DB writes).
     """
     now = utc_now_iso()
     url = f"http://agent-{agent_name}:8000/health"
+
+    # Lazy import — keeps services.agent_client → services.monitoring_service
+    # circular-import risk at zero even if reachability ever flips.
+    try:
+        from services.agent_client import CircuitState
+        circuit = CircuitState(agent_name)
+    except Exception:
+        circuit = None
 
     start = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(url)
             latency_ms = (time.monotonic() - start) * 1000
+
+            if circuit is not None:
+                if 200 <= response.status_code < 500:
+                    circuit.record_success()
+                else:
+                    circuit.record_failure()
 
             return NetworkHealthCheck(
                 agent_name=agent_name,
@@ -159,6 +217,8 @@ async def check_network_health(
                 checked_at=now
             )
     except httpx.TimeoutException:
+        if circuit is not None:
+            circuit.record_failure()
         return NetworkHealthCheck(
             agent_name=agent_name,
             reachable=False,
@@ -166,6 +226,8 @@ async def check_network_health(
             checked_at=now
         )
     except httpx.ConnectError:
+        if circuit is not None:
+            circuit.record_failure()
         return NetworkHealthCheck(
             agent_name=agent_name,
             reachable=False,
@@ -173,6 +235,8 @@ async def check_network_health(
             checked_at=now
         )
     except Exception as e:
+        if circuit is not None:
+            circuit.record_failure()
         return NetworkHealthCheck(
             agent_name=agent_name,
             reachable=False,
@@ -369,9 +433,22 @@ async def perform_health_check(
     Runs all three health check layers and aggregates results.
     Optionally stores results in the database.
 
+    #631 — short-circuit when the agent's circuit breaker is dormant. Once we
+    enter dormant we already know the HTTP server is hard-down (~40min of
+    failed probes). Continuing to run network + business probes wastes CPU
+    and — more importantly — every cycle wrote 4 health_check rows; with two
+    uvicorn workers polling concurrently this was the SQLite-contention
+    source flagged in the bug report. Bail fast with a synthetic detail and
+    no DB writes; recovery resumes when the circuit exits dormant
+    (container restart, manual /api/monitoring/agents/{name}/check, or
+    autonomy re-enabled).
+
     Returns:
         AgentHealthDetail with all check results
     """
+    if _is_circuit_dormant(agent_name):
+        return _dormant_health_detail(agent_name)
+
     # Run Docker check in thread pool (blocking)
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor(max_workers=1) as executor:
