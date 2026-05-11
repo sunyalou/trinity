@@ -166,26 +166,40 @@ end
 
 
 class _ResumeLock:
-    """Async context manager for the per-(agent, uuid) lock.
+    """Async context manager for the per-session turn lock.
 
-    Acts as a no-op when ``claude_session_id`` is None (cold turn) or when
-    Redis is unavailable (degraded mode — log and proceed; lock contention
-    is an optimisation, not a correctness gate at the platform layer).
+    Two key shapes:
+      * **warm turn** — ``session_lock:{agent}:{claude_session_id}`` keyed by
+        the cached Claude UUID. Multiple sessions sharing the same UUID would
+        be a bug elsewhere, but for safety the agent is included.
+      * **cold turn** — ``session_lock:cold:{session_id}``. Issue #779: cold
+        turns previously short-circuited to ``key=None`` (no lock), so two
+        concurrent first-turn POSTs on a fresh session would race on
+        ``update_cached_claude_session_id`` and orphan one JSONL. Keying on
+        the session id serialises cold turns on the *same* session while
+        leaving cold turns on *different* sessions free to run in parallel.
+
+    Acts as a no-op when Redis is unavailable (degraded mode — log and
+    proceed; lock contention is an optimisation, not a correctness gate at
+    the platform layer).
     """
 
-    def __init__(self, agent_name: str, claude_session_id: Optional[str]):
+    def __init__(
+        self,
+        agent_name: str,
+        claude_session_id: Optional[str],
+        session_id: str,
+    ):
         self._key = (
             f"session_lock:{agent_name}:{claude_session_id}"
             if claude_session_id
-            else None
+            else f"session_lock:cold:{session_id}"
         )
         self._token = secrets.token_urlsafe(16)
         self._redis = None
         self._held = False
 
     async def __aenter__(self) -> "_ResumeLock":
-        if self._key is None:
-            return self
         self._redis = self._get_redis()
         if self._redis is None:
             logger.warning(
@@ -227,7 +241,7 @@ class _ResumeLock:
             await asyncio.sleep(_LOCK_POLL_INTERVAL_SECONDS)
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        if not self._held or self._redis is None or self._key is None:
+        if not self._held or self._redis is None:
             return
         try:
             await self._redis.eval(_LOCK_RELEASE_LUA, 1, self._key, self._token)
@@ -449,7 +463,7 @@ async def send_session_message(
     fallback_fired = False
     fallback_reason: Optional[str] = None
 
-    async with _ResumeLock(name, cached_uuid):
+    async with _ResumeLock(name, cached_uuid, session.id):
         # Step 4: cold or resume turn.
         result = await service.execute_task(
             agent_name=name,
