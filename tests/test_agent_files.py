@@ -260,6 +260,9 @@ class TestPreviewFile:
         )
 
         assert_status_in(response, [200, 404])
+        if response.status_code == 200:
+            cd = response.headers.get("content-disposition", "")
+            assert cd.startswith("inline"), f"Expected inline disposition for preview, got: {cd!r}"
 
     def test_preview_nonexistent_file_returns_404(
         self,
