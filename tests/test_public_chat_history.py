@@ -76,7 +76,12 @@ class TestPublicSessionsEndpoints:
         if links_resp.status_code != 200:
             pytest.skip(f"Could not get public links for agent {agent_name}")
 
-        links = links_resp.json().get("links", [])
+        # The endpoint is declared `response_model=List[PublicLinkWithUrl]` in
+        # routers/public_links.py — bare list, no envelope. Tolerate either
+        # shape so the test doesn't break if a future refactor wraps the
+        # payload (Issue #766).
+        payload = links_resp.json()
+        links = payload["links"] if isinstance(payload, dict) else payload
         if not links:
             pytest.skip(f"No public links for agent {agent_name}")
 
