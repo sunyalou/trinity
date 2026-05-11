@@ -25,6 +25,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint-sys-modules:
+    # Issue #762: prevent NEW bare sys.modules mutations in tests/.
+    # Stdlib-only AST check; baseline-ratcheted to permit pre-existing
+    # violations without blocking unrelated PRs.
+    name: lint (sys.modules pollution check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run sys.modules lint
+        run: python tests/lint_sys_modules.py
+
   test:
     name: pytest (${{ matrix.side }}, seed ${{ matrix.seed }})
     runs-on: ubuntu-latest
