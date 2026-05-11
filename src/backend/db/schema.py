@@ -1071,6 +1071,10 @@ INDEXES = [
     # VALIDATE-001: Business status for validation results
     "CREATE INDEX IF NOT EXISTS idx_executions_business_status ON schedule_executions(business_status)",
     "CREATE INDEX IF NOT EXISTS idx_executions_validates ON schedule_executions(validates_execution_id)",
+    # Issue #772: partial index drives execution_log null + row delete retention sweeps.
+    "CREATE INDEX IF NOT EXISTS idx_executions_completed_terminal "
+    "ON schedule_executions(completed_at) "
+    "WHERE status IN ('completed', 'failed', 'terminated')",
 
     # Git config indexes
     "CREATE INDEX IF NOT EXISTS idx_git_config_agent ON agent_git_config(agent_name)",

@@ -107,6 +107,7 @@ from services.log_archive_service import log_archive_service
 
 # Import audit retention service (#552)
 from services.audit_retention_service import audit_retention_service
+from services.db_vacuum_service import db_vacuum_service
 
 # Import operator queue sync service
 from services.operator_queue_service import operator_queue_service, set_websocket_manager as set_opqueue_sync_ws_manager
@@ -381,6 +382,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Error starting audit retention service: {e}")
 
+    # Initialize DB VACUUM service (#772)
+    try:
+        db_vacuum_service.start()
+        print("DB vacuum service started")
+    except Exception as e:
+        print(f"Error starting DB vacuum service: {e}")
+
     # PERF-269: Stagger background services to reduce SQLite write contention
     # Start operator queue sync service (OPS-001) — polls every 5s
     try:
@@ -597,6 +605,13 @@ async def lifespan(app: FastAPI):
         print("Audit retention service stopped")
     except Exception as e:
         print(f"Error stopping audit retention service: {e}")
+
+    # Shutdown DB vacuum service (#772)
+    try:
+        db_vacuum_service.stop()
+        print("DB vacuum service stopped")
+    except Exception as e:
+        print(f"Error stopping DB vacuum service: {e}")
 
     # Shutdown cleanup service
     try:

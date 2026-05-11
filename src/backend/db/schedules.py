@@ -1682,6 +1682,104 @@ class ScheduleOperations:
             conn.commit()
             return cursor.rowcount
 
+    def prune_execution_logs(self, retention_days: int, chunk_size: int = 500) -> int:
+        """Null `execution_log` on terminal executions older than retention_days.
+
+        Issue #772: the JSONL transcript dominates schedule_executions row size
+        (~150–190 KB/row). Nulling preserves the row + metadata (cost, duration,
+        agent, status) while reclaiming the bulk of the space. Runs in chunks
+        to keep the write lock short — each chunk commits before the next, so
+        a 3 GB backfill won't block a live system.
+
+        Args:
+            retention_days: Null logs older than this. 0 disables the sweep.
+            chunk_size: Max rows nulled per commit cycle (default 500).
+
+        Returns:
+            Total rows nulled across all chunks.
+        """
+        if retention_days <= 0 or chunk_size <= 0:
+            return 0
+
+        cutoff = iso_cutoff(hours=retention_days * 24)
+        total = 0
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            while True:
+                # SELECT-then-UPDATE-by-id keeps the WHERE predicate aligned
+                # with idx_executions_completed_terminal (#772) and avoids
+                # depending on SQLITE_ENABLE_UPDATE_DELETE_LIMIT.
+                cursor.execute(
+                    """
+                    SELECT id FROM schedule_executions
+                    WHERE status IN ('completed', 'failed', 'terminated')
+                      AND completed_at IS NOT NULL
+                      AND completed_at < ?
+                      AND execution_log IS NOT NULL
+                    LIMIT ?
+                    """,
+                    (cutoff, chunk_size),
+                )
+                ids = [row["id"] for row in cursor.fetchall()]
+                if not ids:
+                    break
+                placeholders = ",".join("?" * len(ids))
+                cursor.execute(
+                    f"UPDATE schedule_executions SET execution_log = NULL "
+                    f"WHERE id IN ({placeholders})",
+                    ids,
+                )
+                conn.commit()
+                total += cursor.rowcount
+                if len(ids) < chunk_size:
+                    break
+        return total
+
+    def prune_execution_rows(self, retention_days: int, chunk_size: int = 500) -> int:
+        """Delete terminal schedule_executions rows older than retention_days.
+
+        Issue #772: deeper retention beyond `prune_execution_logs` — fully
+        removes ancient rows. Chunked DELETE keeps the write lock short.
+
+        Args:
+            retention_days: Delete rows older than this. 0 disables the sweep.
+            chunk_size: Max rows deleted per commit cycle (default 500).
+
+        Returns:
+            Total rows deleted across all chunks.
+        """
+        if retention_days <= 0 or chunk_size <= 0:
+            return 0
+
+        cutoff = iso_cutoff(hours=retention_days * 24)
+        total = 0
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            while True:
+                cursor.execute(
+                    """
+                    SELECT id FROM schedule_executions
+                    WHERE status IN ('completed', 'failed', 'terminated')
+                      AND completed_at IS NOT NULL
+                      AND completed_at < ?
+                    LIMIT ?
+                    """,
+                    (cutoff, chunk_size),
+                )
+                ids = [row["id"] for row in cursor.fetchall()]
+                if not ids:
+                    break
+                placeholders = ",".join("?" * len(ids))
+                cursor.execute(
+                    f"DELETE FROM schedule_executions WHERE id IN ({placeholders})",
+                    ids,
+                )
+                conn.commit()
+                total += cursor.rowcount
+                if len(ids) < chunk_size:
+                    break
+        return total
+
     def get_running_executions_with_agent_info(self) -> List[Dict]:
         """Get all running executions with effective timeout for watchdog.
 

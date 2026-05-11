@@ -1020,6 +1020,14 @@ class DatabaseManager:
         """Finalize skipped executions missing completed_at (Issue #106)."""
         return self._schedule_ops.finalize_orphaned_skipped_executions()
 
+    def prune_execution_logs(self, retention_days: int, chunk_size: int = 500) -> int:
+        """Null execution_log on terminal executions older than retention_days (#772)."""
+        return self._schedule_ops.prune_execution_logs(retention_days, chunk_size)
+
+    def prune_execution_rows(self, retention_days: int, chunk_size: int = 500) -> int:
+        """Delete terminal schedule_executions rows older than retention_days (#772)."""
+        return self._schedule_ops.prune_execution_rows(retention_days, chunk_size)
+
     def get_running_executions_with_agent_info(self):
         """Get all running executions with schedule timeout info (Issue #129)."""
         return self._schedule_ops.get_running_executions_with_agent_info()
@@ -1461,8 +1469,8 @@ class DatabaseManager:
     def calculate_avg_latency(self, agent_name: str, hours: int = 24):
         return self._monitoring_ops.calculate_avg_latency(agent_name, hours)
 
-    def cleanup_old_health_records(self, days: int = 7):
-        return self._monitoring_ops.cleanup_old_records(days)
+    def cleanup_old_health_records(self, days: int = 7, chunk_size: int = 1000):
+        return self._monitoring_ops.cleanup_old_records(days, chunk_size)
 
     def get_alert_cooldown(self, agent_name: str, condition: str):
         return self._monitoring_ops.get_cooldown(agent_name, condition)
