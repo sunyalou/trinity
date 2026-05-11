@@ -24,7 +24,9 @@ from __future__ import annotations
 import logging
 import os
 from collections import Counter
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+from ..utils.credential_sanitizer import sanitize_dict, sanitize_text
 
 if TYPE_CHECKING:
     from ..models import ExecutionMetadata
@@ -342,7 +344,7 @@ def _classify_empty_result(
     raw_messages: Optional[List[Dict]] = None,
     parse_failure_count: int = 0,
     parse_failure_sample: Optional[str] = None,
-) -> Optional[Tuple[int, str]]:
+) -> Optional[Tuple[int, Dict[str, Any]]]:
     """Classify a clean (return_code == 0) exit that produced no result message.
 
     Issue #520: When the claude subprocess exits 0 but the final
@@ -382,9 +384,18 @@ def _classify_empty_result(
     failed line (sanitized + length-capped) so the next debug session has
     a concrete trace instead of just a generic "child held stdout" guess.
 
-    Returns ``(status_code, detail)`` for empty-result exits, or ``None``
-    if metadata looks well-formed (caller proceeds with the normal
-    response-building path).
+    Returns ``(status_code, detail_dict)`` for empty-result exits, or
+    ``None`` if metadata looks well-formed (caller proceeds with the
+    normal response-building path).
+
+    Issue #678: the detail is a **dict** (was a string until 2026-05-11),
+    carrying partial metadata + raw_messages_count + parse_failure_count
+    so the backend HTTPError handler can salvage cost/context/model_name
+    onto the failure row instead of writing all-null telemetry. Both
+    ``detail["message"]`` and ``detail["metadata"]`` are sanitized via
+    ``sanitize_text`` / ``sanitize_dict`` because
+    ``ExecutionMetadata.error_message`` is populated directly from
+    Claude's output text (`stream_parser.py`) and can leak tokens.
     """
     if metadata is None:
         return None
@@ -422,7 +433,7 @@ def _classify_empty_result(
     else:
         type_summary = "<none>"
 
-    detail = (
+    message = (
         f"Execution completed without a result message after {tool_count} tool calls "
         f"/ {num_turns} turns (raw_messages={raw_message_count} types={type_summary}, "
         f"parse_failures={parse_failure_count}). "
@@ -434,5 +445,21 @@ def _classify_empty_result(
         f"This is a transient infrastructure failure; retry the task."
     )
     if parse_failure_count and parse_failure_sample:
-        detail += f" First malformed stdout line: {parse_failure_sample!r}"
-    return (502, detail)
+        message += f" First malformed stdout line: {parse_failure_sample!r}"
+
+    # #678: structured body so the backend HTTPError handler can salvage
+    # partial telemetry onto the failure row. Sanitize before returning —
+    # `metadata.error_message` is populated directly from Claude output
+    # in stream_parser.py and can carry leaked credentials.
+    partial_metadata: Dict[str, Any] = {}
+    if metadata is not None:
+        partial_metadata = sanitize_dict(metadata.model_dump())
+
+    body: Dict[str, Any] = {
+        "message": sanitize_text(message),
+        "metadata": partial_metadata,
+        "raw_message_count": raw_message_count,
+        "parse_failure_count": parse_failure_count,
+        "recovery_attempted": True,
+    }
+    return (502, body)

@@ -160,6 +160,8 @@ class ScheduleOperations:
             validates_execution_id=row["validates_execution_id"] if "validates_execution_id" in row_keys else None,
             # Auto-compact observability (Bundle B)
             compact_metadata=row["compact_metadata"] if "compact_metadata" in row_keys else None,
+            # Reader-race auto-retry (#678)
+            retry_count=row["retry_count"] if "retry_count" in row_keys and row["retry_count"] is not None else 0,
         )
 
     @staticmethod
@@ -1006,6 +1008,7 @@ class ScheduleOperations:
         execution_log: str = None,
         claude_session_id: str = None,
         compact_metadata: str = None,
+        retry_count: Optional[int] = None,
     ) -> bool:
         """Update execution status when completed.
 
@@ -1021,6 +1024,9 @@ class ScheduleOperations:
 
         Args:
             claude_session_id: Claude Code session ID for --resume support (EXEC-023)
+            retry_count: #678 — number of in-line auto-retries used to produce
+                this terminal write. None leaves the column unchanged (default
+                0 from migration). 1 means the reader-race retry fired once.
         """
         # Terminal states that a non-success write must not overwrite.
         _TERMINAL = (
@@ -1045,37 +1051,47 @@ class ScheduleOperations:
             completed_at = parse_iso_timestamp(utc_now_iso())
             duration_ms = int((completed_at - started_at).total_seconds() * 1000)
 
+            # #678: optionally update retry_count alongside the terminal write.
+            # COALESCE preserves prior value when caller passes None so other
+            # update paths (cleanup, scheduler) don't accidentally zero it.
+            if retry_count is None:
+                retry_set_sql = ""
+                retry_params: tuple = ()
+            else:
+                retry_set_sql = ", retry_count = ?"
+                retry_params = (int(retry_count),)
+
             if status == TaskExecutionStatus.SUCCESS:
                 # Agent's own completion result wins over everything except a
                 # user-issued cancel (#671). A late "I'm done!" from Claude Code
                 # after the operator pulled the plug must not flip the row to
                 # success — that hides incomplete deliverables and silently
                 # advances the schedule's next_run_at.
-                cursor.execute("""
+                cursor.execute(f"""
                     UPDATE schedule_executions
                     SET status = ?, completed_at = ?, duration_ms = ?, response = ?, error = ?,
                         context_used = ?, context_max = ?, cost = ?, tool_calls = ?,
-                        execution_log = ?, claude_session_id = ?, compact_metadata = ?
+                        execution_log = ?, claude_session_id = ?, compact_metadata = ?{retry_set_sql}
                     WHERE id = ? AND status != ?
                 """, (
                     status, to_utc_iso(completed_at), duration_ms, response, error,
                     context_used, context_max, cost, tool_calls, execution_log,
-                    claude_session_id, compact_metadata, execution_id,
+                    claude_session_id, compact_metadata, *retry_params, execution_id,
                     TaskExecutionStatus.CANCELLED,
                 ))
             else:
                 # Non-success terminal write: block if already terminal so cleanup
                 # paths cannot overwrite a real completion (RELIABILITY-005).
-                cursor.execute("""
+                cursor.execute(f"""
                     UPDATE schedule_executions
                     SET status = ?, completed_at = ?, duration_ms = ?, response = ?, error = ?,
                         context_used = ?, context_max = ?, cost = ?, tool_calls = ?,
-                        execution_log = ?, claude_session_id = ?, compact_metadata = ?
+                        execution_log = ?, claude_session_id = ?, compact_metadata = ?{retry_set_sql}
                     WHERE id = ? AND status NOT IN (?, ?, ?, ?)
                 """, (
                     status, to_utc_iso(completed_at), duration_ms, response, error,
                     context_used, context_max, cost, tool_calls, execution_log,
-                    claude_session_id, compact_metadata, execution_id, *_TERMINAL,
+                    claude_session_id, compact_metadata, *retry_params, execution_id, *_TERMINAL,
                 ))
 
             conn.commit()

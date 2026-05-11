@@ -24,11 +24,12 @@ from services.capacity_manager import (
     get_capacity_manager,
 )
 from services.task_execution_service import (
+    _compute_context_used,
     get_task_execution_service,
     agent_post_with_retry,
 )
 from database import db
-from utils.credential_sanitizer import sanitize_execution_log, sanitize_response
+from utils.credential_sanitizer import sanitize_dict, sanitize_execution_log, sanitize_response
 from services.platform_prompt_service import (
     ExecutionContext,
     compose_system_prompt,
@@ -462,11 +463,19 @@ async def chat_with_agent(
         # Extract detailed error message from agent response if available
         error_msg = f"HTTP error: {type(e).__name__}"
         agent_status_code = None
+        # #678: salvage partial metadata when the agent returned the
+        # structured dict body from _classify_empty_result.
+        partial_metadata: dict = {}
         if hasattr(e, 'response') and e.response is not None:
             agent_status_code = e.response.status_code
             try:
                 error_data = e.response.json()
-                if "detail" in error_data:
+                detail = error_data.get("detail")
+                if isinstance(detail, dict):
+                    error_msg = detail.get("message") or str(detail)
+                    if isinstance(detail.get("metadata"), dict):
+                        partial_metadata = sanitize_dict(detail["metadata"])
+                elif "detail" in error_data:
                     error_msg = error_data["detail"]
             except Exception:
                 # Try raw text if JSON parsing fails
@@ -482,12 +491,30 @@ async def chat_with_agent(
         )
 
         # Update task execution record on failure (#96: all chat types now have execution records)
+        # #678: salvage cost/context from partial_metadata when the agent
+        # captured them before the reader-thread race wedged its stream.
+        # Mirror the cancellation-race guard from task_execution_service.py:
+        # the SQL WHERE clause in update_execution_status already blocks a
+        # FAILED write over a CANCELLED row, but the explicit pre-check
+        # keeps the two callers consistent and avoids a wasted UPDATE.
         if task_execution_id:
-            db.update_execution_status(
-                execution_id=task_execution_id,
-                status=TaskExecutionStatus.FAILED,
-                error=error_msg
-            )
+            existing = db.get_execution(task_execution_id)
+            if not existing or existing.status != TaskExecutionStatus.CANCELLED:
+                salvage_cost = partial_metadata.get("cost_usd") if partial_metadata else None
+                salvage_context = _compute_context_used(partial_metadata) if partial_metadata else None
+                salvage_context_max = (
+                    (partial_metadata.get("context_window") or 200000)
+                    if partial_metadata
+                    else None
+                )
+                db.update_execution_status(
+                    execution_id=task_execution_id,
+                    status=TaskExecutionStatus.FAILED,
+                    error=error_msg,
+                    cost=salvage_cost,
+                    context_used=salvage_context,
+                    context_max=salvage_context_max,
+                )
 
         # Complete collaboration activity on failure (was missing - caused activities to stay in "started" state)
         if collaboration_activity_id:

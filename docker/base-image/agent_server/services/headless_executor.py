@@ -40,7 +40,11 @@ from .error_classifier import (
     _is_auth_failure_message,
     _is_rate_limit_message,
 )
-from .jsonl_recovery import _extract_compact_events_from_jsonl, _recover_response_from_jsonl
+from .jsonl_recovery import (
+    _extract_compact_events_from_jsonl,
+    _recover_metadata_from_jsonl,
+    _recover_response_from_jsonl,
+)
 from .process_registry import get_process_registry
 from .stream_parser import process_stream_line
 from .subprocess_lifecycle import (
@@ -52,6 +56,105 @@ from .subprocess_lifecycle import (
 from ..utils.subprocess_pgroup import EXECUTION_TAG_NAME
 
 logger = logging.getLogger(__name__)
+
+# Issue #678 (JSONL persistence Option B): headless tasks above this
+# timeout threshold automatically get JSONL persistence enabled so the
+# stdout-race recovery code can fire. Short tasks remain disk-cheap.
+# 600s = 10 min; tunable if disk pressure shows up. Threshold matches
+# the cost/pain inflection: short fan-out is cheap to re-run, long
+# deliverables aren't.
+_JSONL_PERSIST_THRESHOLD_S = 600
+
+
+def _attempt_empty_result_recovery(
+    metadata: ExecutionMetadata,
+    raw_messages: List[Dict],
+    response_parts: List[str],
+    parse_failure_count: int,
+    parse_failure_sample: Optional[str],
+    task_start_iso: Optional[str],
+    session_id_fallback: Optional[str] = None,
+) -> Optional[Tuple[int, Dict]]:
+    """Shared empty-result recovery used by both async and sync execution paths.
+
+    Issue #678: when ``return_code == 0`` but the trailing ``result``
+    line was lost (stdout reader race), this helper:
+
+    1. Classifies the empty result and gives up early if metadata
+       already looks complete (caller proceeds to success path).
+    2. Tries metadata recovery from the on-disk JSONL — back-fills
+       ``cost_usd``, ``duration_ms``, ``num_turns``, ``model_name``,
+       per-call token usage on the metadata in place.
+    3. Tries text recovery from the JSONL when ``response_parts`` is
+       empty. Sets ``recovered_from_jsonl=True`` on success.
+
+    ``session_id_fallback`` is the UUID we passed to ``claude --session-id``
+    (captured in ``HeadlessRunContext.claude_session_uuid``). When the
+    reader race fires before any stdout arrives, ``metadata.session_id``
+    stays unset; recovery would silently no-op without a way to locate
+    the JSONL on disk. The fallback closes that gap.
+
+    Returns:
+      - ``None`` when metadata was already complete OR when text was
+        recovered (caller continues to success path with populated
+        metadata).
+      - ``(502, dict_body)`` when the result is genuinely lost and no
+        text could be recovered. Caller raises HTTPException with this.
+    """
+    empty_result = _classify_empty_result(
+        metadata,
+        raw_message_count=len(raw_messages),
+        raw_messages=raw_messages,
+        parse_failure_count=parse_failure_count,
+        parse_failure_sample=parse_failure_sample,
+    )
+    if empty_result is None:
+        return None
+
+    # Resolve the JSONL filename UUID. metadata.session_id wins (it's the
+    # one Claude actually echoed back); fall back to the UUID we passed
+    # on the command line when the race wedged the reader before init.
+    effective_session_id = metadata.session_id or session_id_fallback or None
+
+    # Step 1: try to back-fill metadata from the JSONL. Mutates in place.
+    _recover_metadata_from_jsonl(
+        effective_session_id,
+        since_iso=task_start_iso,
+        metadata=metadata,
+    )
+
+    # Step 2: text recovery branches.
+    if response_parts:
+        logger.warning(
+            f"[Recovery] Result event lost (stdout pipe race) but "
+            f"response_parts has {sum(len(p) for p in response_parts)} chars "
+            f"of assistant content across {len(response_parts)} blocks — "
+            f"recovering as soft success. raw_messages={len(raw_messages)} "
+            f"cost_recovered={metadata.cost_usd}"
+        )
+        return None
+
+    recovered_text = _recover_response_from_jsonl(effective_session_id)
+    if recovered_text:
+        logger.warning(
+            f"[Recovery] Stdout race lost the response "
+            f"(raw_messages={len(raw_messages)}, no text in stream), but "
+            f"recovered {len(recovered_text)} chars from JSONL "
+            f"(session_id={effective_session_id}) — surfacing as soft success. "
+            f"cost_recovered={metadata.cost_usd}"
+        )
+        response_parts.append(recovered_text)
+        metadata.recovered_from_jsonl = True
+        return None
+
+    # Hard failure: return the structured 502 body. The classifier already
+    # built it with sanitized partial metadata.
+    status_code, body = empty_result
+    # Refresh the metadata snapshot in the body — we may have populated
+    # cost/duration/model_name above via JSONL metadata recovery.
+    # sanitize_dict is idempotent over the recovered fields.
+    body["metadata"] = sanitize_dict(metadata.model_dump())
+    return (status_code, body)
 
 
 @dataclass
@@ -73,6 +176,11 @@ class HeadlessRunContext:
     effective_timeout: int
     images: Optional[List[Dict]]
     prompt: str
+    # #678: UUID we passed to `claude --session-id`. Used as the JSONL
+    # filename fallback when the reader race fires before any stdout
+    # arrives, leaving `metadata.session_id` unset. Empty string when
+    # the run resumed an existing session (we didn't generate a UUID).
+    claude_session_uuid: str = ""
 
     # Run state (populated by _run_headless_subprocess)
     process: Optional[subprocess.Popen] = None
@@ -154,8 +262,13 @@ def _setup_headless_command(
     cmd = ["claude", "--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"]
 
     # Add --resume if resuming a previous session (EXEC-023)
+    # #678: track the JSONL filename UUID so recovery can fall back to it
+    # when metadata.session_id is unset. For --resume, the JSONL is named
+    # after resume_session_id; for new sessions, we generate the UUID below.
+    claude_session_uuid = ""
     if resume_session_id:
         cmd.extend(["--resume", resume_session_id])
+        claude_session_uuid = resume_session_id
         logger.info(f"[Headless Task] Resuming session: {resume_session_id}")
     else:
         # Session isolation: prevent headless tasks from writing session files
@@ -166,11 +279,29 @@ def _setup_headless_command(
         # Session tab opt-in (persist_session=True): the caller wants the
         # JSONL written so the next turn can --resume it. We still pass a
         # unique --session-id so cold turns don't collide on disk.
-        if not persist_session:
+        #
+        # Issue #678 (JSONL persistence Option B): also auto-persist for
+        # long-running headless tasks (timeout > 10 min) so the JSONL
+        # recovery code can fire when the stdout reader thread wedges.
+        # Short fan-out / utility tasks stay disk-cheap; long deliverable
+        # tasks (the real telemetry-loss pain) get a recovery surface.
+        # The retention sweep in session_cleanup_service.py reaps these
+        # JSONLs after 24h so disk cost stays bounded.
+        effective_persist = persist_session or (timeout_seconds > _JSONL_PERSIST_THRESHOLD_S)
+        if persist_session is False and timeout_seconds > _JSONL_PERSIST_THRESHOLD_S:
+            logger.info(
+                f"event=jsonl_persistence_auto_enabled timeout_seconds={timeout_seconds} "
+                f"threshold={_JSONL_PERSIST_THRESHOLD_S}"
+            )
+        if not effective_persist:
             cmd.append("--no-session-persistence")
         # Claude Code requires --session-id to be a valid UUID.
         # execution_id is a base64url token (not a UUID), so always generate one.
-        cmd.extend(["--session-id", str(uuid.uuid4())])
+        # #678: capture into a variable so JSONL recovery can fall back to
+        # this UUID when the reader race fires before metadata.session_id
+        # is populated by Claude's init message.
+        claude_session_uuid = str(uuid.uuid4())
+        cmd.extend(["--session-id", claude_session_uuid])
 
     # Add MCP config if .mcp.json exists (for agent-to-agent collaboration via Trinity MCP)
     mcp_config_path = Path.home() / ".mcp.json"
@@ -231,6 +362,7 @@ def _setup_headless_command(
         effective_timeout=timeout_seconds,
         images=images,
         prompt=prompt,
+        claude_session_uuid=claude_session_uuid,
     )
 
 
@@ -611,45 +743,24 @@ def _finalize_headless_result(
     # Hard failure path stays as-is for the truly empty case (no
     # assistant text accumulated → nothing to recover).
     #
-    # Issue #640: pass parse_failure_count + sample from the stdout
-    # reader so the diagnostic detail can distinguish wire corruption
-    # from reader-leak when the soft-recovery doesn't fire.
-    empty_result = _classify_empty_result(
-        ctx.metadata,
-        raw_message_count=len(ctx.raw_messages),
+    # Issue #640 / #678: shared recovery pipeline. Tries JSONL metadata
+    # back-fill first (rescues cost/context/model_name even when text
+    # recovery succeeds), then text recovery from response_parts or
+    # JSONL, then raises a structured 502 dict body for the backend to
+    # salvage telemetry from.
+    hard_failure = _attempt_empty_result_recovery(
+        metadata=ctx.metadata,
         raw_messages=ctx.raw_messages,
+        response_parts=ctx.response_parts,
         parse_failure_count=ctx.parse_failure_count,
         parse_failure_sample=ctx.parse_failure_sample,
+        task_start_iso=ctx.task_start_iso,
+        session_id_fallback=ctx.claude_session_uuid or None,
     )
-    if empty_result is not None:
-        if ctx.response_parts:
-            logger.warning(
-                f"[Headless Task] Result event lost (stdout pipe race) but "
-                f"response_parts has {sum(len(p) for p in ctx.response_parts)} chars "
-                f"of assistant content across {len(ctx.response_parts)} blocks — "
-                f"recovering as soft success. raw_messages={len(ctx.raw_messages)}"
-            )
-        else:
-            # Phase 5.1's soft-recovery requires accumulated text from
-            # stdout. When the pipe race fires mid-tool-call, no text
-            # was ever emitted to stdout — but Claude Code's JSONL on
-            # disk usually contains the completed turn. Read it as
-            # the authoritative ground truth before giving up.
-            recovered_text = _recover_response_from_jsonl(ctx.metadata.session_id)
-            if recovered_text:
-                logger.warning(
-                    f"[Headless Task] Stdout race lost the response "
-                    f"(raw_messages={len(ctx.raw_messages)}, no text in stream), but "
-                    f"recovered {len(recovered_text)} chars from JSONL "
-                    f"(session_id={ctx.metadata.session_id}) — "
-                    f"surfacing as soft success."
-                )
-                ctx.response_parts.append(recovered_text)
-                ctx.metadata.recovered_from_jsonl = True
-            else:
-                status_code, detail = empty_result
-                logger.error(f"[Headless Task] {detail}")
-                raise HTTPException(status_code=status_code, detail=detail)
+    if hard_failure is not None:
+        status_code, body = hard_failure
+        logger.error(f"[Headless Task] {body['message']}")
+        raise HTTPException(status_code=status_code, detail=body)
 
     # Build final response text
     response_text = "\n".join(ctx.response_parts) if ctx.response_parts else ""

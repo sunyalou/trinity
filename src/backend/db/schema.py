@@ -223,6 +223,7 @@ TABLES = {
             queued_at TEXT,
             backlog_metadata TEXT,
             fan_out_id TEXT,
+            retry_count INTEGER DEFAULT 0,
             FOREIGN KEY (schedule_id) REFERENCES agent_schedules(id)
         )
     """,
