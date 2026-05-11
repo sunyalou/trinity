@@ -196,8 +196,8 @@ Once you've completed the onboarding guides, explore:
 - **[Trinity Compatible Agent Guide](../TRINITY_COMPATIBLE_AGENT_GUIDE.md)**
   Learn to create custom agent templates
 
-- **[Development Workflow](../DEVELOPMENT_WORKFLOW.md)**
-  Contribute to Trinity development
+- **[Trinity Roadmap](https://github.com/abilityai/trinity/issues)**
+  Open issues and current priorities
 
 - **[Deployment Guide](../DEPLOYMENT.md)**
   Deploy Trinity in production

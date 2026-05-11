@@ -33,7 +33,7 @@ By contributing to Trinity, you agree that your contributions will be licensed u
 
 ### Pull Requests
 
-See `docs/DEVELOPMENT_WORKFLOW.md` for the full SDLC (Todo → In Progress → Review → Done).
+The project follows a 4-stage SDLC: Todo → In Progress → In Dev → Done, tracked via GitHub Issues labels (`status-in-progress`, `status-in-dev`).
 
 1. **Fork and clone** the repository
 2. **Find or create an issue** — every PR must link to an issue
@@ -48,7 +48,7 @@ See `docs/DEVELOPMENT_WORKFLOW.md` for the full SDLC (Todo → In Progress → R
    ```bash
    git commit -m "feat: Add support for custom metrics"
    ```
-7. **Push and create a PR** against `dev` — include `Fixes #N` in the description. `main` is reserved for release cuts; see `docs/DEVELOPMENT_WORKFLOW.md` §4b.
+7. **Push and create a PR** against `dev` — include `Fixes #N` in the description. `main` is reserved for release cuts.
 
 ### Commit Message Format
 

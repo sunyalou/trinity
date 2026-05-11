@@ -68,7 +68,7 @@ All work follows a 4-stage lifecycle tracked via the **Trinity Roadmap** GitHub 
 - **Review**: PR opened, `/validate-pr` passes, code review approved
 - **Done**: PR squash-merged, issue closed
 
-**Full details**: `docs/DEVELOPMENT_WORKFLOW.md`
+**Full details**: `.claude/DEVELOPMENT_WORKFLOW.md`
 
 ---
 
@@ -314,7 +314,7 @@ The **[abilities](https://github.com/abilityai/abilities)** repo is the canonica
 
 ## See Also
 
-- **SDLC & Development Workflow**: `docs/DEVELOPMENT_WORKFLOW.md` ← Start here for dev process
+- **SDLC & Development Workflow**: `.claude/DEVELOPMENT_WORKFLOW.md` ← Start here for dev process
 - **Orchestration Reliability Plan**: `docs/planning/ORCHESTRATION_RELIABILITY_2026-04.md` ← Active direction for execution stack; read before extending orchestration primitives
 - **Full Architecture**: @docs/memory/architecture.md
 - **All Requirements**: `.claude/memory/requirements.md`

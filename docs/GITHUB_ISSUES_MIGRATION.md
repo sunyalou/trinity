@@ -1,6 +1,6 @@
 # GitHub Issues Migration Plan
 
-> **Status**: Migration complete. Roadmap is now tracked via GitHub Issues and the **Trinity Roadmap** project board. The old `docs/memory/roadmap.md` has been archived to `docs/memory/roadmap-archive.md`. See `docs/DEVELOPMENT_WORKFLOW.md` for the current SDLC.
+> **Status**: Migration complete. Roadmap is now tracked via GitHub Issues and the **Trinity Roadmap** project board. The old `docs/memory/roadmap.md` has been archived to `docs/memory/roadmap-archive.md`. See `CONTRIBUTING.md` for the current SDLC.
 >
 > Original purpose: Migrate from `docs/memory/roadmap.md` to GitHub Issues for roadmap tracking.
 

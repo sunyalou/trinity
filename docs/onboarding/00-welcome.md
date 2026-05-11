@@ -189,7 +189,7 @@ Here's what your first few days with Trinity might look like:
 For advanced topics, explore the main documentation:
 - **[Trinity Compatible Agent Guide](../TRINITY_COMPATIBLE_AGENT_GUIDE.md)** — Build custom agent templates
 - **[Multi-Agent System Guide](../MULTI_AGENT_SYSTEM_GUIDE.md)** — Design complex multi-agent systems
-- **[Development Workflow](../DEVELOPMENT_WORKFLOW.md)** — Contribute to Trinity
+- **[Contributing Guide](../../../CONTRIBUTING.md)** — Contribute to Trinity
 - **[Deployment Guide](../DEPLOYMENT.md)** — Production deployment
 
 ---
