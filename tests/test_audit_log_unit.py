@@ -30,14 +30,9 @@ _backend_path = os.path.abspath(
 if _backend_path not in sys.path:
     sys.path.insert(0, _backend_path)
 
-# Stub utils.helpers (tests/utils shadows src/backend/utils in this env).
-if "utils.helpers" not in sys.modules:
-    _helpers = types.ModuleType("utils.helpers")
-    _helpers.utc_now = lambda: datetime.utcnow()
-    _helpers.utc_now_iso = lambda: datetime.utcnow().isoformat() + "Z"
-    _helpers.to_utc_iso = lambda v: str(v)
-    _helpers.parse_iso_timestamp = lambda s: datetime.fromisoformat(s.rstrip("Z"))
-    sys.modules["utils.helpers"] = _helpers
+# Note: `utils.helpers` is preloaded as the real backend module by
+# tests/conftest.py (_preload_backend_helpers_submodule). The tests/conftest.py
+# autouse fixture also restores it after every test (Issue #762).
 
 
 # ---------------------------------------------------------------------------
@@ -124,11 +119,11 @@ def audit_db(monkeypatch):
 
 
 @pytest.fixture
-def audit_ops(audit_db):
+def audit_ops(audit_db, monkeypatch):
     """Fresh PlatformAuditOperations instance using the temp DB."""
     # Force reimport so the new db.connection stub is picked up.
-    if "db.audit" in sys.modules:
-        del sys.modules["db.audit"]
+    # monkeypatch.delitem auto-restores db.audit after the test (Issue #762).
+    monkeypatch.delitem(sys.modules, "db.audit", raising=False)
     from db.audit import PlatformAuditOperations
 
     return PlatformAuditOperations()
@@ -344,8 +339,8 @@ def test_missing_entry_returns_none(audit_ops):
 def audit_service(audit_db, monkeypatch, audit_ops):
     """PlatformAuditService wired to the temp DB via a fake `database.db`."""
     # Reimport to pick up the temp DB.
-    if "services.platform_audit_service" in sys.modules:
-        del sys.modules["services.platform_audit_service"]
+    # monkeypatch.delitem auto-restores after the test (Issue #762).
+    monkeypatch.delitem(sys.modules, "services.platform_audit_service", raising=False)
 
     fake_db_module = types.ModuleType("database")
     fake_db = MagicMock()

@@ -184,6 +184,80 @@ _preload_backend_models()
 _preload_backend_routers_namespace()
 
 # ---------------------------------------------------------------------------
+# Issue #762: cross-file sys.modules pollution baseline + autouse restore.
+#
+# Several root-level test files (e.g. test_validation.py, test_watchdog_unit.py,
+# test_self_execute.py, test_inter_agent_timeout_unit.py) stub `utils.helpers`,
+# `database`, `models`, `services.*` etc. into sys.modules at module-collection
+# time (top-level `sys.modules[k] = stub`). When `test_audit_log_unit.py` runs
+# its fixtures later, `from db.audit import ...` triggers
+#   db/__init__.py → db/schedules.py → from utils.helpers import iso_cutoff
+# and fails because the cached `utils.helpers` is the stub, not the real
+# backend module.
+#
+# Fix: capture each invariant module's object ONCE at conftest import (after
+# the preloads above have run), and restore it after every test. This is
+# function-scoped because the bug is intra-session pollution; per-test restore
+# is the right granularity.
+#
+# Codex review pin: the snapshot MUST be captured at conftest import time, not
+# at fixture setup. A fixture-setup snapshot would record an already-polluted
+# value and treat it as truth. This block runs immediately after
+# _preload_backend_models() / _preload_backend_routers_namespace() so the
+# baseline is the pristine post-preload state.
+# ---------------------------------------------------------------------------
+_SYS_MODULES_INVARIANT_KEYS = (
+    # Backend canonical modules pre-loaded above.
+    "utils.helpers",
+    "models",
+    # `db.*` subtree: stale entries break `from db.audit import ...` etc.
+    "db",
+    "db.audit",
+    "db.connection",
+    "db.schedules",
+    "db.users",
+    "db.agents",
+    "db.activities",
+    "db.chat",
+    "db.mcp_keys",
+    "db.permissions",
+    "db.shared_folders",
+    "db.settings",
+    # `database` is mocked by test_validation.py at line 43.
+    "database",
+    # Services: stubbed by test_validation.py (task_execution_service),
+    # test_telegram_webhook_backfill.py (platform_audit_service,
+    # settings_service), etc.
+    "services",
+    "services.platform_audit_service",
+    "services.settings_service",
+    "services.task_execution_service",
+    "services.validation_service",
+    # Dependencies / adapters: stubbed by various adapter unit tests.
+    "dependencies",
+    "adapters",
+    "adapters.transports",
+    # Utility shadows.
+    "utils.credential_sanitizer",
+)
+
+_SYS_MODULES_BASELINE = {
+    k: sys.modules.get(k) for k in _SYS_MODULES_INVARIANT_KEYS
+}
+
+
+def _restore_invariant_sys_modules() -> None:
+    """Restore invariant keys whose baseline value was a real module object.
+    Keys that had no baseline (None) are left untouched — they may be
+    deliberate stubs installed by individual test files for their own use
+    (e.g. test_validation.py stubs `services.task_execution_service`),
+    and evicting them would break those tests."""
+    for k, baseline in _SYS_MODULES_BASELINE.items():
+        if baseline is not None:
+            sys.modules[k] = baseline
+
+
+# ---------------------------------------------------------------------------
 # End of early-init block
 # ---------------------------------------------------------------------------
 
@@ -192,6 +266,19 @@ import pytest
 import uuid
 import time
 from typing import Generator
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_modules_baseline_762():
+    """Autouse: restore the pristine post-preload sys.modules baseline both
+    before AND after every test. Defends against cross-file pollution from
+    test files that install stubs into sys.modules at module-collection time
+    (Issue #762) — restore-before catches collection-time pollution that
+    landed before this test ran; restore-after catches pollution from inside
+    the test itself."""
+    _restore_invariant_sys_modules()
+    yield
+    _restore_invariant_sys_modules()
 
 from utils.api_client import TrinityApiClient, ApiConfig
 from utils.cleanup import ResourceTracker, cleanup_test_agent
