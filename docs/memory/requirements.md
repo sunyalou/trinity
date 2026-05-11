@@ -626,6 +626,23 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
   - Admin-only trigger endpoint: `POST /api/monitoring/cleanup-trigger`
 - **Constants**: Interval 300s, execution timeout 120min, activity timeout 120min, watchdog HTTP timeout 5s, dispatch grace 60s
 
+### 12.10 Execution & Health-Check Retention (Issue #772)
+- **Status**: ✅ Implemented (2026-05-11, Issue #772)
+- **Requirement ID**: RETENTION-001
+- **GitHub Issue**: #772
+- **Description**: Bounded growth for `schedule_executions` (driven by per-run JSONL transcripts in `execution_log`, ~150–190 KB/row) and `agent_health_checks` so active fleets don't hit disk pressure within weeks. Production observation pre-fix: ~3.3 GB / ~9k rows on `schedule_executions` and ~200 MB / ~750k rows on `agent_health_checks`.
+- **Key Features**:
+  - **Two-stage retention on `schedule_executions`**: nulling `execution_log` past `execution_log_retention_days` preserves row + metadata (agent, status, cost, duration) for audit; full row DELETE past `execution_row_retention_days` for deeper retention.
+  - **Per-cycle row budget**: each sweep caps at 5000 rows per 5-min cleanup tick so the first post-deploy backfill spans hours rather than holding a multi-minute write lock.
+  - **Chunked SQL**: prune methods iterate `SELECT id ... LIMIT N` → `DELETE/UPDATE id IN (...)`, committing per chunk (avoids `SQLITE_ENABLE_UPDATE_DELETE_LIMIT` dependency).
+  - **`iso_cutoff()` cutoffs**: time-window comparisons against ISO-Z TEXT columns use the helper from `utils/helpers.py`, per Architectural Invariant #16.
+  - **Partial index** `idx_executions_completed_terminal ON schedule_executions(completed_at) WHERE status IN ('completed','failed','terminated')` drives both sweeps via index range scan.
+  - **WAL checkpoint** after each cycle that reclaims rows (`PRAGMA wal_checkpoint(TRUNCATE)`).
+  - **Daily VACUUM** via `db_vacuum_service.py` (APScheduler, 04:30 UTC, autocommit connection) for last-mile page reclaim.
+  - **Admin-configurable** via `GET/PUT /api/settings/ops/config` using new ops keys: `execution_log_retention_days` (default 30), `execution_row_retention_days` (default 90), `health_check_retention_days` (default 7). `0` disables that sweep.
+  - **Backward-compatible**: existing `cleanup_old_records()` (agent_health_checks) is reused with added `chunk_size` parameter; previously orphaned (not invoked from any tick), now wired into the cleanup service.
+- **Constants**: Cleanup tick 300s, per-cycle row budget 5000, vacuum cron 04:30 UTC.
+
 ---
 
 ## 13. Content & File Management

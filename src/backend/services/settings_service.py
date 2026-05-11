@@ -31,6 +31,11 @@ OPS_SETTINGS_DEFAULTS = {
     "ops_log_retention_days": "7",  # Days to keep container logs
     "ops_health_check_interval": "60",  # Seconds between health checks
     "ssh_access_enabled": "false",  # Enable SSH access via MCP tool
+    # Issue #772: retention policy for execution_log + agent_health_checks.
+    # "0" disables that prune step.
+    "execution_log_retention_days": "30",  # Null `execution_log` TEXT after N days
+    "execution_row_retention_days": "90",  # DELETE schedule_executions rows after N days
+    "health_check_retention_days": "7",   # DELETE agent_health_checks rows after N days
 }
 
 # Descriptions for each ops setting
@@ -44,6 +49,9 @@ OPS_SETTINGS_DESCRIPTIONS = {
     "ops_log_retention_days": "Number of days to retain container logs (default: 7)",
     "ops_health_check_interval": "Seconds between automated health checks (default: 60)",
     "ssh_access_enabled": "Enable ephemeral SSH access to agent containers via MCP tool (default: false)",
+    "execution_log_retention_days": "Days to retain the JSONL transcript on schedule_executions (default: 30, 0 = disabled, #772)",
+    "execution_row_retention_days": "Days to retain finished schedule_execution rows; rows older than this are deleted (default: 90, 0 = disabled, #772)",
+    "health_check_retention_days": "Days to retain agent_health_checks rows (default: 7, 0 = disabled, #772)",
 }
 
 

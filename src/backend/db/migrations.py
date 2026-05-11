@@ -2006,6 +2006,22 @@ def _migrate_canary_violations_table(cursor, conn):
     print("Created canary_violations table with indexes (CANARY-001)")
 
 
+def _migrate_execution_retention_index(cursor, conn):
+    """Issue #772: partial index on schedule_executions(completed_at) for terminal rows.
+
+    Drives the execution_log null sweep and the row-delete sweep in
+    cleanup_service. Partial predicate matches the WHERE clause of both sweeps
+    so the planner uses an index range scan rather than a table scan.
+    Idempotent: CREATE INDEX IF NOT EXISTS.
+    """
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_executions_completed_terminal "
+        "ON schedule_executions(completed_at) "
+        "WHERE status IN ('completed', 'failed', 'terminated')"
+    )
+    conn.commit()
+
+
 MIGRATIONS = [
     ("agent_sharing", _migrate_agent_sharing_table),
     ("schedule_executions_observability", _migrate_schedule_executions_observability),
@@ -2064,4 +2080,5 @@ MIGRATIONS = [
     ("public_links_type", _migrate_public_links_type),
     ("slack_bot_token_encryption", _migrate_slack_bot_token_encryption),
     ("canary_violations_table", _migrate_canary_violations_table),
+    ("execution_retention_index", _migrate_execution_retention_index),
 ]

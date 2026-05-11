@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
 from .connection import get_db_connection
-from utils.helpers import utc_now_iso
+from utils.helpers import iso_cutoff, utc_now_iso
 
 
 class MonitoringOperations:
@@ -228,25 +228,53 @@ class MonitoringOperations:
         latencies = [h["latency_ms"] for h in history if h.get("latency_ms") is not None]
         return sum(latencies) / len(latencies) if latencies else None
 
-    def cleanup_old_records(self, days: int = 7) -> int:
+    def cleanup_old_records(self, days: int = 7, chunk_size: int = 1000) -> int:
         """
         Delete health check records older than specified days.
 
-        Returns:
-            Number of deleted records
-        """
-        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat() + "Z"
+        Issue #772: chunked DELETE so production tables with ~750k rows don't
+        hold the write lock for the duration of a full purge. Each chunk
+        commits before the next; total returned is the sum across chunks.
+        Uses `iso_cutoff()` so the lex comparison aligns with `utc_now_iso()`
+        written by `create_health_check` (Architectural Invariant #16).
 
+        Args:
+            days: Delete rows older than this. 0 disables the sweep.
+            chunk_size: Max rows deleted per commit cycle (default 1000).
+
+        Returns:
+            Total rows deleted across all chunks.
+        """
+        if days <= 0 or chunk_size <= 0:
+            return 0
+
+        cutoff = iso_cutoff(hours=days * 24)
+        total = 0
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM agent_health_checks
-                WHERE checked_at < ?
-            """, (cutoff,))
-            deleted = cursor.rowcount
-            conn.commit()
+            while True:
+                cursor.execute(
+                    """
+                    SELECT id FROM agent_health_checks
+                    WHERE checked_at < ?
+                    LIMIT ?
+                    """,
+                    (cutoff, chunk_size),
+                )
+                ids = [row["id"] for row in cursor.fetchall()]
+                if not ids:
+                    break
+                placeholders = ",".join("?" * len(ids))
+                cursor.execute(
+                    f"DELETE FROM agent_health_checks WHERE id IN ({placeholders})",
+                    ids,
+                )
+                conn.commit()
+                total += cursor.rowcount
+                if len(ids) < chunk_size:
+                    break
 
-        return deleted
+        return total
 
     # =========================================================================
     # Alert Cooldowns

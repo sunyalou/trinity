@@ -67,7 +67,7 @@ Singleton pattern via global `cleanup_service` instance (line 141).
 
 ### Cleanup Cycle (`run_cleanup`)
 
-Seven sequential operations plus an hourly maintenance gate, each wrapped in individual try/except. Watchdog runs FIRST to release resources before passive cleanup:
+Nine sequential operations plus an hourly maintenance gate, each wrapped in individual try/except. Watchdog runs FIRST to release resources before passive cleanup:
 
 0. **Watchdog: reconcile DB vs agent process registries** (Issue #129, #226)
    ```python
@@ -120,6 +120,25 @@ Seven sequential operations plus an hourly maintenance gate, each wrapped in ind
    self._cycle_count += 1
    ```
    Runs on cycle 0 (first sweep after boot) and every 12th cycle thereafter — so roughly hourly at the 5-min cleanup interval. Deletes rows from `subscription_rate_limit_events` with `occurred_at < iso_cutoff(24)`. Wired here after #476 confirmed `cleanup_old_rate_limit_events()` had zero production callers; without this, the SUB-003 rate-limit events table would grow unbounded once the lexicographic-compare fix started letting events age correctly.
+
+7. **Retention sweeps: execution_log + execution rows + health_checks** (Issue #772)
+   ```python
+   log_days, row_days, hc_days = _read_retention_settings()
+   if log_days > 0:
+       report.execution_logs_pruned = db.prune_execution_logs(log_days, RETENTION_CHUNK_SIZE_PER_CYCLE)
+   if row_days > 0:
+       report.execution_rows_pruned = db.prune_execution_rows(row_days, RETENTION_CHUNK_SIZE_PER_CYCLE)
+   if hc_days > 0:
+       report.health_checks_pruned = db.cleanup_old_health_records(hc_days, RETENTION_CHUNK_SIZE_PER_CYCLE)
+   ```
+   Three independent sweeps, each gated on its own ops-config retention window (`execution_log_retention_days` default 30, `execution_row_retention_days` default 90, `health_check_retention_days` default 7). `0` disables the corresponding sweep. Per-cycle row budget capped at `RETENTION_CHUNK_SIZE_PER_CYCLE = 5000` so the first post-deploy backfill spreads across multiple ticks rather than holding the write lock end-to-end. All cutoffs use `iso_cutoff()` (Architectural Invariant #16). The two execution sweeps share the partial index `idx_executions_completed_terminal ON schedule_executions(completed_at) WHERE status IN ('completed','failed','terminated')`.
+
+8. **WAL checkpoint after reclaim** (Issue #772)
+   ```python
+   if (report.execution_logs_pruned + report.execution_rows_pruned + report.health_checks_pruned) > 0:
+       _wal_checkpoint_truncate()  # PRAGMA wal_checkpoint(TRUNCATE)
+   ```
+   Returns freed pages to the OS so the on-disk size actually shrinks. Cheap — runs only when a retention sweep produced work. Full `VACUUM` is delegated to a separate daily APScheduler job in `services/db_vacuum_service.py` (04:30 UTC, autocommit connection) because VACUUM holds an exclusive lock and is unsuitable for the 5-min cadence.
 
 ### Watchdog Reconciliation (Issue #129)
 

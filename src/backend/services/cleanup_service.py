@@ -37,6 +37,13 @@ WATCHDOG_HTTP_TIMEOUT = 5.0  # Timeout for agent HTTP calls during reconciliatio
 WATCHDOG_MIN_AGE_SECONDS = 60  # Don't orphan-recover executions younger than this (dispatch window)
 ERROR_FETCH_TIMEOUT = 2.0  # Issue #286: short timeout for fetching error context from agent
 MAX_ERROR_MESSAGE_LENGTH = 2000  # Issue #286: truncate combined error messages
+# Issue #772: per-cycle row budget for retention sweeps. Caps the work each
+# 5-min tick performs so the first post-deploy backfill (potentially GB of
+# execution_log on production instances) is spread over hours, not held in a
+# single multi-minute write lock. At 5000 rows/cycle the worst observed prod
+# backlog (~9000 terminal rows past 30 days) drains in 2 cycles; for the
+# 90-day row-delete sweep on the same fleet that's roughly one cycle.
+RETENTION_CHUNK_SIZE_PER_CYCLE = 5000
 
 # WebSocket manager (injected from main.py)
 _ws_manager = None
@@ -46,6 +53,57 @@ def set_cleanup_ws_manager(manager):
     """Set the WebSocket manager for watchdog event broadcasting."""
     global _ws_manager
     _ws_manager = manager
+
+
+def _read_retention_settings() -> tuple[int, int, int]:
+    """Read retention windows from ops settings (#772).
+
+    Returns:
+        (execution_log_retention_days, execution_row_retention_days,
+         health_check_retention_days). 0 means the sweep is disabled.
+        Invalid (non-integer or negative) values are coerced to 0 so a
+        malformed setting can't accidentally enable an unbounded prune.
+    """
+    from services.settings_service import OPS_SETTINGS_DEFAULTS
+
+    def _read(key: str) -> int:
+        raw = db.get_setting_value(key, OPS_SETTINGS_DEFAULTS.get(key, "0"))
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return 0
+        return max(value, 0)
+
+    return (
+        _read("execution_log_retention_days"),
+        _read("execution_row_retention_days"),
+        _read("health_check_retention_days"),
+    )
+
+
+def _wal_checkpoint_truncate() -> None:
+    """Run PRAGMA wal_checkpoint(TRUNCATE) to return freed pages to the OS.
+
+    Called after retention sweeps reclaim measurable space. TRUNCATE mode is
+    safe under concurrent readers — it only blocks if another writer holds
+    the lock, in which case the checkpoint returns busy and we move on.
+    """
+    from db.connection import get_db_connection
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        # PRAGMA result is (busy, log_pages, checkpointed) — log at debug
+        # only; non-zero busy is normal under contention.
+        try:
+            row = cursor.fetchone()
+            if row is not None:
+                logger.debug(
+                    "[Cleanup] wal_checkpoint(TRUNCATE) "
+                    f"busy={row[0]} log_pages={row[1]} checkpointed={row[2]}"
+                )
+        except Exception:
+            pass
 
 
 @dataclass
@@ -60,13 +118,19 @@ class CleanupReport:
     stale_slots: int = 0
     stale_slot_executions: int = 0  # Issue #219: executions failed when their slot was reclaimed
     shared_files_purged: int = 0  # C4 / FILES-001: expired or old-revoked file shares
+    # Issue #772: retention sweeps
+    execution_logs_pruned: int = 0
+    execution_rows_pruned: int = 0
+    health_checks_pruned: int = 0
 
     @property
     def total(self) -> int:
         return (self.orphaned_executions + self.auto_terminated +
                 self.stale_executions + self.no_session_executions +
                 self.orphaned_skipped + self.stale_activities + self.stale_slots +
-                self.stale_slot_executions + self.shared_files_purged)
+                self.stale_slot_executions + self.shared_files_purged +
+                self.execution_logs_pruned + self.execution_rows_pruned +
+                self.health_checks_pruned)
 
     def to_dict(self) -> Dict:
         return {
@@ -79,6 +143,9 @@ class CleanupReport:
             "stale_slots": self.stale_slots,
             "stale_slot_executions": self.stale_slot_executions,
             "shared_files_purged": self.shared_files_purged,
+            "execution_logs_pruned": self.execution_logs_pruned,
+            "execution_rows_pruned": self.execution_rows_pruned,
+            "health_checks_pruned": self.health_checks_pruned,
             "total": self.total,
         }
 
@@ -245,6 +312,75 @@ class CleanupService:
                 )
         except Exception as e:
             logger.error(f"[Cleanup] Error purging shared files: {e}")
+
+        # 4c. Issue #772: retention pruning for execution_log, execution rows,
+        # and agent_health_checks. All three obey the configurable retention
+        # window from ops settings; "0" disables the corresponding sweep.
+        # Per-cycle budget caps each sweep so the first post-deploy backfill
+        # spans multiple cycles instead of holding the write lock end-to-end.
+        try:
+            log_days, row_days, hc_days = _read_retention_settings()
+        except Exception as e:
+            logger.error(f"[Cleanup] Error reading retention settings: {e}")
+            log_days = row_days = hc_days = 0
+
+        if log_days > 0:
+            try:
+                pruned = db.prune_execution_logs(
+                    retention_days=log_days,
+                    chunk_size=RETENTION_CHUNK_SIZE_PER_CYCLE,
+                )
+                report.execution_logs_pruned = pruned
+                if pruned > 0:
+                    logger.info(
+                        f"[Cleanup] Nulled execution_log on {pruned} executions "
+                        f"older than {log_days} days (#772)"
+                    )
+            except Exception as e:
+                logger.error(f"[Cleanup] Error pruning execution_log: {e}")
+
+        if row_days > 0:
+            try:
+                pruned = db.prune_execution_rows(
+                    retention_days=row_days,
+                    chunk_size=RETENTION_CHUNK_SIZE_PER_CYCLE,
+                )
+                report.execution_rows_pruned = pruned
+                if pruned > 0:
+                    logger.info(
+                        f"[Cleanup] Deleted {pruned} schedule_executions rows "
+                        f"older than {row_days} days (#772)"
+                    )
+            except Exception as e:
+                logger.error(f"[Cleanup] Error pruning execution rows: {e}")
+
+        if hc_days > 0:
+            try:
+                pruned = db.cleanup_old_health_records(
+                    days=hc_days,
+                    chunk_size=RETENTION_CHUNK_SIZE_PER_CYCLE,
+                )
+                report.health_checks_pruned = pruned
+                if pruned > 0:
+                    logger.info(
+                        f"[Cleanup] Deleted {pruned} agent_health_checks rows "
+                        f"older than {hc_days} days (#772)"
+                    )
+            except Exception as e:
+                logger.error(f"[Cleanup] Error pruning health checks: {e}")
+
+        # 4d. Issue #772: after a retention sweep reclaims meaningful space,
+        # truncate the WAL so the OS sees the free pages. Checkpoint is cheap
+        # and safe to run per-cycle when there's work to do; full VACUUM is
+        # gated to a daily off-peak job (see start()).
+        retention_total = (report.execution_logs_pruned
+                           + report.execution_rows_pruned
+                           + report.health_checks_pruned)
+        if retention_total > 0:
+            try:
+                _wal_checkpoint_truncate()
+            except Exception as e:
+                logger.warning(f"[Cleanup] WAL checkpoint failed: {e}")
 
         self._cycle_count += 1
 

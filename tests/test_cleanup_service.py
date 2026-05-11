@@ -50,19 +50,19 @@ class TestCleanupStatus:
             assert "orphaned_skipped" in report, "Missing orphaned_skipped field"
             # Verify Issue #219 field exists
             assert "stale_slot_executions" in report, "Missing stale_slot_executions field"
+            # Issue #772: retention sweeps
+            assert "execution_logs_pruned" in report, "Missing execution_logs_pruned field (#772)"
+            assert "execution_rows_pruned" in report, "Missing execution_rows_pruned field (#772)"
+            assert "health_checks_pruned" in report, "Missing health_checks_pruned field (#772)"
             # Verify existing fields still present
             assert "stale_executions" in report
             assert "stale_activities" in report
             assert "stale_slots" in report
             assert "total" in report
-            # Total should be sum of all fields
-            expected_total = (
-                report["stale_executions"]
-                + report["no_session_executions"]
-                + report["orphaned_skipped"]
-                + report["stale_activities"]
-                + report["stale_slots"]
-                + report["stale_slot_executions"]
+            # Total = sum of every int counter except `total` itself
+            expected_total = sum(
+                v for k, v in report.items()
+                if k != "total" and isinstance(v, int)
             )
             assert report["total"] == expected_total
 
@@ -90,12 +90,22 @@ class TestCleanupTrigger:
         assert "no_session_executions" in report, "Missing no_session_executions field"
         assert "orphaned_skipped" in report, "Missing orphaned_skipped field"
         assert "stale_slot_executions" in report, "Missing stale_slot_executions field (#219)"
+        # Issue #772: retention sweeps
+        assert "execution_logs_pruned" in report, "Missing execution_logs_pruned field (#772)"
+        assert "execution_rows_pruned" in report, "Missing execution_rows_pruned field (#772)"
+        assert "health_checks_pruned" in report, "Missing health_checks_pruned field (#772)"
         assert isinstance(report["no_session_executions"], int)
         assert isinstance(report["orphaned_skipped"], int)
         assert isinstance(report["stale_slot_executions"], int)
+        assert isinstance(report["execution_logs_pruned"], int)
+        assert isinstance(report["execution_rows_pruned"], int)
+        assert isinstance(report["health_checks_pruned"], int)
         assert report["no_session_executions"] >= 0
         assert report["orphaned_skipped"] >= 0
         assert report["stale_slot_executions"] >= 0
+        assert report["execution_logs_pruned"] >= 0
+        assert report["execution_rows_pruned"] >= 0
+        assert report["health_checks_pruned"] >= 0
 
     def test_trigger_cleanup_total_includes_all_fields(self, api_client: TrinityApiClient):
         """Cleanup total correctly sums all fields including Issue #106 and #219 additions."""
@@ -103,13 +113,9 @@ class TestCleanupTrigger:
         assert_status(response, 200)
         report = response.json()["report"]
 
-        expected_total = (
-            report["stale_executions"]
-            + report["no_session_executions"]
-            + report["orphaned_skipped"]
-            + report["stale_activities"]
-            + report["stale_slots"]
-            + report["stale_slot_executions"]
+        expected_total = sum(
+            v for k, v in report.items()
+            if k != "total" and isinstance(v, int)
         )
         assert report["total"] == expected_total
 
