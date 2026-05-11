@@ -950,7 +950,7 @@ docker logs --tail=100 agent-AGENT-NAME > agent.log
 1. **Documentation**:
    - [Trinity Compatible Agent Guide](../TRINITY_COMPATIBLE_AGENT_GUIDE.md)
    - [Multi-Agent System Guide](../MULTI_AGENT_SYSTEM_GUIDE.md)
-   - [Development Workflow](../DEVELOPMENT_WORKFLOW.md)
+   - [Contributing Guide](../../CONTRIBUTING.md)
 
 2. **GitHub Issues**:
    - Search existing issues: https://github.com/abilityai/trinity/issues
