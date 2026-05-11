@@ -350,11 +350,13 @@ async def preview_file(path: str):
             # Default to binary for unknown types
             mime_type = "application/octet-stream"
 
-        # Return file with correct Content-Type for browser preview
+        # Return file with correct Content-Type for browser preview.
+        # Use inline disposition so text/media files render in the preview
+        # panel rather than triggering a download.
         return FileResponse(
             path=requested_path,
             media_type=mime_type,
-            filename=requested_path.name
+            headers={"Content-Disposition": f'inline; filename="{requested_path.name}"'}
         )
 
     except Exception as e:
