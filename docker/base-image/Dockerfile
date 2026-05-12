@@ -1,4 +1,8 @@
-FROM ubuntu:22.04
+# Python 3.11 is provided by the official python image (Debian Bookworm
+# slim). This eliminates the dependency on ppa:deadsnakes/ppa, which has
+# no SLA and historically blocked deployment of critical agent-runtime
+# fixes for days at a time when the PPA was unreachable. See #658.
+FROM python:3.11-slim-bookworm
 
 # Version tracking - set at build time via --build-arg VERSION=x.y.z
 ARG VERSION=latest
@@ -8,7 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=America/New_York
 ENV TRINITY_BASE_VERSION="${VERSION}"
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     git \
@@ -16,7 +20,6 @@ RUN apt-get update && apt-get install -y \
     nano \
     htop \
     build-essential \
-    software-properties-common \
     apt-transport-https \
     ca-certificates \
     gnupg \
@@ -27,22 +30,20 @@ RUN apt-get update && apt-get install -y \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-RUN add-apt-repository -y ppa:deadsnakes/ppa && \
-    apt-get update && \
-    apt-get install -y python3.11 python3.11-venv python3.11-dev python3-pip && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
-
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN wget -q https://go.dev/dl/go1.23.4.linux-amd64.tar.gz && \
     tar -C /usr/local -xzf go1.23.4.linux-amd64.tar.gz && \
     rm go1.23.4.linux-amd64.tar.gz
 
-RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null && \
+# Docker apt repo for debian (was linux/ubuntu when the base was ubuntu:22.04).
+RUN curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null && \
     apt-get update && \
-    apt-get install -y docker-ce-cli
+    apt-get install -y --no-install-recommends docker-ce-cli && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @anthropic-ai/claude-code@latest
 
