@@ -35,6 +35,20 @@ ACTIVITY_STALE_TIMEOUT_MINUTES = 120  # SCHED-ASYNC-001: increased from 30 to su
 NO_SESSION_TIMEOUT_SECONDS = 60  # Issue #106: fast-fail executions that never got a Claude session
 WATCHDOG_HTTP_TIMEOUT = 5.0  # Timeout for agent HTTP calls during reconciliation
 WATCHDOG_MIN_AGE_SECONDS = 60  # Don't orphan-recover executions younger than this (dispatch window)
+# #749: grace window for the Redis-side orphan-slot sweep. A slot whose
+# ZSET score (unix seconds, recorded at ZADD time) is within this many
+# seconds of "now" may belong to a concurrent /internal/execute-task
+# handler that has done its ZADD but not yet inserted the SQL row.
+# Symmetric with the SQL-side window in `recover_orphaned_executions`.
+SLOT_RECOVERY_GRACE_SECONDS = 15
+# Terminal SQL statuses that mean "the row is done; any matching Redis
+# slot is a leak." Mirrors the values in models.TaskExecutionStatus.
+_TERMINAL_EXECUTION_STATUSES = {"success", "failed", "cancelled", "skipped"}
+# #749: members starting with this prefix are drain sentinels used by
+# the capacity manager — not real executions — and must be skipped by
+# the orphan-slot sweep. Matches the canary S-01 filter
+# (`canary/invariants/s01_slot_row_bijection.py:DRAIN_PREFIX`).
+_DRAIN_SENTINEL_PREFIX = "drain-"
 ERROR_FETCH_TIMEOUT = 2.0  # Issue #286: short timeout for fetching error context from agent
 MAX_ERROR_MESSAGE_LENGTH = 2000  # Issue #286: truncate combined error messages
 # Issue #772: per-cycle row budget for retention sweeps. Caps the work each
@@ -906,19 +920,36 @@ cleanup_service = CleanupService()
 async def recover_orphaned_executions() -> Dict:
     """Recover orphaned task executions on backend startup.
 
-    Checks each 'running' schedule execution against the agent's container
-    and process registry. Executions not found on the agent are marked failed
-    and their capacity slots released.
+    Two passes:
+
+      1. SQL→Redis (legacy): for each 'running' schedule execution row,
+         check the agent's container and process registry — if missing,
+         mark the row failed and release any capacity slot.
+      2. Redis→SQL (#749): scan ``agent:slots:*`` for members whose SQL
+         row is terminal or missing and ZREM them. Necessary because a
+         backend kill between slot ZADD and the finally-block ZREM leaves
+         the slot leaked, and the SQL→Redis pass cannot see Redis-only
+         orphans.
 
     Returns:
-        Dict with recovered, still_running, and errors counts.
+        Dict with recovered, still_running, errors, and redis_slots_reclaimed
+        counts.
     """
     from services.agent_client import AgentClientError, get_agent_client
     from services.docker_service import get_agent_container
 
     running = db.get_running_executions()
     if not running:
-        return {"recovered": 0, "still_running": 0, "errors": 0}
+        # #749: still run the Redis-side sweep — orphan slots can exist
+        # even when SQL has zero running rows (that is in fact the
+        # textbook symptom of the kill-between-ZADD-and-ZREM bug).
+        redis_reclaimed = await _reconcile_orphaned_slots()
+        return {
+            "recovered": 0,
+            "still_running": 0,
+            "errors": 0,
+            "redis_slots_reclaimed": sum(redis_reclaimed.values()),
+        }
 
     capacity = get_capacity_manager()
 
@@ -968,7 +999,21 @@ async def recover_orphaned_executions() -> Dict:
         f"[Recovery] Task execution recovery complete: "
         f"recovered={recovered}, still_running={still_running}, errors={errors}"
     )
-    return {"recovered": recovered, "still_running": still_running, "errors": errors}
+
+    # #749: complete the asymmetric pair. The SQL→Redis pass above flips
+    # SQL rows to FAILED when Redis lost their slot; the Redis→SQL pass
+    # below ZREMs slots whose SQL row is terminal or missing (e.g. backend
+    # killed between ZADD and ZREM). Without this pass the leaked slot
+    # persists until 1200s TTL or the next acquire on this agent.
+    redis_reclaimed = await _reconcile_orphaned_slots()
+    redis_reclaimed_total = sum(redis_reclaimed.values())
+
+    return {
+        "recovered": recovered,
+        "still_running": still_running,
+        "errors": errors,
+        "redis_slots_reclaimed": redis_reclaimed_total,
+    }
 
 
 async def _recover_execution(execution: Dict, agent_name: str, capacity) -> bool:
@@ -985,3 +1030,117 @@ async def _recover_execution(execution: Dict, agent_name: str, capacity) -> bool
     except Exception as e:
         logger.error(f"[Recovery] Error recovering execution {execution['id']}: {e}")
         return False
+
+
+async def _reconcile_orphaned_slots() -> Dict[str, int]:
+    """Sweep Redis for slot members that have no live SQL execution (#749).
+
+    SQL→Redis recovery (the existing path in `recover_orphaned_executions`)
+    flips SQL rows to FAILED when Redis lost their slot. It is asymmetric —
+    it doesn't catch the inverse leak, where Redis still holds a slot for an
+    execution whose SQL row is either terminal (someone wrote SUCCESS /
+    FAILED already) or missing entirely. That happens whenever the backend
+    is killed between `capacity.acquire()` (ZADD) and the `finally`-block
+    `capacity.release()` (ZREM): the in-flight handler dies, the slot
+    stays. The canary S-01 invariant (Issue #411) detects exactly this
+    shape; rows #26/#27/#28 in `canary_violations` reproduced it three
+    cycles in a row during the same incident as #748.
+
+    For each Redis slot member we:
+
+      - skip drain sentinels (members starting with ``drain-``) — they
+        are not executions;
+      - skip members whose ZSET score is within
+        ``SLOT_RECOVERY_GRACE_SECONDS`` of "now" — they may belong to a
+        concurrent /internal/execute-task handler that has done its ZADD
+        but not yet committed the SQL row (mirrors the SQL-side grace
+        window in #748);
+      - look up the execution by id in SQL: if the row is missing or its
+        status is terminal (success/failed/cancelled/skipped), the slot
+        is orphaned → ZREM the member and DELETE its metadata key.
+
+    Returns a dict ``{agent_name: int}`` counting reclaimed slots per
+    agent. Never raises — Redis-unreachable errors are logged and the
+    call returns whatever was reclaimed before the failure.
+    """
+    import time
+
+    from services.slot_service import get_slot_service
+
+    try:
+        slot_service = get_slot_service()
+    except Exception as e:
+        logger.error(f"[Recovery] Slot service unavailable; skipping Redis sweep: {e}")
+        return {}
+
+    redis_client = slot_service.redis
+    prefix = slot_service.slots_prefix
+    grace_cutoff = time.time() - SLOT_RECOVERY_GRACE_SECONDS
+
+    reclaimed: Dict[str, int] = {}
+
+    # SCAN the agent:slots:* keyspace (matches canary/snapshot.py:325 and
+    # slot_service.cleanup_stale_slots — same SCAN pattern, count=200 to
+    # keep network round-trips low under fleet scale).
+    cursor = 0
+    try:
+        while True:
+            cursor, keys = redis_client.scan(cursor=cursor, match=f"{prefix}*", count=200)
+            for key in keys:
+                # decode_responses=True → key is str.
+                agent_name = key[len(prefix):]
+                try:
+                    members_with_scores = redis_client.zrange(
+                        key, 0, -1, withscores=True
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        f"[Recovery] ZRANGE failed for {key}: {exc}"
+                    )
+                    continue
+
+                for execution_id, score in members_with_scores:
+                    if execution_id.startswith(_DRAIN_SENTINEL_PREFIX):
+                        continue
+                    if float(score) >= grace_cutoff:
+                        # In the grace window — may be an in-flight ZADD
+                        # whose SQL row hasn't been written yet.
+                        continue
+
+                    row = db.get_execution(execution_id)
+                    if row is not None and row.status not in _TERMINAL_EXECUTION_STATUSES:
+                        # Still active — leave the slot alone.
+                        continue
+
+                    # Orphan: SQL row missing OR terminal. Reclaim the slot.
+                    try:
+                        removed = redis_client.zrem(key, execution_id)
+                        if removed:
+                            metadata_key = slot_service._metadata_key(
+                                agent_name, execution_id
+                            )
+                            redis_client.delete(metadata_key)
+                            reclaimed[agent_name] = reclaimed.get(agent_name, 0) + 1
+                            logger.info(
+                                f"[Recovery] Reclaimed orphan slot: agent='{agent_name}' "
+                                f"execution_id='{execution_id}' "
+                                f"sql_status={'<missing>' if row is None else row.status}"
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            f"[Recovery] ZREM failed for {key}/{execution_id}: {exc}"
+                        )
+
+            if cursor == 0:
+                break
+    except Exception as e:
+        # SCAN itself blew up — return partial results.
+        logger.error(f"[Recovery] Redis SCAN failed during orphan-slot sweep: {e}")
+
+    total = sum(reclaimed.values())
+    if total:
+        logger.info(
+            f"[Recovery] Orphan-slot sweep reclaimed {total} slot(s) across "
+            f"{len(reclaimed)} agent(s)"
+        )
+    return reclaimed

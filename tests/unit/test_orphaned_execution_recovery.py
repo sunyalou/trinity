@@ -103,7 +103,12 @@ class TestRecoverOrphanedExecutions:
         with patch.dict('sys.modules', _SYS_MOCKS):
             result = _run(_recover_fn())
 
-        assert result == {"recovered": 0, "still_running": 0, "errors": 0}
+        # Key-by-key — additional diagnostic keys (e.g. skipped_grace from
+        # #748, redis_slots_reclaimed from #749) may be added to the result
+        # dict over time; the contract here is the per-counter shape.
+        assert result["recovered"] == 0
+        assert result["still_running"] == 0
+        assert result["errors"] == 0
 
     def test_container_down_marks_orphaned(self):
         _mock_db.get_running_executions.return_value = [
