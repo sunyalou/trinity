@@ -103,7 +103,14 @@ class TestRecoverOrphanedExecutions:
         with patch.dict('sys.modules', _SYS_MOCKS):
             result = _run(_recover_fn())
 
-        assert result == {"recovered": 0, "still_running": 0, "errors": 0}
+        # #748: added skipped_grace counter to the result dict for the
+        # startup-recovery grace-window path.
+        assert result == {
+            "recovered": 0,
+            "still_running": 0,
+            "skipped_grace": 0,
+            "errors": 0,
+        }
 
     def test_container_down_marks_orphaned(self):
         _mock_db.get_running_executions.return_value = [
