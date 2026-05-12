@@ -507,7 +507,7 @@ class TestDrainOrphanKillerTimeout:
 
         orphan_killer_started = threading.Event()
 
-        def _slow_orphan_killer(fd: int, our_pgid) -> int:
+        def _slow_orphan_killer(fd: int, our_pgid, _scan_deadline=None) -> int:
             orphan_killer_started.set()
             time.sleep(100)  # simulate /proc scan blocked on D-state process
             return 0
@@ -799,3 +799,61 @@ sys.exit(0)
                 terminate_process_group(proc, graceful_timeout=1, pgid=claude_pgid)
             except Exception:
                 pass
+
+    def test_scan_deadline_stops_scan_early(self):
+        """Issue #808: _scan_deadline halts /proc iteration after budget expires.
+
+        We pass a deadline that is already in the past (monotonic() - 1) so
+        the scan must abort on the very first PID it encounters, returning 0
+        killed instead of scanning all of /proc.  This verifies that the
+        deadline check is evaluated per-iteration, not just at the start.
+        """
+        import subprocess_pgroup as spg
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        pgid = capture_pgid(proc)
+        assert pgid is not None
+
+        try:
+            assert proc.stdout is not None
+            # Deadline already expired — the scan should bail out immediately.
+            expired_deadline = time.monotonic() - 1.0
+            start = time.monotonic()
+            killed = spg._kill_orphan_pipe_writers(
+                proc.stdout.fileno(), pgid, _scan_deadline=expired_deadline
+            )
+            elapsed = time.monotonic() - start
+
+            # With an already-expired deadline the scan must abort quickly.
+            assert elapsed < 1.0, (
+                f"scan with expired deadline took {elapsed:.2f}s — deadline check not per-iteration"
+            )
+            # Our own process holds the read end and the child is in pgid, so
+            # killed==0 is the correct answer regardless of the deadline path.
+            assert killed == 0
+        finally:
+            terminate_process_group(proc, graceful_timeout=1, pgid=pgid)
+
+
+@pytest.mark.unit
+class TestSetIdlePriority:
+    """Issue #808: _set_idle_priority() must not raise on any supported platform."""
+
+    def test_does_not_raise(self):
+        """Call from the current thread — must complete without raising on
+        Linux (SCHED_IDLE or nice) and macOS (nice fallback)."""
+        import subprocess_pgroup as spg
+        # Must not raise regardless of platform or privilege level.
+        spg._set_idle_priority()
+
+    def test_idempotent(self):
+        """Calling twice in the same thread is safe."""
+        import subprocess_pgroup as spg
+        spg._set_idle_priority()
+        spg._set_idle_priority()

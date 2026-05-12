@@ -181,8 +181,49 @@ def _read_proc_cmdline(pid: int, max_len: int = 200) -> str:
 # with full identity. (#640 follow-up to #618.)
 _ORPHAN_LOG_DETAIL_CAP = 10
 
+# Hard wall-clock budget for the /proc scan inside the orphan-killer daemon
+# thread.  Must be shorter than the asyncio.wait_for(…, timeout=11) ceiling
+# that gates us in drain_reader_threads so we abandon scanning before the
+# event-loop timeout fires.  8 seconds leaves a 3-second margin. (#808)
+_ORPHAN_SCAN_WALL_SECONDS = 8
 
-def _kill_orphan_pipe_writers(pipe_read_fd: int, our_pgid: Optional[int]) -> int:
+
+def _set_idle_priority() -> None:
+    """Lower the calling thread to the lowest possible scheduling priority.
+
+    On Linux this uses SCHED_IDLE (the scheduler's background tier) which
+    only runs when no other runnable thread wants the CPU.  This prevents
+    the orphan-killer daemon thread from starving the uvicorn event loop on
+    single-CPU containers — health probes that arrive while the scan is
+    looping can still be served. (#808)
+
+    Falls back to nice(19) on non-Linux POSIX systems (e.g. macOS in CI).
+    No-op on platforms that support neither — the scan proceeds at normal
+    priority in that case, which is acceptable because the SCHED_IDLE path
+    is only critical on the 1-CPU production containers.
+    """
+    try:
+        if hasattr(os, "sched_setscheduler") and hasattr(os, "SCHED_IDLE"):
+            # SCHED_IDLE is a Linux extension; POSIX does not guarantee it.
+            os.sched_setscheduler(
+                0,  # 0 = calling thread
+                os.SCHED_IDLE,  # type: ignore[attr-defined]
+                os.sched_param(0),  # type: ignore[attr-defined]  # priority ignored for SCHED_IDLE
+            )
+            return
+    except OSError:
+        pass
+    try:
+        os.nice(19)
+    except (OSError, AttributeError):
+        pass
+
+
+def _kill_orphan_pipe_writers(
+    pipe_read_fd: int,
+    our_pgid: Optional[int],
+    _scan_deadline: Optional[float] = None,
+) -> int:
     """Kill any process outside *our_pgid* that holds the same pipe's write end open.
 
     Issue #618: npx-based MCP servers (spawned by npm which calls setsid())
@@ -227,6 +268,18 @@ def _kill_orphan_pipe_writers(pipe_read_fd: int, our_pgid: Optional[int]) -> int
         return 0
 
     for pid_str in proc_entries:
+        # Per-iteration deadline check so the scan bails quickly once the
+        # wall-clock budget is exhausted — avoids holding CPU past the
+        # asyncio.wait_for timeout when D-state processes delay individual
+        # readlink() calls. (#808)
+        if _scan_deadline is not None and time.monotonic() >= _scan_deadline:
+            logger.warning(
+                "[Subprocess] _kill_orphan_pipe_writers: scan deadline reached "
+                "after %d killed — aborting /proc iteration",
+                killed,
+            )
+            break
+
         if not pid_str.isdigit():
             continue
         pid = int(pid_str)
@@ -367,8 +420,15 @@ async def drain_reader_threads(
             _orphan_done = threading.Event()
 
             def _run_orphan_killer() -> None:
+                # Yield CPU to higher-priority threads (uvicorn event loop,
+                # reader threads) so the scan cannot starve health probes on
+                # single-CPU containers. (#808)
+                _set_idle_priority()
+                scan_deadline = time.monotonic() + _ORPHAN_SCAN_WALL_SECONDS
                 try:
-                    _orphan_result[0] = _kill_orphan_pipe_writers(stdout_fd, pgid)
+                    _orphan_result[0] = _kill_orphan_pipe_writers(
+                        stdout_fd, pgid, _scan_deadline=scan_deadline
+                    )
                 except Exception:
                     pass  # best-effort; never fail the drain path
                 finally:
