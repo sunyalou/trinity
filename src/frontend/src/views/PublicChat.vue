@@ -46,13 +46,13 @@
             <div class="flex items-center space-x-2">
               <span
                 v-if="linkInfo.is_autonomous"
-                class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
+                class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-state-autonomous-100 text-state-autonomous-800 dark:bg-state-autonomous-900/30 dark:text-state-autonomous-400"
               >
                 AUTO
               </span>
               <span
                 v-if="linkInfo.is_read_only"
-                class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-400"
+                class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-state-locked-100 text-state-locked-800 dark:bg-state-locked-900/30 dark:text-state-locked-400"
               >
                 <svg class="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
@@ -209,14 +209,14 @@
         <!-- Read-only history banner -->
         <div
           v-if="viewingHistorySession"
-          class="mb-3 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg flex items-center justify-between text-xs"
+          class="mb-3 px-3 py-2 bg-state-autonomous-50 dark:bg-state-autonomous-900/20 border border-state-autonomous-200 dark:border-state-autonomous-800 rounded-lg flex items-center justify-between text-xs"
         >
-          <span class="text-amber-700 dark:text-amber-400">
+          <span class="text-state-autonomous-700 dark:text-state-autonomous-400">
             Viewing past session — read only
           </span>
           <button
             @click="exitHistoryView"
-            class="ml-2 text-amber-700 dark:text-amber-400 underline hover:no-underline"
+            class="ml-2 text-state-autonomous-700 dark:text-state-autonomous-400 underline hover:no-underline"
           >
             Return to current chat
           </button>

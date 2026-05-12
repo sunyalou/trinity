@@ -178,7 +178,7 @@
                     task.status === 'cancelled' ? 'bg-status-urgent-100 dark:bg-status-urgent-900/30 text-status-urgent-800 dark:text-status-urgent-300' :
                     task.status === 'running' ? 'bg-status-warning-100 dark:bg-status-warning-900/30 text-status-warning-800 dark:text-status-warning-300' :
                     task.status === 'queued' ? 'bg-state-autonomous-100 dark:bg-state-autonomous-900/30 text-state-autonomous-800 dark:text-state-autonomous-300' :
-                    task.status === 'skipped' ? 'bg-accent-purple-100 dark:bg-accent-purple-900/30 text-accent-purple-800 dark:text-accent-purple-300' :
+                    task.status === 'skipped' ? 'bg-accent-accent-purple-100 dark:bg-accent-accent-purple-900/30 text-accent-accent-purple-800 dark:text-accent-accent-purple-300' :
                     'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-300'
                   ]"
                 >
@@ -190,7 +190,7 @@
                       task.status === 'cancelled' ? 'bg-status-urgent-500' :
                       task.status === 'running' ? 'bg-status-warning-500 animate-pulse' :
                       task.status === 'queued' ? 'bg-state-autonomous-500' :
-                      task.status === 'skipped' ? 'bg-accent-purple-500' :
+                      task.status === 'skipped' ? 'bg-accent-accent-purple-500' :
                       'bg-gray-500'
                     ]"
                   ></span>
@@ -201,9 +201,9 @@
                   :class="[
                     'px-1.5 py-0.5 rounded text-xs',
                     task.triggered_by === 'chat' ? 'bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300' :
-                    task.triggered_by === 'session' ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300' :
+                    task.triggered_by === 'session' ? 'bg-state-autonomous-100 dark:bg-state-autonomous-900/30 text-state-autonomous-700 dark:text-state-autonomous-300' :
                     task.triggered_by === 'manual' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' :
-                    task.triggered_by === 'schedule' ? 'bg-accent-purple-100 dark:bg-accent-purple-900/30 text-accent-purple-700 dark:text-accent-purple-300' :
+                    task.triggered_by === 'schedule' ? 'bg-accent-accent-purple-100 dark:bg-accent-accent-purple-900/30 text-accent-accent-purple-700 dark:text-accent-accent-purple-300' :
                     task.triggered_by === 'paid' ? 'bg-status-warning-100 dark:bg-status-warning-900/30 text-status-warning-700 dark:text-status-warning-300' :
                     task.triggered_by === 'public' ? 'bg-teal-100 dark:bg-teal-900/30 text-teal-700 dark:text-teal-300' :
                     'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400'
@@ -351,7 +351,7 @@
               <button
                 v-if="task.status !== 'running'"
                 @click="makeRepeatable(task)"
-                class="p-1.5 text-gray-400 hover:text-accent-purple-600 dark:hover:text-accent-purple-400 rounded transition-colors"
+                class="p-1.5 text-gray-400 hover:text-accent-accent-purple-600 dark:hover:text-accent-accent-purple-400 rounded transition-colors"
                 title="Create schedule from this task"
               >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

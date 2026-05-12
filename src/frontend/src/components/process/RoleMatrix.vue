@@ -40,7 +40,7 @@
         <span>Executor</span>
       </div>
       <div class="flex items-center gap-1.5">
-        <span class="inline-flex items-center justify-center w-6 h-6 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 font-semibold text-xs">M</span>
+        <span class="inline-flex items-center justify-center w-6 h-6 rounded bg-state-autonomous-100 dark:bg-state-autonomous-900/40 text-state-autonomous-700 dark:text-state-autonomous-400 font-semibold text-xs">M</span>
         <span>Monitor</span>
       </div>
       <div class="flex items-center gap-1.5">
@@ -149,7 +149,7 @@
       <div
         v-for="(warning, index) in validationWarnings"
         :key="index"
-        class="flex items-center gap-2 px-3 py-2 text-sm bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 rounded-lg"
+        class="flex items-center gap-2 px-3 py-2 text-sm bg-state-autonomous-50 dark:bg-state-autonomous-900/20 text-state-autonomous-700 dark:text-state-autonomous-400 rounded-lg"
       >
         <ExclamationTriangleIcon class="w-4 h-4 flex-shrink-0" />
         <span>{{ warning }}</span>
@@ -314,7 +314,7 @@ function getRoleCellClass(stepId, agent) {
     case 'executor':
       return `${base} bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-400 font-semibold`;
     case 'monitor':
-      return `${base} bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 font-semibold`;
+      return `${base} bg-state-autonomous-100 dark:bg-state-autonomous-900/40 text-state-autonomous-700 dark:text-state-autonomous-400 font-semibold`;
     case 'informed':
       return `${base} bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-400 font-semibold`;
     default:

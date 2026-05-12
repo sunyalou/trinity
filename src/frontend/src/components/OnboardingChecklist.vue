@@ -33,7 +33,7 @@
   >
     <!-- Header -->
     <div
-      class="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-indigo-500 to-purple-500 text-white cursor-pointer"
+      class="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-indigo-500 to-accent-purple-500 text-white cursor-pointer"
       @click="toggleMinimized"
     >
       <div class="flex items-center gap-2">
@@ -54,7 +54,7 @@
     <!-- Celebration Banner -->
     <div
       v-if="isCelebrating && !isMinimized"
-      class="bg-gradient-to-r from-green-500 to-emerald-500 text-white px-4 py-2 flex items-center gap-2"
+      class="bg-gradient-to-r from-status-success-500 to-emerald-500 text-white px-4 py-2 flex items-center gap-2"
     >
       <span class="text-lg">🎉</span>
       <span class="text-sm font-medium">Great job! Here's your next step:</span>
@@ -66,7 +66,7 @@
       <div class="mb-4">
         <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
           <div
-            class="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-500"
+            class="h-full bg-gradient-to-r from-indigo-500 to-accent-purple-500 transition-all duration-500"
             :style="{ width: `${progressPercent}%` }"
           />
         </div>
@@ -131,7 +131,7 @@
             v-if="!item.completed && item.link && isCurrentStep(index)"
             class="flex-shrink-0 text-xs font-medium"
             :class="isOnTargetPage(item)
-              ? 'text-amber-600 dark:text-amber-400'
+              ? 'text-state-autonomous-600 dark:text-state-autonomous-400'
               : 'text-indigo-600 dark:text-indigo-400'"
           >
             {{ isOnTargetPage(item) ? 'See above ↑' : 'Start →' }}

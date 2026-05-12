@@ -86,7 +86,7 @@
                 :class="[
                   'flex items-center space-x-1 px-2 py-0.5 rounded text-xs font-medium transition-all',
                   showTagClouds
-                    ? 'bg-purple-600 text-white'
+                    ? 'bg-accent-purple-600 text-white'
                     : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
                 ]"
                 title="Toggle tag grouping clouds"

@@ -56,7 +56,7 @@
       <!-- Dead-end configuration warning (#446) -->
       <div
         v-if="policy.require_email && !policy.open_access && (!shares || shares.length === 0)"
-        class="mt-4 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 p-3 text-sm text-amber-900 dark:text-amber-200"
+        class="mt-4 rounded-lg bg-state-autonomous-50 dark:bg-state-autonomous-900/20 border border-state-autonomous-200 dark:border-state-autonomous-800/40 p-3 text-sm text-state-autonomous-900 dark:text-state-autonomous-200"
       >
         <strong>Heads up:</strong> you've required verified email but haven't shared with anyone or enabled Open access.
         Every verified user will land in Pending Access Requests and stay locked out until you approve them one by one.

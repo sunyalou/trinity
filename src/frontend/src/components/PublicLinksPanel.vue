@@ -281,7 +281,7 @@
                       <span class="text-xs text-gray-500 dark:text-gray-400">Proxy agent's web server</span>
                     </button>
                   </div>
-                  <p v-if="formData.link_type === 'site'" class="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                  <p v-if="formData.link_type === 'site'" class="mt-2 text-xs text-state-autonomous-600 dark:text-state-autonomous-400">
                     Requires the agent to run a web server on port 3000 (e.g. Next.js).
                   </p>
                 </div>

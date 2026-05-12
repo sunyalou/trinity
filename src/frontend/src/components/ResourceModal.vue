@@ -23,12 +23,12 @@
         </div>
 
         <!-- Warning Banner -->
-        <div class="mt-4 p-3 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded-lg">
+        <div class="mt-4 p-3 bg-state-autonomous-50 dark:bg-state-autonomous-900/30 border border-state-autonomous-200 dark:border-state-autonomous-800 rounded-lg">
           <div class="flex">
-            <svg class="h-5 w-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg class="h-5 w-5 text-state-autonomous-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
-            <p class="ml-3 text-sm text-amber-700 dark:text-amber-300">
+            <p class="ml-3 text-sm text-state-autonomous-700 dark:text-state-autonomous-300">
               If the agent is running, it will be automatically restarted to apply changes.
             </p>
           </div>

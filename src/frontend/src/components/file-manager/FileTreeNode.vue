@@ -113,14 +113,14 @@ const fileIcon = computed(() => {
 })
 
 const iconColor = computed(() => {
-  if (props.item.type === 'directory') return 'text-yellow-500'
+  if (props.item.type === 'directory') return 'text-status-warning-500'
 
   const ext = fileExtension.value
-  if (['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)) return 'text-purple-500'
-  if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'].includes(ext)) return 'text-green-500'
+  if (['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)) return 'text-accent-purple-500'
+  if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'].includes(ext)) return 'text-status-success-500'
   if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'bmp'].includes(ext)) return 'text-blue-500'
   if (['js', 'ts', 'jsx', 'tsx', 'py', 'go', 'rs', 'rb', 'java', 'c', 'cpp', 'h', 'css', 'scss', 'html', 'vue', 'svelte'].includes(ext)) return 'text-gray-500'
-  if (['pdf'].includes(ext)) return 'text-red-500'
+  if (['pdf'].includes(ext)) return 'text-status-danger-500'
 
   return 'text-gray-400'
 })

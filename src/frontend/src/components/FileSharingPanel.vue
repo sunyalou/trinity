@@ -34,7 +34,7 @@
     <!-- Restart-required banner -->
     <div
       v-if="status.restart_required"
-      class="mb-4 rounded-md bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-800 dark:text-amber-200"
+      class="mb-4 rounded-md bg-state-autonomous-50 dark:bg-state-autonomous-900/30 border border-state-autonomous-200 dark:border-state-autonomous-800 px-4 py-3 text-sm text-state-autonomous-800 dark:text-state-autonomous-200"
     >
       Configuration changed — restart the agent to mount or detach
       <code class="font-mono text-xs">/home/developer/public/</code>.

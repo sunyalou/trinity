@@ -24,7 +24,7 @@
     <!-- Directory Preview -->
     <div v-else-if="file.type === 'directory'" class="flex-1 flex items-center justify-center">
       <div class="text-center">
-        <svg class="h-16 w-16 text-yellow-500 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg class="h-16 w-16 text-status-warning-500 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
         </svg>
         <h3 class="mt-4 text-lg font-medium text-gray-900 dark:text-white">{{ file.name }}</h3>
@@ -62,7 +62,7 @@
       <div v-else-if="isAudio" class="flex-1 flex items-center justify-center p-4">
         <div class="w-full max-w-md bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
           <div class="flex items-center justify-center mb-4">
-            <svg class="h-16 w-16 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg class="h-16 w-16 text-status-success-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
             </svg>
           </div>
