@@ -1,5 +1,7 @@
 # Feature: Cleanup Service (CLEANUP-001)
 
+> **Updated 2026-05-11 (#686):** The interactive `chat_with_agent()` handler in `routers/chat.py` is now a second producer of the `claude_session_id='dispatched'` sentinel (parallel of #279). The no-session sweep's correctness assumption now extends to interactive `/chat` executions too. See the updated [`mark_execution_dispatched`](#mark_execution_dispatched-scheduleoperations) and [Fast-fail no-session executions](#cleanup-cycle-run_cleanup) sections.
+
 > **Updated 2026-04-26 (#428):** Stale-slot reclaim and watchdog release now go through [`CapacityManager`](capacity-management.md) — `capacity.reclaim_stale(agent_timeouts)` replaces `slot_service.cleanup_stale_slots(...)` and `capacity.release_if_matches(agent, exec_id)` replaces the prior pair of `slot_service.release_slot` + `execution_queue.force_release_if_matches`. Recovery (`_recover_execution`) calls `capacity.release(...)`. `ExecutionQueue` is gone; the TOCTOU-safe match check lives on the new facade.
 
 ## Overview
@@ -85,7 +87,7 @@ Nine sequential operations plus an hourly maintenance gate, each wrapped in indi
    ```python
    count = db.mark_no_session_executions_failed(NO_SESSION_TIMEOUT_SECONDS)
    ```
-   Marks `running` executions with `claude_session_id IS NULL` older than 60 seconds as failed. These are silent launch failures where the backend failed to dispatch to the agent. Note: `TaskExecutionService` sets `claude_session_id='dispatched'` before calling the agent (step 3b), so only executions that never reached dispatch are caught here.
+   Marks `running` executions with `claude_session_id IS NULL` older than 60 seconds as failed. These are silent launch failures where the backend failed to dispatch to the agent. Note: both `TaskExecutionService` (step 3b, for `/task` / public chat / scheduled executions) AND the `chat_with_agent()` handler in `routers/chat.py` (added in #686 as the parallel of #279, for interactive `/chat` executions) set `claude_session_id='dispatched'` before their agent HTTP calls — so only executions that never reached dispatch are caught here. Both `/task` and `/chat` codepaths are protected from this false-fail sweep.
 
 3. **Finalize orphaned skipped executions** (lines 98-105, Issue #106)
    ```python
@@ -327,7 +329,7 @@ WHERE id = ?
 #### mark_execution_dispatched (ScheduleOperations)
 **File**: `src/backend/db/schedules.py:570-590`
 
-Called by `TaskExecutionService` (step 3b) before the agent HTTP call. Sets `claude_session_id='dispatched'` so the no-session cleanup only catches executions that never reached dispatch.
+Called by two codepaths before the agent HTTP call: (1) `TaskExecutionService.execute_task()` step 3b (for `/task`, public chat, and scheduled executions), and (2) `chat_with_agent()` in `src/backend/routers/chat.py:313-321` (for interactive `/chat` executions, added in #686 as the parallel of #279). Sets `claude_session_id='dispatched'` so the no-session cleanup only catches executions that never reached dispatch. On success, `chat_with_agent()` overwrites the sentinel with the real Claude UUID derived from `response_data`/`session_data`/`metadata` via `db.update_execution_status(claude_session_id=real_session_id)` at `routers/chat.py:411-428` (#686 UC1) — for observability and `--resume`-style reattachment.
 
 **SQL**:
 ```sql

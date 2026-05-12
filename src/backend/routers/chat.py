@@ -9,6 +9,7 @@ import httpx
 import json
 import logging
 import asyncio
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -310,6 +311,16 @@ async def chat_with_agent(
         if task_execution_id:
             payload["execution_id"] = task_execution_id
 
+        # Mark execution dispatched BEFORE calling agent so the cleanup-service
+        # no-session sweep doesn't falsely fail long-running executions
+        # (mirrors services/task_execution_service.py:401-410, fixes #686 —
+        # parallel codepath of #279).
+        if task_execution_id:
+            try:
+                db.mark_execution_dispatched(task_execution_id)
+            except Exception as e:
+                logger.warning(f"[Chat] Failed to mark execution dispatched: {e}")
+
         start_time = datetime.utcnow()
 
         # Use retry helper to handle agent server startup delays
@@ -398,6 +409,28 @@ async def chat_with_agent(
         # SECURITY: Use sanitized response and execution logs
         if task_execution_id:
             context_used = session_data.get("context_tokens", 0)
+            # Persist the real Claude session UUID instead of the 'dispatched'
+            # sentinel set by mark_execution_dispatched (#686 UC1 — closes
+            # observability gap; falls back to existing sentinel if absent).
+            # Defense-in-depth: agent-server emits session IDs as uuid4 strings
+            # (docker/base-image/agent_server/services/headless_executor.py:167).
+            # Reject malformed values so a buggy/compromised agent can't poison
+            # the claude_session_id column — on rejection leave the 'dispatched'
+            # sentinel (cleanup sweep stays correct, observability lost for row).
+            real_session_id = (
+                response_data.get("session_id")
+                or session_data.get("session_id")
+                or metadata.get("session_id")
+            )
+            if real_session_id is not None:
+                try:
+                    uuid.UUID(str(real_session_id))
+                except (ValueError, TypeError, AttributeError):
+                    logger.warning(
+                        f"[Chat] Discarding malformed claude_session_id from agent response "
+                        f"(execution_id={task_execution_id})"
+                    )
+                    real_session_id = None
             db.update_execution_status(
                 execution_id=task_execution_id,
                 status=TaskExecutionStatus.SUCCESS,
@@ -406,7 +439,8 @@ async def chat_with_agent(
                 context_max=session_data.get("context_window") or 200000,
                 cost=metadata.get("cost_usd"),
                 tool_calls=tool_calls_json,  # Simplified format for activity tracking
-                execution_log=execution_log_json  # Raw Claude Code format for UI
+                execution_log=execution_log_json,  # Raw Claude Code format for UI
+                claude_session_id=real_session_id,
             )
 
         execution_success = True
