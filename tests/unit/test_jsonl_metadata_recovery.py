@@ -18,24 +18,13 @@ Module under test:
 from __future__ import annotations
 
 import json
-import sys
-import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_AGENT_SERVER_DIR = _PROJECT_ROOT / "docker" / "base-image" / "agent_server"
-
-if "agent_server" not in sys.modules:
-    _stub = types.ModuleType("agent_server")
-    _stub.__path__ = [str(_AGENT_SERVER_DIR)]
-    sys.modules["agent_server"] = _stub
-
-from agent_server.models import ExecutionMetadata  # noqa: E402
-from agent_server.services import jsonl_recovery  # noqa: E402
+from agent_server.models import ExecutionMetadata
+from agent_server.services import jsonl_recovery
 
 
 # ---------------------------------------------------------------------------
