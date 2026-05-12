@@ -56,27 +56,32 @@ if str(_BACKEND) not in sys.path:
 
 # The unit test venv does NOT have the `docker` Python package installed,
 # but `services/__init__.py` eagerly imports `services.docker_service` which
-# imports `docker`. Stub both BEFORE we import anything from `services`.
-# Same shape as tests/test_watchdog_unit.py's preload block — mirrored here
-# instead of imported because the unit/ conftest preloads a different module
-# set and importing the top-level test file would re-execute its stubs.
-if "docker" not in sys.modules:
-    sys.modules["docker"] = MagicMock(name="docker_stub")
-if "services.docker_service" not in sys.modules:
-    _ds_stub = types.ModuleType("services.docker_service")
-    _ds_stub.docker_client = MagicMock()
-    _ds_stub.get_agent_container = lambda *a, **kw: None
-    _ds_stub.get_agent_status_from_container = lambda *a, **kw: "stopped"
-    _ds_stub.list_all_agents = lambda *a, **kw: []
-    _ds_stub.get_agent_by_name = lambda *a, **kw: None
-    _ds_stub.get_next_available_port = lambda *a, **kw: 2222
-    async def _exec(*a, **kw):
-        return {"exit_code": 0, "output": ""}
-    _ds_stub.execute_command_in_container = _exec
-    sys.modules["services.docker_service"] = _ds_stub
-# database.db is hit transitively; pre-stub it before cleanup_service loads.
-if "database" not in sys.modules:
-    sys.modules["database"] = MagicMock(name="database_stub")
+# imports `docker`. Stub both BEFORE the test method imports cleanup_service.
+# Issue #762 lint forbids bare `sys.modules` mutations outside conftest, so
+# install via an autouse monkeypatch fixture — the imports inside each test
+# (`from services.cleanup_service import CleanupService`) and `@patch(...)`
+# resolution both happen after fixture setup, so the stubs land in time.
+@pytest.fixture(autouse=True)
+def _stub_docker_and_database(monkeypatch):
+    if "docker" not in sys.modules:
+        monkeypatch.setitem(sys.modules, "docker", MagicMock(name="docker_stub"))
+    if "services.docker_service" not in sys.modules:
+        _ds_stub = types.ModuleType("services.docker_service")
+        _ds_stub.docker_client = MagicMock()
+        _ds_stub.get_agent_container = lambda *a, **kw: None
+        _ds_stub.get_agent_status_from_container = lambda *a, **kw: "stopped"
+        _ds_stub.list_all_agents = lambda *a, **kw: []
+        _ds_stub.get_agent_by_name = lambda *a, **kw: None
+        _ds_stub.get_next_available_port = lambda *a, **kw: 2222
+
+        async def _exec(*a, **kw):
+            return {"exit_code": 0, "output": ""}
+
+        _ds_stub.execute_command_in_container = _exec
+        monkeypatch.setitem(sys.modules, "services.docker_service", _ds_stub)
+    # database.db is hit transitively; pre-stub it before cleanup_service loads.
+    if "database" not in sys.modules:
+        monkeypatch.setitem(sys.modules, "database", MagicMock(name="database_stub"))
 
 
 def _iso_past_minutes(minutes: int) -> str:
