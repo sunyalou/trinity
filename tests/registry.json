@@ -521,6 +521,33 @@
         "circuit-breaker"
       ],
       "description": "Tests that the AgentClient circuit breaker only counts TCP unreachability (connect errors/timeouts) toward opening — HTTP errors, read/write/pool failures, and protocol errors are excluded"
+    },
+    {
+      "file": "integration/test_circuit_breaker.py",
+      "feature": "#474",
+      "added": "2026-05-12",
+      "categories": [
+        "integration",
+        "backend",
+        "service",
+        "resilience",
+        "circuit-breaker",
+        "redis"
+      ],
+      "description": "Drives the real AgentClient through httpx.MockTransport against real Redis circuit state — hard vs soft failures, mixed interleave, open-circuit fast-fail, recovery on 200, and the deferred half-open soft-failure probe-lock behaviour"
+    },
+    {
+      "file": "integration/test_monitoring_service.py",
+      "feature": "#474",
+      "added": "2026-05-12",
+      "categories": [
+        "integration",
+        "backend",
+        "service",
+        "monitoring",
+        "circuit-breaker"
+      ],
+      "description": "Mirrors the #474 classification rule on the /health probe path and pins the `status_code >= 500 → UNHEALTHY` aggregator branch"
     }
   ]
 }
