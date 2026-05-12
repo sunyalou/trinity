@@ -644,10 +644,39 @@ def _finalize_headless_result(
     response_text = sanitize_text(response_text)
 
     if not response_text:
-        raise HTTPException(
-            status_code=500,
-            detail="Task returned empty response"
-        )
+        # #160: `context: fork` skills do their work in a sub-context whose
+        # output never reaches the parent stream. The parent claude exits
+        # cleanly with a populated result line (cost_usd / duration_ms set
+        # — that's why `_classify_empty_result` above returned None and we
+        # got here), but `response_parts` is empty because no assistant
+        # text was emitted to the parent's stdout. Pre-#160 we 500'd here,
+        # which silently failed every scheduled invocation of any fork
+        # skill (the issue reported 8 consecutive daily failures).
+        #
+        # When the parent reports completion cleanly, trust it: synthesize
+        # a short placeholder reply so the caller gets a 200 instead of an
+        # opaque "Task returned empty response" error. Real plumbing
+        # failures (lost result line, dropped pipe, etc.) are already
+        # handled above by `_classify_empty_result` and never reach here.
+        if ctx.return_code == 0 and ctx.metadata.cost_usd is not None:
+            logger.info(
+                "[Headless Task] Task %s exited cleanly with no assistant "
+                "text in the parent stream (cost=$%s, duration=%sms) — "
+                "likely a `context: fork` skill. Returning placeholder "
+                "response.",
+                ctx.task_session_id,
+                ctx.metadata.cost_usd,
+                ctx.metadata.duration_ms,
+            )
+            response_text = (
+                "(Task completed with no direct output — "
+                "skill may use `context: fork`.)"
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Task returned empty response"
+            )
 
     # Count unique tools used
     tool_use_count = len([e for e in ctx.execution_log if e.type == "tool_use"])
