@@ -6,7 +6,7 @@
     <!-- Header -->
     <div class="flex items-center justify-between px-4 py-2 bg-gray-50 dark:bg-gray-900/50 border-b border-gray-200 dark:border-gray-700">
       <div class="flex items-center gap-2">
-        <QuestionMarkCircleIcon class="h-4 w-4 text-indigo-500" />
+        <QuestionMarkCircleIcon class="h-4 w-4 text-action-primary-500" />
         <h3 class="text-sm font-medium text-gray-700 dark:text-gray-300">Quick Help</h3>
       </div>
       <button
@@ -69,7 +69,7 @@
               <code
                 v-for="opt in helpContent.options"
                 :key="opt"
-                class="text-xs px-1.5 py-0.5 bg-indigo-50 dark:bg-indigo-900/30 rounded text-indigo-700 dark:text-indigo-300"
+                class="text-xs px-1.5 py-0.5 bg-action-primary-50 dark:bg-action-primary-900/30 rounded text-action-primary-700 dark:text-action-primary-300"
               >
                 {{ opt }}
               </code>
@@ -87,7 +87,7 @@
         <router-link
           v-if="helpContent.docs_link"
           :to="helpContent.docs_link"
-          class="inline-flex items-center gap-1 text-sm text-indigo-600 dark:text-indigo-400 hover:underline"
+          class="inline-flex items-center gap-1 text-sm text-action-primary-600 dark:text-action-primary-400 hover:underline"
         >
           <BookOpenIcon class="h-4 w-4" />
           Learn more in documentation

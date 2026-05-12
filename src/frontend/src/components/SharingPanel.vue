@@ -1,7 +1,7 @@
 <template>
   <div class="p-6 space-y-8">
     <!-- Framing: identity vs. authorization (Issue #446) -->
-    <div class="rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-900/40 p-4 text-sm text-indigo-900 dark:text-indigo-200">
+    <div class="rounded-lg bg-action-primary-50 dark:bg-action-primary-900/20 border border-action-primary-100 dark:border-action-primary-900/40 p-4 text-sm text-action-primary-900 dark:text-action-primary-200">
       Access to this agent has two layers:
       <ul class="mt-2 list-disc pl-5 space-y-1">
         <li><strong>Identity proof</strong> — "Require verified email" (below) forces every user to prove who they are via email verification before chatting. It is enforced on web, Slack, and Telegram.</li>
@@ -115,12 +115,12 @@
           type="email"
           placeholder="user@example.com"
           :disabled="shareLoading"
-          class="flex-1 max-w-md px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100 dark:disabled:bg-gray-900"
+          class="flex-1 max-w-md px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-action-primary-500 disabled:bg-gray-100 dark:disabled:bg-gray-900"
         />
         <button
           type="submit"
           :disabled="shareLoading || !shareEmail.trim()"
-          class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:focus:ring-offset-gray-800 disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed"
+          class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-action-primary-600 hover:bg-action-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-action-primary-500 dark:focus:ring-offset-gray-800 disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed"
         >
           <svg v-if="shareLoading" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -175,8 +175,8 @@
                   @click="toggleProactive(share)"
                   :disabled="proactiveLoading === share.shared_with_email"
                   :class="[
-                    share.allow_proactive ? 'bg-indigo-600' : 'bg-gray-200 dark:bg-gray-600',
-                    'relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed'
+                    share.allow_proactive ? 'bg-action-primary-600' : 'bg-gray-200 dark:bg-gray-600',
+                    'relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-action-primary-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed'
                   ]"
                 >
                   <span

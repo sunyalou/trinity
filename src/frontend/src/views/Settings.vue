@@ -22,7 +22,7 @@
               :class="[
                 'whitespace-nowrap py-2 px-1 border-b-2 text-sm font-medium',
                 activeTab === tab.id
-                  ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                  ? 'border-action-primary-500 text-action-primary-600 dark:text-action-primary-400'
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-200'
               ]"
               type="button"
@@ -33,7 +33,7 @@
 
         <!-- Loading State -->
         <div v-if="loading" class="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-900 p-8 text-center">
-          <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto"></div>
+          <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-action-primary-600 mx-auto"></div>
           <p class="mt-4 text-gray-500 dark:text-gray-400">Loading settings...</p>
         </div>
 
@@ -65,12 +65,12 @@
                       v-model="publicUrl"
                       :placeholder="publicUrlCurrent || 'https://your-domain.com'"
                       :disabled="savingPublicUrl"
-                      class="block flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+                      class="block flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
                     />
                     <button
                       @click="savePublicUrl"
                       :disabled="!publicUrl || savingPublicUrl"
-                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <svg v-if="savingPublicUrl" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -137,7 +137,7 @@
                         v-model="anthropicKey"
                         :placeholder="anthropicKeyStatus.configured ? anthropicKeyStatus.masked : 'sk-ant-...'"
                         :disabled="savingApiKey"
-                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                       />
                       <button
                         type="button"
@@ -167,7 +167,7 @@
                     <button
                       @click="saveApiKey"
                       :disabled="!anthropicKey || savingApiKey"
-                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <svg v-if="savingApiKey" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -223,7 +223,7 @@
                   </div>
                   <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
                     Required for agents to use Claude. Get your key at
-                    <a href="https://console.anthropic.com" target="_blank" class="text-indigo-600 dark:text-indigo-400 hover:underline">
+                    <a href="https://console.anthropic.com" target="_blank" class="text-action-primary-600 dark:text-action-primary-400 hover:underline">
                       console.anthropic.com
                     </a>
                   </p>
@@ -242,7 +242,7 @@
                         v-model="githubPat"
                         :placeholder="githubPatStatus.configured ? githubPatStatus.masked : 'ghp_... or github_pat_...'"
                         :disabled="savingGithubPat"
-                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                       />
                       <button
                         type="button"
@@ -272,7 +272,7 @@
                     <button
                       @click="saveGithubPat"
                       :disabled="!githubPat || savingGithubPat"
-                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <svg v-if="savingGithubPat" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -352,7 +352,7 @@
                   </div>
                   <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
                     Required for creating and pushing agents to GitHub repositories. Get your token at
-                    <a href="https://github.com/settings/tokens/new" target="_blank" class="text-indigo-600 dark:text-indigo-400 hover:underline">
+                    <a href="https://github.com/settings/tokens/new" target="_blank" class="text-action-primary-600 dark:text-action-primary-400 hover:underline">
                       github.com/settings/tokens
                     </a>
                     with <code class="px-1 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-xs">repo</code> scope.
@@ -401,7 +401,7 @@
                       v-model="slackClientId"
                       :placeholder="slackSettings.client_id?.configured ? slackSettings.client_id.masked : 'Enter Slack Client ID'"
                       :disabled="savingSlackSettings"
-                      class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                      class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                     />
                   </div>
                   <div v-if="slackSettings.client_id?.configured" class="mt-1 text-xs text-status-success-600 dark:text-status-success-400">
@@ -421,7 +421,7 @@
                       v-model="slackClientSecret"
                       :placeholder="slackSettings.client_secret?.configured ? slackSettings.client_secret.masked : 'Enter Slack Client Secret'"
                       :disabled="savingSlackSettings"
-                      class="block w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                      class="block w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                     />
                     <button
                       type="button"
@@ -454,7 +454,7 @@
                       v-model="slackSigningSecret"
                       :placeholder="slackSettings.signing_secret?.configured ? slackSettings.signing_secret.masked : 'Enter Slack Signing Secret'"
                       :disabled="savingSlackSettings"
-                      class="block w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                      class="block w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                     />
                     <button
                       type="button"
@@ -480,7 +480,7 @@
                   <button
                     @click="saveSlackSettings"
                     :disabled="(!slackClientId && !slackClientSecret && !slackSigningSecret) || savingSlackSettings"
-                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg v-if="savingSlackSettings" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -528,7 +528,7 @@
                       v-model="slackAppToken"
                       :placeholder="slackTransportStatus.app_token_configured ? slackTransportStatus.app_token_masked : 'xapp-1-...'"
                       :disabled="connectingSlack"
-                      class="block w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                      class="block w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                     />
                     <button
                       type="button"
@@ -605,7 +605,7 @@
                         <span
                           v-for="agent in ws.agents"
                           :key="agent"
-                          class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300"
+                          class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-action-primary-100 text-action-primary-800 dark:bg-action-primary-900/40 dark:text-action-primary-300"
                         >
                           {{ agent }}
                         </span>
@@ -616,11 +616,11 @@
 
                 <!-- Setup Instructions -->
                 <details class="mt-2">
-                  <summary class="text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400">
+                  <summary class="text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:text-action-primary-600 dark:hover:text-action-primary-400">
                     Setup Instructions
                   </summary>
                   <div class="mt-3 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg text-sm text-gray-600 dark:text-gray-300 space-y-2">
-                    <p><strong>1.</strong> Create a Slack App at <a href="https://api.slack.com/apps" target="_blank" class="text-indigo-600 dark:text-indigo-400 hover:underline">api.slack.com/apps</a></p>
+                    <p><strong>1.</strong> Create a Slack App at <a href="https://api.slack.com/apps" target="_blank" class="text-action-primary-600 dark:text-action-primary-400 hover:underline">api.slack.com/apps</a></p>
                     <p><strong>2.</strong> Copy <strong>Client ID</strong>, <strong>Client Secret</strong>, and <strong>Signing Secret</strong> from Basic Information and save above</p>
                     <p><strong>3.</strong> Add Bot Token Scopes: <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">im:history</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">im:read</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">im:write</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">chat:write</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">chat:write.customize</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">users:read.email</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">app_mentions:read</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">channels:read</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">channels:manage</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">reactions:write</code></p>
                     <p><strong>4.</strong> Enable <strong>Socket Mode</strong> and create an App-Level Token with <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">connections:write</code> scope. Paste it above as App Token.</p>
@@ -678,7 +678,7 @@
                         id="subscription-name"
                         v-model="newSubscription.name"
                         placeholder="e.g., eugene-max"
-                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
                         :disabled="addingSubscription"
                       />
                     </div>
@@ -691,7 +691,7 @@
                       <select
                         id="subscription-type"
                         v-model="newSubscription.type"
-                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
                         :disabled="addingSubscription"
                       >
                         <option value="max">Claude Max</option>
@@ -711,7 +711,7 @@
                       v-model="newSubscription.token"
                       placeholder="sk-ant-oat01-..."
                       :disabled="addingSubscription"
-                      class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                      class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-action-primary-500 focus:border-action-primary-500"
                       :class="{ 'border-status-danger-400 dark:border-status-danger-500': newSubscription.token && !newSubscription.token.startsWith('sk-ant-oat01-') }"
                     />
                     <p v-if="newSubscription.token && !newSubscription.token.startsWith('sk-ant-oat01-')" class="mt-1 text-xs text-status-danger-500">
@@ -734,7 +734,7 @@
                     <button
                       @click="addSubscription"
                       :disabled="!newSubscription.name || !newSubscription.token.startsWith('sk-ant-oat01-') || addingSubscription || !encryptionConfigured"
-                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <svg v-if="addingSubscription" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -770,7 +770,7 @@
                     <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                       <tr v-if="loadingSubscriptions">
                         <td colspan="5" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">
-                          <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600 mx-auto"></div>
+                          <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-action-primary-600 mx-auto"></div>
                         </td>
                       </tr>
                       <tr v-else-if="subscriptions.length === 0">
@@ -827,7 +827,7 @@
                                 <strong class="text-gray-600 dark:text-gray-400">Assigned Agents:</strong>
                                 <div v-if="sub.agents && sub.agents.length > 0" class="mt-2 flex flex-wrap gap-2">
                                   <span v-for="agent in sub.agents" :key="agent"
-                                        class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200">
+                                        class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-action-primary-100 text-action-primary-800 dark:bg-action-primary-900 dark:text-action-primary-200">
                                     <svg class="mr-1 h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
                                       <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" />
                                       <path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd" />
@@ -836,7 +836,7 @@
                                     <button
                                       @click.stop="unassignAgentFromSubscription(agent)"
                                       :disabled="unassigningAgent === agent"
-                                      class="ml-1.5 inline-flex items-center justify-center h-4 w-4 rounded-full hover:bg-indigo-200 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-300 disabled:opacity-50"
+                                      class="ml-1.5 inline-flex items-center justify-center h-4 w-4 rounded-full hover:bg-action-primary-200 dark:hover:bg-action-primary-800 text-action-primary-600 dark:text-action-primary-300 disabled:opacity-50"
                                       title="Remove agent from subscription"
                                     >
                                       <svg v-if="unassigningAgent === agent" class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24">
@@ -857,7 +857,7 @@
                                   <select
                                     v-model="selectedAgentToAssign[sub.id]"
                                     :disabled="assigningAgent || loadingAgents"
-                                    class="flex-1 max-w-xs px-3 py-1.5 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white"
+                                    class="flex-1 max-w-xs px-3 py-1.5 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white"
                                     @click.stop
                                   >
                                     <option value="" disabled selected>{{ loadingAgents ? 'Loading agents...' : 'Select agent...' }}</option>
@@ -872,7 +872,7 @@
                                   <button
                                     @click.stop="assignAgentToSubscription(sub.name, selectedAgentToAssign[sub.id])"
                                     :disabled="!selectedAgentToAssign[sub.id] || assigningAgent"
-                                    class="inline-flex items-center px-3 py-1.5 border border-transparent rounded-md shadow-sm text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    class="inline-flex items-center px-3 py-1.5 border border-transparent rounded-md shadow-sm text-xs font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
                                     <svg v-if="assigningAgent" class="animate-spin -ml-0.5 mr-1.5 h-3 w-3" fill="none" viewBox="0 0 24 24">
                                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -909,8 +909,8 @@
                       id="auto-switch-toggle"
                       type="button"
                       :class="[
-                        autoSwitchEnabled ? 'bg-indigo-600' : 'bg-gray-200 dark:bg-gray-600',
-                        'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2'
+                        autoSwitchEnabled ? 'bg-action-primary-600' : 'bg-gray-200 dark:bg-gray-600',
+                        'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-action-primary-500 focus:ring-offset-2'
                       ]"
                       :disabled="savingAutoSwitch"
                       @click="toggleAutoSwitch"
@@ -949,7 +949,7 @@
                       id="trinity-prompt"
                       v-model="trinityPrompt"
                       rows="15"
-                      class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border border-gray-300 dark:border-gray-600 rounded-md font-mono bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
+                      class="shadow-sm focus:ring-action-primary-500 focus:border-action-primary-500 block w-full sm:text-sm border border-gray-300 dark:border-gray-600 rounded-md font-mono bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
                       placeholder="Enter custom instructions for all agents...
 
 Example:
@@ -983,7 +983,7 @@ Example:
                   <button
                     @click="savePrompt"
                     :disabled="saving || !hasChanges"
-                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg v-if="saving" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1014,14 +1014,14 @@ Example:
                     v-model="newEmail"
                     type="email"
                     placeholder="user@example.com"
-                    class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+                    class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
                     :disabled="addingEmail"
                     @keyup.enter="addEmailToWhitelist"
                   />
                   <button
                     @click="addEmailToWhitelist"
                     :disabled="!newEmail || addingEmail"
-                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg v-if="addingEmail" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1053,7 +1053,7 @@ Example:
                     <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                       <tr v-if="loadingWhitelist">
                         <td colspan="4" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">
-                          <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600 mx-auto"></div>
+                          <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-action-primary-600 mx-auto"></div>
                         </td>
                       </tr>
                       <tr v-else-if="emailWhitelist.length === 0">
@@ -1111,7 +1111,7 @@ Example:
               <div class="flex flex-wrap gap-2 mb-4 text-xs text-gray-500 dark:text-gray-400">
                 <span class="font-medium">Roles:</span>
                 <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-accent-purple-100 text-accent-purple-800 dark:bg-accent-purple-900 dark:text-accent-purple-200">admin — full control</span>
-                <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200">creator — create &amp; manage agents</span>
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-action-primary-100 text-action-primary-800 dark:bg-action-primary-900 dark:text-action-primary-200">creator — create &amp; manage agents</span>
                 <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">operator — run existing agents</span>
                 <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200">user — public links only</span>
               </div>
@@ -1130,7 +1130,7 @@ Example:
                   <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                     <tr v-if="loadingUsers">
                       <td colspan="4" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">
-                        <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600 mx-auto"></div>
+                        <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-action-primary-600 mx-auto"></div>
                       </td>
                     </tr>
                     <tr v-else-if="usersList.length === 0">
@@ -1148,7 +1148,7 @@ Example:
                           v-if="u.username !== currentUsername"
                           :value="u.role"
                           @change="updateUserRole(u.username, $event.target.value)"
-                          class="text-sm border border-gray-300 dark:border-gray-600 rounded px-2 py-1 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                          class="text-sm border border-gray-300 dark:border-gray-600 rounded px-2 py-1 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500"
                         >
                           <option value="admin">admin</option>
                           <option value="creator">creator</option>
@@ -1202,12 +1202,12 @@ Example:
                   v-model="mcpUrlInput"
                   type="url"
                   :placeholder="mcpUrlConfig.default_url || 'https://your-domain.com/mcp'"
-                  class="flex-1 block rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                  class="flex-1 block rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-action-primary-500 focus:ring-action-primary-500 sm:text-sm"
                 />
                 <button
                   @click="saveMcpUrl"
                   :disabled="!mcpUrlInput || savingMcpUrl"
-                  class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {{ savingMcpUrl ? 'Saving...' : 'Save' }}
                 </button>
@@ -1239,7 +1239,7 @@ Example:
                 <span v-if="githubTemplatesSource === 'defaults'" class="inline-flex items-center ml-2 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
                   Using defaults
                 </span>
-                <span v-else class="inline-flex items-center ml-2 px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300">
+                <span v-else class="inline-flex items-center ml-2 px-2 py-0.5 rounded-full text-xs font-medium bg-action-primary-100 text-action-primary-700 dark:bg-action-primary-900 dark:text-action-primary-300">
                   Custom config
                 </span>
               </p>
@@ -1253,7 +1253,7 @@ Example:
                     v-model="newTemplateRepo"
                     type="text"
                     placeholder="owner/repo"
-                    class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                    class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                     :disabled="savingGithubTemplates"
                     @keyup.enter="addGithubTemplate"
                   />
@@ -1261,14 +1261,14 @@ Example:
                     v-model="newTemplateName"
                     type="text"
                     placeholder="Display name (optional)"
-                    class="w-48 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+                    class="w-48 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
                     :disabled="savingGithubTemplates"
                     @keyup.enter="addGithubTemplate"
                   />
                   <button
                     @click="addGithubTemplate"
                     :disabled="!newTemplateRepo || savingGithubTemplates"
-                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Add
                   </button>
@@ -1296,7 +1296,7 @@ Example:
                     <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                       <tr v-if="loadingGithubTemplates">
                         <td colspan="3" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">
-                          <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600 mx-auto"></div>
+                          <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-action-primary-600 mx-auto"></div>
                         </td>
                       </tr>
                       <tr v-else-if="githubTemplates.length === 0">
@@ -1310,7 +1310,7 @@ Example:
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                           {{ tmpl.resolved_name || tmpl.display_name || '-' }}
-                          <span v-if="tmpl.display_name" class="ml-1 text-xs text-indigo-500">(custom)</span>
+                          <span v-if="tmpl.display_name" class="ml-1 text-xs text-action-primary-500">(custom)</span>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                           <button
@@ -1338,7 +1338,7 @@ Example:
                   <button
                     @click="saveGithubTemplates"
                     :disabled="savingGithubTemplates || !githubTemplatesDirty"
-                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg v-if="savingGithubTemplates" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1374,8 +1374,8 @@ Example:
                   id="ssh-access-toggle"
                   type="button"
                   :class="[
-                    sshAccessEnabled ? 'bg-indigo-600' : 'bg-gray-200 dark:bg-gray-600',
-                    'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2'
+                    sshAccessEnabled ? 'bg-action-primary-600' : 'bg-gray-200 dark:bg-gray-600',
+                    'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-action-primary-500 focus:ring-offset-2'
                   ]"
                   :disabled="savingSshAccess"
                   @click="toggleSshAccess"
@@ -1421,7 +1421,7 @@ Example:
                   id="quota-creator"
                   v-model="agentQuotaValues.max_agents_creator"
                   min="0"
-                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm text-center"
+                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-action-primary-500 focus:ring-action-primary-500 sm:text-sm text-center"
                 />
               </div>
 
@@ -1436,7 +1436,7 @@ Example:
                   id="quota-operator"
                   v-model="agentQuotaValues.max_agents_operator"
                   min="0"
-                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm text-center"
+                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-action-primary-500 focus:ring-action-primary-500 sm:text-sm text-center"
                 />
               </div>
 
@@ -1451,7 +1451,7 @@ Example:
                   id="quota-user"
                   v-model="agentQuotaValues.max_agents_user"
                   min="0"
-                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm text-center"
+                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-action-primary-500 focus:ring-action-primary-500 sm:text-sm text-center"
                 />
               </div>
 
@@ -1466,7 +1466,7 @@ Example:
               <div class="flex justify-end">
                 <button
                   type="button"
-                  class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
+                  class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-action-primary-600 hover:bg-action-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-action-primary-500 disabled:opacity-50"
                   :disabled="savingQuotas"
                   @click="saveAgentQuotas"
                 >
@@ -1502,7 +1502,7 @@ Example:
                     id="skills-library-url"
                     v-model="skillsLibraryUrl"
                     placeholder="github.com/owner/skills-library"
-                    class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+                    class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
                   />
                 </div>
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -1521,7 +1521,7 @@ Example:
                     id="skills-library-branch"
                     v-model="skillsLibraryBranch"
                     placeholder="main"
-                    class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+                    class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
                   />
                 </div>
               </div>
@@ -1565,7 +1565,7 @@ Example:
                 <button
                   @click="saveSkillsLibrarySettings"
                   :disabled="savingSkillsLibrary"
-                  class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <svg v-if="savingSkillsLibrary" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1606,7 +1606,7 @@ Example:
               <button
                 @click="generateDefaultAvatars"
                 :disabled="generatingDefaultAvatars"
-                class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <svg v-if="generatingDefaultAvatars" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>

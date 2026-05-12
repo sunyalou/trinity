@@ -63,7 +63,7 @@
                   :checked="apiKeySetting.use_platform_api_key"
                   @change="$emit('update-api-key-setting', true)"
                   :disabled="apiKeySettingLoading"
-                  class="text-indigo-500 focus:ring-indigo-500"
+                  class="text-action-primary-500 focus:ring-action-primary-500"
                 />
                 <div>
                   <span class="text-sm text-gray-200">Use Platform API Key</span>
@@ -76,7 +76,7 @@
                   :checked="!apiKeySetting.use_platform_api_key"
                   @change="$emit('update-api-key-setting', false)"
                   :disabled="apiKeySettingLoading"
-                  class="text-indigo-500 focus:ring-indigo-500"
+                  class="text-action-primary-500 focus:ring-action-primary-500"
                 />
                 <div>
                   <span class="text-sm text-gray-200">Authenticate in Terminal</span>

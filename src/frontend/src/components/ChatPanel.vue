@@ -36,7 +36,7 @@
                 :key="session.id"
                 @click="selectSession(session)"
                 class="w-full text-left px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                :class="{ 'bg-indigo-50 dark:bg-indigo-900/30': currentSessionId === session.id }"
+                :class="{ 'bg-action-primary-50 dark:bg-action-primary-900/30': currentSessionId === session.id }"
               >
                 <div class="flex items-center justify-between">
                   <span class="text-sm font-medium text-gray-700 dark:text-gray-200">
@@ -65,7 +65,7 @@
         <button
           @click="startNewChat"
           :disabled="loading"
-          class="inline-flex items-center px-3 py-1.5 text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition-colors"
+          class="inline-flex items-center px-3 py-1.5 text-sm font-medium text-action-primary-600 dark:text-action-primary-400 hover:text-action-primary-700 dark:hover:text-action-primary-300 hover:bg-action-primary-50 dark:hover:bg-action-primary-900/30 rounded-lg transition-colors"
         >
           <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
@@ -95,15 +95,15 @@
       <!-- Resume mode banner (EXEC-023) -->
       <div
         v-if="isResumeMode"
-        class="mx-6 mt-3 px-4 py-3 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-800 rounded-lg flex items-center justify-between"
+        class="mx-6 mt-3 px-4 py-3 bg-action-primary-50 dark:bg-action-primary-900/30 border border-action-primary-200 dark:border-action-primary-800 rounded-lg flex items-center justify-between"
       >
         <div class="flex items-center space-x-2">
-          <svg class="w-5 h-5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg class="w-5 h-5 text-action-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-          <span class="text-sm text-indigo-700 dark:text-indigo-300">
+          <span class="text-sm text-action-primary-700 dark:text-action-primary-300">
             Continuing from execution
-            <span class="font-mono text-xs bg-indigo-100 dark:bg-indigo-800 px-1.5 py-0.5 rounded">
+            <span class="font-mono text-xs bg-action-primary-100 dark:bg-action-primary-800 px-1.5 py-0.5 rounded">
               {{ resumeExecutionIdLocal?.substring(0, 8) }}...
             </span>
             - The agent has full context from that execution.
@@ -111,7 +111,7 @@
         </div>
         <button
           @click="dismissResumeMode"
-          class="text-indigo-500 hover:text-indigo-700 dark:hover:text-indigo-300"
+          class="text-action-primary-500 hover:text-action-primary-700 dark:hover:text-action-primary-300"
           title="Dismiss"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

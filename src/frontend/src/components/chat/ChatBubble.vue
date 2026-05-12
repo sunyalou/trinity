@@ -4,7 +4,7 @@
     v-if="role === 'user'"
     class="max-w-[85%] min-w-0 ml-auto"
   >
-    <div class="rounded-xl px-4 py-3 bg-indigo-600 text-white overflow-hidden">
+    <div class="rounded-xl px-4 py-3 bg-action-primary-600 text-white overflow-hidden">
       <div v-if="source === 'voice'" class="flex items-center gap-1.5 mb-1 opacity-75">
         <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4M12 15a3 3 0 003-3V5a3 3 0 00-6 0v7a3 3 0 003 3z" /></svg>
         <span class="text-[10px] uppercase tracking-wide">Voice</span>
@@ -55,7 +55,7 @@
       <!-- Expanded content -->
       <div
         v-else
-        class="prose prose-sm dark:prose-invert max-w-none break-words prose-p:my-2 prose-headings:my-3 prose-ul:my-2 prose-ol:my-2 prose-li:my-0 prose-pre:my-2 prose-pre:max-w-full prose-pre:overflow-x-auto prose-pre:whitespace-pre prose-code:text-indigo-600 dark:prose-code:text-indigo-400 prose-code:bg-gray-100 dark:prose-code:bg-gray-700 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:break-words prose-code:before:content-none prose-code:after:content-none prose-a:break-words"
+        class="prose prose-sm dark:prose-invert max-w-none break-words prose-p:my-2 prose-headings:my-3 prose-ul:my-2 prose-ol:my-2 prose-li:my-0 prose-pre:my-2 prose-pre:max-w-full prose-pre:overflow-x-auto prose-pre:whitespace-pre prose-code:text-action-primary-600 dark:prose-code:text-action-primary-400 prose-code:bg-gray-100 dark:prose-code:bg-gray-700 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:break-words prose-code:before:content-none prose-code:after:content-none prose-a:break-words"
         v-html="renderedContent"
       ></div>
     </div>
@@ -82,7 +82,7 @@
         <span class="text-[10px] uppercase tracking-wide">Voice</span>
       </div>
       <div
-        class="prose prose-sm dark:prose-invert max-w-none break-words prose-p:my-2 prose-headings:my-3 prose-ul:my-2 prose-ol:my-2 prose-li:my-0 prose-pre:my-2 prose-pre:max-w-full prose-pre:overflow-x-auto prose-pre:whitespace-pre prose-code:text-indigo-600 dark:prose-code:text-indigo-400 prose-code:bg-gray-100 dark:prose-code:bg-gray-700 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:break-words prose-code:before:content-none prose-code:after:content-none prose-a:break-words"
+        class="prose prose-sm dark:prose-invert max-w-none break-words prose-p:my-2 prose-headings:my-3 prose-ul:my-2 prose-ol:my-2 prose-li:my-0 prose-pre:my-2 prose-pre:max-w-full prose-pre:overflow-x-auto prose-pre:whitespace-pre prose-code:text-action-primary-600 dark:prose-code:text-action-primary-400 prose-code:bg-gray-100 dark:prose-code:bg-gray-700 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:break-words prose-code:before:content-none prose-code:after:content-none prose-a:break-words"
         v-html="renderedContent"
       ></div>
     </div>

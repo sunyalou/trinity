@@ -4,7 +4,7 @@
     <button
       @click="toggleDropdown"
       class="inline-flex items-center px-2 py-1 text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-      :class="{ 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/20': isOpen }"
+      :class="{ 'text-action-primary-600 dark:text-action-primary-400 bg-action-primary-50 dark:bg-action-primary-900/20': isOpen }"
       title="Chat history"
     >
       <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -37,7 +37,7 @@
 
         <!-- Loading state -->
         <div v-if="loading" class="px-3 py-4 text-center">
-          <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-indigo-500 mx-auto"></div>
+          <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-action-primary-500 mx-auto"></div>
         </div>
 
         <!-- Error state -->

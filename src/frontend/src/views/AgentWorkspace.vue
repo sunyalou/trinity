@@ -86,7 +86,7 @@
             <select
               v-model="selectedVoice"
               :disabled="voice.isActive.value"
-              class="flex-1 text-xs bg-gray-900 border border-gray-700 rounded px-2 py-1 text-gray-300 focus:outline-none focus:border-indigo-500 disabled:opacity-40"
+              class="flex-1 text-xs bg-gray-900 border border-gray-700 rounded px-2 py-1 text-gray-300 focus:outline-none focus:border-action-primary-500 disabled:opacity-40"
             >
               <option v-for="v in VOICES" :key="v.id" :value="v.id">{{ v.label }}</option>
             </select>
@@ -173,8 +173,8 @@
               prose-pre:bg-gray-800 prose-pre:border prose-pre:border-gray-700
               prose-ul:text-gray-300 prose-ol:text-gray-300
               prose-li:marker:text-gray-500
-              prose-blockquote:border-indigo-500 prose-blockquote:text-gray-400
-              prose-a:text-indigo-400 hover:prose-a:text-indigo-300
+              prose-blockquote:border-action-primary-500 prose-blockquote:text-gray-400
+              prose-a:text-action-primary-400 hover:prose-a:text-action-primary-300
               prose-hr:border-gray-700
               prose-table:text-sm
               prose-th:text-gray-200 prose-th:bg-gray-800

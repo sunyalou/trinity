@@ -127,7 +127,7 @@
 
       <!-- Load more button (for pagination) -->
       <div v-if="activity.timeline?.length >= 20" class="px-4 py-2 text-center">
-        <button class="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300">
+        <button class="text-xs text-action-primary-600 dark:text-action-primary-400 hover:text-action-primary-800 dark:hover:text-action-primary-300">
           Load more...
         </button>
       </div>

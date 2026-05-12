@@ -2,7 +2,7 @@
   <div class="space-y-6">
     <!-- Loading State -->
     <div v-if="loading" class="flex items-center justify-center py-8">
-      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
+      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-action-primary-500"></div>
     </div>
 
     <!-- Not Owner State -->
@@ -53,8 +53,8 @@
               @click="toggleExpose"
               :disabled="saving"
               :class="[
-                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800',
-                foldersData?.expose_enabled ? 'bg-indigo-600' : 'bg-gray-200 dark:bg-gray-600'
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-action-primary-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800',
+                foldersData?.expose_enabled ? 'bg-action-primary-600' : 'bg-gray-200 dark:bg-gray-600'
               ]"
             >
               <span
@@ -79,8 +79,8 @@
               @click="toggleConsume"
               :disabled="saving"
               :class="[
-                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800',
-                foldersData?.consume_enabled ? 'bg-indigo-600' : 'bg-gray-200 dark:bg-gray-600'
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-action-primary-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800',
+                foldersData?.consume_enabled ? 'bg-action-primary-600' : 'bg-gray-200 dark:bg-gray-600'
               ]"
             >
               <span
@@ -195,19 +195,19 @@
         <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">How Shared Folders Work</h4>
         <ul class="text-xs text-gray-600 dark:text-gray-400 space-y-1">
           <li class="flex items-start">
-            <span class="text-indigo-500 mr-2">1.</span>
+            <span class="text-action-primary-500 mr-2">1.</span>
             Enable "Expose" on Agent A to create a shared volume at <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">/home/developer/shared-out</code>
           </li>
           <li class="flex items-start">
-            <span class="text-indigo-500 mr-2">2.</span>
+            <span class="text-action-primary-500 mr-2">2.</span>
             Grant Agent B permission to access Agent A (via Permissions tab)
           </li>
           <li class="flex items-start">
-            <span class="text-indigo-500 mr-2">3.</span>
+            <span class="text-action-primary-500 mr-2">3.</span>
             Enable "Mount" on Agent B to mount Agent A's folder at <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">/home/developer/shared-in/agent-a</code>
           </li>
           <li class="flex items-start">
-            <span class="text-indigo-500 mr-2">4.</span>
+            <span class="text-action-primary-500 mr-2">4.</span>
             Restart both agents to apply the volume mounts
           </li>
         </ul>

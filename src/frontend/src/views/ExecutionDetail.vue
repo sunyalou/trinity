@@ -30,7 +30,7 @@
               <p class="text-sm text-gray-500 dark:text-gray-400">
                 <router-link
                   :to="{ name: 'AgentDetail', params: { name: agentName } }"
-                  class="hover:text-indigo-600 dark:hover:text-indigo-400"
+                  class="hover:text-action-primary-600 dark:hover:text-action-primary-400"
                 >
                   {{ agentName }}
                 </router-link>
@@ -60,7 +60,7 @@
             <button
               v-if="execution?.claude_session_id && execution?.status !== 'running'"
               @click="continueAsChat"
-              class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center space-x-1"
+              class="px-3 py-1.5 bg-action-primary-600 hover:bg-action-primary-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center space-x-1"
               title="Continue this execution as an interactive chat"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -84,7 +84,7 @@
 
     <!-- Loading state -->
     <div v-if="loading" class="flex items-center justify-center py-20">
-      <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-500"></div>
+      <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-action-primary-500"></div>
     </div>
 
     <!-- Error state -->
@@ -187,7 +187,7 @@
             <span class="text-gray-500 dark:text-gray-400">Source Agent:</span>
             <router-link
               :to="{ name: 'AgentDetail', params: { name: execution.source_agent_name } }"
-              class="ml-2 text-indigo-600 dark:text-indigo-400 font-medium hover:underline"
+              class="ml-2 text-action-primary-600 dark:text-action-primary-400 font-medium hover:underline"
             >
               {{ execution.source_agent_name }}
             </router-link>
@@ -293,7 +293,7 @@
             <button
               v-if="isStreaming"
               @click="toggleAutoScroll"
-              :class="autoScroll ? 'text-indigo-600 dark:text-indigo-400' : 'text-gray-400 dark:text-gray-500'"
+              :class="autoScroll ? 'text-action-primary-600 dark:text-action-primary-400' : 'text-gray-400 dark:text-gray-500'"
               class="text-xs font-medium hover:underline"
               title="Toggle auto-scroll"
             >
@@ -307,7 +307,7 @@
         <div class="p-4 log-scroll-container" :class="{ 'max-h-[600px] overflow-y-auto': isStreaming }">
           <!-- Streaming - waiting for entries -->
           <div v-if="isStreaming && logEntries.length === 0" class="text-center py-8">
-            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500 mx-auto mb-4"></div>
+            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-action-primary-500 mx-auto mb-4"></div>
             <p class="text-gray-500 dark:text-gray-400">Waiting for execution output...</p>
           </div>
 
@@ -338,13 +338,13 @@
 
               <!-- Assistant Message (thinking text) -->
               <div v-else-if="entry.type === 'assistant-text'" class="flex space-x-3">
-                <div class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 rounded-full flex items-center justify-center">
-                  <svg class="w-4 h-4 text-indigo-600 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="flex-shrink-0 w-8 h-8 bg-action-primary-100 dark:bg-action-primary-900/50 rounded-full flex items-center justify-center">
+                  <svg class="w-4 h-4 text-action-primary-600 dark:text-action-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                   </svg>
                 </div>
-                <div class="flex-1 min-w-0 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg p-3">
-                  <div class="text-xs font-medium text-indigo-700 dark:text-indigo-300 mb-1">Claude</div>
+                <div class="flex-1 min-w-0 bg-action-primary-50 dark:bg-action-primary-900/20 rounded-lg p-3">
+                  <div class="text-xs font-medium text-action-primary-700 dark:text-action-primary-300 mb-1">Claude</div>
                   <div class="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">{{ entry.text }}</div>
                 </div>
               </div>
@@ -387,7 +387,7 @@
                   </div>
                   <div class="flex items-center space-x-3 font-mono">
                     <span>{{ entry.duration }}</span>
-                    <span class="text-indigo-600 dark:text-indigo-400">${{ entry.cost }}</span>
+                    <span class="text-action-primary-600 dark:text-action-primary-400">${{ entry.cost }}</span>
                   </div>
                 </div>
               </div>

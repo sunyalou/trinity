@@ -2,7 +2,7 @@
   <div class="space-y-6">
     <!-- Loading State -->
     <div v-if="loading" class="flex items-center justify-center py-8">
-      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
+      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-action-primary-500"></div>
     </div>
 
     <!-- Agent Not Running State -->
@@ -101,7 +101,7 @@
             v-if="hasUpdateDashboardPlaybook"
             @click="triggerUpdateDashboard"
             :disabled="updatingDashboard"
-            class="inline-flex items-center px-2.5 py-1.5 text-xs font-medium rounded bg-indigo-50 text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-900/50 dark:text-indigo-300 dark:hover:bg-indigo-900/70 disabled:opacity-50"
+            class="inline-flex items-center px-2.5 py-1.5 text-xs font-medium rounded bg-action-primary-50 text-action-primary-700 hover:bg-action-primary-100 dark:bg-action-primary-900/50 dark:text-action-primary-300 dark:hover:bg-action-primary-900/70 disabled:opacity-50"
             title="Run /update-dashboard playbook"
           >
             <svg v-if="updatingDashboard" class="w-3.5 h-3.5 mr-1 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -130,15 +130,15 @@
         v-for="(section, sectionIndex) in dashboardData.config.sections"
         :key="sectionIndex"
         class="space-y-4"
-        :class="section.platform_managed ? 'mt-6 pt-6 border-t border-indigo-200 dark:border-indigo-800' : ''"
+        :class="section.platform_managed ? 'mt-6 pt-6 border-t border-action-primary-200 dark:border-action-primary-800' : ''"
       >
         <!-- Section Header -->
-        <div v-if="section.title" class="border-b border-gray-200 dark:border-gray-700 pb-2" :class="section.platform_managed ? 'border-indigo-200 dark:border-indigo-800' : ''">
+        <div v-if="section.title" class="border-b border-gray-200 dark:border-gray-700 pb-2" :class="section.platform_managed ? 'border-action-primary-200 dark:border-action-primary-800' : ''">
           <div class="flex items-center gap-2">
-            <h3 class="text-sm font-semibold uppercase tracking-wider" :class="section.platform_managed ? 'text-indigo-600 dark:text-indigo-400' : 'text-gray-900 dark:text-white'">
+            <h3 class="text-sm font-semibold uppercase tracking-wider" :class="section.platform_managed ? 'text-action-primary-600 dark:text-action-primary-400' : 'text-gray-900 dark:text-white'">
               {{ section.title }}
             </h3>
-            <span v-if="section.platform_managed" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300">
+            <span v-if="section.platform_managed" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-action-primary-100 text-action-primary-700 dark:bg-action-primary-900/50 dark:text-action-primary-300">
               Auto
             </span>
           </div>

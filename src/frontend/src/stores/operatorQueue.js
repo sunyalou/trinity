@@ -13,7 +13,7 @@ import { useAuthStore } from './auth'
 // Agent display helpers
 const AGENT_COLORS = [
   'bg-blue-500', 'bg-emerald-500', 'bg-accent-purple-500', 'bg-state-autonomous-500',
-  'bg-state-locked-500', 'bg-cyan-500', 'bg-indigo-500', 'bg-teal-500'
+  'bg-state-locked-500', 'bg-cyan-500', 'bg-action-primary-500', 'bg-teal-500'
 ]
 
 function getAgentProfile(name) {

@@ -2,7 +2,7 @@
   <div class="bg-white dark:bg-gray-800 shadow dark:shadow-gray-900 rounded-lg mb-4 relative">
     <!-- Overlapping Avatar (AVATAR-001) - centered on left edge of card (50% in, 50% out) -->
     <div class="absolute left-0 top-3 z-10 group -translate-x-1/2">
-      <div class="rounded-full border-[3px] border-indigo-400 dark:border-indigo-500 shadow-lg overflow-hidden">
+      <div class="rounded-full border-[3px] border-action-primary-400 dark:border-action-primary-500 shadow-lg overflow-hidden">
         <div class="relative w-28 h-28">
           <Transition name="avatar-crossfade">
             <div :key="emotionAvatarUrl || agent.avatar_url" class="absolute inset-0">
@@ -61,7 +61,7 @@
                 ref="nameInput"
                 v-model="editedName"
                 type="text"
-                class="text-2xl font-bold text-gray-900 dark:text-white bg-transparent border-b-2 border-indigo-500 focus:outline-none focus:border-indigo-600 py-0 px-0"
+                class="text-2xl font-bold text-gray-900 dark:text-white bg-transparent border-b-2 border-action-primary-500 focus:outline-none focus:border-action-primary-600 py-0 px-0"
                 :class="{ 'border-status-danger-500': nameError }"
                 @keydown.enter="saveName"
                 @keydown.escape="cancelEditName"
@@ -75,7 +75,7 @@
               <button
                 v-if="agent.can_share && !agent.is_system"
                 @click="startEditName"
-                class="text-gray-400 dark:text-gray-500 hover:text-indigo-600 dark:hover:text-indigo-400 p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                class="text-gray-400 dark:text-gray-500 hover:text-action-primary-600 dark:hover:text-action-primary-400 p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
                 title="Rename agent"
               >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -154,7 +154,7 @@
             :disabled="agent.status !== 'running'"
             class="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition-colors"
             :class="agent.status === 'running'
-              ? 'text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700'
+              ? 'text-action-primary-600 dark:text-action-primary-400 hover:bg-action-primary-50 dark:hover:bg-action-primary-900/30 border border-action-primary-200 dark:border-action-primary-700'
               : 'text-gray-300 dark:text-gray-600 border border-gray-200 dark:border-gray-700 cursor-not-allowed'"
             title="Open Workspace — voice + canvas (Beta)"
           >
@@ -281,7 +281,7 @@
         <button
           v-if="agent.can_share"
           @click="$emit('open-resource-modal')"
-          class="p-1.5 text-gray-400 dark:text-gray-500 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors flex-shrink-0"
+          class="p-1.5 text-gray-400 dark:text-gray-500 hover:text-action-primary-600 dark:hover:text-action-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors flex-shrink-0"
           title="Configure resources (Memory/CPU)"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

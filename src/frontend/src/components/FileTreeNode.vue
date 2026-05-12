@@ -54,7 +54,7 @@ export default defineComponent({
             ]),
             // Folder icon
             h('svg', {
-              class: `w-5 h-5 mr-2 ${isExpanded() ? 'text-indigo-500 dark:text-indigo-400' : 'text-gray-400 dark:text-gray-500'}`,
+              class: `w-5 h-5 mr-2 ${isExpanded() ? 'text-action-primary-500 dark:text-action-primary-400' : 'text-gray-400 dark:text-gray-500'}`,
               fill: 'currentColor',
               viewBox: '0 0 20 20'
             }, [
@@ -114,7 +114,7 @@ export default defineComponent({
           }, formatFileSize(props.item.size)),
           // Download button
           h('button', {
-            class: 'p-1 text-indigo-600 dark:text-indigo-400 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded',
+            class: 'p-1 text-action-primary-600 dark:text-action-primary-400 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-action-primary-50 dark:hover:bg-action-primary-900/30 rounded',
             title: 'Download file',
             onClick: downloadFile
           }, [

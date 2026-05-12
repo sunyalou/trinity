@@ -10,7 +10,7 @@
       </div>
       <button
         @click="showCreateModal = true"
-        class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:focus:ring-offset-gray-800"
+        class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-action-primary-600 hover:bg-action-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-action-primary-500 dark:focus:ring-offset-gray-800"
       >
         <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
@@ -21,7 +21,7 @@
 
     <!-- Loading state -->
     <div v-if="loading" class="text-center py-8">
-      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500 mx-auto"></div>
+      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-action-primary-500 mx-auto"></div>
       <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">Loading links...</p>
     </div>
 
@@ -34,7 +34,7 @@
       <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Create a link to share this agent with others.</p>
       <button
         @click="showCreateModal = true"
-        class="mt-4 inline-flex items-center px-3 py-2 text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300"
+        class="mt-4 inline-flex items-center px-3 py-2 text-sm font-medium text-action-primary-600 dark:text-action-primary-400 hover:text-action-primary-700 dark:hover:text-action-primary-300"
       >
         <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
@@ -126,7 +126,7 @@
                   <button
                     @click="connectSlack(link)"
                     :disabled="slackLoading[link.id]"
-                    class="inline-flex items-center px-2 py-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 disabled:opacity-50"
+                    class="inline-flex items-center px-2 py-1 text-xs font-medium text-action-primary-600 dark:text-action-primary-400 hover:text-action-primary-700 dark:hover:text-action-primary-300 disabled:opacity-50"
                   >
                     <span v-if="slackLoading[link.id]">Connecting...</span>
                     <span v-else>Connect Slack</span>
@@ -191,7 +191,7 @@
               class="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
               title="Edit link"
             >
-              <svg class="w-4 h-4 text-gray-400 hover:text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg class="w-4 h-4 text-gray-400 hover:text-action-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
               </svg>
             </button>
@@ -234,7 +234,7 @@
                     v-model="formData.name"
                     type="text"
                     placeholder="e.g., Customer Support Demo"
-                    class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-indigo-500 focus:border-indigo-500"
+                    class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-action-primary-500 focus:border-action-primary-500"
                   />
                 </div>
 
@@ -250,12 +250,12 @@
                       :class="[
                         'flex flex-col items-start p-3 rounded-lg border-2 text-left transition-colors',
                         formData.link_type === 'chat'
-                          ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20'
+                          ? 'border-action-primary-500 bg-action-primary-50 dark:bg-action-primary-900/20'
                           : 'border-gray-200 dark:border-gray-600 hover:border-gray-300 dark:hover:border-gray-500'
                       ]"
                     >
                       <div class="flex items-center mb-1">
-                        <svg class="w-4 h-4 mr-1.5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg class="w-4 h-4 mr-1.5 text-action-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                         </svg>
                         <span class="text-sm font-medium text-gray-900 dark:text-white">Chat</span>
@@ -268,12 +268,12 @@
                       :class="[
                         'flex flex-col items-start p-3 rounded-lg border-2 text-left transition-colors',
                         formData.link_type === 'site'
-                          ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20'
+                          ? 'border-action-primary-500 bg-action-primary-50 dark:bg-action-primary-900/20'
                           : 'border-gray-200 dark:border-gray-600 hover:border-gray-300 dark:hover:border-gray-500'
                       ]"
                     >
                       <div class="flex items-center mb-1">
-                        <svg class="w-4 h-4 mr-1.5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg class="w-4 h-4 mr-1.5 text-action-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
                         </svg>
                         <span class="text-sm font-medium text-gray-900 dark:text-white">Website</span>
@@ -301,7 +301,7 @@
                   <input
                     v-model="formData.expires_at"
                     type="datetime-local"
-                    class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-indigo-500 focus:border-indigo-500"
+                    class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-action-primary-500 focus:border-action-primary-500"
                   />
                 </div>
 
@@ -311,7 +311,7 @@
                     id="enabled"
                     v-model="formData.enabled"
                     type="checkbox"
-                    class="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 dark:border-gray-600 rounded"
+                    class="h-4 w-4 text-action-primary-600 focus:ring-action-primary-500 border-gray-300 dark:border-gray-600 rounded"
                   />
                   <label for="enabled" class="ml-2 block text-sm text-gray-700 dark:text-gray-300">
                     Link enabled
@@ -336,7 +336,7 @@
               <button
                 type="submit"
                 :disabled="formLoading"
-                class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-md disabled:bg-indigo-400"
+                class="px-4 py-2 text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 rounded-md disabled:bg-action-primary-400"
               >
                 <span v-if="formLoading" class="flex items-center">
                   <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">

@@ -2,7 +2,7 @@
   <div class="p-6 space-y-6">
     <!-- Loading State -->
     <div v-if="loading" class="text-center py-8">
-      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500 mx-auto"></div>
+      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-action-primary-500 mx-auto"></div>
       <p class="text-gray-500 dark:text-gray-400 mt-2">Loading credentials...</p>
     </div>
 
@@ -58,7 +58,7 @@
               <button
                 @click="editFile(file.name)"
                 :disabled="agentStatus !== 'running'"
-                class="text-sm text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                class="text-sm text-action-primary-600 hover:text-action-primary-700 dark:text-action-primary-400 dark:hover:text-action-primary-300 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {{ file.exists ? 'Edit' : 'Add' }}
               </button>

@@ -138,7 +138,7 @@
             <!-- Avatar (vertically centered, with border ring) -->
             <div class="flex-shrink-0 flex items-center mr-1.5">
               <div class="rounded-full border-2 overflow-hidden shadow-sm"
-                   :class="row.isSystemAgent ? 'border-accent-purple-400 dark:border-accent-purple-500' : 'border-indigo-400 dark:border-indigo-500'"
+                   :class="row.isSystemAgent ? 'border-accent-purple-400 dark:border-accent-purple-500' : 'border-action-primary-400 dark:border-action-primary-500'"
               >
                 <AgentAvatar :name="row.name" :avatar-url="row.avatarUrl" size="lg" />
               </div>

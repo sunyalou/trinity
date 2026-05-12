@@ -3,7 +3,7 @@
   <Teleport to="body">
     <div
       v-if="showHint"
-      class="fixed bottom-24 right-4 z-[9998] w-80 bg-indigo-600 text-white rounded-lg shadow-2xl p-4 flex items-start gap-3 transition-all duration-300"
+      class="fixed bottom-24 right-4 z-[9998] w-80 bg-action-primary-600 text-white rounded-lg shadow-2xl p-4 flex items-start gap-3 transition-all duration-300"
       style="animation: slideIn 0.3s ease-out;"
     >
       <div class="flex-shrink-0">
@@ -33,7 +33,7 @@
   >
     <!-- Header -->
     <div
-      class="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-indigo-500 to-accent-purple-500 text-white cursor-pointer"
+      class="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-action-primary-500 to-accent-purple-500 text-white cursor-pointer"
       @click="toggleMinimized"
     >
       <div class="flex items-center gap-2">
@@ -66,7 +66,7 @@
       <div class="mb-4">
         <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
           <div
-            class="h-full bg-gradient-to-r from-indigo-500 to-accent-purple-500 transition-all duration-500"
+            class="h-full bg-gradient-to-r from-action-primary-500 to-accent-purple-500 transition-all duration-500"
             :style="{ width: `${progressPercent}%` }"
           />
         </div>
@@ -86,9 +86,9 @@
             item.completed
               ? 'bg-status-success-50 dark:bg-status-success-900/20'
               : isCurrentStep(index)
-                ? 'bg-indigo-50 dark:bg-indigo-900/20 ring-1 ring-indigo-200 dark:ring-indigo-700'
+                ? 'bg-action-primary-50 dark:bg-action-primary-900/20 ring-1 ring-action-primary-200 dark:ring-action-primary-700'
                 : 'opacity-50',
-            !item.completed && item.link && isCurrentStep(index) ? 'cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900/30' : ''
+            !item.completed && item.link && isCurrentStep(index) ? 'cursor-pointer hover:bg-action-primary-100 dark:hover:bg-action-primary-900/30' : ''
           ]"
           @click="handleItemClick(item, index)"
         >
@@ -97,7 +97,7 @@
             :class="item.completed
               ? 'bg-status-success-500 text-white'
               : isCurrentStep(index)
-                ? 'border-2 border-indigo-500 dark:border-indigo-400'
+                ? 'border-2 border-action-primary-500 dark:border-action-primary-400'
                 : 'border-2 border-gray-300 dark:border-gray-600'"
           >
             <CheckIcon v-if="item.completed" class="h-3 w-3" />
@@ -132,7 +132,7 @@
             class="flex-shrink-0 text-xs font-medium"
             :class="isOnTargetPage(item)
               ? 'text-state-autonomous-600 dark:text-state-autonomous-400'
-              : 'text-indigo-600 dark:text-indigo-400'"
+              : 'text-action-primary-600 dark:text-action-primary-400'"
           >
             {{ isOnTargetPage(item) ? 'See above ↑' : 'Start →' }}
           </span>
@@ -204,7 +204,7 @@
         <button
           @click.stop.prevent="navigateTo('/processes/docs')"
           type="button"
-          class="text-xs text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer pointer-events-auto"
+          class="text-xs text-action-primary-600 dark:text-action-primary-400 hover:underline cursor-pointer pointer-events-auto"
         >
           View all docs →
         </button>

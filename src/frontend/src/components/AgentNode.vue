@@ -23,7 +23,7 @@
     <!-- Avatar on left edge (50% in, 50% out) -->
     <div class="absolute left-0 top-5 z-10 -translate-x-1/2">
       <div class="rounded-full border-2 shadow-md overflow-hidden"
-           :class="isSystemAgent ? 'border-accent-purple-400 dark:border-accent-purple-500' : 'border-indigo-400 dark:border-indigo-500'"
+           :class="isSystemAgent ? 'border-accent-purple-400 dark:border-accent-purple-500' : 'border-action-primary-400 dark:border-action-primary-500'"
       >
         <AgentAvatar :name="data.label" :avatar-url="data.avatarUrl" size="xl" />
       </div>

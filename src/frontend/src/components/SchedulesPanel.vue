@@ -8,7 +8,7 @@
       </div>
       <button
         @click="showCreateForm = true"
-        class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+        class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-action-primary-600 hover:bg-action-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-action-primary-500"
       >
         <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
@@ -34,7 +34,7 @@
                 type="text"
                 required
                 placeholder="Daily report"
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-action-primary-500"
               />
             </div>
 
@@ -45,7 +45,7 @@
                 type="text"
                 required
                 placeholder="0 9 * * *"
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md font-mono focus:outline-none focus:ring-2 focus:ring-action-primary-500"
               />
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                 Format: minute hour day month day_of_week (e.g., "0 9 * * *" for 9 AM daily)
@@ -65,7 +65,7 @@
                 required
                 rows="3"
                 placeholder="Generate and post the daily analytics report..."
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-action-primary-500"
               ></textarea>
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">This message will be sent to the agent when the schedule triggers</p>
             </div>
@@ -76,7 +76,7 @@
                 v-model="formData.description"
                 type="text"
                 placeholder="Optional description"
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-action-primary-500"
               />
             </div>
 
@@ -90,7 +90,7 @@
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Timezone</label>
                 <select
                   v-model="formData.timezone"
-                  class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-action-primary-500"
                 >
                   <option value="UTC">UTC</option>
                   <option value="America/New_York">America/New_York (EST/EDT)</option>
@@ -105,7 +105,7 @@
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Timeout</label>
                 <select
                   v-model="formData.timeout_seconds"
-                  class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-action-primary-500"
                 >
                   <option :value="300">5 minutes</option>
                   <option :value="900">15 minutes (default)</option>
@@ -122,7 +122,7 @@
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Max Retries</label>
                 <select
                   v-model="formData.max_retries"
-                  class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-action-primary-500"
                 >
                   <option :value="0">Disabled (default)</option>
                   <option :value="1">1 retry</option>
@@ -135,7 +135,7 @@
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Retry Delay</label>
                 <select
                   v-model="formData.retry_delay_seconds"
-                  class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-action-primary-500"
                 >
                   <option :value="30">30 seconds</option>
                   <option :value="60">1 minute (default)</option>
@@ -157,7 +157,7 @@
                   type="button"
                   @click="toggleAllTools"
                   class="text-xs px-2 py-1 rounded"
-                  :class="formData.allowed_tools === null ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300' : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'"
+                  :class="formData.allowed_tools === null ? 'bg-action-primary-100 dark:bg-action-primary-900/30 text-action-primary-700 dark:text-action-primary-300' : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'"
                 >
                   {{ formData.allowed_tools === null ? 'All Tools (Unrestricted)' : 'Enable All' }}
                 </button>
@@ -170,7 +170,7 @@
                       v-for="tool in category.tools"
                       :key="tool.value"
                       class="inline-flex items-center px-2 py-1 rounded text-xs cursor-pointer transition-colors"
-                      :class="isToolSelected(tool.value) ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'"
+                      :class="isToolSelected(tool.value) ? 'bg-action-primary-100 dark:bg-action-primary-900/30 text-action-primary-700 dark:text-action-primary-300' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'"
                     >
                       <input
                         type="checkbox"
@@ -194,7 +194,7 @@
                 v-model="formData.enabled"
                 type="checkbox"
                 id="enabled"
-                class="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                class="h-4 w-4 text-action-primary-600 focus:ring-action-primary-500 border-gray-300 rounded"
               />
               <label for="enabled" class="ml-2 text-sm text-gray-700 dark:text-gray-300">Enable schedule immediately</label>
             </div>
@@ -214,7 +214,7 @@
               <button
                 type="submit"
                 :disabled="formLoading"
-                class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md hover:bg-indigo-700 disabled:bg-gray-400"
+                class="px-4 py-2 text-sm font-medium text-white bg-action-primary-600 border border-transparent rounded-md hover:bg-action-primary-700 disabled:bg-gray-400"
               >
                 <span v-if="formLoading" class="flex items-center">
                   <svg class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
@@ -233,7 +233,7 @@
 
     <!-- Schedules List -->
     <div v-if="loading" class="text-center py-8">
-      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500 mx-auto"></div>
+      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-action-primary-500 mx-auto"></div>
       <p class="text-sm text-gray-500 dark:text-gray-400 mt-2">Loading schedules...</p>
     </div>
 
@@ -304,7 +304,7 @@
                 </svg>
                 {{ schedule.max_retries }}x retry
               </span>
-              <span v-if="schedule.next_run_at" class="flex items-center text-indigo-600 dark:text-indigo-400">
+              <span v-if="schedule.next_run_at" class="flex items-center text-action-primary-600 dark:text-action-primary-400">
                 <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6" />
                 </svg>
@@ -327,7 +327,7 @@
             <button
               @click="triggerSchedule(schedule)"
               :disabled="triggerLoading === schedule.id"
-              class="p-1.5 text-gray-400 hover:text-indigo-600 rounded transition-colors"
+              class="p-1.5 text-gray-400 hover:text-action-primary-600 rounded transition-colors"
               title="Run now"
             >
               <svg v-if="triggerLoading === schedule.id" class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
@@ -356,7 +356,7 @@
             </button>
             <button
               @click="editSchedule(schedule)"
-              class="p-1.5 text-gray-400 hover:text-indigo-600 rounded transition-colors"
+              class="p-1.5 text-gray-400 hover:text-action-primary-600 rounded transition-colors"
               title="Edit"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -383,7 +383,7 @@
         <!-- Expand to show executions -->
         <button
           @click="toggleExecutions(schedule.id)"
-          class="mt-3 text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 flex items-center"
+          class="mt-3 text-xs text-action-primary-600 dark:text-action-primary-400 hover:text-action-primary-800 dark:hover:text-action-primary-300 flex items-center"
         >
           <svg
             class="w-3 h-3 mr-1 transform transition-transform"
@@ -400,7 +400,7 @@
         <!-- Execution History -->
         <div v-if="expandedSchedule === schedule.id" class="mt-3 border-t border-gray-100 dark:border-gray-700 pt-3">
           <div v-if="executionsLoading" class="text-center py-4">
-            <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-indigo-500 mx-auto"></div>
+            <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-action-primary-500 mx-auto"></div>
           </div>
           <div v-else-if="!executions[schedule.id] || executions[schedule.id].length === 0" class="text-center py-4 text-xs text-gray-400 dark:text-gray-500">
             No executions yet
@@ -549,7 +549,7 @@
                   class="flex items-center justify-between text-xs bg-gray-100 dark:bg-gray-700 rounded px-2 py-1"
                 >
                   <div class="flex items-center space-x-2">
-                    <span class="font-medium text-indigo-600 dark:text-indigo-400">{{ tool.tool }}</span>
+                    <span class="font-medium text-action-primary-600 dark:text-action-primary-400">{{ tool.tool }}</span>
                     <span v-if="tool.input" class="text-gray-500 dark:text-gray-400 truncate max-w-xs">
                       {{ summarizeToolInput(tool) }}
                     </span>

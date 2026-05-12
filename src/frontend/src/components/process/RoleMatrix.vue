@@ -15,7 +15,7 @@
           :class="[
             'px-3 py-1.5 text-sm font-medium rounded-lg transition-colors',
             editMode
-              ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400'
+              ? 'bg-action-primary-100 text-action-primary-700 dark:bg-action-primary-900/30 dark:text-action-primary-400'
               : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
           ]"
         >
@@ -26,7 +26,7 @@
           <input
             type="checkbox"
             v-model="showAllAgents"
-            class="rounded border-gray-300 dark:border-gray-600 text-indigo-600 focus:ring-indigo-500"
+            class="rounded border-gray-300 dark:border-gray-600 text-action-primary-600 focus:ring-action-primary-500"
           />
           Show all agents
         </label>
@@ -36,7 +36,7 @@
     <!-- Legend -->
     <div class="flex items-center gap-4 mb-4 text-sm text-gray-600 dark:text-gray-400">
       <div class="flex items-center gap-1.5">
-        <span class="inline-flex items-center justify-center w-6 h-6 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-400 font-semibold text-xs">E</span>
+        <span class="inline-flex items-center justify-center w-6 h-6 rounded bg-action-primary-100 dark:bg-action-primary-900/40 text-action-primary-700 dark:text-action-primary-400 font-semibold text-xs">E</span>
         <span>Executor</span>
       </div>
       <div class="flex items-center gap-1.5">
@@ -80,7 +80,7 @@
             >
               <button
                 @click="showAddAgentModal = true"
-                class="text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 text-xs"
+                class="text-action-primary-600 dark:text-action-primary-400 hover:text-action-primary-700 dark:hover:text-action-primary-300 text-xs"
               >
                 + Add Agent
               </button>
@@ -168,7 +168,7 @@
           v-model="newAgentName"
           type="text"
           placeholder="Enter agent name"
-          class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+          class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-action-primary-500 focus:border-action-primary-500"
           @keyup.enter="addAgent"
         />
         <div class="flex justify-end gap-3 mt-4">
@@ -181,7 +181,7 @@
           <button
             @click="addAgent"
             :disabled="!newAgentName.trim()"
-            class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg"
+            class="px-4 py-2 text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg"
           >
             Add
           </button>
@@ -312,7 +312,7 @@ function getRoleCellClass(stepId, agent) {
   const base = editMode.value ? 'cursor-pointer hover:ring-2 hover:ring-gray-300 dark:hover:ring-gray-600' : '';
   switch (role) {
     case 'executor':
-      return `${base} bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-400 font-semibold`;
+      return `${base} bg-action-primary-100 dark:bg-action-primary-900/40 text-action-primary-700 dark:text-action-primary-400 font-semibold`;
     case 'monitor':
       return `${base} bg-state-autonomous-100 dark:bg-state-autonomous-900/40 text-state-autonomous-700 dark:text-state-autonomous-400 font-semibold`;
     case 'informed':

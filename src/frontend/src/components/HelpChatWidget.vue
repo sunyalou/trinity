@@ -3,7 +3,7 @@
   <button
     v-if="!isOpen"
     @click="openChat"
-    class="fixed bottom-6 right-6 w-14 h-14 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-105 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 z-50"
+    class="fixed bottom-6 right-6 w-14 h-14 bg-action-primary-600 hover:bg-action-primary-700 text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-105 focus:outline-none focus:ring-2 focus:ring-action-primary-500 focus:ring-offset-2 z-50"
     aria-label="Open help chat"
   >
     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -29,7 +29,7 @@
       @keydown.escape="closeChat"
     >
       <!-- Header -->
-      <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-indigo-600 rounded-t-xl">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-action-primary-600 rounded-t-xl">
         <div class="flex items-center space-x-2">
           <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -71,8 +71,8 @@
       >
         <!-- Welcome message when empty -->
         <div v-if="messages.length === 0 && !loading" class="text-center py-8">
-          <div class="w-12 h-12 bg-indigo-100 dark:bg-indigo-900/30 rounded-full flex items-center justify-center mx-auto mb-3">
-            <svg class="w-6 h-6 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div class="w-12 h-12 bg-action-primary-100 dark:bg-action-primary-900/30 rounded-full flex items-center justify-center mx-auto mb-3">
+            <svg class="w-6 h-6 text-action-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
@@ -93,9 +93,9 @@
         <!-- Loading indicator -->
         <div v-if="loading" class="flex items-center space-x-2 text-gray-500 dark:text-gray-400">
           <div class="flex space-x-1">
-            <div class="w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style="animation-delay: 0ms"></div>
-            <div class="w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style="animation-delay: 150ms"></div>
-            <div class="w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style="animation-delay: 300ms"></div>
+            <div class="w-2 h-2 bg-action-primary-500 rounded-full animate-bounce" style="animation-delay: 0ms"></div>
+            <div class="w-2 h-2 bg-action-primary-500 rounded-full animate-bounce" style="animation-delay: 150ms"></div>
+            <div class="w-2 h-2 bg-action-primary-500 rounded-full animate-bounce" style="animation-delay: 300ms"></div>
           </div>
           <span class="text-sm">Thinking...</span>
         </div>
@@ -123,7 +123,7 @@
             rows="1"
             :maxlength="2000"
             placeholder="Ask a question..."
-            class="flex-1 resize-none border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm"
+            class="flex-1 resize-none border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-action-primary-500 focus:border-transparent text-sm"
             :disabled="loading"
             @keydown.enter.exact.prevent="sendMessage"
             @input="autoResize"
@@ -131,7 +131,7 @@
           <button
             type="submit"
             :disabled="loading || !inputMessage.trim()"
-            class="p-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 disabled:cursor-not-allowed text-white rounded-lg transition-colors shrink-0"
+            class="p-2 bg-action-primary-600 hover:bg-action-primary-700 disabled:bg-action-primary-400 disabled:cursor-not-allowed text-white rounded-lg transition-colors shrink-0"
             aria-label="Send message"
           >
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

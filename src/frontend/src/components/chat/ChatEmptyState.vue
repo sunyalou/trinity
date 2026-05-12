@@ -1,7 +1,7 @@
 <template>
   <div class="text-center py-8 px-4">
-    <div v-if="showIcon" class="w-16 h-16 bg-indigo-100 dark:bg-indigo-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
-      <svg class="w-8 h-8 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <div v-if="showIcon" class="w-16 h-16 bg-action-primary-100 dark:bg-action-primary-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+      <svg class="w-8 h-8 text-action-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
       </svg>
     </div>
@@ -16,7 +16,7 @@
         :key="idx"
         type="button"
         @click="$emit('select', { text: item.text, sendImmediately: item.sendImmediately })"
-        class="text-left px-4 py-3 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg hover:border-indigo-400 dark:hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors group"
+        class="text-left px-4 py-3 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg hover:border-action-primary-400 dark:hover:border-action-primary-500 hover:bg-action-primary-50 dark:hover:bg-action-primary-900/20 transition-colors group"
       >
         <div class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
           {{ item.label }}

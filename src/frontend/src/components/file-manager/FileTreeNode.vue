@@ -5,7 +5,7 @@
       @click="handleClick"
       :class="[
         'flex items-center px-2 py-1 rounded cursor-pointer text-sm',
-        isSelected ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-900 dark:text-indigo-100' : 'hover:bg-gray-100 dark:hover:bg-gray-700',
+        isSelected ? 'bg-action-primary-100 dark:bg-action-primary-900/30 text-action-primary-900 dark:text-action-primary-100' : 'hover:bg-gray-100 dark:hover:bg-gray-700',
         isMatched ? 'bg-status-warning-50 dark:bg-status-warning-900/20' : ''
       ]"
     >
