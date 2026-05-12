@@ -8,7 +8,7 @@
 
       <!-- Loading State -->
       <div v-if="permissionsLoading" class="text-center py-4">
-        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500 mx-auto"></div>
+        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-action-primary-500 mx-auto"></div>
         <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">Loading permissions...</p>
       </div>
 
@@ -19,7 +19,7 @@
           <button
             @click="allowAllAgents"
             :disabled="permissionsSaving"
-            class="text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 font-medium disabled:opacity-50"
+            class="text-sm text-action-primary-600 dark:text-action-primary-400 hover:text-action-primary-800 dark:hover:text-action-primary-300 font-medium disabled:opacity-50"
           >
             Allow All
           </button>
@@ -46,7 +46,7 @@
                 v-model="targetAgent.permitted"
                 @change="markDirty"
                 :disabled="permissionsSaving"
-                class="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-700"
+                class="h-4 w-4 text-action-primary-600 focus:ring-action-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-700"
               />
               <div class="flex-1">
                 <span class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ targetAgent.name }}</span>
@@ -67,7 +67,7 @@
           <button
             @click="savePermissions"
             :disabled="permissionsSaving || !permissionsDirty"
-            class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:focus:ring-offset-gray-800 disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed"
+            class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-action-primary-600 hover:bg-action-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-action-primary-500 dark:focus:ring-offset-gray-800 disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed"
           >
             <svg v-if="permissionsSaving" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
               <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>

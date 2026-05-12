@@ -46,13 +46,13 @@
             <div class="flex items-center space-x-2">
               <span
                 v-if="linkInfo.is_autonomous"
-                class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
+                class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-state-autonomous-100 text-state-autonomous-800 dark:bg-state-autonomous-900/30 dark:text-state-autonomous-400"
               >
                 AUTO
               </span>
               <span
                 v-if="linkInfo.is_read_only"
-                class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-400"
+                class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-state-locked-100 text-state-locked-800 dark:bg-state-locked-900/30 dark:text-state-locked-400"
               >
                 <svg class="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
@@ -80,7 +80,7 @@
       <!-- Loading state -->
       <div v-if="loading" class="flex-1 flex items-center justify-center">
         <div class="text-center">
-          <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-500 mx-auto mb-4"></div>
+          <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-action-primary-500 mx-auto mb-4"></div>
           <p class="text-gray-500 dark:text-gray-400">Loading...</p>
         </div>
       </div>
@@ -119,8 +119,8 @@
       <div v-else-if="linkInfo.require_email && !isVerified" class="flex-1 flex items-center justify-center">
         <div class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-8 max-w-md w-full">
           <div class="text-center mb-6">
-            <div class="w-16 h-16 bg-indigo-100 dark:bg-indigo-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
-              <svg class="w-8 h-8 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="w-16 h-16 bg-action-primary-100 dark:bg-action-primary-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+              <svg class="w-8 h-8 text-action-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
               </svg>
             </div>
@@ -138,14 +138,14 @@
                 type="email"
                 required
                 placeholder="your@email.com"
-                class="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                class="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-action-primary-500 focus:border-transparent"
                 :disabled="verifyLoading"
               />
             </div>
             <button
               type="submit"
               :disabled="verifyLoading || !email"
-              class="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white font-medium rounded-lg transition-colors"
+              class="w-full py-3 px-4 bg-action-primary-600 hover:bg-action-primary-700 disabled:bg-action-primary-400 text-white font-medium rounded-lg transition-colors"
             >
               <span v-if="verifyLoading" class="flex items-center justify-center">
                 <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
@@ -167,7 +167,7 @@
                 required
                 maxlength="6"
                 placeholder="123456"
-                class="w-full px-4 py-3 text-center text-2xl tracking-widest border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent font-mono"
+                class="w-full px-4 py-3 text-center text-2xl tracking-widest border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-action-primary-500 focus:border-transparent font-mono"
                 :disabled="verifyLoading"
               />
               <p class="mt-2 text-xs text-gray-500 dark:text-gray-400 text-center">
@@ -177,7 +177,7 @@
             <button
               type="submit"
               :disabled="verifyLoading || code.length !== 6"
-              class="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white font-medium rounded-lg transition-colors"
+              class="w-full py-3 px-4 bg-action-primary-600 hover:bg-action-primary-700 disabled:bg-action-primary-400 text-white font-medium rounded-lg transition-colors"
             >
               <span v-if="verifyLoading" class="flex items-center justify-center">
                 <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
@@ -209,14 +209,14 @@
         <!-- Read-only history banner -->
         <div
           v-if="viewingHistorySession"
-          class="mb-3 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg flex items-center justify-between text-xs"
+          class="mb-3 px-3 py-2 bg-state-autonomous-50 dark:bg-state-autonomous-900/20 border border-state-autonomous-200 dark:border-state-autonomous-800 rounded-lg flex items-center justify-between text-xs"
         >
-          <span class="text-amber-700 dark:text-amber-400">
+          <span class="text-state-autonomous-700 dark:text-state-autonomous-400">
             Viewing past session — read only
           </span>
           <button
             @click="exitHistoryView"
-            class="ml-2 text-amber-700 dark:text-amber-400 underline hover:no-underline"
+            class="ml-2 text-state-autonomous-700 dark:text-state-autonomous-400 underline hover:no-underline"
           >
             Return to current chat
           </button>
@@ -233,8 +233,8 @@
           <template #empty>
             <!-- Loading intro -->
             <div v-if="introLoading" class="text-center py-12">
-              <div class="w-16 h-16 bg-indigo-100 dark:bg-indigo-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg class="w-8 h-8 text-indigo-500 animate-spin" fill="none" viewBox="0 0 24 24">
+              <div class="w-16 h-16 bg-action-primary-100 dark:bg-action-primary-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg class="w-8 h-8 text-action-primary-500 animate-spin" fill="none" viewBox="0 0 24 24">
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                   <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
@@ -247,8 +247,8 @@
 
             <!-- Fallback welcome message (only if intro failed or not fetched yet) -->
             <div v-else class="text-center py-12">
-              <div class="w-16 h-16 bg-indigo-100 dark:bg-indigo-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg class="w-8 h-8 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div class="w-16 h-16 bg-action-primary-100 dark:bg-action-primary-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg class="w-8 h-8 text-action-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                 </svg>
               </div>

@@ -3,7 +3,7 @@
     <!-- Loading State -->
     <div v-if="previewLoading" class="flex-1 flex items-center justify-center">
       <div class="text-center">
-        <svg class="animate-spin h-8 w-8 text-indigo-600 mx-auto" fill="none" viewBox="0 0 24 24">
+        <svg class="animate-spin h-8 w-8 text-action-primary-600 mx-auto" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
           <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
         </svg>
@@ -24,7 +24,7 @@
     <!-- Directory Preview -->
     <div v-else-if="file.type === 'directory'" class="flex-1 flex items-center justify-center">
       <div class="text-center">
-        <svg class="h-16 w-16 text-yellow-500 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg class="h-16 w-16 text-status-warning-500 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
         </svg>
         <h3 class="mt-4 text-lg font-medium text-gray-900 dark:text-white">{{ file.name }}</h3>
@@ -62,7 +62,7 @@
       <div v-else-if="isAudio" class="flex-1 flex items-center justify-center p-4">
         <div class="w-full max-w-md bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
           <div class="flex items-center justify-center mb-4">
-            <svg class="h-16 w-16 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg class="h-16 w-16 text-status-success-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
             </svg>
           </div>
@@ -96,7 +96,7 @@
           v-if="props.isEditing"
           :value="props.editContent"
           @input="emit('update:editContent', $event.target.value)"
-          class="flex-1 p-4 text-sm font-mono bg-gray-900 text-gray-100 m-2 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          class="flex-1 p-4 text-sm font-mono bg-gray-900 text-gray-100 m-2 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-action-primary-500"
           spellcheck="false"
         ></textarea>
         <!-- View Mode: Pre/Code -->

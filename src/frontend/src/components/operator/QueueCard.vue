@@ -217,7 +217,7 @@ function typePill(type) {
   return {
     approval: 'bg-accent-purple-50 text-accent-purple-600 dark:bg-accent-purple-900/20 dark:text-accent-purple-400',
     question: 'bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400',
-    alert: 'bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-400'
+    alert: 'bg-state-autonomous-50 text-state-autonomous-600 dark:bg-state-autonomous-900/20 dark:text-state-autonomous-400'
   }[type] || ''
 }
 

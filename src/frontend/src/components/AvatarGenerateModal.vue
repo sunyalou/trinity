@@ -33,7 +33,7 @@
         rows="3"
         maxlength="500"
         placeholder='e.g. "a wise owl with spectacles" or "a friendly robot with glowing blue eyes"'
-        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 resize-none"
+        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-action-primary-500 focus:border-action-primary-500 resize-none"
         :disabled="generating"
       ></textarea>
       <div class="text-xs text-gray-400 dark:text-gray-500 mt-1 text-right">{{ identityPrompt.length }}/500</div>
@@ -64,7 +64,7 @@
           <button
             @click="generate"
             :disabled="!identityPrompt.trim() || generating"
-            class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 rounded-lg transition-colors flex items-center gap-2"
+            class="px-4 py-2 text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:bg-action-primary-400 rounded-lg transition-colors flex items-center gap-2"
           >
             <svg v-if="generating" class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
               <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>

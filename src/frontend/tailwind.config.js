@@ -19,6 +19,8 @@ export default {
       //   accent-*  decorative highlight that isn't status (named after the
       //             literal color so future accents like `accent-green` join
       //             cleanly without renaming).
+      //   action-*  interactive surface that performs a verb (primary buttons,
+      //             links, focus rings).
       colors: {
         'status-success':    colors.green,
         'status-warning':    colors.yellow,
@@ -30,6 +32,7 @@ export default {
         'brand-claude':      colors.orange,
         'brand-gemini':      colors.blue,
         'accent-purple':     colors.purple,
+        'action-primary':    colors.indigo,
       },
     },
   },

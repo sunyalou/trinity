@@ -27,12 +27,16 @@
   </p>
 
   <br/>
-  <a href="https://youtu.be/SWpNphnuPpQ">
+  <a href="https://youtu.be/ivljtZqsxeo">
     <img src="https://img.shields.io/badge/▶_Watch_Demo-YouTube-red?style=for-the-badge&logo=youtube" alt="Watch the Demo">
   </a>
   &nbsp;
   <a href="https://github.com/abilityai/trinity-ops-public">
     <img src="https://img.shields.io/badge/🤖_Ops_Agent-GitHub-black?style=for-the-badge&logo=github" alt="Trinity Ops Agent">
+  </a>
+  <br/><br/>
+  <a href="https://youtu.be/ivljtZqsxeo">
+    <img src="https://img.youtube.com/vi/ivljtZqsxeo/maxresdefault.jpg" alt="Trinity Platform Demo — Click to Watch" width="800"/>
   </a>
   <br/><br/>
   <img src="docs/assets/screenshots/graph-view-fleet.png" alt="Trinity Agent Fleet — Graph View" width="800"/>

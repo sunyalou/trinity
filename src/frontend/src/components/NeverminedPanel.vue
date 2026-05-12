@@ -2,7 +2,7 @@
   <div class="p-6 space-y-6">
     <!-- Loading State -->
     <div v-if="loading" class="text-center py-8">
-      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500 mx-auto"></div>
+      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-action-primary-500 mx-auto"></div>
       <p class="text-gray-500 dark:text-gray-400 mt-2">Loading payment config...</p>
     </div>
 
@@ -74,7 +74,7 @@
                   :type="showApiKey ? 'text' : 'password'"
                   :disabled="!canEdit"
                   placeholder="sandbox:eyJhbGci..."
-                  :class="['w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-indigo-500 focus:border-indigo-500', canEdit ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed']"
+                  :class="['w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-action-primary-500 focus:border-action-primary-500', canEdit ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed']"
                 />
                 <button
                   type="button"
@@ -99,7 +99,7 @@
               <select
                 v-model="form.nvm_environment"
                 :disabled="!canEdit"
-                :class="['w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-indigo-500 focus:border-indigo-500', canEdit ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed']"
+                :class="['w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-action-primary-500 focus:border-action-primary-500', canEdit ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed']"
               >
                 <option value="sandbox">Sandbox (testnet)</option>
                 <option value="live">Live (mainnet)</option>
@@ -118,7 +118,7 @@
                   type="text"
                   :disabled="!canEdit"
                   placeholder="304071263598..."
-                  :class="['w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-indigo-500 focus:border-indigo-500', canEdit ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed']"
+                  :class="['w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-action-primary-500 focus:border-action-primary-500', canEdit ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed']"
                 />
               </div>
               <div>
@@ -128,7 +128,7 @@
                   type="text"
                   :disabled="!canEdit"
                   placeholder="828208014058..."
-                  :class="['w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-indigo-500 focus:border-indigo-500', canEdit ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed']"
+                  :class="['w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-action-primary-500 focus:border-action-primary-500', canEdit ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed']"
                 />
               </div>
             </div>
@@ -141,7 +141,7 @@
                 type="number"
                 min="1"
                 :disabled="!canEdit"
-                :class="['w-32 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-indigo-500 focus:border-indigo-500', canEdit ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed']"
+                :class="['w-32 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-action-primary-500 focus:border-action-primary-500', canEdit ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed']"
               />
             </div>
 
@@ -150,7 +150,7 @@
               <button
                 type="submit"
                 :disabled="saving || !isFormValid"
-                class="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                class="px-4 py-2 bg-action-primary-600 text-white text-sm font-medium rounded-md hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {{ saving ? 'Saving...' : (config ? 'Update Configuration' : 'Save Configuration') }}
               </button>
@@ -174,7 +174,7 @@
           <h3 class="text-lg font-medium text-gray-900 dark:text-white">Payment Log</h3>
           <button
             @click="loadPaymentLog"
-            class="text-sm text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300"
+            class="text-sm text-action-primary-600 hover:text-action-primary-700 dark:text-action-primary-400 dark:hover:text-action-primary-300"
           >
             Refresh
           </button>

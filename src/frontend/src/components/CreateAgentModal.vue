@@ -17,7 +17,7 @@
                   v-model="form.name"
                   type="text"
                   required
-                  class="mt-1 block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm px-3 py-2 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
+                  class="mt-1 block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm px-3 py-2 focus:ring-action-primary-500 focus:border-action-primary-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
                   placeholder="my-agent"
                 />
               </div>
@@ -27,7 +27,7 @@
 
                 <!-- Loading state -->
                 <div v-if="templatesLoading" class="mt-2 flex items-center justify-center py-4">
-                  <svg class="animate-spin h-5 w-5 text-indigo-500 mr-2" fill="none" viewBox="0 0 24 24">
+                  <svg class="animate-spin h-5 w-5 text-action-primary-500 mr-2" fill="none" viewBox="0 0 24 24">
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                     <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
@@ -48,7 +48,7 @@
                     @click="form.template = ''"
                     :class="[
                       'relative flex items-center p-3 border rounded-lg cursor-pointer transition-all',
-                      form.template === '' ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/30 ring-2 ring-indigo-500' : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
+                      form.template === '' ? 'border-action-primary-500 bg-action-primary-50 dark:bg-action-primary-900/30 ring-2 ring-action-primary-500' : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
                     ]"
                   >
                     <div class="flex-shrink-0 w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-600 flex items-center justify-center">
@@ -60,7 +60,7 @@
                       <p class="text-sm font-medium text-gray-900 dark:text-white">Blank Agent (Claude Code)</p>
                       <p class="text-xs text-gray-500 dark:text-gray-400">Start with empty config using Claude Code runtime</p>
                     </div>
-                    <div v-if="form.template === ''" class="flex-shrink-0 text-indigo-500 dark:text-indigo-400">
+                    <div v-if="form.template === ''" class="flex-shrink-0 text-action-primary-500 dark:text-action-primary-400">
                       <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
                       </svg>
@@ -72,7 +72,7 @@
                     @click="form.template = 'github-custom'"
                     :class="[
                       'relative flex items-center p-3 border rounded-lg cursor-pointer transition-all',
-                      form.template === 'github-custom' ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/30 ring-2 ring-indigo-500' : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
+                      form.template === 'github-custom' ? 'border-action-primary-500 bg-action-primary-50 dark:bg-action-primary-900/30 ring-2 ring-action-primary-500' : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
                     ]"
                   >
                     <div class="flex-shrink-0 w-8 h-8 rounded-full bg-gray-900 dark:bg-gray-700 flex items-center justify-center">
@@ -84,7 +84,7 @@
                       <p class="text-sm font-medium text-gray-900 dark:text-white">GitHub Repository</p>
                       <p class="text-xs text-gray-500 dark:text-gray-400">Create from any GitHub repository URL</p>
                     </div>
-                    <div v-if="form.template === 'github-custom'" class="flex-shrink-0 text-indigo-500 dark:text-indigo-400">
+                    <div v-if="form.template === 'github-custom'" class="flex-shrink-0 text-action-primary-500 dark:text-action-primary-400">
                       <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
                       </svg>
@@ -96,7 +96,7 @@
                       v-model="githubRepoUrl"
                       type="text"
                       ref="githubRepoInput"
-                      class="block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm px-3 py-2 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
+                      class="block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm px-3 py-2 focus:ring-action-primary-500 focus:border-action-primary-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
                       placeholder="owner/repo or https://github.com/owner/repo"
                       @click.stop
                     />
@@ -117,11 +117,11 @@
                       @click="form.template = template.id"
                       :class="[
                         'relative flex items-center p-3 border rounded-lg cursor-pointer transition-all',
-                        form.template === template.id ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/30 ring-2 ring-indigo-500' : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
+                        form.template === template.id ? 'border-action-primary-500 bg-action-primary-50 dark:bg-action-primary-900/30 ring-2 ring-action-primary-500' : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
                       ]"
                     >
-                      <div class="flex-shrink-0 w-8 h-8 rounded-full bg-indigo-100 dark:bg-indigo-900/50 flex items-center justify-center">
-                        <svg class="w-4 h-4 text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <div class="flex-shrink-0 w-8 h-8 rounded-full bg-action-primary-100 dark:bg-action-primary-900/50 flex items-center justify-center">
+                        <svg class="w-4 h-4 text-action-primary-600 dark:text-action-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                         </svg>
                       </div>
@@ -129,7 +129,7 @@
                         <p class="text-sm font-medium text-gray-900 dark:text-white">{{ template.display_name }}</p>
                         <p class="text-xs text-gray-500 dark:text-gray-400 truncate">{{ truncateDescription(template.description) }}</p>
                       </div>
-                      <div v-if="form.template === template.id" class="flex-shrink-0 text-indigo-500 dark:text-indigo-400">
+                      <div v-if="form.template === template.id" class="flex-shrink-0 text-action-primary-500 dark:text-action-primary-400">
                         <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
                           <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
                         </svg>
@@ -151,7 +151,7 @@
                       @click="form.template = template.id"
                       :class="[
                         'relative flex items-center p-3 border rounded-lg cursor-pointer transition-all',
-                        form.template === template.id ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/30 ring-2 ring-indigo-500' : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
+                        form.template === template.id ? 'border-action-primary-500 bg-action-primary-50 dark:bg-action-primary-900/30 ring-2 ring-action-primary-500' : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
                       ]"
                     >
                       <div class="flex-shrink-0 w-8 h-8 rounded-full bg-gray-900 dark:bg-gray-700 flex items-center justify-center">
@@ -163,7 +163,7 @@
                         <p class="text-sm font-medium text-gray-900 dark:text-white">{{ template.display_name }}</p>
                         <p class="text-xs text-gray-500 dark:text-gray-400">{{ template.github_repo }}</p>
                       </div>
-                      <div v-if="form.template === template.id" class="flex-shrink-0 text-indigo-500 dark:text-indigo-400">
+                      <div v-if="form.template === template.id" class="flex-shrink-0 text-action-primary-500 dark:text-action-primary-400">
                         <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
                           <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
                         </svg>
@@ -196,7 +196,7 @@
             <button
               type="submit"
               :disabled="loading"
-              class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-indigo-600 text-base font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 focus:ring-indigo-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
+              class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-action-primary-600 text-base font-medium text-white hover:bg-action-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 focus:ring-action-primary-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
             >
               <svg v-if="loading" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -207,7 +207,7 @@
             <button
               type="button"
               @click="$emit('close')"
-              class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 dark:border-gray-600 shadow-sm px-4 py-2 bg-white dark:bg-gray-700 text-base font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"
+              class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 dark:border-gray-600 shadow-sm px-4 py-2 bg-white dark:bg-gray-700 text-base font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 focus:ring-action-primary-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"
             >
               Cancel
             </button>

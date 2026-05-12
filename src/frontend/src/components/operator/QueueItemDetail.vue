@@ -57,7 +57,7 @@
             </svg>
             {{ formatDate(item.created_at) }}
           </span>
-          <span v-if="item.expires_at" class="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+          <span v-if="item.expires_at" class="inline-flex items-center gap-1 text-state-autonomous-600 dark:text-state-autonomous-400">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
@@ -179,7 +179,7 @@
           ></textarea>
           <button
             @click="submitAcknowledge"
-            class="w-full py-2 px-4 rounded-lg text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 dark:bg-amber-500 dark:hover:bg-amber-600 transition-colors"
+            class="w-full py-2 px-4 rounded-lg text-sm font-medium text-white bg-state-autonomous-600 hover:bg-state-autonomous-700 dark:bg-state-autonomous-500 dark:hover:bg-state-autonomous-600 transition-colors"
           >
             Acknowledge
           </button>
@@ -236,7 +236,7 @@ function typeBadge(type) {
   const badges = {
     approval: 'bg-accent-purple-100 text-accent-purple-700 dark:bg-accent-purple-900/30 dark:text-accent-purple-400',
     question: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
-    alert: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+    alert: 'bg-state-autonomous-100 text-state-autonomous-700 dark:bg-state-autonomous-900/30 dark:text-state-autonomous-400'
   }
   return badges[type] || ''
 }

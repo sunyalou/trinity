@@ -34,7 +34,7 @@
                 :href="binding.bot_link"
                 target="_blank"
                 rel="noopener noreferrer"
-                class="text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
+                class="text-xs text-action-primary-600 dark:text-action-primary-400 hover:underline"
               >
                 {{ binding.bot_link }}
               </a>
@@ -44,7 +44,7 @@
             <button
               @click="verifyBot"
               :disabled="verifying"
-              class="text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 disabled:opacity-50"
+              class="text-sm text-action-primary-600 dark:text-action-primary-400 hover:text-action-primary-800 dark:hover:text-action-primary-300 disabled:opacity-50"
             >
               {{ verifying ? 'Verifying...' : 'Verify' }}
             </button>
@@ -102,7 +102,7 @@
                   value="mention"
                   :checked="group.trigger_mode === 'mention'"
                   @change="updateGroup(group, { trigger_mode: 'mention' })"
-                  class="text-indigo-600 focus:ring-indigo-500"
+                  class="text-action-primary-600 focus:ring-action-primary-500"
                 />
                 <span class="text-gray-600 dark:text-gray-400">@mention only</span>
               </label>
@@ -113,7 +113,7 @@
                   value="all"
                   :checked="group.trigger_mode === 'all'"
                   @change="updateGroup(group, { trigger_mode: 'all' })"
-                  class="text-indigo-600 focus:ring-indigo-500"
+                  class="text-action-primary-600 focus:ring-action-primary-500"
                 />
                 <span class="text-gray-600 dark:text-gray-400">All messages</span>
               </label>
@@ -124,7 +124,7 @@
                   value="observe"
                   :checked="group.trigger_mode === 'observe'"
                   @change="updateGroup(group, { trigger_mode: 'observe' })"
-                  class="text-indigo-600 focus:ring-indigo-500"
+                  class="text-action-primary-600 focus:ring-action-primary-500"
                 />
                 <span class="text-gray-600 dark:text-gray-400">Observe</span>
               </label>
@@ -137,7 +137,7 @@
                   type="checkbox"
                   :checked="group.welcome_enabled"
                   @change="updateGroup(group, { welcome_enabled: !group.welcome_enabled })"
-                  class="rounded text-indigo-600 focus:ring-indigo-500"
+                  class="rounded text-action-primary-600 focus:ring-action-primary-500"
                 />
                 <span class="text-gray-600 dark:text-gray-400">Welcome new members</span>
               </label>
@@ -147,7 +147,7 @@
                   :value="group.welcome_text || ''"
                   @blur="updateGroup(group, { welcome_text: $event.target.value })"
                   placeholder="Welcome, {name}! I'm here to help."
-                  class="w-full text-xs px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  class="w-full text-xs px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-action-primary-500"
                 />
                 <p class="mt-0.5 text-xs text-gray-400">Use {name} for the user's first name</p>
               </div>
@@ -173,16 +173,16 @@
             type="password"
             placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
             :disabled="connecting"
-            class="w-full max-w-lg px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100 dark:disabled:bg-gray-900"
+            class="w-full max-w-lg px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-action-primary-500 disabled:bg-gray-100 dark:disabled:bg-gray-900"
           />
           <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Get a token from <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer" class="text-indigo-600 dark:text-indigo-400 hover:underline">@BotFather</a> on Telegram.
+            Get a token from <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer" class="text-action-primary-600 dark:text-action-primary-400 hover:underline">@BotFather</a> on Telegram.
           </p>
         </div>
         <button
           type="submit"
           :disabled="connecting || !botToken.trim()"
-          class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <svg v-if="connecting" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>

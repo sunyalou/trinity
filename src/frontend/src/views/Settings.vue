@@ -22,7 +22,7 @@
               :class="[
                 'whitespace-nowrap py-2 px-1 border-b-2 text-sm font-medium',
                 activeTab === tab.id
-                  ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                  ? 'border-action-primary-500 text-action-primary-600 dark:text-action-primary-400'
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-200'
               ]"
               type="button"
@@ -33,7 +33,7 @@
 
         <!-- Loading State -->
         <div v-if="loading" class="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-900 p-8 text-center">
-          <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto"></div>
+          <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-action-primary-600 mx-auto"></div>
           <p class="mt-4 text-gray-500 dark:text-gray-400">Loading settings...</p>
         </div>
 
@@ -65,12 +65,12 @@
                       v-model="publicUrl"
                       :placeholder="publicUrlCurrent || 'https://your-domain.com'"
                       :disabled="savingPublicUrl"
-                      class="block flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+                      class="block flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
                     />
                     <button
                       @click="savePublicUrl"
                       :disabled="!publicUrl || savingPublicUrl"
-                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <svg v-if="savingPublicUrl" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -82,24 +82,24 @@
                   <!-- Status -->
                   <div class="mt-2 flex items-center text-sm">
                     <template v-if="publicUrlSaveSuccess">
-                      <svg class="h-4 w-4 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg class="h-4 w-4 text-status-success-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
                       </svg>
-                      <span class="text-green-600 dark:text-green-400">Saved</span>
+                      <span class="text-status-success-600 dark:text-status-success-400">Saved</span>
                     </template>
                     <template v-else-if="publicUrlCurrent">
-                      <svg class="h-4 w-4 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg class="h-4 w-4 text-status-success-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
                       </svg>
-                      <span class="text-green-600 dark:text-green-400">
+                      <span class="text-status-success-600 dark:text-status-success-400">
                         {{ publicUrlCurrent }}
                       </span>
                     </template>
                     <template v-else>
-                      <svg class="h-4 w-4 text-amber-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg class="h-4 w-4 text-state-autonomous-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                       </svg>
-                      <span class="text-amber-600 dark:text-amber-400">
+                      <span class="text-state-autonomous-600 dark:text-state-autonomous-400">
                         Not configured — required for Telegram bots and public links
                       </span>
                     </template>
@@ -137,7 +137,7 @@
                         v-model="anthropicKey"
                         :placeholder="anthropicKeyStatus.configured ? anthropicKeyStatus.masked : 'sk-ant-...'"
                         :disabled="savingApiKey"
-                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                       />
                       <button
                         type="button"
@@ -167,7 +167,7 @@
                     <button
                       @click="saveApiKey"
                       :disabled="!anthropicKey || savingApiKey"
-                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <svg v-if="savingApiKey" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -179,7 +179,7 @@
                       v-if="anthropicKeyStatus.configured && anthropicKeyStatus.source === 'settings'"
                       @click="removeAnthropicKey"
                       :disabled="removingApiKey"
-                      class="inline-flex items-center px-4 py-2 border border-red-300 dark:border-red-700 rounded-md shadow-sm text-sm font-medium text-red-700 dark:text-red-300 bg-white dark:bg-gray-700 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="inline-flex items-center px-4 py-2 border border-status-danger-300 dark:border-status-danger-700 rounded-md shadow-sm text-sm font-medium text-status-danger-700 dark:text-status-danger-300 bg-white dark:bg-gray-700 hover:bg-status-danger-50 dark:hover:bg-status-danger-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <svg v-if="removingApiKey" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -191,21 +191,21 @@
                   <!-- Status/Result -->
                   <div class="mt-2 flex items-center text-sm">
                     <template v-if="apiKeyTestResult !== null">
-                      <svg v-if="apiKeyTestResult" class="h-4 w-4 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg v-if="apiKeyTestResult" class="h-4 w-4 text-status-success-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
                       </svg>
-                      <svg v-else class="h-4 w-4 text-red-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg v-else class="h-4 w-4 text-status-danger-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                       </svg>
-                      <span :class="apiKeyTestResult ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'">
+                      <span :class="apiKeyTestResult ? 'text-status-success-600 dark:text-status-success-400' : 'text-status-danger-600 dark:text-status-danger-400'">
                         {{ apiKeyTestMessage }}
                       </span>
                     </template>
                     <template v-else-if="anthropicKeyStatus.configured">
-                      <svg class="h-4 w-4 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg class="h-4 w-4 text-status-success-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
                       </svg>
-                      <span class="text-green-600 dark:text-green-400">
+                      <span class="text-status-success-600 dark:text-status-success-400">
                         Configured
                         <span class="text-gray-500 dark:text-gray-400">
                           ({{ anthropicKeyStatus.source === 'settings' ? 'from settings' : 'from environment' }})
@@ -213,17 +213,17 @@
                       </span>
                     </template>
                     <template v-else>
-                      <svg class="h-4 w-4 text-amber-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg class="h-4 w-4 text-state-autonomous-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                       </svg>
-                      <span class="text-amber-600 dark:text-amber-400">
+                      <span class="text-state-autonomous-600 dark:text-state-autonomous-400">
                         Not configured - required for agents
                       </span>
                     </template>
                   </div>
                   <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
                     Required for agents to use Claude. Get your key at
-                    <a href="https://console.anthropic.com" target="_blank" class="text-indigo-600 dark:text-indigo-400 hover:underline">
+                    <a href="https://console.anthropic.com" target="_blank" class="text-action-primary-600 dark:text-action-primary-400 hover:underline">
                       console.anthropic.com
                     </a>
                   </p>
@@ -242,7 +242,7 @@
                         v-model="githubPat"
                         :placeholder="githubPatStatus.configured ? githubPatStatus.masked : 'ghp_... or github_pat_...'"
                         :disabled="savingGithubPat"
-                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                       />
                       <button
                         type="button"
@@ -272,7 +272,7 @@
                     <button
                       @click="saveGithubPat"
                       :disabled="!githubPat || savingGithubPat"
-                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <svg v-if="savingGithubPat" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -284,7 +284,7 @@
                       v-if="githubPatStatus.configured && githubPatStatus.source === 'settings'"
                       @click="removeGithubPat"
                       :disabled="removingGithubPat"
-                      class="inline-flex items-center px-4 py-2 border border-red-300 dark:border-red-700 rounded-md shadow-sm text-sm font-medium text-red-700 dark:text-red-300 bg-white dark:bg-gray-700 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="inline-flex items-center px-4 py-2 border border-status-danger-300 dark:border-status-danger-700 rounded-md shadow-sm text-sm font-medium text-status-danger-700 dark:text-status-danger-300 bg-white dark:bg-gray-700 hover:bg-status-danger-50 dark:hover:bg-status-danger-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <svg v-if="removingGithubPat" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -296,21 +296,21 @@
                   <!-- Status/Result -->
                   <div class="mt-2 flex items-center text-sm">
                     <template v-if="githubPatTestResult !== null">
-                      <svg v-if="githubPatTestResult" class="h-4 w-4 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg v-if="githubPatTestResult" class="h-4 w-4 text-status-success-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
                       </svg>
-                      <svg v-else class="h-4 w-4 text-red-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg v-else class="h-4 w-4 text-status-danger-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                       </svg>
-                      <span :class="githubPatTestResult ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'">
+                      <span :class="githubPatTestResult ? 'text-status-success-600 dark:text-status-success-400' : 'text-status-danger-600 dark:text-status-danger-400'">
                         {{ githubPatTestMessage }}
                       </span>
                     </template>
                     <template v-else-if="githubPatStatus.configured">
-                      <svg class="h-4 w-4 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg class="h-4 w-4 text-status-success-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
                       </svg>
-                      <span class="text-green-600 dark:text-green-400">
+                      <span class="text-status-success-600 dark:text-status-success-400">
                         Configured
                         <span class="text-gray-500 dark:text-gray-400">
                           ({{ githubPatStatus.source === 'settings' ? 'from settings' : 'from environment' }})
@@ -329,7 +329,7 @@
                   <!-- Propagation result (#211) -->
                   <div v-if="githubPatPropagation" class="mt-2 text-sm">
                     <template v-if="githubPatPropagation.error">
-                      <div class="text-red-600 dark:text-red-400">
+                      <div class="text-status-danger-600 dark:text-status-danger-400">
                         PAT saved, but propagation failed: {{ githubPatPropagation.error }}
                       </div>
                     </template>
@@ -339,10 +339,10 @@
                       </div>
                     </template>
                     <template v-else>
-                      <div :class="githubPatPropagation.failed.length ? 'text-yellow-700 dark:text-yellow-400' : 'text-green-600 dark:text-green-400'">
+                      <div :class="githubPatPropagation.failed.length ? 'text-status-warning-700 dark:text-status-warning-400' : 'text-status-success-600 dark:text-status-success-400'">
                         PAT updated and applied to {{ githubPatPropagation.updated.length }} of {{ githubPatPropagation.total_running }} running agent{{ githubPatPropagation.total_running === 1 ? '' : 's' }}.
                       </div>
-                      <div v-if="githubPatPropagation.failed.length" class="mt-1 text-red-600 dark:text-red-400">
+                      <div v-if="githubPatPropagation.failed.length" class="mt-1 text-status-danger-600 dark:text-status-danger-400">
                         Failed: {{ githubPatPropagation.failed.map(a => a.agent_name).join(', ') }}
                       </div>
                       <div v-if="githubPatPropagation.skipped.length" class="mt-1 text-gray-500 dark:text-gray-400">
@@ -352,7 +352,7 @@
                   </div>
                   <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
                     Required for creating and pushing agents to GitHub repositories. Get your token at
-                    <a href="https://github.com/settings/tokens/new" target="_blank" class="text-indigo-600 dark:text-indigo-400 hover:underline">
+                    <a href="https://github.com/settings/tokens/new" target="_blank" class="text-action-primary-600 dark:text-action-primary-400 hover:underline">
                       github.com/settings/tokens
                     </a>
                     with <code class="px-1 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-xs">repo</code> scope.
@@ -375,9 +375,9 @@
                 <span class="flex items-center gap-2">
                   <span
                     class="inline-block w-2.5 h-2.5 rounded-full"
-                    :class="slackTransportStatus.connected ? 'bg-green-500' : 'bg-red-500'"
+                    :class="slackTransportStatus.connected ? 'bg-status-success-500' : 'bg-status-danger-500'"
                   ></span>
-                  <span class="text-sm" :class="slackTransportStatus.connected ? 'text-green-700 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'">
+                  <span class="text-sm" :class="slackTransportStatus.connected ? 'text-status-success-700 dark:text-status-success-400' : 'text-gray-500 dark:text-gray-400'">
                     {{ slackTransportStatus.connected ? (slackTransportStatus.transport_mode === 'socket' ? 'Socket Mode' : 'Webhook') : 'Disconnected' }}
                   </span>
                 </span>
@@ -401,10 +401,10 @@
                       v-model="slackClientId"
                       :placeholder="slackSettings.client_id?.configured ? slackSettings.client_id.masked : 'Enter Slack Client ID'"
                       :disabled="savingSlackSettings"
-                      class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                      class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                     />
                   </div>
-                  <div v-if="slackSettings.client_id?.configured" class="mt-1 text-xs text-green-600 dark:text-green-400">
+                  <div v-if="slackSettings.client_id?.configured" class="mt-1 text-xs text-status-success-600 dark:text-status-success-400">
                     ✓ Configured ({{ slackSettings.client_id.source === 'settings' ? 'from settings' : 'from environment' }})
                   </div>
                 </div>
@@ -421,7 +421,7 @@
                       v-model="slackClientSecret"
                       :placeholder="slackSettings.client_secret?.configured ? slackSettings.client_secret.masked : 'Enter Slack Client Secret'"
                       :disabled="savingSlackSettings"
-                      class="block w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                      class="block w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                     />
                     <button
                       type="button"
@@ -437,7 +437,7 @@
                       </svg>
                     </button>
                   </div>
-                  <div v-if="slackSettings.client_secret?.configured" class="mt-1 text-xs text-green-600 dark:text-green-400">
+                  <div v-if="slackSettings.client_secret?.configured" class="mt-1 text-xs text-status-success-600 dark:text-status-success-400">
                     ✓ Configured ({{ slackSettings.client_secret.source === 'settings' ? 'from settings' : 'from environment' }})
                   </div>
                 </div>
@@ -454,7 +454,7 @@
                       v-model="slackSigningSecret"
                       :placeholder="slackSettings.signing_secret?.configured ? slackSettings.signing_secret.masked : 'Enter Slack Signing Secret'"
                       :disabled="savingSlackSettings"
-                      class="block w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                      class="block w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                     />
                     <button
                       type="button"
@@ -470,7 +470,7 @@
                       </svg>
                     </button>
                   </div>
-                  <div v-if="slackSettings.signing_secret?.configured" class="mt-1 text-xs text-green-600 dark:text-green-400">
+                  <div v-if="slackSettings.signing_secret?.configured" class="mt-1 text-xs text-status-success-600 dark:text-status-success-400">
                     ✓ Configured ({{ slackSettings.signing_secret.source === 'settings' ? 'from settings' : 'from environment' }})
                   </div>
                 </div>
@@ -480,7 +480,7 @@
                   <button
                     @click="saveSlackSettings"
                     :disabled="(!slackClientId && !slackClientSecret && !slackSigningSecret) || savingSlackSettings"
-                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg v-if="savingSlackSettings" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -492,7 +492,7 @@
                     v-if="slackHasStoredCredentials"
                     @click="removeSlackSettings"
                     :disabled="removingSlackSettings"
-                    class="inline-flex items-center px-4 py-2 border border-red-300 dark:border-red-700 rounded-md shadow-sm text-sm font-medium text-red-700 dark:text-red-300 bg-white dark:bg-gray-700 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="inline-flex items-center px-4 py-2 border border-status-danger-300 dark:border-status-danger-700 rounded-md shadow-sm text-sm font-medium text-status-danger-700 dark:text-status-danger-300 bg-white dark:bg-gray-700 hover:bg-status-danger-50 dark:hover:bg-status-danger-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg v-if="removingSlackSettings" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -500,7 +500,7 @@
                     </svg>
                     Remove Credentials
                   </button>
-                  <span v-if="slackSaveSuccess" class="text-sm text-green-600 dark:text-green-400">
+                  <span v-if="slackSaveSuccess" class="text-sm text-status-success-600 dark:text-status-success-400">
                     ✓ Saved
                   </span>
                 </div>
@@ -528,7 +528,7 @@
                       v-model="slackAppToken"
                       :placeholder="slackTransportStatus.app_token_configured ? slackTransportStatus.app_token_masked : 'xapp-1-...'"
                       :disabled="connectingSlack"
-                      class="block w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                      class="block w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                     />
                     <button
                       type="button"
@@ -544,7 +544,7 @@
                       </svg>
                     </button>
                   </div>
-                  <div v-if="slackTransportStatus.app_token_configured" class="mt-1 text-xs text-green-600 dark:text-green-400">
+                  <div v-if="slackTransportStatus.app_token_configured" class="mt-1 text-xs text-status-success-600 dark:text-status-success-400">
                     ✓ App token configured
                   </div>
                   <p class="mt-1 text-xs text-gray-400">
@@ -559,7 +559,7 @@
                     v-if="!slackTransportStatus.connected"
                     @click="connectSlackTransport"
                     :disabled="connectingSlack || (!slackTransportStatus.app_token_configured && !slackAppToken)"
-                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-status-success-600 hover:bg-status-success-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg v-if="connectingSlack" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -567,7 +567,7 @@
                     </svg>
                     {{ connectingSlack ? 'Connecting...' : 'Connect' }}
                   </button>
-                  <span v-if="slackTransportStatus.connected" class="text-sm text-green-600 dark:text-green-400">
+                  <span v-if="slackTransportStatus.connected" class="text-sm text-status-success-600 dark:text-status-success-400">
                     ✓ Socket Mode active
                   </span>
 
@@ -583,7 +583,7 @@
                     </svg>
                     {{ slackTransportStatus.workspaces.length > 0 ? 'Reinstall to Workspace' : 'Install to Workspace' }}
                   </button>
-                  <span v-if="slackInstallSuccess" class="text-sm text-green-600 dark:text-green-400">
+                  <span v-if="slackInstallSuccess" class="text-sm text-status-success-600 dark:text-status-success-400">
                     ✓ Workspace installed
                   </span>
                 </div>
@@ -605,7 +605,7 @@
                         <span
                           v-for="agent in ws.agents"
                           :key="agent"
-                          class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300"
+                          class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-action-primary-100 text-action-primary-800 dark:bg-action-primary-900/40 dark:text-action-primary-300"
                         >
                           {{ agent }}
                         </span>
@@ -616,11 +616,11 @@
 
                 <!-- Setup Instructions -->
                 <details class="mt-2">
-                  <summary class="text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400">
+                  <summary class="text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:text-action-primary-600 dark:hover:text-action-primary-400">
                     Setup Instructions
                   </summary>
                   <div class="mt-3 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg text-sm text-gray-600 dark:text-gray-300 space-y-2">
-                    <p><strong>1.</strong> Create a Slack App at <a href="https://api.slack.com/apps" target="_blank" class="text-indigo-600 dark:text-indigo-400 hover:underline">api.slack.com/apps</a></p>
+                    <p><strong>1.</strong> Create a Slack App at <a href="https://api.slack.com/apps" target="_blank" class="text-action-primary-600 dark:text-action-primary-400 hover:underline">api.slack.com/apps</a></p>
                     <p><strong>2.</strong> Copy <strong>Client ID</strong>, <strong>Client Secret</strong>, and <strong>Signing Secret</strong> from Basic Information and save above</p>
                     <p><strong>3.</strong> Add Bot Token Scopes: <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">im:history</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">im:read</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">im:write</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">chat:write</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">chat:write.customize</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">users:read.email</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">app_mentions:read</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">channels:read</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">channels:manage</code>, <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">reactions:write</code></p>
                     <p><strong>4.</strong> Enable <strong>Socket Mode</strong> and create an App-Level Token with <code class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">connections:write</code> scope. Paste it above as App Token.</p>
@@ -646,18 +646,18 @@
             <div class="px-6 py-4">
               <div class="space-y-4">
                 <!-- Encryption Not Configured Warning -->
-                <div v-if="!encryptionConfigured" class="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
+                <div v-if="!encryptionConfigured" class="bg-status-warning-50 dark:bg-status-warning-900/30 border border-status-warning-200 dark:border-status-warning-800 rounded-lg p-4">
                   <div class="flex">
                     <div class="flex-shrink-0">
-                      <svg class="h-5 w-5 text-yellow-400" fill="currentColor" viewBox="0 0 20 20">
+                      <svg class="h-5 w-5 text-status-warning-400" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
                       </svg>
                     </div>
                     <div class="ml-3">
-                      <h3 class="text-sm font-medium text-yellow-800 dark:text-yellow-300">Encryption not configured</h3>
-                      <p class="mt-1 text-sm text-yellow-700 dark:text-yellow-400">
-                        Subscription storage requires <code class="px-1 py-0.5 bg-yellow-100 dark:bg-yellow-900 rounded text-xs">CREDENTIAL_ENCRYPTION_KEY</code> in your <code class="px-1 py-0.5 bg-yellow-100 dark:bg-yellow-900 rounded text-xs">.env</code> file.
-                        Generate with: <code class="px-1 py-0.5 bg-yellow-100 dark:bg-yellow-900 rounded text-xs">openssl rand -hex 32</code> and restart the backend.
+                      <h3 class="text-sm font-medium text-status-warning-800 dark:text-status-warning-300">Encryption not configured</h3>
+                      <p class="mt-1 text-sm text-status-warning-700 dark:text-status-warning-400">
+                        Subscription storage requires <code class="px-1 py-0.5 bg-status-warning-100 dark:bg-status-warning-900 rounded text-xs">CREDENTIAL_ENCRYPTION_KEY</code> in your <code class="px-1 py-0.5 bg-status-warning-100 dark:bg-status-warning-900 rounded text-xs">.env</code> file.
+                        Generate with: <code class="px-1 py-0.5 bg-status-warning-100 dark:bg-status-warning-900 rounded text-xs">openssl rand -hex 32</code> and restart the backend.
                       </p>
                     </div>
                   </div>
@@ -678,7 +678,7 @@
                         id="subscription-name"
                         v-model="newSubscription.name"
                         placeholder="e.g., eugene-max"
-                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
                         :disabled="addingSubscription"
                       />
                     </div>
@@ -691,7 +691,7 @@
                       <select
                         id="subscription-type"
                         v-model="newSubscription.type"
-                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+                        class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
                         :disabled="addingSubscription"
                       >
                         <option value="max">Claude Max</option>
@@ -711,10 +711,10 @@
                       v-model="newSubscription.token"
                       placeholder="sk-ant-oat01-..."
                       :disabled="addingSubscription"
-                      class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                      :class="{ 'border-red-400 dark:border-red-500': newSubscription.token && !newSubscription.token.startsWith('sk-ant-oat01-') }"
+                      class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-action-primary-500 focus:border-action-primary-500"
+                      :class="{ 'border-status-danger-400 dark:border-status-danger-500': newSubscription.token && !newSubscription.token.startsWith('sk-ant-oat01-') }"
                     />
-                    <p v-if="newSubscription.token && !newSubscription.token.startsWith('sk-ant-oat01-')" class="mt-1 text-xs text-red-500">
+                    <p v-if="newSubscription.token && !newSubscription.token.startsWith('sk-ant-oat01-')" class="mt-1 text-xs text-status-danger-500">
                       Token must start with sk-ant-oat01-
                     </p>
                     <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
@@ -734,7 +734,7 @@
                     <button
                       @click="addSubscription"
                       :disabled="!newSubscription.name || !newSubscription.token.startsWith('sk-ant-oat01-') || addingSubscription || !encryptionConfigured"
-                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <svg v-if="addingSubscription" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -770,7 +770,7 @@
                     <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                       <tr v-if="loadingSubscriptions">
                         <td colspan="5" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">
-                          <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600 mx-auto"></div>
+                          <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-action-primary-600 mx-auto"></div>
                         </td>
                       </tr>
                       <tr v-else-if="subscriptions.length === 0">
@@ -790,7 +790,7 @@
                           </td>
                           <td class="px-6 py-4 whitespace-nowrap">
                             <span v-if="sub.subscription_type" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
-                                  :class="sub.subscription_type === 'max' ? 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200' : 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'">
+                                  :class="sub.subscription_type === 'max' ? 'bg-accent-purple-100 text-accent-purple-800 dark:bg-accent-purple-900 dark:text-accent-purple-200' : 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'">
                               {{ sub.subscription_type === 'max' ? 'Max' : sub.subscription_type === 'pro' ? 'Pro' : sub.subscription_type }}
                             </span>
                             <span v-else class="text-sm text-gray-500 dark:text-gray-400">—</span>
@@ -807,7 +807,7 @@
                             <button
                               @click.stop="deleteSubscription(sub)"
                               :disabled="deletingSubscription === sub.id"
-                              class="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300 disabled:opacity-50"
+                              class="text-status-danger-600 hover:text-status-danger-900 dark:text-status-danger-400 dark:hover:text-status-danger-300 disabled:opacity-50"
                             >
                               {{ deletingSubscription === sub.id ? 'Deleting...' : 'Delete' }}
                             </button>
@@ -827,7 +827,7 @@
                                 <strong class="text-gray-600 dark:text-gray-400">Assigned Agents:</strong>
                                 <div v-if="sub.agents && sub.agents.length > 0" class="mt-2 flex flex-wrap gap-2">
                                   <span v-for="agent in sub.agents" :key="agent"
-                                        class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200">
+                                        class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-action-primary-100 text-action-primary-800 dark:bg-action-primary-900 dark:text-action-primary-200">
                                     <svg class="mr-1 h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
                                       <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" />
                                       <path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd" />
@@ -836,7 +836,7 @@
                                     <button
                                       @click.stop="unassignAgentFromSubscription(agent)"
                                       :disabled="unassigningAgent === agent"
-                                      class="ml-1.5 inline-flex items-center justify-center h-4 w-4 rounded-full hover:bg-indigo-200 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-300 disabled:opacity-50"
+                                      class="ml-1.5 inline-flex items-center justify-center h-4 w-4 rounded-full hover:bg-action-primary-200 dark:hover:bg-action-primary-800 text-action-primary-600 dark:text-action-primary-300 disabled:opacity-50"
                                       title="Remove agent from subscription"
                                     >
                                       <svg v-if="unassigningAgent === agent" class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24">
@@ -857,7 +857,7 @@
                                   <select
                                     v-model="selectedAgentToAssign[sub.id]"
                                     :disabled="assigningAgent || loadingAgents"
-                                    class="flex-1 max-w-xs px-3 py-1.5 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white"
+                                    class="flex-1 max-w-xs px-3 py-1.5 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white"
                                     @click.stop
                                   >
                                     <option value="" disabled selected>{{ loadingAgents ? 'Loading agents...' : 'Select agent...' }}</option>
@@ -872,7 +872,7 @@
                                   <button
                                     @click.stop="assignAgentToSubscription(sub.name, selectedAgentToAssign[sub.id])"
                                     :disabled="!selectedAgentToAssign[sub.id] || assigningAgent"
-                                    class="inline-flex items-center px-3 py-1.5 border border-transparent rounded-md shadow-sm text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    class="inline-flex items-center px-3 py-1.5 border border-transparent rounded-md shadow-sm text-xs font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
                                     <svg v-if="assigningAgent" class="animate-spin -ml-0.5 mr-1.5 h-3 w-3" fill="none" viewBox="0 0 24 24">
                                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -909,8 +909,8 @@
                       id="auto-switch-toggle"
                       type="button"
                       :class="[
-                        autoSwitchEnabled ? 'bg-indigo-600' : 'bg-gray-200 dark:bg-gray-600',
-                        'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2'
+                        autoSwitchEnabled ? 'bg-action-primary-600' : 'bg-gray-200 dark:bg-gray-600',
+                        'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-action-primary-500 focus:ring-offset-2'
                       ]"
                       :disabled="savingAutoSwitch"
                       @click="toggleAutoSwitch"
@@ -949,7 +949,7 @@
                       id="trinity-prompt"
                       v-model="trinityPrompt"
                       rows="15"
-                      class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border border-gray-300 dark:border-gray-600 rounded-md font-mono bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
+                      class="shadow-sm focus:ring-action-primary-500 focus:border-action-primary-500 block w-full sm:text-sm border border-gray-300 dark:border-gray-600 rounded-md font-mono bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
                       placeholder="Enter custom instructions for all agents...
 
 Example:
@@ -968,7 +968,7 @@ Example:
                 <!-- Character Count -->
                 <div class="flex justify-between text-sm text-gray-500 dark:text-gray-400">
                   <span>{{ trinityPrompt.length }} characters</span>
-                  <span v-if="hasChanges" class="text-amber-600 dark:text-amber-400">Unsaved changes</span>
+                  <span v-if="hasChanges" class="text-state-autonomous-600 dark:text-state-autonomous-400">Unsaved changes</span>
                 </div>
 
                 <!-- Action Buttons -->
@@ -983,7 +983,7 @@ Example:
                   <button
                     @click="savePrompt"
                     :disabled="saving || !hasChanges"
-                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg v-if="saving" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1014,14 +1014,14 @@ Example:
                     v-model="newEmail"
                     type="email"
                     placeholder="user@example.com"
-                    class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+                    class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
                     :disabled="addingEmail"
                     @keyup.enter="addEmailToWhitelist"
                   />
                   <button
                     @click="addEmailToWhitelist"
                     :disabled="!newEmail || addingEmail"
-                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg v-if="addingEmail" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1053,7 +1053,7 @@ Example:
                     <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                       <tr v-if="loadingWhitelist">
                         <td colspan="4" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">
-                          <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600 mx-auto"></div>
+                          <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-action-primary-600 mx-auto"></div>
                         </td>
                       </tr>
                       <tr v-else-if="emailWhitelist.length === 0">
@@ -1080,7 +1080,7 @@ Example:
                           <button
                             @click="removeEmailFromWhitelist(entry.email)"
                             :disabled="removingEmail === entry.email"
-                            class="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300 disabled:opacity-50"
+                            class="text-status-danger-600 hover:text-status-danger-900 dark:text-status-danger-400 dark:hover:text-status-danger-300 disabled:opacity-50"
                           >
                             {{ removingEmail === entry.email ? 'Removing...' : 'Remove' }}
                           </button>
@@ -1110,8 +1110,8 @@ Example:
               <!-- Role legend -->
               <div class="flex flex-wrap gap-2 mb-4 text-xs text-gray-500 dark:text-gray-400">
                 <span class="font-medium">Roles:</span>
-                <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200">admin — full control</span>
-                <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200">creator — create &amp; manage agents</span>
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-accent-purple-100 text-accent-purple-800 dark:bg-accent-purple-900 dark:text-accent-purple-200">admin — full control</span>
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-action-primary-100 text-action-primary-800 dark:bg-action-primary-900 dark:text-action-primary-200">creator — create &amp; manage agents</span>
                 <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">operator — run existing agents</span>
                 <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200">user — public links only</span>
               </div>
@@ -1130,7 +1130,7 @@ Example:
                   <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                     <tr v-if="loadingUsers">
                       <td colspan="4" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">
-                        <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600 mx-auto"></div>
+                        <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-action-primary-600 mx-auto"></div>
                       </td>
                     </tr>
                     <tr v-else-if="usersList.length === 0">
@@ -1148,14 +1148,14 @@ Example:
                           v-if="u.username !== currentUsername"
                           :value="u.role"
                           @change="updateUserRole(u.username, $event.target.value)"
-                          class="text-sm border border-gray-300 dark:border-gray-600 rounded px-2 py-1 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+                          class="text-sm border border-gray-300 dark:border-gray-600 rounded px-2 py-1 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500"
                         >
                           <option value="admin">admin</option>
                           <option value="creator">creator</option>
                           <option value="operator">operator</option>
                           <option value="user">user</option>
                         </select>
-                        <span v-else class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200">
+                        <span v-else class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-accent-purple-100 text-accent-purple-800 dark:bg-accent-purple-900 dark:text-accent-purple-200">
                           {{ u.role }} (you)
                         </span>
                       </td>
@@ -1202,12 +1202,12 @@ Example:
                   v-model="mcpUrlInput"
                   type="url"
                   :placeholder="mcpUrlConfig.default_url || 'https://your-domain.com/mcp'"
-                  class="flex-1 block rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                  class="flex-1 block rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-action-primary-500 focus:ring-action-primary-500 sm:text-sm"
                 />
                 <button
                   @click="saveMcpUrl"
                   :disabled="!mcpUrlInput || savingMcpUrl"
-                  class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {{ savingMcpUrl ? 'Saving...' : 'Save' }}
                 </button>
@@ -1221,10 +1221,10 @@ Example:
                 </button>
               </div>
 
-              <p v-if="mcpUrlError" class="mt-2 text-sm text-red-600 dark:text-red-400">
+              <p v-if="mcpUrlError" class="mt-2 text-sm text-status-danger-600 dark:text-status-danger-400">
                 {{ mcpUrlError }}
               </p>
-              <p v-if="mcpUrlSuccess" class="mt-2 text-sm text-green-600 dark:text-green-400">
+              <p v-if="mcpUrlSuccess" class="mt-2 text-sm text-status-success-600 dark:text-status-success-400">
                 {{ mcpUrlSuccess }}
               </p>
             </div>
@@ -1239,7 +1239,7 @@ Example:
                 <span v-if="githubTemplatesSource === 'defaults'" class="inline-flex items-center ml-2 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
                   Using defaults
                 </span>
-                <span v-else class="inline-flex items-center ml-2 px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300">
+                <span v-else class="inline-flex items-center ml-2 px-2 py-0.5 rounded-full text-xs font-medium bg-action-primary-100 text-action-primary-700 dark:bg-action-primary-900 dark:text-action-primary-300">
                   Custom config
                 </span>
               </p>
@@ -1253,7 +1253,7 @@ Example:
                     v-model="newTemplateRepo"
                     type="text"
                     placeholder="owner/repo"
-                    class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
+                    class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                     :disabled="savingGithubTemplates"
                     @keyup.enter="addGithubTemplate"
                   />
@@ -1261,19 +1261,19 @@ Example:
                     v-model="newTemplateName"
                     type="text"
                     placeholder="Display name (optional)"
-                    class="w-48 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+                    class="w-48 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
                     :disabled="savingGithubTemplates"
                     @keyup.enter="addGithubTemplate"
                   />
                   <button
                     @click="addGithubTemplate"
                     :disabled="!newTemplateRepo || savingGithubTemplates"
-                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Add
                   </button>
                 </div>
-                <p v-if="templateValidationError" class="text-sm text-red-600 dark:text-red-400">
+                <p v-if="templateValidationError" class="text-sm text-status-danger-600 dark:text-status-danger-400">
                   {{ templateValidationError }}
                 </p>
 
@@ -1296,7 +1296,7 @@ Example:
                     <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                       <tr v-if="loadingGithubTemplates">
                         <td colspan="3" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">
-                          <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600 mx-auto"></div>
+                          <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-action-primary-600 mx-auto"></div>
                         </td>
                       </tr>
                       <tr v-else-if="githubTemplates.length === 0">
@@ -1310,13 +1310,13 @@ Example:
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                           {{ tmpl.resolved_name || tmpl.display_name || '-' }}
-                          <span v-if="tmpl.display_name" class="ml-1 text-xs text-indigo-500">(custom)</span>
+                          <span v-if="tmpl.display_name" class="ml-1 text-xs text-action-primary-500">(custom)</span>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                           <button
                             @click="removeGithubTemplate(index)"
                             :disabled="savingGithubTemplates"
-                            class="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300 disabled:opacity-50"
+                            class="text-status-danger-600 hover:text-status-danger-900 dark:text-status-danger-400 dark:hover:text-status-danger-300 disabled:opacity-50"
                           >
                             Remove
                           </button>
@@ -1338,7 +1338,7 @@ Example:
                   <button
                     @click="saveGithubTemplates"
                     :disabled="savingGithubTemplates || !githubTemplatesDirty"
-                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg v-if="savingGithubTemplates" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1374,8 +1374,8 @@ Example:
                   id="ssh-access-toggle"
                   type="button"
                   :class="[
-                    sshAccessEnabled ? 'bg-indigo-600' : 'bg-gray-200 dark:bg-gray-600',
-                    'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2'
+                    sshAccessEnabled ? 'bg-action-primary-600' : 'bg-gray-200 dark:bg-gray-600',
+                    'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-action-primary-500 focus:ring-offset-2'
                   ]"
                   :disabled="savingSshAccess"
                   @click="toggleSshAccess"
@@ -1407,7 +1407,7 @@ Example:
                   <label class="text-sm font-medium text-gray-700 dark:text-gray-300">Admin</label>
                   <p class="text-sm text-gray-500 dark:text-gray-400">Admins can always create unlimited agents</p>
                 </div>
-                <span class="text-sm font-medium text-green-600 dark:text-green-400">Unlimited</span>
+                <span class="text-sm font-medium text-status-success-600 dark:text-status-success-400">Unlimited</span>
               </div>
 
               <!-- Creator role -->
@@ -1421,7 +1421,7 @@ Example:
                   id="quota-creator"
                   v-model="agentQuotaValues.max_agents_creator"
                   min="0"
-                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm text-center"
+                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-action-primary-500 focus:ring-action-primary-500 sm:text-sm text-center"
                 />
               </div>
 
@@ -1436,7 +1436,7 @@ Example:
                   id="quota-operator"
                   v-model="agentQuotaValues.max_agents_operator"
                   min="0"
-                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm text-center"
+                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-action-primary-500 focus:ring-action-primary-500 sm:text-sm text-center"
                 />
               </div>
 
@@ -1451,14 +1451,14 @@ Example:
                   id="quota-user"
                   v-model="agentQuotaValues.max_agents_user"
                   min="0"
-                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm text-center"
+                  class="w-20 rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-action-primary-500 focus:ring-action-primary-500 sm:text-sm text-center"
                 />
               </div>
 
               <!-- Legacy setting warning -->
-              <div v-if="agentQuotaLegacy" class="rounded-md bg-yellow-50 dark:bg-yellow-900/20 p-3">
-                <p class="text-sm text-yellow-700 dark:text-yellow-400">
-                  Legacy setting <code class="px-1 py-0.5 bg-yellow-100 dark:bg-yellow-900/40 rounded text-xs">max_agents_per_user={{ agentQuotaLegacy }}</code> is active and used as fallback. Save per-role quotas to override it.
+              <div v-if="agentQuotaLegacy" class="rounded-md bg-status-warning-50 dark:bg-status-warning-900/20 p-3">
+                <p class="text-sm text-status-warning-700 dark:text-status-warning-400">
+                  Legacy setting <code class="px-1 py-0.5 bg-status-warning-100 dark:bg-status-warning-900/40 rounded text-xs">max_agents_per_user={{ agentQuotaLegacy }}</code> is active and used as fallback. Save per-role quotas to override it.
                 </p>
               </div>
 
@@ -1466,7 +1466,7 @@ Example:
               <div class="flex justify-end">
                 <button
                   type="button"
-                  class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
+                  class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-action-primary-600 hover:bg-action-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-action-primary-500 disabled:opacity-50"
                   :disabled="savingQuotas"
                   @click="saveAgentQuotas"
                 >
@@ -1502,7 +1502,7 @@ Example:
                     id="skills-library-url"
                     v-model="skillsLibraryUrl"
                     placeholder="github.com/owner/skills-library"
-                    class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+                    class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
                   />
                 </div>
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -1521,7 +1521,7 @@ Example:
                     id="skills-library-branch"
                     v-model="skillsLibraryBranch"
                     placeholder="main"
-                    class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+                    class="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
                   />
                 </div>
               </div>
@@ -1531,7 +1531,7 @@ Example:
                 <div class="flex items-center justify-between text-sm">
                   <div class="flex items-center gap-4 text-gray-600 dark:text-gray-300">
                     <span>
-                      <svg class="h-4 w-4 text-green-500 inline mr-1" fill="currentColor" viewBox="0 0 20 20">
+                      <svg class="h-4 w-4 text-status-success-500 inline mr-1" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
                       </svg>
                       {{ skillsLibraryStatus.skill_count }} skills available
@@ -1565,7 +1565,7 @@ Example:
                 <button
                   @click="saveSkillsLibrarySettings"
                   :disabled="savingSkillsLibrary"
-                  class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <svg v-if="savingSkillsLibrary" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1589,8 +1589,8 @@ Example:
             <div class="px-6 py-4 space-y-4">
               <!-- Result message -->
               <div v-if="defaultAvatarResult" class="rounded-md p-3" :class="{
-                'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300': defaultAvatarResult.generated > 0 && defaultAvatarResult.failed === 0,
-                'bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300': defaultAvatarResult.failed > 0,
+                'bg-status-success-50 dark:bg-status-success-900/30 text-status-success-700 dark:text-status-success-300': defaultAvatarResult.generated > 0 && defaultAvatarResult.failed === 0,
+                'bg-status-warning-50 dark:bg-status-warning-900/30 text-status-warning-700 dark:text-status-warning-300': defaultAvatarResult.failed > 0,
                 'bg-gray-50 dark:bg-gray-700 text-gray-600 dark:text-gray-300': defaultAvatarResult.generated === 0 && defaultAvatarResult.failed === 0
               }">
                 <p class="text-sm font-medium">{{ defaultAvatarResult.message }}</p>
@@ -1598,7 +1598,7 @@ Example:
                   <li v-for="name in defaultAvatarResult.agents" :key="name">Generated: {{ name }}</li>
                 </ul>
                 <ul v-if="defaultAvatarResult.errors.length" class="mt-1 text-xs space-y-0.5">
-                  <li v-for="err in defaultAvatarResult.errors" :key="err.agent" class="text-red-600 dark:text-red-400">Failed: {{ err.agent }} - {{ err.error }}</li>
+                  <li v-for="err in defaultAvatarResult.errors" :key="err.agent" class="text-status-danger-600 dark:text-status-danger-400">Failed: {{ err.agent }} - {{ err.error }}</li>
                 </ul>
               </div>
 
@@ -1606,7 +1606,7 @@ Example:
               <button
                 @click="generateDefaultAvatars"
                 :disabled="generatingDefaultAvatars"
-                class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <svg v-if="generatingDefaultAvatars" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1641,30 +1641,30 @@ Example:
         </div>
 
         <!-- Error Display -->
-        <div v-if="error" class="mt-4 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg p-4">
+        <div v-if="error" class="mt-4 bg-status-danger-50 dark:bg-status-danger-900/30 border border-status-danger-200 dark:border-status-danger-800 rounded-lg p-4">
           <div class="flex">
             <div class="flex-shrink-0">
-              <svg class="h-5 w-5 text-red-400" fill="currentColor" viewBox="0 0 20 20">
+              <svg class="h-5 w-5 text-status-danger-400" fill="currentColor" viewBox="0 0 20 20">
                 <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
               </svg>
             </div>
             <div class="ml-3">
-              <h3 class="text-sm font-medium text-red-800 dark:text-red-300">Error</h3>
-              <p class="mt-1 text-sm text-red-700 dark:text-red-400">{{ error }}</p>
+              <h3 class="text-sm font-medium text-status-danger-800 dark:text-status-danger-300">Error</h3>
+              <p class="mt-1 text-sm text-status-danger-700 dark:text-status-danger-400">{{ error }}</p>
             </div>
           </div>
         </div>
 
         <!-- Success Message -->
-        <div v-if="showSuccess" class="mt-4 bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800 rounded-lg p-4">
+        <div v-if="showSuccess" class="mt-4 bg-status-success-50 dark:bg-status-success-900/30 border border-status-success-200 dark:border-status-success-800 rounded-lg p-4">
           <div class="flex">
             <div class="flex-shrink-0">
-              <svg class="h-5 w-5 text-green-400" fill="currentColor" viewBox="0 0 20 20">
+              <svg class="h-5 w-5 text-status-success-400" fill="currentColor" viewBox="0 0 20 20">
                 <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
               </svg>
             </div>
             <div class="ml-3">
-              <p class="text-sm font-medium text-green-800 dark:text-green-300">Settings saved successfully!</p>
+              <p class="text-sm font-medium text-status-success-800 dark:text-status-success-300">Settings saved successfully!</p>
             </div>
           </div>
         </div>

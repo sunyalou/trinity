@@ -37,7 +37,7 @@
           <!-- DM default control: badge if already default, button otherwise -->
           <span
             v-if="channel.is_dm_default"
-            class="inline-flex items-center gap-1 text-xs font-medium text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-800 rounded px-2 py-1"
+            class="inline-flex items-center gap-1 text-xs font-medium text-action-primary-700 dark:text-action-primary-300 bg-action-primary-50 dark:bg-action-primary-900/30 border border-action-primary-200 dark:border-action-primary-800 rounded px-2 py-1"
             :title="dmDefaultTooltip"
           >
             <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
@@ -48,7 +48,7 @@
             @click="makeDmDefault"
             :disabled="makingDefault"
             :title="dmDefaultTooltip"
-            class="text-xs px-2 py-1 border border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+            class="text-xs px-2 py-1 border border-action-primary-300 dark:border-action-primary-700 text-action-primary-700 dark:text-action-primary-300 hover:bg-action-primary-50 dark:hover:bg-action-primary-900/30 rounded disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {{ makingDefault ? 'Setting...' : 'Make default' }}
           </button>
@@ -69,7 +69,7 @@
       <button
         @click="createChannel"
         :disabled="creating"
-        class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+        class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
       >
         <svg v-if="creating" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>

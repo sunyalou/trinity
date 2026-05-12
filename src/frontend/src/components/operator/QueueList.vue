@@ -164,7 +164,7 @@ function typeIconColor(type) {
   const colors = {
     approval: 'text-accent-purple-500 dark:text-accent-purple-400',
     question: 'text-blue-500 dark:text-blue-400',
-    alert: 'text-amber-500 dark:text-amber-400'
+    alert: 'text-state-autonomous-500 dark:text-state-autonomous-400'
   }
   return colors[type] || 'text-gray-500'
 }

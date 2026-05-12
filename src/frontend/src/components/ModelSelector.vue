@@ -39,13 +39,13 @@
         :class="[
           'w-full text-left px-3 py-2 text-sm transition-colors',
           highlightedIndex === index
-            ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'
+            ? 'bg-action-primary-50 dark:bg-action-primary-900/30 text-action-primary-700 dark:text-action-primary-300'
             : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
         ]"
       >
         <div class="flex items-center justify-between">
           <span>{{ model.label }}</span>
-          <span v-if="model.value === modelValue" class="text-indigo-500">
+          <span v-if="model.value === modelValue" class="text-action-primary-500">
             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
               <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
             </svg>
@@ -98,7 +98,7 @@ const inputRef = ref(null)
 const isTyping = ref(false)
 
 const inputClass = computed(() => {
-  const base = 'w-full border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 pr-8'
+  const base = 'w-full border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-action-primary-500 pr-8'
   return props.compact
     ? `${base} px-2 py-1.5 text-xs`
     : `${base} px-3 py-2 text-sm`

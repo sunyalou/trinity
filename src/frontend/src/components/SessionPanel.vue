@@ -9,7 +9,7 @@
             @click="showSessionDropdown = !showSessionDropdown"
             class="flex items-center space-x-2 px-3 py-1.5 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
           >
-            <svg class="w-4 h-4 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg class="w-4 h-4 text-action-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             <span class="max-w-32 truncate">{{ currentSessionLabel }}</span>
@@ -36,7 +36,7 @@
                 :key="session.id"
                 @click="selectSession(session)"
                 class="w-full text-left px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                :class="{ 'bg-indigo-50 dark:bg-indigo-900/30': currentSessionId === session.id }"
+                :class="{ 'bg-action-primary-50 dark:bg-action-primary-900/30': currentSessionId === session.id }"
               >
                 <div class="flex items-center justify-between">
                   <span class="text-sm font-medium text-gray-700 dark:text-gray-200">
@@ -51,7 +51,7 @@
                   <span>{{ formatContextPercent(session) }}</span>
                   <span v-if="session.cached_claude_session_id" class="text-emerald-500" title="Has working memory">●</span>
                   <span v-else class="text-gray-300 dark:text-gray-600" title="Cold (memory cleared)">●</span>
-                  <span v-if="session.consecutive_resume_failures > 0" class="text-amber-500">
+                  <span v-if="session.consecutive_resume_failures > 0" class="text-state-autonomous-500">
                     {{ session.consecutive_resume_failures }} resume failure(s)
                   </span>
                 </p>
@@ -72,7 +72,7 @@
           <button
             @click="confirmReset"
             :disabled="loading"
-            class="inline-flex items-center px-3 py-1.5 text-sm font-medium text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-lg transition-colors"
+            class="inline-flex items-center px-3 py-1.5 text-sm font-medium text-state-autonomous-600 dark:text-state-autonomous-400 hover:text-state-autonomous-700 dark:hover:text-state-autonomous-300 hover:bg-state-autonomous-50 dark:hover:bg-state-autonomous-900/30 rounded-lg transition-colors"
             title="Clear working memory (keeps message history)"
           >
             <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -92,7 +92,7 @@
         <button
           @click="startNewSession"
           :disabled="loading || creatingSession"
-          class="inline-flex items-center px-3 py-1.5 text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition-colors"
+          class="inline-flex items-center px-3 py-1.5 text-sm font-medium text-action-primary-600 dark:text-action-primary-400 hover:text-action-primary-700 dark:hover:text-action-primary-300 hover:bg-action-primary-50 dark:hover:bg-action-primary-900/30 rounded-lg transition-colors"
         >
           <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
@@ -105,8 +105,8 @@
     <!-- Agent not running message -->
     <div v-if="agentStatus !== 'running'" class="flex-1 flex items-center justify-center">
       <div class="text-center p-8">
-        <div class="w-16 h-16 bg-yellow-100 dark:bg-yellow-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
-          <svg class="w-8 h-8 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div class="w-16 h-16 bg-status-warning-100 dark:bg-status-warning-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+          <svg class="w-8 h-8 text-status-warning-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
           </svg>
         </div>
@@ -122,19 +122,19 @@
       <!-- Fallback notice (E2/E3): the resume failed and we recovered -->
       <div
         v-if="fallbackNotice"
-        class="mx-6 mt-3 px-4 py-3 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded-lg flex items-center justify-between"
+        class="mx-6 mt-3 px-4 py-3 bg-state-autonomous-50 dark:bg-state-autonomous-900/30 border border-state-autonomous-200 dark:border-state-autonomous-800 rounded-lg flex items-center justify-between"
       >
         <div class="flex items-center space-x-2">
-          <svg class="w-5 h-5 text-amber-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg class="w-5 h-5 text-state-autonomous-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z" />
           </svg>
-          <span class="text-sm text-amber-700 dark:text-amber-300">
+          <span class="text-sm text-state-autonomous-700 dark:text-state-autonomous-300">
             This session’s working memory expired. Starting fresh — past messages are still visible.
           </span>
         </div>
         <button
           @click="dismissFallbackNotice"
-          class="text-amber-500 hover:text-amber-700 dark:hover:text-amber-300"
+          class="text-state-autonomous-500 hover:text-state-autonomous-700 dark:hover:text-state-autonomous-300"
           title="Dismiss"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -153,8 +153,8 @@
       >
         <template #empty>
           <div class="text-center py-12">
-            <div class="w-16 h-16 bg-indigo-100 dark:bg-indigo-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
-              <svg class="w-8 h-8 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="w-16 h-16 bg-action-primary-100 dark:bg-action-primary-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+              <svg class="w-8 h-8 text-action-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
               </svg>
             </div>
@@ -170,8 +170,8 @@
       </ChatMessages>
 
       <!-- Error message -->
-      <div v-if="error" class="mx-6 mb-2 p-3 rounded-lg bg-red-100 dark:bg-red-900/30 border border-red-200 dark:border-red-800">
-        <p class="text-sm text-red-600 dark:text-red-400">{{ error }}</p>
+      <div v-if="error" class="mx-6 mb-2 p-3 rounded-lg bg-status-danger-100 dark:bg-status-danger-900/30 border border-status-danger-200 dark:border-status-danger-800">
+        <p class="text-sm text-status-danger-600 dark:text-status-danger-400">{{ error }}</p>
       </div>
 
       <!-- Input area -->
@@ -212,7 +212,7 @@
           </button>
           <button
             @click="performReset"
-            class="px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg"
+            class="px-4 py-2 text-sm font-medium text-white bg-state-autonomous-600 hover:bg-state-autonomous-700 rounded-lg"
           >
             Reset memory
           </button>

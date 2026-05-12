@@ -10,7 +10,7 @@
         <!-- Trigger Type Filter -->
         <select
           v-model="triggerFilter"
-          class="text-xs px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          class="text-xs px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-action-primary-500"
         >
           <option value="all">All triggers</option>
           <option value="chat">Chat</option>
@@ -94,7 +94,7 @@
           <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Timeout</label>
           <select
             v-model="taskTimeout"
-            class="px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            class="px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-action-primary-500"
           >
             <option :value="300">5 min</option>
             <option :value="900">15 min</option>
@@ -114,13 +114,13 @@
             @keydown.enter.exact.prevent="runNewTask"
             @keydown.meta.enter="runNewTask"
             @keydown.ctrl.enter="runNewTask"
-            class="w-full h-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:cursor-not-allowed resize-none"
+            class="w-full h-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-action-primary-500 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:cursor-not-allowed resize-none"
           ></textarea>
         </div>
         <button
           @click="runNewTask"
           :disabled="taskLoading || !newTaskMessage.trim() || agentStatus !== 'running'"
-          class="inline-flex items-center justify-center px-4 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed"
+          class="inline-flex items-center justify-center px-4 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-action-primary-600 hover:bg-action-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-action-primary-500 disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed"
         >
           <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
@@ -138,7 +138,7 @@
     <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
       <!-- Loading State -->
       <div v-if="loading && allTasks.length === 0" class="text-center py-8">
-        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500 mx-auto"></div>
+        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-action-primary-500 mx-auto"></div>
         <p class="text-sm text-gray-500 dark:text-gray-400 mt-2">Loading tasks...</p>
       </div>
 
@@ -162,7 +162,7 @@
             'bg-status-warning-50/50 dark:bg-status-warning-900/10': task.status === 'running',
             'bg-status-danger-50/30 dark:bg-status-danger-900/10': task.status === 'failed',
             'bg-status-urgent-50/30 dark:bg-status-urgent-900/10': task.status === 'cancelled',
-            'ring-2 ring-indigo-500 ring-inset bg-indigo-50/50 dark:bg-indigo-900/20': isHighlightedTask(task.id)
+            'ring-2 ring-action-primary-500 ring-inset bg-action-primary-50/50 dark:bg-action-primary-900/20': isHighlightedTask(task.id)
           }"
         >
           <div class="flex items-start justify-between">
@@ -201,7 +201,7 @@
                   :class="[
                     'px-1.5 py-0.5 rounded text-xs',
                     task.triggered_by === 'chat' ? 'bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300' :
-                    task.triggered_by === 'session' ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300' :
+                    task.triggered_by === 'session' ? 'bg-state-autonomous-100 dark:bg-state-autonomous-900/30 text-state-autonomous-700 dark:text-state-autonomous-300' :
                     task.triggered_by === 'manual' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' :
                     task.triggered_by === 'schedule' ? 'bg-accent-purple-100 dark:bg-accent-purple-900/30 text-accent-purple-700 dark:text-accent-purple-300' :
                     task.triggered_by === 'paid' ? 'bg-status-warning-100 dark:bg-status-warning-900/30 text-status-warning-700 dark:text-status-warning-300' :
@@ -227,7 +227,7 @@
 
               <!-- Message -->
               <p
-                class="text-sm text-gray-700 dark:text-gray-300 cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400"
+                class="text-sm text-gray-700 dark:text-gray-300 cursor-pointer hover:text-action-primary-600 dark:hover:text-action-primary-400"
                 @click="toggleTaskExpand(task.id)"
               >
                 {{ task.message.substring(0, 120) }}{{ task.message.length > 120 ? '...' : '' }}
@@ -284,7 +284,7 @@
                   'p-1.5 rounded transition-colors flex items-center space-x-1',
                   task.status === 'running'
                     ? 'text-status-success-600 dark:text-status-success-400 hover:text-status-success-700 dark:hover:text-status-success-300 bg-status-success-50 dark:bg-status-success-900/20'
-                    : 'text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400'
+                    : 'text-gray-400 hover:text-action-primary-600 dark:hover:text-action-primary-400'
                 ]"
                 :title="task.status === 'running' ? 'View live execution' : 'Open execution details'"
               >
@@ -311,7 +311,7 @@
               <!-- Copy Input Button -->
               <button
                 @click="copyTaskMessage(task)"
-                class="p-1.5 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded transition-colors"
+                class="p-1.5 text-gray-400 hover:text-action-primary-600 dark:hover:text-action-primary-400 rounded transition-colors"
                 title="Copy task input"
               >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -361,7 +361,7 @@
               <!-- Expand/Collapse Button -->
               <button
                 @click="toggleTaskExpand(task.id)"
-                class="p-1.5 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded transition-colors"
+                class="p-1.5 text-gray-400 hover:text-action-primary-600 dark:hover:text-action-primary-400 rounded transition-colors"
                 :title="expandedTaskId === task.id ? 'Collapse' : 'Expand'"
               >
                 <svg
@@ -410,7 +410,7 @@
             <!-- Modal Body -->
             <div class="flex-1 overflow-y-auto overflow-x-hidden p-4">
               <div v-if="logLoading" class="flex items-center justify-center py-12">
-                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
+                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-action-primary-500"></div>
               </div>
               <div v-else-if="logError" class="text-center py-8">
                 <p class="text-status-danger-500 dark:text-status-danger-400">{{ logError }}</p>
@@ -437,13 +437,13 @@
 
                   <!-- Assistant Message (thinking text) -->
                   <div v-else-if="entry.type === 'assistant-text'" class="flex space-x-3">
-                    <div class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 rounded-full flex items-center justify-center">
-                      <svg class="w-4 h-4 text-indigo-600 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <div class="flex-shrink-0 w-8 h-8 bg-action-primary-100 dark:bg-action-primary-900/50 rounded-full flex items-center justify-center">
+                      <svg class="w-4 h-4 text-action-primary-600 dark:text-action-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                       </svg>
                     </div>
-                    <div class="flex-1 min-w-0 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg p-3">
-                      <div class="text-xs font-medium text-indigo-700 dark:text-indigo-300 mb-1">Claude</div>
+                    <div class="flex-1 min-w-0 bg-action-primary-50 dark:bg-action-primary-900/20 rounded-lg p-3">
+                      <div class="text-xs font-medium text-action-primary-700 dark:text-action-primary-300 mb-1">Claude</div>
                       <div class="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">{{ entry.text }}</div>
                     </div>
                   </div>
@@ -486,7 +486,7 @@
                       </div>
                       <div class="flex items-center space-x-3 font-mono">
                         <span>{{ entry.duration }}</span>
-                        <span class="text-indigo-600 dark:text-indigo-400">${{ entry.cost }}</span>
+                        <span class="text-action-primary-600 dark:text-action-primary-400">${{ entry.cost }}</span>
                       </div>
                     </div>
                   </div>

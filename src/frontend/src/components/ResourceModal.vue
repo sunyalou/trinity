@@ -7,8 +7,8 @@
       <!-- Modal panel -->
       <div class="inline-block align-bottom bg-white dark:bg-gray-800 rounded-lg px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full sm:p-6">
         <div>
-          <div class="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-indigo-100 dark:bg-indigo-900/50">
-            <svg class="h-6 w-6 text-indigo-600 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div class="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-action-primary-100 dark:bg-action-primary-900/50">
+            <svg class="h-6 w-6 text-action-primary-600 dark:text-action-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
             </svg>
           </div>
@@ -23,12 +23,12 @@
         </div>
 
         <!-- Warning Banner -->
-        <div class="mt-4 p-3 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded-lg">
+        <div class="mt-4 p-3 bg-state-autonomous-50 dark:bg-state-autonomous-900/30 border border-state-autonomous-200 dark:border-state-autonomous-800 rounded-lg">
           <div class="flex">
-            <svg class="h-5 w-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg class="h-5 w-5 text-state-autonomous-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
-            <p class="ml-3 text-sm text-amber-700 dark:text-amber-300">
+            <p class="ml-3 text-sm text-state-autonomous-700 dark:text-state-autonomous-300">
               If the agent is running, it will be automatically restarted to apply changes.
             </p>
           </div>
@@ -42,7 +42,7 @@
               :value="resourceLimits.memory"
               @change="$emit('update:memory', $event.target.value || null)"
               :disabled="loading"
-              class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+              class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-action-primary-500 focus:border-action-primary-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
             >
               <option :value="null">Default ({{ resourceLimits.current_memory || '4g' }})</option>
               <option value="1g">1 GB</option>
@@ -60,7 +60,7 @@
               :value="resourceLimits.cpu"
               @change="$emit('update:cpu', $event.target.value || null)"
               :disabled="loading"
-              class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+              class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-action-primary-500 focus:border-action-primary-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
             >
               <option :value="null">Default ({{ resourceLimits.current_cpu || '2' }})</option>
               <option value="1">1 Core</option>
@@ -78,14 +78,14 @@
             type="button"
             @click="$emit('save')"
             :disabled="loading"
-            class="w-full inline-flex justify-center rounded-lg border border-transparent shadow-sm px-4 py-2 bg-indigo-600 text-base font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:col-start-2 sm:text-sm disabled:opacity-50"
+            class="w-full inline-flex justify-center rounded-lg border border-transparent shadow-sm px-4 py-2 bg-action-primary-600 text-base font-medium text-white hover:bg-action-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-action-primary-500 sm:col-start-2 sm:text-sm disabled:opacity-50"
           >
             {{ loading ? 'Saving...' : 'Save Changes' }}
           </button>
           <button
             type="button"
             @click="$emit('update:show', false)"
-            class="mt-3 w-full inline-flex justify-center rounded-lg border border-gray-300 dark:border-gray-600 shadow-sm px-4 py-2 bg-white dark:bg-gray-700 text-base font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:col-start-1 sm:text-sm"
+            class="mt-3 w-full inline-flex justify-center rounded-lg border border-gray-300 dark:border-gray-600 shadow-sm px-4 py-2 bg-white dark:bg-gray-700 text-base font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-action-primary-500 sm:mt-0 sm:col-start-1 sm:text-sm"
           >
             Cancel
           </button>

@@ -30,7 +30,7 @@
               <p class="text-sm text-gray-500 dark:text-gray-400">
                 <router-link
                   :to="{ name: 'AgentDetail', params: { name: agentName } }"
-                  class="hover:text-indigo-600 dark:hover:text-indigo-400"
+                  class="hover:text-action-primary-600 dark:hover:text-action-primary-400"
                 >
                   {{ agentName }}
                 </router-link>
@@ -47,7 +47,7 @@
               v-if="execution?.status === 'running'"
               @click="stopExecution"
               :disabled="isStopping"
-              class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 flex items-center space-x-1"
+              class="px-3 py-1.5 bg-status-danger-600 hover:bg-status-danger-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 flex items-center space-x-1"
               title="Stop execution"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -60,7 +60,7 @@
             <button
               v-if="execution?.claude_session_id && execution?.status !== 'running'"
               @click="continueAsChat"
-              class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center space-x-1"
+              class="px-3 py-1.5 bg-action-primary-600 hover:bg-action-primary-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center space-x-1"
               title="Continue this execution as an interactive chat"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -84,20 +84,20 @@
 
     <!-- Loading state -->
     <div v-if="loading" class="flex items-center justify-center py-20">
-      <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-500"></div>
+      <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-action-primary-500"></div>
     </div>
 
     <!-- Error state -->
     <div v-else-if="error" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-6 text-center">
-        <svg class="w-12 h-12 text-red-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <div class="bg-status-danger-50 dark:bg-status-danger-900/20 border border-status-danger-200 dark:border-status-danger-800 rounded-lg p-6 text-center">
+        <svg class="w-12 h-12 text-status-danger-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
         </svg>
-        <h3 class="text-lg font-medium text-red-800 dark:text-red-300 mb-2">Failed to load execution</h3>
-        <p class="text-red-600 dark:text-red-400">{{ error }}</p>
+        <h3 class="text-lg font-medium text-status-danger-800 dark:text-status-danger-300 mb-2">Failed to load execution</h3>
+        <p class="text-status-danger-600 dark:text-status-danger-400">{{ error }}</p>
         <button
           @click="loadExecution"
-          class="mt-4 px-4 py-2 bg-red-100 dark:bg-red-800 text-red-700 dark:text-red-200 rounded-lg hover:bg-red-200 dark:hover:bg-red-700 transition-colors"
+          class="mt-4 px-4 py-2 bg-status-danger-100 dark:bg-status-danger-800 text-status-danger-700 dark:text-status-danger-200 rounded-lg hover:bg-status-danger-200 dark:hover:bg-status-danger-700 transition-colors"
         >
           Try Again
         </button>
@@ -126,8 +126,8 @@
         <!-- Cost Card -->
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
           <div class="flex items-center space-x-3">
-            <div class="flex-shrink-0 w-10 h-10 bg-green-100 dark:bg-green-900/50 rounded-lg flex items-center justify-center">
-              <svg class="w-5 h-5 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="flex-shrink-0 w-10 h-10 bg-status-success-100 dark:bg-status-success-900/50 rounded-lg flex items-center justify-center">
+              <svg class="w-5 h-5 text-status-success-600 dark:text-status-success-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </div>
@@ -141,8 +141,8 @@
         <!-- Context Card -->
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
           <div class="flex items-center space-x-3">
-            <div class="flex-shrink-0 w-10 h-10 bg-purple-100 dark:bg-purple-900/50 rounded-lg flex items-center justify-center">
-              <svg class="w-5 h-5 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="flex-shrink-0 w-10 h-10 bg-accent-purple-100 dark:bg-accent-purple-900/50 rounded-lg flex items-center justify-center">
+              <svg class="w-5 h-5 text-accent-purple-600 dark:text-accent-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
               </svg>
             </div>
@@ -187,7 +187,7 @@
             <span class="text-gray-500 dark:text-gray-400">Source Agent:</span>
             <router-link
               :to="{ name: 'AgentDetail', params: { name: execution.source_agent_name } }"
-              class="ml-2 text-indigo-600 dark:text-indigo-400 font-medium hover:underline"
+              class="ml-2 text-action-primary-600 dark:text-action-primary-400 font-medium hover:underline"
             >
               {{ execution.source_agent_name }}
             </router-link>
@@ -234,9 +234,9 @@
       </div>
 
       <!-- Error Panel (if failed) -->
-      <div v-if="execution.error" class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg shadow">
-        <div class="px-4 py-3 border-b border-red-200 dark:border-red-800">
-          <h2 class="text-sm font-semibold text-red-800 dark:text-red-300 flex items-center">
+      <div v-if="execution.error" class="bg-status-danger-50 dark:bg-status-danger-900/20 border border-status-danger-200 dark:border-status-danger-800 rounded-lg shadow">
+        <div class="px-4 py-3 border-b border-status-danger-200 dark:border-status-danger-800">
+          <h2 class="text-sm font-semibold text-status-danger-800 dark:text-status-danger-300 flex items-center">
             <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
@@ -244,7 +244,7 @@
           </h2>
         </div>
         <div class="p-4">
-          <pre class="text-sm text-red-700 dark:text-red-300 whitespace-pre-wrap font-mono">{{ execution.error }}</pre>
+          <pre class="text-sm text-status-danger-700 dark:text-status-danger-300 whitespace-pre-wrap font-mono">{{ execution.error }}</pre>
         </div>
       </div>
 
@@ -259,16 +259,16 @@
       </div>
 
       <!-- Stream Error Banner -->
-      <div v-if="streamError" class="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4 flex items-start space-x-3">
-        <svg class="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <div v-if="streamError" class="bg-state-autonomous-50 dark:bg-state-autonomous-900/20 border border-state-autonomous-200 dark:border-state-autonomous-800 rounded-lg p-4 flex items-start space-x-3">
+        <svg class="w-5 h-5 text-state-autonomous-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
         </svg>
         <div class="flex-1 min-w-0">
-          <p class="text-sm text-amber-800 dark:text-amber-300">{{ streamError }}</p>
+          <p class="text-sm text-state-autonomous-800 dark:text-state-autonomous-300">{{ streamError }}</p>
         </div>
         <button
           @click="retryStream"
-          class="flex-shrink-0 px-3 py-1 text-xs font-medium text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-800/50 rounded hover:bg-amber-200 dark:hover:bg-amber-700 transition-colors"
+          class="flex-shrink-0 px-3 py-1 text-xs font-medium text-state-autonomous-700 dark:text-state-autonomous-300 bg-state-autonomous-100 dark:bg-state-autonomous-800/50 rounded hover:bg-state-autonomous-200 dark:hover:bg-state-autonomous-700 transition-colors"
         >
           Retry
         </button>
@@ -282,10 +282,10 @@
             <!-- Streaming indicator -->
             <div v-if="isStreaming" class="flex items-center space-x-2">
               <span class="relative flex h-2 w-2">
-                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                <span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-success-400 opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2 w-2 bg-status-success-500"></span>
               </span>
-              <span class="text-xs text-green-600 dark:text-green-400 font-medium">Live</span>
+              <span class="text-xs text-status-success-600 dark:text-status-success-400 font-medium">Live</span>
             </div>
           </div>
           <div class="flex items-center space-x-3">
@@ -293,7 +293,7 @@
             <button
               v-if="isStreaming"
               @click="toggleAutoScroll"
-              :class="autoScroll ? 'text-indigo-600 dark:text-indigo-400' : 'text-gray-400 dark:text-gray-500'"
+              :class="autoScroll ? 'text-action-primary-600 dark:text-action-primary-400' : 'text-gray-400 dark:text-gray-500'"
               class="text-xs font-medium hover:underline"
               title="Toggle auto-scroll"
             >
@@ -307,7 +307,7 @@
         <div class="p-4 log-scroll-container" :class="{ 'max-h-[600px] overflow-y-auto': isStreaming }">
           <!-- Streaming - waiting for entries -->
           <div v-if="isStreaming && logEntries.length === 0" class="text-center py-8">
-            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500 mx-auto mb-4"></div>
+            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-action-primary-500 mx-auto mb-4"></div>
             <p class="text-gray-500 dark:text-gray-400">Waiting for execution output...</p>
           </div>
 
@@ -338,28 +338,28 @@
 
               <!-- Assistant Message (thinking text) -->
               <div v-else-if="entry.type === 'assistant-text'" class="flex space-x-3">
-                <div class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 rounded-full flex items-center justify-center">
-                  <svg class="w-4 h-4 text-indigo-600 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="flex-shrink-0 w-8 h-8 bg-action-primary-100 dark:bg-action-primary-900/50 rounded-full flex items-center justify-center">
+                  <svg class="w-4 h-4 text-action-primary-600 dark:text-action-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                   </svg>
                 </div>
-                <div class="flex-1 min-w-0 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg p-3">
-                  <div class="text-xs font-medium text-indigo-700 dark:text-indigo-300 mb-1">Claude</div>
+                <div class="flex-1 min-w-0 bg-action-primary-50 dark:bg-action-primary-900/20 rounded-lg p-3">
+                  <div class="text-xs font-medium text-action-primary-700 dark:text-action-primary-300 mb-1">Claude</div>
                   <div class="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">{{ entry.text }}</div>
                 </div>
               </div>
 
               <!-- Tool Call -->
               <div v-else-if="entry.type === 'tool-call'" class="flex space-x-3">
-                <div class="flex-shrink-0 w-8 h-8 bg-amber-100 dark:bg-amber-900/50 rounded-full flex items-center justify-center">
-                  <svg class="w-4 h-4 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="flex-shrink-0 w-8 h-8 bg-state-autonomous-100 dark:bg-state-autonomous-900/50 rounded-full flex items-center justify-center">
+                  <svg class="w-4 h-4 text-state-autonomous-600 dark:text-state-autonomous-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                   </svg>
                 </div>
-                <div class="flex-1 min-w-0 bg-amber-50 dark:bg-amber-900/20 rounded-lg p-3">
+                <div class="flex-1 min-w-0 bg-state-autonomous-50 dark:bg-state-autonomous-900/20 rounded-lg p-3">
                   <div class="flex items-center space-x-2 mb-1">
-                    <span class="text-xs font-medium text-amber-700 dark:text-amber-300">{{ entry.tool }}</span>
+                    <span class="text-xs font-medium text-state-autonomous-700 dark:text-state-autonomous-300">{{ entry.tool }}</span>
                   </div>
                   <pre class="text-xs text-gray-600 dark:text-gray-400 bg-white/50 dark:bg-black/20 rounded p-2 whitespace-pre-wrap break-words max-h-96 overflow-y-auto">{{ entry.input }}</pre>
                 </div>
@@ -367,13 +367,13 @@
 
               <!-- Tool Result -->
               <div v-else-if="entry.type === 'tool-result'" class="flex space-x-3">
-                <div class="flex-shrink-0 w-8 h-8 bg-green-100 dark:bg-green-900/50 rounded-full flex items-center justify-center">
-                  <svg class="w-4 h-4 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="flex-shrink-0 w-8 h-8 bg-status-success-100 dark:bg-status-success-900/50 rounded-full flex items-center justify-center">
+                  <svg class="w-4 h-4 text-status-success-600 dark:text-status-success-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                 </div>
-                <div class="flex-1 min-w-0 bg-green-50 dark:bg-green-900/20 rounded-lg p-3">
-                  <div class="text-xs font-medium text-green-700 dark:text-green-300 mb-1">Result</div>
+                <div class="flex-1 min-w-0 bg-status-success-50 dark:bg-status-success-900/20 rounded-lg p-3">
+                  <div class="text-xs font-medium text-status-success-700 dark:text-status-success-300 mb-1">Result</div>
                   <pre class="text-xs text-gray-600 dark:text-gray-400 bg-white/50 dark:bg-black/20 rounded p-2 whitespace-pre-wrap break-words max-h-96 overflow-y-auto">{{ entry.content }}</pre>
                 </div>
               </div>
@@ -382,12 +382,12 @@
               <div v-else-if="entry.type === 'result'" class="bg-gray-100 dark:bg-gray-900 rounded-lg p-3 text-xs border-t-2 border-gray-300 dark:border-gray-600">
                 <div class="flex items-center justify-between text-gray-500 dark:text-gray-400">
                   <div class="flex items-center space-x-3">
-                    <span class="font-semibold text-green-600 dark:text-green-400">Completed</span>
+                    <span class="font-semibold text-status-success-600 dark:text-status-success-400">Completed</span>
                     <span>{{ entry.numTurns }} turns</span>
                   </div>
                   <div class="flex items-center space-x-3 font-mono">
                     <span>{{ entry.duration }}</span>
-                    <span class="text-indigo-600 dark:text-indigo-400">${{ entry.cost }}</span>
+                    <span class="text-action-primary-600 dark:text-action-primary-400">${{ entry.cost }}</span>
                   </div>
                 </div>
               </div>
@@ -434,20 +434,20 @@ const MAX_STREAM_RETRIES = 12  // Max retries (12 * 5s = 60s)
 const statusClass = computed(() => {
   if (!execution.value) return ''
   const status = execution.value.status
-  if (status === 'success') return 'bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300'
-  if (status === 'failed') return 'bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300'
+  if (status === 'success') return 'bg-status-success-100 text-status-success-800 dark:bg-status-success-900/50 dark:text-status-success-300'
+  if (status === 'failed') return 'bg-status-danger-100 text-status-danger-800 dark:bg-status-danger-900/50 dark:text-status-danger-300'
   if (status === 'running') return 'bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300'
-  if (status === 'queued') return 'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300'
-  if (status === 'skipped') return 'bg-purple-100 text-purple-800 dark:bg-purple-900/50 dark:text-purple-300'
+  if (status === 'queued') return 'bg-state-autonomous-100 text-state-autonomous-800 dark:bg-state-autonomous-900/50 dark:text-state-autonomous-300'
+  if (status === 'skipped') return 'bg-accent-purple-100 text-accent-purple-800 dark:bg-accent-purple-900/50 dark:text-accent-purple-300'
   return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
 })
 
 const triggerIconClass = computed(() => {
   if (!execution.value) return 'bg-gray-100 dark:bg-gray-700'
   const trigger = execution.value.triggered_by
-  if (trigger === 'schedule') return 'bg-purple-100 dark:bg-purple-900/50'
-  if (trigger === 'manual') return 'bg-amber-100 dark:bg-amber-900/50'
-  if (trigger === 'paid') return 'bg-yellow-100 dark:bg-yellow-900/50'
+  if (trigger === 'schedule') return 'bg-accent-purple-100 dark:bg-accent-purple-900/50'
+  if (trigger === 'manual') return 'bg-state-autonomous-100 dark:bg-state-autonomous-900/50'
+  if (trigger === 'paid') return 'bg-status-warning-100 dark:bg-status-warning-900/50'
   if (trigger === 'public') return 'bg-teal-100 dark:bg-teal-900/50'
   return 'bg-cyan-100 dark:bg-cyan-900/50'
 })
@@ -455,9 +455,9 @@ const triggerIconClass = computed(() => {
 const triggerIconColor = computed(() => {
   if (!execution.value) return 'text-gray-600 dark:text-gray-400'
   const trigger = execution.value.triggered_by
-  if (trigger === 'schedule') return 'text-purple-600 dark:text-purple-400'
-  if (trigger === 'manual') return 'text-amber-600 dark:text-amber-400'
-  if (trigger === 'paid') return 'text-yellow-600 dark:text-yellow-400'
+  if (trigger === 'schedule') return 'text-accent-purple-600 dark:text-accent-purple-400'
+  if (trigger === 'manual') return 'text-state-autonomous-600 dark:text-state-autonomous-400'
+  if (trigger === 'paid') return 'text-status-warning-600 dark:text-status-warning-400'
   if (trigger === 'public') return 'text-teal-600 dark:text-teal-400'
   return 'text-cyan-600 dark:text-cyan-400'
 })

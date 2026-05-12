@@ -44,7 +44,7 @@
             <button
               @click="verifyCredentials"
               :disabled="verifying"
-              class="text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 disabled:opacity-50"
+              class="text-sm text-action-primary-600 dark:text-action-primary-400 hover:text-action-primary-800 dark:hover:text-action-primary-300 disabled:opacity-50"
             >
               {{ verifying ? 'Verifying...' : 'Verify' }}
             </button>
@@ -60,29 +60,29 @@
       </div>
 
       <!-- Webhook URL Display -->
-      <div v-if="binding.webhook_url" class="p-3 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/40">
-        <p class="text-xs font-medium text-indigo-900 dark:text-indigo-200 mb-1">
+      <div v-if="binding.webhook_url" class="p-3 rounded-lg bg-action-primary-50 dark:bg-action-primary-900/20 border border-action-primary-100 dark:border-action-primary-800/40">
+        <p class="text-xs font-medium text-action-primary-900 dark:text-action-primary-200 mb-1">
           Webhook URL — paste into Twilio Console
         </p>
         <div class="flex items-center gap-2">
-          <code class="flex-1 text-xs text-indigo-900 dark:text-indigo-100 font-mono break-all select-all">
+          <code class="flex-1 text-xs text-action-primary-900 dark:text-action-primary-100 font-mono break-all select-all">
             {{ binding.webhook_url }}
           </code>
           <button
             @click="copyWebhook"
-            class="text-xs text-indigo-700 dark:text-indigo-300 hover:text-indigo-900 dark:hover:text-indigo-100"
+            class="text-xs text-action-primary-700 dark:text-action-primary-300 hover:text-action-primary-900 dark:hover:text-action-primary-100"
           >
             {{ copied ? 'Copied!' : 'Copy' }}
           </button>
         </div>
-        <p class="mt-2 text-xs text-indigo-700 dark:text-indigo-300">
+        <p class="mt-2 text-xs text-action-primary-700 dark:text-action-primary-300">
           In Twilio Console → Messaging → {{ binding.is_sandbox ? 'Sandbox settings' : 'your sender' }} →
           <strong>When a message comes in</strong>, set method to <strong>HTTP POST</strong> and paste this URL.
         </p>
       </div>
 
       <!-- Ops prerequisite notice -->
-      <div class="p-3 rounded-lg text-xs bg-amber-50 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200">
+      <div class="p-3 rounded-lg text-xs bg-state-autonomous-50 dark:bg-state-autonomous-900/30 text-state-autonomous-800 dark:text-state-autonomous-200">
         <strong>Deployment prerequisite:</strong> Cloudflare Tunnel ingress must route
         <code class="font-mono">/api/whatsapp/webhook/*</code> to the frontend service.
         See <em>docs/requirements/PUBLIC_EXTERNAL_ACCESS_SETUP.md</em>.
@@ -119,7 +119,7 @@
             type="text"
             placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
             :disabled="connecting"
-            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100 dark:disabled:bg-gray-900 font-mono text-xs"
+            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-action-primary-500 disabled:bg-gray-100 dark:disabled:bg-gray-900 font-mono text-xs"
           />
         </div>
         <div>
@@ -132,7 +132,7 @@
             type="password"
             placeholder="Paste your Twilio Auth Token"
             :disabled="connecting"
-            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100 dark:disabled:bg-gray-900"
+            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-action-primary-500 disabled:bg-gray-100 dark:disabled:bg-gray-900"
           />
           <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
             From Twilio Console — stored encrypted.
@@ -148,7 +148,7 @@
             type="text"
             placeholder="whatsapp:+14155238886"
             :disabled="connecting"
-            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100 dark:disabled:bg-gray-900 font-mono text-xs"
+            class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-action-primary-500 disabled:bg-gray-100 dark:disabled:bg-gray-900 font-mono text-xs"
           />
           <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
             Must start with <code class="font-mono">whatsapp:+</code>. Use
@@ -158,7 +158,7 @@
         <button
           type="submit"
           :disabled="connecting || !canSubmit"
-          class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <svg v-if="connecting" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>

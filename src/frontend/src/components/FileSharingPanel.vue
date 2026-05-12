@@ -19,7 +19,7 @@
           :disabled="toggleLoading || statusLoading"
           @change="onToggle($event.target.checked)"
         />
-        <div class="w-11 h-6 bg-gray-200 dark:bg-gray-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:border after:border-gray-300 after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+        <div class="w-11 h-6 bg-gray-200 dark:bg-gray-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-action-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:border after:border-gray-300 after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-action-primary-600"></div>
       </label>
       <div class="flex-1">
         <div class="text-sm font-medium text-gray-900 dark:text-gray-100">
@@ -34,7 +34,7 @@
     <!-- Restart-required banner -->
     <div
       v-if="status.restart_required"
-      class="mb-4 rounded-md bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-800 dark:text-amber-200"
+      class="mb-4 rounded-md bg-state-autonomous-50 dark:bg-state-autonomous-900/30 border border-state-autonomous-200 dark:border-state-autonomous-800 px-4 py-3 text-sm text-state-autonomous-800 dark:text-state-autonomous-200"
     >
       Configuration changed — restart the agent to mount or detach
       <code class="font-mono text-xs">/home/developer/public/</code>.
@@ -77,7 +77,7 @@
             <td class="px-4 py-2 text-right whitespace-nowrap">
               <button
                 @click="copyUrl(file)"
-                class="px-2 py-1 text-xs font-medium rounded-md text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/70 mr-2"
+                class="px-2 py-1 text-xs font-medium rounded-md text-action-primary-700 dark:text-action-primary-300 bg-action-primary-50 dark:bg-action-primary-900/40 hover:bg-action-primary-100 dark:hover:bg-action-primary-900/70 mr-2"
                 :title="file.url"
               >
                 {{ copiedId === file.file_id ? 'Copied!' : 'Copy URL' }}

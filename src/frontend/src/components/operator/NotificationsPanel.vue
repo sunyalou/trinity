@@ -119,7 +119,7 @@
       <div class="flex gap-2">
         <button
           @click="bulkAcknowledge"
-          class="px-3 py-1.5 text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg"
+          class="px-3 py-1.5 text-xs font-medium text-white bg-status-success-600 hover:bg-status-success-700 rounded-lg"
         >
           Acknowledge Selected
         </button>

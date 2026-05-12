@@ -34,6 +34,7 @@ const EXPECTED_ALIASES = {
   'brand-claude':     'orange',
   'brand-gemini':     'blue',
   'accent-purple':    'purple',
+  'action-primary':   'indigo',
 }
 
 // Known token families. Reference scanner uses this to flag references like
@@ -43,6 +44,7 @@ const KNOWN_FAMILIES = {
   state:  new Set(['autonomous', 'locked']),
   brand:  new Set(['claude', 'gemini']),
   accent: new Set(['purple']),
+  action: new Set(['primary']),
 }
 
 function checkPaletteEquivalence() {

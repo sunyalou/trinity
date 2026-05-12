@@ -19,7 +19,7 @@
 
     <!-- Loading State -->
     <div v-else-if="loading" class="flex justify-center py-12">
-      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-action-primary-600"></div>
     </div>
 
     <!-- Error State -->
@@ -49,7 +49,7 @@
           v-model="searchQuery"
           type="text"
           placeholder="Search playbooks..."
-          class="block w-full pl-10 pr-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white text-sm"
+          class="block w-full pl-10 pr-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
         />
         <svg class="absolute left-3 top-2.5 h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -65,7 +65,7 @@
         >
           <!-- Skill Name -->
           <div class="flex items-start justify-between mb-2">
-            <code class="text-sm font-semibold text-indigo-600 dark:text-indigo-400">/{{ skill.name }}</code>
+            <code class="text-sm font-semibold text-action-primary-600 dark:text-action-primary-400">/{{ skill.name }}</code>
             <!-- Automation Badge -->
             <span
               v-if="skill.automation"
@@ -114,7 +114,7 @@
             <!-- Run with Instructions Button -->
             <button
               @click="runWithInstructions(skill)"
-              class="inline-flex items-center justify-center px-3 py-1.5 border border-gray-300 dark:border-gray-600 text-xs font-medium rounded-md text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
+              class="inline-flex items-center justify-center px-3 py-1.5 border border-gray-300 dark:border-gray-600 text-xs font-medium rounded-md text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-action-primary-500 transition-colors"
               title="Add instructions before running"
             >
               <svg class="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">

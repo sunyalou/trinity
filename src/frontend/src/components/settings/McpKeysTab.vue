@@ -9,7 +9,7 @@
       </div>
       <button
         @click="showCreateModal = true"
-        class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700"
+        class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700"
       >
         <svg class="-ml-1 mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
@@ -49,7 +49,7 @@
     <!-- API Keys List -->
     <div class="bg-white dark:bg-gray-800 shadow dark:shadow-gray-900 rounded-lg overflow-hidden">
       <div v-if="loading" class="p-8 text-center">
-        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto"></div>
+        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-action-primary-600 mx-auto"></div>
         <p class="mt-4 text-gray-500 dark:text-gray-400">Loading API keys...</p>
       </div>
 
@@ -83,7 +83,7 @@
                   <span v-if="key.scope === 'agent'" class="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-accent-purple-100 dark:bg-accent-purple-900/50 text-accent-purple-800 dark:text-accent-purple-300">
                     Agent
                   </span>
-                  <span v-else-if="key.scope === 'system'" class="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 dark:bg-orange-900/50 text-orange-800 dark:text-orange-300">
+                  <span v-else-if="key.scope === 'system'" class="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-status-urgent-100 dark:bg-status-urgent-900/50 text-status-urgent-800 dark:text-status-urgent-300">
                     System
                   </span>
                 </div>
@@ -144,7 +144,7 @@
                 <input
                   v-model="newKey.name"
                   type="text"
-                  class="mt-1 block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
+                  class="mt-1 block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
                   placeholder="My Claude Code Key"
                 />
               </div>
@@ -154,7 +154,7 @@
                 <textarea
                   v-model="newKey.description"
                   rows="2"
-                  class="mt-1 block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
+                  class="mt-1 block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
                   placeholder="Used for..."
                 ></textarea>
               </div>
@@ -165,7 +165,7 @@
             <button
               @click="createKey"
               :disabled="creating || !newKey.name"
-              class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-indigo-600 text-base font-medium text-white hover:bg-indigo-700 focus:outline-none sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
+              class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-action-primary-600 text-base font-medium text-white hover:bg-action-primary-700 focus:outline-none sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
             >
               {{ creating ? 'Creating...' : 'Create' }}
             </button>
@@ -221,7 +221,7 @@
                     class="inline-flex items-center px-3 py-1 text-xs font-medium rounded-md"
                     :class="copiedConfig
                       ? 'bg-status-success-100 dark:bg-status-success-900/50 text-status-success-700 dark:text-status-success-300'
-                      : 'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-200 dark:hover:bg-indigo-900'"
+                      : 'bg-action-primary-100 dark:bg-action-primary-900/50 text-action-primary-700 dark:text-action-primary-300 hover:bg-action-primary-200 dark:hover:bg-action-primary-900'"
                   >
                     <svg v-if="!copiedConfig" class="h-3.5 w-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -232,7 +232,7 @@
                     {{ copiedConfig ? 'Copied!' : 'Copy Config' }}
                   </button>
                 </div>
-                <pre class="bg-gray-900 dark:bg-gray-950 rounded-lg p-4 text-xs overflow-x-auto text-green-400 font-mono border border-gray-700">{{ getMcpConfig(createdApiKey) }}</pre>
+                <pre class="bg-gray-900 dark:bg-gray-950 rounded-lg p-4 text-xs overflow-x-auto text-status-success-400 font-mono border border-gray-700">{{ getMcpConfig(createdApiKey) }}</pre>
               </div>
 
               <div>
@@ -277,7 +277,7 @@
           <div class="bg-gray-50 dark:bg-gray-900 px-4 py-3 sm:px-6">
             <button
               @click="closeKeyModal"
-              class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-indigo-600 text-base font-medium text-white hover:bg-indigo-700 focus:outline-none sm:text-sm"
+              class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-action-primary-600 text-base font-medium text-white hover:bg-action-primary-700 focus:outline-none sm:text-sm"
             >
               I've copied the configuration
             </button>

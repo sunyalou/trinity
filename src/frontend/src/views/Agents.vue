@@ -27,7 +27,7 @@
               v-model="filterName"
               type="text"
               placeholder="Search agents..."
-              class="block w-44 rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm py-2 pl-8 pr-3 bg-white dark:bg-gray-700 dark:text-gray-200 border"
+              class="block w-44 rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-action-primary-500 focus:ring-action-primary-500 text-sm py-2 pl-8 pr-3 bg-white dark:bg-gray-700 dark:text-gray-200 border"
             />
           </div>
 
@@ -40,7 +40,7 @@
               :class="[
                 'px-3 py-2 font-medium transition-colors',
                 filterStatus === opt.value
-                  ? 'bg-indigo-600 text-white'
+                  ? 'bg-action-primary-600 text-white'
                   : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600'
               ]"
             >
@@ -52,7 +52,7 @@
           <select
             v-if="availableTags.length > 0"
             v-model="selectedFilterTagDropdown"
-            class="block rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm py-2 px-3 bg-white dark:bg-gray-700 dark:text-gray-200 border"
+            class="block rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-action-primary-500 focus:ring-action-primary-500 text-sm py-2 px-3 bg-white dark:bg-gray-700 dark:text-gray-200 border"
           >
             <option value="">All Tags</option>
             <option v-for="tagInfo in availableTags" :key="tagInfo.tag" :value="tagInfo.tag">
@@ -64,7 +64,7 @@
           <select
             v-if="availableOwners.length > 1"
             v-model="selectedOwner"
-            class="block rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm py-2 px-3 bg-white dark:bg-gray-700 dark:text-gray-200 border"
+            class="block rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-action-primary-500 focus:ring-action-primary-500 text-sm py-2 px-3 bg-white dark:bg-gray-700 dark:text-gray-200 border"
           >
             <option value="">All Owners</option>
             <option v-for="owner in availableOwners" :key="owner.name || '__unassigned__'" :value="owner.name || '__unassigned__'">
@@ -96,7 +96,7 @@
           <div class="flex items-center gap-3 ml-auto">
             <select
               v-model="agentsStore.sortBy"
-              class="block rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm py-2 px-3 bg-white dark:bg-gray-700 dark:text-gray-200 border"
+              class="block rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-action-primary-500 focus:ring-action-primary-500 text-sm py-2 px-3 bg-white dark:bg-gray-700 dark:text-gray-200 border"
             >
               <option value="created_desc">Newest First</option>
               <option value="created_asc">Oldest First</option>
@@ -108,7 +108,7 @@
 
             <button
               @click="showCreateModal = true"
-              class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded whitespace-nowrap"
+              class="bg-action-primary-600 hover:bg-action-primary-700 text-white font-bold py-2 px-4 rounded whitespace-nowrap"
             >
               Create Agent
             </button>
@@ -260,7 +260,7 @@
             <!-- Avatar: half out of the box (all breakpoints) -->
             <div class="absolute left-0 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
               <div class="rounded-full border-2 shadow-md overflow-hidden"
-                   :class="agent.is_system ? 'border-accent-purple-400 dark:border-accent-purple-500' : 'border-indigo-400 dark:border-indigo-500'">
+                   :class="agent.is_system ? 'border-accent-purple-400 dark:border-accent-purple-500' : 'border-action-primary-400 dark:border-action-primary-500'">
                 <AgentAvatar :name="agent.name" :avatar-url="agent.avatar_url" size="md" />
               </div>
             </div>
@@ -298,7 +298,7 @@
                 <div class="flex items-center min-w-0 gap-2">
                   <router-link
                     :to="`/agents/${agent.name}`"
-                    class="text-gray-900 dark:text-white font-semibold text-sm truncate hover:text-indigo-600 dark:hover:text-indigo-400"
+                    class="text-gray-900 dark:text-white font-semibold text-sm truncate hover:text-action-primary-600 dark:hover:text-action-primary-400"
                     :title="agent.name"
                   >
                     {{ agent.name }}
@@ -410,7 +410,7 @@
                 <!-- Arrow link -->
                 <router-link
                   :to="`/agents/${agent.name}`"
-                  class="text-gray-400 dark:text-gray-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+                  class="text-gray-400 dark:text-gray-500 hover:text-action-primary-600 dark:hover:text-action-primary-400 transition-colors"
                 >
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
@@ -467,7 +467,7 @@
                 ></div>
                 <router-link
                   :to="`/agents/${agent.name}`"
-                  class="text-gray-900 dark:text-white font-semibold text-sm truncate hover:text-indigo-600 dark:hover:text-indigo-400"
+                  class="text-gray-900 dark:text-white font-semibold text-sm truncate hover:text-action-primary-600 dark:hover:text-action-primary-400"
                   :title="agent.name"
                 >
                   {{ agent.name }}
@@ -497,7 +497,7 @@
                   </div>
                   <router-link
                     :to="`/agents/${agent.name}`"
-                    class="text-gray-400 dark:text-gray-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+                    class="text-gray-400 dark:text-gray-500 hover:text-action-primary-600 dark:hover:text-action-primary-400 transition-colors"
                   >
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
@@ -609,7 +609,7 @@
                 ></div>
                 <router-link
                   :to="`/agents/${agent.name}`"
-                  class="text-gray-900 dark:text-white font-semibold text-sm truncate hover:text-indigo-600 dark:hover:text-indigo-400 flex-1 min-w-0"
+                  class="text-gray-900 dark:text-white font-semibold text-sm truncate hover:text-action-primary-600 dark:hover:text-action-primary-400 flex-1 min-w-0"
                   :title="agent.name"
                 >
                   {{ agent.name }}
@@ -630,7 +630,7 @@
                   />
                   <router-link
                     :to="`/agents/${agent.name}`"
-                    class="text-gray-400 dark:text-gray-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+                    class="text-gray-400 dark:text-gray-500 hover:text-action-primary-600 dark:hover:text-action-primary-400 transition-colors"
                   >
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
@@ -683,7 +683,7 @@
             <div class="mt-6">
               <button
                 @click="showCreateModal = true"
-                class="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700"
+                class="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-action-primary-600 hover:bg-action-primary-700"
               >
                 Create Agent
               </button>

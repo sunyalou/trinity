@@ -39,13 +39,13 @@
             :class="[
               'flex items-start gap-2 px-3 py-2 cursor-pointer transition-colors',
               idx === ac.selectedIndex.value
-                ? 'bg-indigo-50 dark:bg-indigo-900/40'
+                ? 'bg-action-primary-50 dark:bg-action-primary-900/40'
                 : 'hover:bg-gray-50 dark:hover:bg-gray-700/60'
             ]"
             @click="onClickSuggestion(playbook)"
           >
             <!-- Command name -->
-            <code class="shrink-0 text-sm font-semibold text-indigo-600 dark:text-indigo-400">
+            <code class="shrink-0 text-sm font-semibold text-action-primary-600 dark:text-action-primary-400">
               /{{ playbook.name }}
             </code>
 
@@ -87,7 +87,7 @@
       <div
         v-for="(f, idx) in pendingFiles"
         :key="idx"
-        class="flex items-center gap-1 px-2 py-0.5 bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 text-xs rounded-full"
+        class="flex items-center gap-1 px-2 py-0.5 bg-action-primary-100 dark:bg-action-primary-900/40 text-action-primary-700 dark:text-action-primary-300 text-xs rounded-full"
       >
         <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
@@ -104,9 +104,9 @@
     <!-- ── Drag-over overlay ──────────────────────────────────────────────── -->
     <div
       v-if="dragOver"
-      class="absolute inset-0 rounded-xl bg-indigo-50/90 dark:bg-indigo-900/60 border-2 border-dashed border-indigo-400 flex items-center justify-center z-20 pointer-events-none"
+      class="absolute inset-0 rounded-xl bg-action-primary-50/90 dark:bg-action-primary-900/60 border-2 border-dashed border-action-primary-400 flex items-center justify-center z-20 pointer-events-none"
     >
-      <span class="text-indigo-600 dark:text-indigo-300 text-sm font-medium">Drop files here</span>
+      <span class="text-action-primary-600 dark:text-action-primary-300 text-sm font-medium">Drop files here</span>
     </div>
 
     <!-- ── Input row ─────────────────────────────────────────────────────── -->
@@ -155,7 +155,7 @@
         type="button"
         @click="fileInputRef?.click()"
         :disabled="disabled || pendingFiles.length >= 3"
-        class="p-2 rounded-lg transition-colors shrink-0 bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/30 hover:text-indigo-600 dark:hover:text-indigo-400 disabled:opacity-40"
+        class="p-2 rounded-lg transition-colors shrink-0 bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300 hover:bg-action-primary-100 dark:hover:bg-action-primary-900/30 hover:text-action-primary-600 dark:hover:text-action-primary-400 disabled:opacity-40"
         title="Attach files (max 3, 5 MB each)"
       >
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -172,7 +172,7 @@
         class="p-2 rounded-lg transition-colors shrink-0"
         :class="voiceActive
           ? 'bg-status-danger-500 hover:bg-status-danger-600 text-white'
-          : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/30 hover:text-indigo-600 dark:hover:text-indigo-400 disabled:opacity-50'"
+          : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300 hover:bg-action-primary-100 dark:hover:bg-action-primary-900/30 hover:text-action-primary-600 dark:hover:text-action-primary-400 disabled:opacity-50'"
         :title="voiceActive ? 'Voice session active' : 'Start voice conversation'"
       >
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -184,7 +184,7 @@
       <button
         type="submit"
         :disabled="disabled || (!localMessage.trim() && pendingFiles.length === 0)"
-        class="p-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white rounded-lg transition-colors shrink-0"
+        class="p-2 bg-action-primary-600 hover:bg-action-primary-700 disabled:bg-action-primary-400 text-white rounded-lg transition-colors shrink-0"
       >
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
@@ -205,7 +205,7 @@
         v-if="ac.activeArgHint.value"
         class="mt-1.5 flex items-center gap-1.5 text-xs font-mono text-gray-400 dark:text-gray-500"
       >
-        <span class="text-indigo-500 dark:text-indigo-400">/{{ ac.activeArgHint.value.name }}</span>
+        <span class="text-action-primary-500 dark:text-action-primary-400">/{{ ac.activeArgHint.value.name }}</span>
         <span>{{ ac.activeArgHint.value.argument_hint }}</span>
         <span
           v-if="ac.activeArgHint.value.description"

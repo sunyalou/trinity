@@ -22,14 +22,14 @@
         :class="[
           'px-2 py-0.5 text-[11px] font-medium rounded-full flex-shrink-0',
           agent.status === 'running'
-            ? 'bg-green-900/50 text-green-400'
+            ? 'bg-status-success-900/50 text-status-success-400'
             : 'bg-gray-700 text-gray-400'
         ]"
       >{{ agent.status }}</span>
 
       <span class="flex-1" />
 
-      <span class="px-1.5 py-0.5 text-[10px] font-bold rounded bg-amber-900/40 text-amber-400 border border-amber-700/50 tracking-wide flex-shrink-0">
+      <span class="px-1.5 py-0.5 text-[10px] font-bold rounded bg-state-autonomous-900/40 text-state-autonomous-400 border border-state-autonomous-700/50 tracking-wide flex-shrink-0">
         BETA
       </span>
     </header>
@@ -86,7 +86,7 @@
             <select
               v-model="selectedVoice"
               :disabled="voice.isActive.value"
-              class="flex-1 text-xs bg-gray-900 border border-gray-700 rounded px-2 py-1 text-gray-300 focus:outline-none focus:border-indigo-500 disabled:opacity-40"
+              class="flex-1 text-xs bg-gray-900 border border-gray-700 rounded px-2 py-1 text-gray-300 focus:outline-none focus:border-action-primary-500 disabled:opacity-40"
             >
               <option v-for="v in VOICES" :key="v.id" :value="v.id">{{ v.label }}</option>
             </select>
@@ -169,12 +169,12 @@
               prose-headings:text-gray-100 prose-headings:font-semibold
               prose-p:text-gray-300 prose-p:leading-relaxed
               prose-strong:text-gray-100
-              prose-code:text-amber-300 prose-code:bg-gray-800 prose-code:px-1 prose-code:rounded prose-code:text-xs
+              prose-code:text-state-autonomous-300 prose-code:bg-gray-800 prose-code:px-1 prose-code:rounded prose-code:text-xs
               prose-pre:bg-gray-800 prose-pre:border prose-pre:border-gray-700
               prose-ul:text-gray-300 prose-ol:text-gray-300
               prose-li:marker:text-gray-500
-              prose-blockquote:border-indigo-500 prose-blockquote:text-gray-400
-              prose-a:text-indigo-400 hover:prose-a:text-indigo-300
+              prose-blockquote:border-action-primary-500 prose-blockquote:text-gray-400
+              prose-a:text-action-primary-400 hover:prose-a:text-action-primary-300
               prose-hr:border-gray-700
               prose-table:text-sm
               prose-th:text-gray-200 prose-th:bg-gray-800

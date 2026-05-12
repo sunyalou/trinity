@@ -2,7 +2,7 @@
   <div class="space-y-6">
     <!-- Loading State -->
     <div v-if="loading" class="flex items-center justify-center py-8">
-      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
+      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-action-primary-500"></div>
     </div>
 
     <!-- No Template State -->
@@ -24,14 +24,14 @@
     <!-- Template Info Display -->
     <div v-else>
       <!-- Header Section -->
-      <div class="bg-gradient-to-r from-indigo-50 to-accent-purple-50 dark:from-indigo-900/30 dark:to-accent-purple-900/30 rounded-lg p-6 border border-indigo-100 dark:border-indigo-800">
+      <div class="bg-gradient-to-r from-action-primary-50 to-accent-purple-50 dark:from-action-primary-900/30 dark:to-accent-purple-900/30 rounded-lg p-6 border border-action-primary-100 dark:border-action-primary-800">
         <div class="flex items-start justify-between">
           <div>
             <h2 class="text-2xl font-bold text-gray-900 dark:text-white">
               {{ templateInfo.display_name || templateInfo.name }}
             </h2>
             <!-- Tagline -->
-            <p v-if="templateInfo.tagline" class="mt-1 text-sm text-indigo-600 dark:text-indigo-400 font-medium">
+            <p v-if="templateInfo.tagline" class="mt-1 text-sm text-action-primary-600 dark:text-action-primary-400 font-medium">
               {{ templateInfo.tagline }}
             </p>
             <div class="mt-2 flex items-center space-x-3 text-sm text-gray-500 dark:text-gray-400">
@@ -55,7 +55,7 @@
               </span>
             </div>
           </div>
-          <div v-if="templateInfo.type" class="px-3 py-1 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-800 dark:text-indigo-300 text-xs font-medium rounded-full">
+          <div v-if="templateInfo.type" class="px-3 py-1 bg-action-primary-100 dark:bg-action-primary-900/50 text-action-primary-800 dark:text-action-primary-300 text-xs font-medium rounded-full">
             {{ templateInfo.type }}
           </div>
         </div>
@@ -78,11 +78,11 @@
           <div
             v-for="(useCase, index) in templateInfo.use_cases"
             :key="index"
-            class="flex items-start space-x-2 px-3 py-2 bg-gray-50 dark:bg-gray-700 rounded-lg hover:bg-indigo-50 dark:hover:bg-indigo-900/30 hover:border-indigo-200 dark:hover:border-indigo-700 border border-transparent transition-colors cursor-pointer"
+            class="flex items-start space-x-2 px-3 py-2 bg-gray-50 dark:bg-gray-700 rounded-lg hover:bg-action-primary-50 dark:hover:bg-action-primary-900/30 hover:border-action-primary-200 dark:hover:border-action-primary-700 border border-transparent transition-colors cursor-pointer"
             @click="handleUseCaseClick(useCase)"
             title="Click to run this task"
           >
-            <svg class="w-4 h-4 text-indigo-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg class="w-4 h-4 text-action-primary-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
             </svg>
             <span class="text-sm text-gray-700 dark:text-gray-200">"{{ useCase }}"</span>

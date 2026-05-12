@@ -43,7 +43,7 @@
             </svg>
           </div>
           <p class="text-gray-600 dark:text-gray-400">{{ error }}</p>
-          <button @click="fetchTemplates" class="mt-4 text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300">
+          <button @click="fetchTemplates" class="mt-4 text-action-primary-600 dark:text-action-primary-400 hover:text-action-primary-800 dark:hover:text-action-primary-300">
             Try again
           </button>
         </div>
@@ -110,7 +110,7 @@
 
                 <button
                   @click="useTemplate(template)"
-                  class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded transition-colors mt-auto"
+                  class="w-full bg-action-primary-600 hover:bg-action-primary-700 text-white font-bold py-2 px-4 rounded transition-colors mt-auto"
                 >
                   Use Template
                 </button>
@@ -127,7 +127,7 @@
               Custom Agent
             </h2>
             <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-              <div class="bg-white dark:bg-gray-800 shadow dark:shadow-gray-900 rounded-lg p-6 border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-indigo-300 dark:hover:border-indigo-500 transition-colors">
+              <div class="bg-white dark:bg-gray-800 shadow dark:shadow-gray-900 rounded-lg p-6 border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-action-primary-300 dark:hover:border-action-primary-500 transition-colors">
                 <div class="text-center py-4">
                   <div class="mx-auto w-12 h-12 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center mb-4">
                     <svg class="w-6 h-6 text-gray-400 dark:text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
