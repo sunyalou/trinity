@@ -264,6 +264,17 @@ async def execute_task_internal(request: InternalTaskExecutionRequest):
     task and returns immediately with {"status": "accepted"}. The scheduler
     then polls the DB for completion instead of holding the HTTP connection.
     """
+    # #748: warming-up gate. Until startup orphan-recovery finishes, refuse new
+    # task starts so we don't ZADD a capacity slot for an execution row that
+    # recovery is about to flip to FAILED (which would leak the slot until
+    # TTL). The scheduler treats 503 as transient and retries.
+    from services.cleanup_service import is_startup_recovery_complete
+    if not is_startup_recovery_complete():
+        raise HTTPException(
+            status_code=503,
+            detail="Backend warming up — startup execution recovery still in progress. Retry.",
+        )
+
     task_service = get_task_execution_service()
 
     # Audit schedule-triggered execution (source=scheduler, actor=system)

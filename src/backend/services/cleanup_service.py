@@ -35,6 +35,10 @@ ACTIVITY_STALE_TIMEOUT_MINUTES = 120  # SCHED-ASYNC-001: increased from 30 to su
 NO_SESSION_TIMEOUT_SECONDS = 60  # Issue #106: fast-fail executions that never got a Claude session
 WATCHDOG_HTTP_TIMEOUT = 5.0  # Timeout for agent HTTP calls during reconciliation
 WATCHDOG_MIN_AGE_SECONDS = 60  # Don't orphan-recover executions younger than this (dispatch window)
+STARTUP_RECOVERY_GRACE_SECONDS = 15  # #748: skip startup orphan-recovery for rows
+                                     # whose started_at is within this window — they
+                                     # may be from an in-flight /internal/execute-task
+                                     # call that races the backend startup.
 ERROR_FETCH_TIMEOUT = 2.0  # Issue #286: short timeout for fetching error context from agent
 MAX_ERROR_MESSAGE_LENGTH = 2000  # Issue #286: truncate combined error messages
 # Issue #772: per-cycle row budget for retention sweeps. Caps the work each
@@ -903,6 +907,40 @@ class CleanupService:
 cleanup_service = CleanupService()
 
 
+# ---------------------------------------------------------------------------
+# Startup-recovery readiness flag (#748)
+# ---------------------------------------------------------------------------
+# Set False at module load; flipped True at the end of
+# recover_orphaned_executions(). The /internal/execute-task router returns
+# 503 while False so the scheduler retries instead of racing recovery with
+# a slot ZADD on a row that's about to be flipped to FAILED.
+
+_startup_recovery_complete: bool = False
+
+
+def is_startup_recovery_complete() -> bool:
+    """Return True once startup orphan-recovery has finished (#748).
+
+    The internal task-execution route uses this as a gate: while False, the
+    backend is still in the window where startup recovery may flip in-flight
+    rows to FAILED. Returning 503 lets the scheduler retry once the gate
+    opens, instead of leaking a Redis capacity slot on the doomed row.
+    """
+    return _startup_recovery_complete
+
+
+def mark_startup_recovery_complete() -> None:
+    """Set the warming-up gate to admit /internal/execute-task calls (#748)."""
+    global _startup_recovery_complete
+    _startup_recovery_complete = True
+
+
+def reset_startup_recovery_flag_for_tests() -> None:
+    """Test-only helper: revert the gate to its pre-recovery state."""
+    global _startup_recovery_complete
+    _startup_recovery_complete = False
+
+
 async def recover_orphaned_executions() -> Dict:
     """Recover orphaned task executions on backend startup.
 
@@ -910,15 +948,24 @@ async def recover_orphaned_executions() -> Dict:
     and process registry. Executions not found on the agent are marked failed
     and their capacity slots released.
 
+    #748: rows whose ``started_at`` is younger than
+    ``STARTUP_RECOVERY_GRACE_SECONDS`` are *skipped* — they may be from a
+    ``/internal/execute-task`` call that the scheduler queued while the
+    backend was still booting and that is about to ZADD a capacity slot.
+    Failing such a row would race the handler and leave a permanently
+    leaked Redis slot. The skipped row is handled either by the regular
+    watchdog cycle (which uses the same grace window) or by the now-late
+    handler completing normally.
+
     Returns:
-        Dict with recovered, still_running, and errors counts.
+        Dict with recovered, still_running, skipped_grace, and errors counts.
     """
     from services.agent_client import AgentClientError, get_agent_client
     from services.docker_service import get_agent_container
 
     running = db.get_running_executions()
     if not running:
-        return {"recovered": 0, "still_running": 0, "errors": 0}
+        return {"recovered": 0, "still_running": 0, "skipped_grace": 0, "errors": 0}
 
     capacity = get_capacity_manager()
 
@@ -929,6 +976,7 @@ async def recover_orphaned_executions() -> Dict:
 
     recovered = 0
     still_running = 0
+    skipped_grace = 0
     errors = 0
 
     for agent_name, executions in by_agent.items():
@@ -937,6 +985,9 @@ async def recover_orphaned_executions() -> Dict:
         if not container or container.status != "running":
             # Container down — all executions for this agent are orphaned
             for execution in executions:
+                if _within_startup_grace(execution):
+                    skipped_grace += 1
+                    continue
                 if await _recover_execution(execution, agent_name, capacity):
                     recovered += 1
                 else:
@@ -958,6 +1009,8 @@ async def recover_orphaned_executions() -> Dict:
         for execution in executions:
             if execution["id"] in registry_ids:
                 still_running += 1
+            elif _within_startup_grace(execution):
+                skipped_grace += 1
             else:
                 if await _recover_execution(execution, agent_name, capacity):
                     recovered += 1
@@ -966,9 +1019,34 @@ async def recover_orphaned_executions() -> Dict:
 
     logger.info(
         f"[Recovery] Task execution recovery complete: "
-        f"recovered={recovered}, still_running={still_running}, errors={errors}"
+        f"recovered={recovered}, still_running={still_running}, "
+        f"skipped_grace={skipped_grace}, errors={errors}"
     )
-    return {"recovered": recovered, "still_running": still_running, "errors": errors}
+    return {
+        "recovered": recovered,
+        "still_running": still_running,
+        "skipped_grace": skipped_grace,
+        "errors": errors,
+    }
+
+
+def _within_startup_grace(execution: Dict) -> bool:
+    """Return True if the execution's started_at is within the startup grace window.
+
+    Mirrors the WATCHDOG_MIN_AGE_SECONDS pattern at the regular-cycle path
+    (cleanup_service.py:609). Rows are skipped instead of failed during
+    startup recovery so an in-flight ``/internal/execute-task`` call cannot
+    race the recovery flip and leak a slot (#748).
+    """
+    raw = execution.get("started_at")
+    if not raw:
+        # No timestamp — be conservative and allow recovery to proceed.
+        return False
+    try:
+        age_seconds = (utc_now() - parse_iso_timestamp(raw)).total_seconds()
+    except Exception:
+        return False
+    return age_seconds < STARTUP_RECOVERY_GRACE_SECONDS
 
 
 async def _recover_execution(execution: Dict, agent_name: str, capacity) -> bool:

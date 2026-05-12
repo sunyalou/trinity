@@ -464,21 +464,29 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Error wiring CapacityManager: {e}")
 
-    # Recover orphaned regular task executions (Issue #128)
+    # Recover orphaned regular task executions (Issue #128).
+    # #748: flip the warming-up gate open in a finally block so the
+    # /internal/execute-task route doesn't 503 forever if recovery raises.
+    from services.cleanup_service import (
+        mark_startup_recovery_complete,
+        recover_orphaned_executions,
+    )
     try:
-        from services.cleanup_service import recover_orphaned_executions
         task_recovery = await recover_orphaned_executions()
         if task_recovery["recovered"] > 0:
             print(
                 f"Task execution recovery: "
                 f"recovered={task_recovery['recovered']}, "
-                f"still_running={task_recovery['still_running']}"
+                f"still_running={task_recovery['still_running']}, "
+                f"skipped_grace={task_recovery.get('skipped_grace', 0)}"
             )
         else:
             print("Task execution recovery: no orphaned executions found")
     except Exception as e:
         print(f"Error recovering task executions: {e}")
         # Don't fail startup - recovery is important but not critical
+    finally:
+        mark_startup_recovery_complete()
 
     # Start Slack channel transport (Socket Mode or webhook)
     try:
