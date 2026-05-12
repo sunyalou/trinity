@@ -44,6 +44,7 @@ _sanitizer_mod = types.ModuleType("utils.credential_sanitizer")
 _sanitizer_mod.sanitize_response = lambda x: x
 _sanitizer_mod.sanitize_execution_log = lambda x: x
 _sanitizer_mod.sanitize_text = lambda x: x
+_sanitizer_mod.sanitize_dict = lambda x: x
 sys.modules.setdefault("utils.credential_sanitizer", _sanitizer_mod)
 
 sys.modules.setdefault("database", MagicMock())
