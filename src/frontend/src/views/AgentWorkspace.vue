@@ -181,11 +181,16 @@
               prose-td:text-gray-300 prose-td:border-gray-700"
           />
 
-          <!-- HTML content -->
-          <div
+          <!-- HTML content — sandboxed iframe so agent-supplied scripts run in
+               an opaque origin and cannot reach parent localStorage / cookies /
+               JWT. Deliberately omits allow-same-origin / allow-forms /
+               allow-popups / allow-top-navigation / allow-modals. -->
+          <iframe
             v-else-if="panelState.type === 'html'"
             ref="htmlPanelEl"
-            class="text-gray-300 text-sm leading-relaxed"
+            sandbox="allow-scripts"
+            class="w-full h-full bg-transparent border-0 block"
+            title="Agent panel"
           />
         </div>
       </div>
@@ -201,9 +206,13 @@ import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 import { useVoiceSession } from '../composables/useVoiceSession'
 import { renderMarkdown } from '../utils/markdown'
-import DOMPurify from 'dompurify'
 import AgentAvatar from '../components/AgentAvatar.vue'
-import Chart from 'chart.js/auto'
+// Chart.js is loaded inside the sandboxed iframe (see renderHtmlPanel). The
+// relative path is intentional: chart.js 4 doesn't expose the UMD bundle via
+// its package `exports` field, so a bare specifier like `chart.js/dist/...`
+// fails to resolve. The relative path bypasses module resolution and Vite's
+// `?url` import emits the file as a hashed same-origin asset.
+import chartJsUrl from '../../node_modules/chart.js/dist/chart.umd.js?url'
 
 const route = useRoute()
 const authStore = useAuthStore()
@@ -243,25 +252,33 @@ const panelUpdatedAgo = computed(() => {
 
 // ── HTML panel rendering ─────────────────────────────────────────────────────
 
-// Re-execute <script> tags after innerHTML assignment — v-html and innerHTML
-// both skip script execution. We clone each script node as a live element so
-// Chart.js initialisation code in update_panel HTML runs correctly.
-// Chart.js 4 is pre-loaded globally (see injectChartJs), so agents must NOT
-// add their own CDN <script src> tags.
-function _execScripts(container) {
-  Array.from(container.querySelectorAll('script')).forEach(old => {
-    const s = document.createElement('script')
-    Array.from(old.attributes).forEach(a => s.setAttribute(a.name, a.value))
-    s.textContent = old.textContent
-    old.replaceWith(s)
-  })
-}
-
+// Render the agent's HTML inside a sandboxed iframe. The iframe gets an opaque
+// origin (sandbox="allow-scripts" without allow-same-origin), so agent-supplied
+// JS cannot read parent localStorage / cookies / JWT, submit forms, navigate
+// the parent, or open popups. Chart.js is loaded inside the iframe via a
+// same-origin asset URL so new Chart(...) calls in agent HTML still work.
+//
+// Tag delimiters are built via string concat (s_open / s_close) so the SFC
+// parser doesn't see them as nested block tags.
+const s_open = '<' + 's' + 'cript'
+const s_close = '<' + '/' + 's' + 'cript' + '>'
 function renderHtmlPanel(html) {
   const el = htmlPanelEl.value
   if (!el) return
-  el.innerHTML = DOMPurify.sanitize(html, { ADD_TAGS: ['script'], ADD_ATTR: ['type'] })
-  _execScripts(el)
+  const chartUrl = new URL(chartJsUrl, window.location.origin).href
+  el.srcdoc = [
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><style>',
+    'body{margin:0;padding:8px;color:#d1d5db;background:transparent;',
+    'font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}',
+    'canvas{max-width:100%}',
+    'table{border-collapse:collapse}th,td{padding:4px 8px}',
+    'a{color:#818cf8}',
+    '</style>',
+    s_open, ' src="', chartUrl, '">', s_close,
+    '</head><body>',
+    html ?? '',
+    '</body></html>',
+  ].join('')
 }
 
 // Re-render HTML panel when panelState content changes
@@ -558,8 +575,6 @@ function resizeCanvas() {
 watch(() => voice.status.value, (s) => { targetHueShift = STATE_HUE[s] ?? 0 })
 
 onMounted(async () => {
-  // Expose Chart globally so agent update_panel HTML snippets can call new Chart(...)
-  if (!window.Chart) window.Chart = Chart
   await fetchAgent()
   currentSprites = buildSprites(0)
   initParticles()
