@@ -1,0 +1,56 @@
+version: 2
+updates:
+  # GitHub Actions: catch new SHAs for already-pinned third-party actions and
+  # flag CVEs in first-party actions. Weekly cadence — security PRs from
+  # Dependabot are auto-grouped by ecosystem so review burden stays low.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - github-actions
+
+  # Frontend (Vite + Vue): catches Vue / Vite / Chart.js / DOMPurify CVEs.
+  - package-ecosystem: npm
+    directory: /src/frontend
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - frontend
+    groups:
+      patch-and-minor:
+        update-types:
+          - patch
+          - minor
+
+  # Backend (FastAPI). Trinity's existing Dependabot guidance (referenced in
+  # the security report's supply_chain_summary note) flows through PR #793 —
+  # this entry continues that cadence.
+  - package-ecosystem: pip
+    directory: /src/backend
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - backend
+    groups:
+      patch-and-minor:
+        update-types:
+          - patch
+          - minor
+
+  # MCP server (TypeScript).
+  - package-ecosystem: npm
+    directory: /src/mcp-server
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - mcp-server
+    groups:
+      patch-and-minor:
+        update-types:
+          - patch
+          - minor

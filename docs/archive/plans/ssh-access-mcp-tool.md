@@ -148,9 +148,9 @@ async createSshAccess(agentName: string, ttlHours: number = 4): Promise<SshAcces
 {
   "status": "success",
   "agent": "my-agent",
-  "ssh_command": "ssh -p 2222 -i ~/.trinity/keys/my-agent.key developer@100.64.0.1",
+  "ssh_command": "ssh -p 2222 -i ~/.trinity/keys/my-agent.key developer@203.0.113.1",
   "private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1r...\n-----END OPENSSH PRIVATE KEY-----",
-  "host": "100.64.0.1",
+  "host": "203.0.113.1",
   "port": 2222,
   "user": "developer",
   "expires_at": "2025-01-02T14:00:00Z",
@@ -158,7 +158,7 @@ async createSshAccess(agentName: string, ttlHours: number = 4): Promise<SshAcces
   "instructions": [
     "Save the private key to a file: ~/.trinity/keys/my-agent.key",
     "Set permissions: chmod 600 ~/.trinity/keys/my-agent.key",
-    "Connect: ssh -p 2222 -i ~/.trinity/keys/my-agent.key developer@100.64.0.1",
+    "Connect: ssh -p 2222 -i ~/.trinity/keys/my-agent.key developer@203.0.113.1",
     "Key expires in 4 hours"
   ]
 }
