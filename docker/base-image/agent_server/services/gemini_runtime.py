@@ -18,6 +18,7 @@ from fastapi import HTTPException
 
 from ..models import ExecutionLogEntry, ExecutionMetadata
 from ..state import agent_state
+from ..utils.subprocess_pgroup import EXECUTION_TAG_NAME, kill_processes_by_env_tag
 from .activity_tracking import start_tool_execution, complete_tool_execution
 from .runtime_adapter import AgentRuntime
 
@@ -180,6 +181,12 @@ class GeminiRuntime(AgentRuntime):
 
             logger.info(f"Starting Gemini CLI: {' '.join(cmd[:5])}...")
 
+            # Issue #817: ensure execution_id is set so we can tag the
+            # Gemini subprocess and any descendants. Tag is inherited at
+            # every fork/exec/setsid, lets the post-wait sweep identify
+            # and kill orphans the same way the Claude path does.
+            execution_id = execution_id or str(uuid.uuid4())
+
             # Use Popen for real-time streaming
             process = subprocess.Popen(
                 cmd,
@@ -187,7 +194,8 @@ class GeminiRuntime(AgentRuntime):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                bufsize=1  # Line buffered
+                bufsize=1,  # Line buffered
+                env={**os.environ, EXECUTION_TAG_NAME: execution_id},
             )
 
             # Write prompt to stdin and close it
@@ -216,6 +224,23 @@ class GeminiRuntime(AgentRuntime):
                 # Wait for process to complete and get stderr
                 stderr = process.stderr.read()
                 return_code = process.wait()
+
+                # Issue #817: env-tag sweep for Gemini-spawned descendants
+                # that may have escaped via setsid + FD detachment. Best-
+                # effort — never fail the response on this path.
+                try:
+                    killed = kill_processes_by_env_tag(EXECUTION_TAG_NAME, execution_id)
+                    if killed:
+                        logger.info(
+                            f"[Gemini] Killed {killed} env-tagged orphan(s) "
+                            f"for execution {execution_id} after Gemini exit"
+                        )
+                except Exception:
+                    logger.exception(
+                        f"[Gemini] kill_processes_by_env_tag({execution_id}) "
+                        "raised — continuing"
+                    )
+
                 return stderr, return_code
 
             # Run the blocking subprocess reading in a thread pool
@@ -578,14 +603,19 @@ class GeminiRuntime(AgentRuntime):
 
             logger.info(f"[Headless Task {session_id}] Starting Gemini CLI...")
 
-            # Use Popen for real-time streaming with timeout
+            # Use Popen for real-time streaming with timeout.
+            # Issue #817: TRINITY_EXECUTION_ID env var is inherited by every
+            # descendant across fork/exec/setsid/double-fork. The post-wait
+            # sweep below uses it to identify orphans the same way the Claude
+            # path does.
             process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                bufsize=1
+                bufsize=1,
+                env={**os.environ, EXECUTION_TAG_NAME: session_id},
             )
 
             # Write prompt to stdin and close it
@@ -607,10 +637,35 @@ class GeminiRuntime(AgentRuntime):
                         self._process_stream_line(line, execution_log, metadata, tool_start_times, tool_names, response_parts, model)
                 except Exception as e:
                     logger.error(f"[Headless Task {session_id}] Error: {e}")
+                    # Issue #817: even on error, run the env-tag sweep so
+                    # leaked descendants don't survive the failed task.
+                    try:
+                        kill_processes_by_env_tag(EXECUTION_TAG_NAME, session_id)
+                    except Exception:
+                        logger.exception(
+                            f"[Headless Task {session_id}] env-tag sweep "
+                            "raised on error path — continuing"
+                        )
                     raise
 
                 stderr = process.stderr.read()
                 return_code = process.wait()
+
+                # Issue #817: env-tag sweep for descendants that may have
+                # escaped via setsid + FD detachment. Best-effort.
+                try:
+                    killed = kill_processes_by_env_tag(EXECUTION_TAG_NAME, session_id)
+                    if killed:
+                        logger.info(
+                            f"[Headless Task {session_id}] Killed {killed} "
+                            f"env-tagged orphan(s) after Gemini exit"
+                        )
+                except Exception:
+                    logger.exception(
+                        f"[Headless Task {session_id}] env-tag sweep raised "
+                        "— continuing"
+                    )
+
                 return stderr, return_code
 
             # Run the blocking subprocess reading in a thread pool
