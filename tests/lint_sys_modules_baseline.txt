@@ -10,6 +10,7 @@
 1 tests/test_event_bus.py
 6 tests/test_github_pat_propagation_unit.py
 9 tests/test_inter_agent_timeout_unit.py
+6 tests/test_platform_default_model.py
 4 tests/test_platform_prompt_unit.py
 1 tests/test_proactive_audit_unit.py
 2 tests/test_self_execute.py
