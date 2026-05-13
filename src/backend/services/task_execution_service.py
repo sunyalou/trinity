@@ -32,6 +32,7 @@ from services.activity_service import activity_service
 from services.agent_client import CircuitState
 from services.capacity_manager import CapacityFull, get_capacity_manager
 from utils.credential_sanitizer import sanitize_execution_log, sanitize_response
+from services.settings_service import settings_service
 from services.platform_prompt_service import (
     ExecutionContext,
     compose_system_prompt,
@@ -279,6 +280,11 @@ class TaskExecutionService:
         # TIMEOUT-001: Use agent's configured timeout if not explicitly provided
         if timeout_seconds is None:
             timeout_seconds = db.get_execution_timeout(agent_name)
+
+        # #831: Resolve null model → platform default so the agent always receives
+        # a concrete model string. Avoids the stale "sonnet" hardcode in base-image.
+        if model is None:
+            model = settings_service.get_platform_default_model()
 
         # ---- 1. Create execution record (if not provided) ----------------
         if not execution_id:

@@ -126,6 +126,7 @@ async def get_public_feature_flags(
     return {
         "session_tab_enabled": settings_service.is_session_tab_enabled(),
         "voice_available": VOICE_ENABLED and bool(GEMINI_API_KEY),
+        "platform_default_model": settings_service.get_platform_default_model(),
     }
 
 
@@ -1373,6 +1374,12 @@ async def update_setting(
 
     try:
         setting = db.set_setting(key, body.value)
+
+        # #831: Invalidate platform default model TTL cache on write
+        if key == "platform_default_model":
+            import services.settings_service as _ss
+            _ss._platform_model_cache = None
+            _ss._platform_model_cache_ts = 0.0
 
         # SEC-001: audit generic setting change
         await platform_audit_service.log(

@@ -12,7 +12,7 @@
         @keydown.down.prevent="highlightNext"
         @keydown.up.prevent="highlightPrev"
         @keydown.enter.prevent="selectHighlighted"
-        :placeholder="placeholder"
+        :placeholder="resolvedPlaceholder"
         :class="inputClass"
       />
       <button
@@ -71,24 +71,31 @@ const props = defineProps({
   },
   placeholder: {
     type: String,
-    default: 'Select or type a model...'
+    default: null
   },
   compact: {
     type: Boolean,
     default: false
+  },
+  platformDefault: {
+    type: String,
+    default: null
   }
 })
 
 const emit = defineEmits(['update:modelValue'])
 
+// Canonical model list — synced from https://docs.anthropic.com/en/docs/about-claude/models/overview
+// Last updated: 2026-05-13 (#831)
 const PRESET_MODELS = [
-  { value: 'claude-opus-4-5-20251101', label: 'Claude Opus 4.5', note: 'Default — most capable' },
-  { value: 'claude-opus-4-6', label: 'Claude Opus 4.6', note: 'Latest generation' },
-  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', note: 'Fast + smart' },
-  { value: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5', note: 'Previous gen, fast' },
-  { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', note: 'Fastest, cheapest' },
-  { value: 'claude-opus-4-20250514', label: 'Claude Opus 4', note: 'Legacy' },
-  { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', note: 'Legacy' }
+  { value: 'claude-opus-4-7', label: 'Claude Opus 4.7', note: 'Most capable (latest)' },
+  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', note: 'Fast + smart (latest)' },
+  { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', note: 'Fastest, cheapest (latest)' },
+  { value: 'claude-opus-4-6', label: 'Claude Opus 4.6', note: 'Legacy' },
+  { value: 'claude-opus-4-5-20251101', label: 'Claude Opus 4.5', note: 'Legacy' },
+  { value: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5', note: 'Legacy' },
+  { value: 'claude-opus-4-20250514', label: 'Claude Opus 4', note: 'Deprecated — retiring Jun 15 2026' },
+  { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', note: 'Deprecated — retiring Jun 15 2026' },
 ]
 
 const showDropdown = ref(false)
@@ -96,6 +103,12 @@ const highlightedIndex = ref(-1)
 const containerRef = ref(null)
 const inputRef = ref(null)
 const isTyping = ref(false)
+
+const resolvedPlaceholder = computed(() => {
+  if (props.placeholder !== null) return props.placeholder
+  if (props.platformDefault) return `platform default (${props.platformDefault})`
+  return 'Select or type a model...'
+})
 
 const inputClass = computed(() => {
   const base = 'w-full border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-action-primary-500 pr-8'

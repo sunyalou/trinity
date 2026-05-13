@@ -497,6 +497,17 @@
         "executions",
         "circuit-breaker"
       ]
+    },
+    {
+      "file": "test_platform_default_model.py",
+      "feature": "MODEL-DEFAULT-001",
+      "added": "2026-05-13",
+      "categories": [
+        "unit",
+        "integration",
+        "backend",
+        "settings"
+      ]
     }
   ]
 }

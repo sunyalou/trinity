@@ -87,7 +87,7 @@ class ClaudeCodeRuntime(AgentRuntime):
 
     def get_default_model(self) -> str:
         """Get default Claude model."""
-        return "sonnet"  # Claude Sonnet 4.5
+        return "claude-sonnet-4-6"
 
     def get_context_window(self, model: Optional[str] = None) -> int:
         """Get context window for Claude models."""
@@ -190,14 +190,11 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
         # 2. ANTHROPIC_API_KEY environment variable (API billing)
         # We don't require ANTHROPIC_API_KEY since users may be logged in with their subscription.
 
-        # Issue #138: Default to "sonnet" when no model is specified and none is set on state.
-        # Same fix as Issue #81 for execute_headless_task() — without --model, Claude Code
-        # uses the agent's ~/.claude/settings.json model, which may be incompatible with
-        # the assigned subscription (e.g., haiku on Claude Max), causing misleading
-        # "token expired" errors.
+        # Safety-net fallback: backend always resolves model before calling the agent
+        # (#831), so this branch should only fire for direct agent-server calls.
         if not model and not agent_state.current_model:
-            model = "sonnet"
-            logger.debug("[Chat] No model specified, defaulting to 'sonnet' for subscription compatibility")
+            model = "claude-sonnet-4-6"
+            logger.debug("[Chat] No model specified, defaulting to 'claude-sonnet-4-6'")
 
         # Update model if specified (persists for session)
         if model:

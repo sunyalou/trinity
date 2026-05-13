@@ -144,10 +144,11 @@ def _setup_headless_command(
     --input-format / --append-system-prompt / --max-turns), and unique
     task-session-id generation. Pure — no subprocess spawn, no DI.
     """
-    # Issue #81: Default to "sonnet" when model is not specified.
+    # Safety-net fallback: backend always resolves model before calling the agent
+    # (#831), so this branch should only fire for direct agent-server calls.
     if model is None:
-        model = "sonnet"
-        logger.debug("[Headless Task] No model specified, defaulting to 'sonnet' for subscription compatibility")
+        model = "claude-sonnet-4-6"
+        logger.debug("[Headless Task] No model specified, defaulting to 'claude-sonnet-4-6'")
 
     # Build command - NO --continue flag (stateless) unless resuming
     cmd = ["claude", "--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"]

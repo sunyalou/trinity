@@ -80,9 +80,17 @@
               />
             </div>
 
-            <!-- Model Selector (MODEL-001) -->
+            <!-- Model Selector (#831) -->
             <div>
-              <ModelSelector v-model="formData.model" label="Model" />
+              <ModelSelector
+                v-model="formData.model"
+                label="Model"
+                :platformDefault="platformDefaultModel"
+              />
+              <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Leave blank to use the platform default
+                <span v-if="platformDefaultModel" class="font-mono">({{ platformDefaultModel }})</span>.
+              </p>
             </div>
 
             <div class="grid grid-cols-2 gap-4">
@@ -291,11 +299,13 @@
                 </svg>
                 {{ schedule.allowed_tools.length }} tools
               </span>
-              <span v-if="schedule.model" class="flex items-center" :title="`Model: ${schedule.model}`">
+              <span class="flex items-center" :title="`Model: ${schedule.model || 'platform default'}`">
                 <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                 </svg>
-                {{ schedule.model }}
+                <span :class="!schedule.model ? 'text-gray-400 dark:text-gray-500 italic' : ''">
+                  {{ schedule.model || `platform default${platformDefaultModel ? ` (${platformDefaultModel})` : ''}` }}
+                </span>
               </span>
               <!-- RETRY-001: Retry configuration badge -->
               <span v-if="schedule.max_retries > 0" class="flex items-center" :title="`Retry: ${schedule.max_retries}x, ${schedule.retry_delay_seconds}s delay`">
@@ -517,7 +527,9 @@
             </div>
             <div>
               <p class="text-xs text-gray-500 dark:text-gray-400">Model</p>
-              <p class="text-sm font-medium font-mono dark:text-white">{{ selectedExecution.model_used || 'default' }}</p>
+              <p class="text-sm font-medium font-mono dark:text-white">
+                {{ selectedExecution.model_used || `platform default${platformDefaultModel ? ` (${platformDefaultModel})` : ''}` }}
+              </p>
             </div>
             <div>
               <p class="text-xs text-gray-500 dark:text-gray-400">Triggered By</p>
@@ -603,6 +615,9 @@ import ConfirmDialog from './ConfirmDialog.vue'
 import ModelSelector from './ModelSelector.vue'
 import { useAuthStore } from '../stores/auth'
 
+// Platform default model fetched from /api/settings/feature-flags (#831)
+const platformDefaultModel = ref('')
+
 const props = defineProps({
   agentName: {
     type: String,
@@ -663,7 +678,7 @@ const formData = ref({
   enabled: true,
   timeout_seconds: 900,
   allowed_tools: null,  // null = all tools allowed
-  model: 'claude-opus-4-5-20251101',  // MODEL-001
+  model: '',  // '' = use platform default (#831); non-empty = explicit override
   // RETRY-001: Retry configuration. 0 = disabled (default, #476); 1-5 opt-in.
   max_retries: 0,
   retry_delay_seconds: 60  // Seconds between retries (30-600 range)
@@ -754,18 +769,20 @@ async function saveSchedule() {
   formError.value = ''
 
   try {
+    // Normalize '' → null so DB stores NULL, not empty string (#831)
+    const payload = { ...formData.value, model: formData.value.model || null }
     if (editingSchedule.value) {
       // Update
       await axios.put(
         `/api/agents/${props.agentName}/schedules/${editingSchedule.value.id}`,
-        formData.value,
+        payload,
         { headers: authStore.authHeader }
       )
     } else {
       // Create
       await axios.post(
         `/api/agents/${props.agentName}/schedules`,
-        formData.value,
+        payload,
         { headers: authStore.authHeader }
       )
     }
@@ -792,7 +809,7 @@ function closeForm() {
     enabled: true,
     timeout_seconds: 900,
     allowed_tools: null,
-    model: 'claude-opus-4-5-20251101',
+    model: '',  // '' = use platform default (#831)
     // RETRY-001
     max_retries: 0,
     retry_delay_seconds: 60
@@ -811,7 +828,7 @@ function editSchedule(schedule) {
     enabled: schedule.enabled,
     timeout_seconds: schedule.timeout_seconds || 900,
     allowed_tools: schedule.allowed_tools || null,
-    model: schedule.model || 'claude-opus-4-6',
+    model: schedule.model || '',  // '' = use platform default (#831)
     // RETRY-001
     max_retries: schedule.max_retries ?? 0,
     retry_delay_seconds: schedule.retry_delay_seconds ?? 60
@@ -1040,8 +1057,15 @@ watch(() => props.initialMessage, (newMessage) => {
   }
 }, { immediate: true })
 
-onMounted(() => {
+onMounted(async () => {
   loadSchedules()
+  // Fetch platform default model for display and ModelSelector placeholder (#831)
+  try {
+    const r = await axios.get('/api/settings/feature-flags', { headers: authStore.authHeader })
+    platformDefaultModel.value = r.data.platform_default_model || ''
+  } catch {
+    // non-critical; falls back to generic placeholder
+  }
 })
 
 onUnmounted(() => {

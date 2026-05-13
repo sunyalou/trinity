@@ -12,8 +12,16 @@ routers.settings re-exports these functions for backward compatibility.
 """
 import json
 import os
+import time
 from typing import List, Optional
 from database import db
+
+# Platform default model (#831)
+PLATFORM_DEFAULT_MODEL_KEY = "platform_default_model"
+PLATFORM_DEFAULT_MODEL_VALUE = "claude-sonnet-4-6"
+_platform_model_cache: Optional[str] = None
+_platform_model_cache_ts: float = 0.0
+_PLATFORM_MODEL_CACHE_TTL = 60.0
 
 
 # ============================================================================
@@ -194,6 +202,22 @@ class SettingsService:
     def delete_github_templates(self) -> bool:
         """Delete GitHub templates configuration (revert to defaults)."""
         return db.delete_setting('github_templates')
+
+    def get_platform_default_model(self) -> str:
+        """
+        Return the platform-wide default Claude model (#831).
+
+        Resolution: system_settings.platform_default_model → PLATFORM_DEFAULT_MODEL_VALUE.
+        Result is cached for 60 s to avoid per-turn SQLite reads during burst drain.
+        """
+        global _platform_model_cache, _platform_model_cache_ts
+        now = time.monotonic()
+        if _platform_model_cache is not None and (now - _platform_model_cache_ts) < _PLATFORM_MODEL_CACHE_TTL:
+            return _platform_model_cache
+        value = self.get_setting(PLATFORM_DEFAULT_MODEL_KEY, PLATFORM_DEFAULT_MODEL_VALUE)
+        _platform_model_cache = value or PLATFORM_DEFAULT_MODEL_VALUE
+        _platform_model_cache_ts = now
+        return _platform_model_cache
 
     def get_ops_setting(self, key: str, as_type: type = str):
         """
@@ -385,3 +409,8 @@ def get_agent_default_resources() -> dict:
 def get_github_templates() -> Optional[List[dict]]:
     """Get admin-configured GitHub templates, or None for defaults."""
     return settings_service.get_github_templates()
+
+
+def get_platform_default_model() -> str:
+    """Return the platform-wide default Claude model (#831)."""
+    return settings_service.get_platform_default_model()

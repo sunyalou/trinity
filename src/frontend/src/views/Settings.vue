@@ -109,6 +109,44 @@
                     Used for Telegram webhooks, Slack OAuth callbacks, and shareable public links.
                   </p>
                 </div>
+
+                <!-- Platform Default Model (#831) -->
+                <div v-if="isAdmin">
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Default Model
+                  </label>
+                  <div class="mt-1 flex gap-2 items-center">
+                    <select
+                      v-model="platformDefaultModelValue"
+                      :disabled="savingPlatformDefaultModel"
+                      class="block flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
+                    >
+                      <option value="claude-sonnet-4-6">Claude Sonnet 4.6 — Fast + smart (recommended)</option>
+                      <option value="claude-opus-4-7">Claude Opus 4.7 — Most capable</option>
+                    </select>
+                    <button
+                      @click="savePlatformDefaultModel"
+                      :disabled="savingPlatformDefaultModel"
+                      class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <svg v-if="savingPlatformDefaultModel" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Save
+                    </button>
+                  </div>
+                  <div v-if="platformDefaultModelSaveSuccess" class="mt-1 flex items-center text-sm text-status-success-600 dark:text-status-success-400">
+                    <svg class="h-4 w-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                    Saved
+                  </div>
+                  <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                    Model used for schedules and chats where no model is explicitly selected.
+                    Changes take effect on the next execution — no restart required.
+                  </p>
+                </div>
               </div>
             </div>
           </div>
@@ -1788,6 +1826,11 @@ const originalPrompt = ref('')
 // Public URL state
 const publicUrl = ref('')
 const publicUrlCurrent = ref('')
+
+// Platform default model (#831)
+const platformDefaultModelValue = ref('claude-sonnet-4-6')
+const savingPlatformDefaultModel = ref(false)
+const platformDefaultModelSaveSuccess = ref(false)
 const savingPublicUrl = ref(false)
 const publicUrlSaveSuccess = ref(false)
 
@@ -1948,6 +1991,7 @@ async function loadSettings() {
     // Load independent settings in parallel
     await Promise.all([
       loadPublicUrl(),
+      loadPlatformDefaultModel(),
       loadApiKeyStatus(),
       loadSlackSettings(),
       loadSlackTransportStatus(),
@@ -2148,6 +2192,30 @@ function removeGithubPat() {
     }
   }
   confirmDialog.visible = true
+}
+
+// Platform default model methods (#831)
+async function loadPlatformDefaultModel() {
+  try {
+    const value = await settingsStore.getSetting('platform_default_model')
+    if (value) platformDefaultModelValue.value = value
+  } catch {
+    // non-critical; UI shows the code-default
+  }
+}
+
+async function savePlatformDefaultModel() {
+  savingPlatformDefaultModel.value = true
+  platformDefaultModelSaveSuccess.value = false
+  try {
+    await settingsStore.updateSetting('platform_default_model', platformDefaultModelValue.value)
+    platformDefaultModelSaveSuccess.value = true
+    setTimeout(() => { platformDefaultModelSaveSuccess.value = false }, 3000)
+  } catch (e) {
+    error.value = e.response?.data?.detail || 'Failed to save default model'
+  } finally {
+    savingPlatformDefaultModel.value = false
+  }
 }
 
 // Public URL methods
