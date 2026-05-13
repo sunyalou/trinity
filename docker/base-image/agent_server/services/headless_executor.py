@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import threading
 import uuid
@@ -48,6 +49,7 @@ from .subprocess_lifecycle import (
     _safe_close_pipes,
     _terminate_process_group,
 )
+from ..utils.subprocess_pgroup import EXECUTION_TAG_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +117,10 @@ class HeadlessRunContext:
         improvement over the original closure-captured ``process`` variable.
         """
         if self.process is not None:
-            _terminate_process_group(self.process, graceful_timeout=2, pgid=self.process_pgid)
+            _terminate_process_group(
+                self.process, graceful_timeout=2,
+                pgid=self.process_pgid, execution_tag=self.task_session_id,
+            )
             _safe_close_pipes(self.process)
 
 
@@ -251,6 +256,10 @@ def _run_headless_subprocess(ctx: HeadlessRunContext) -> None:
     # spawns) into their own process group so we can reap the whole tree
     # on exit/timeout. Without this, hook grandchildren can outlive
     # claude, keep pipe FDs open, and wedge readline() forever.
+    # Issue #817: TRINITY_EXECUTION_ID env var is inherited by every
+    # descendant across fork/exec/setsid/double-fork. Cleanup uses it
+    # to identify and kill orphans that escape both the pgid sweep
+    # and the FD-based pipe-writer sweep.
     process = subprocess.Popen(
         ctx.cmd,
         stdin=subprocess.PIPE,
@@ -259,6 +268,7 @@ def _run_headless_subprocess(ctx: HeadlessRunContext) -> None:
         text=True,
         bufsize=1,  # Line buffered
         start_new_session=True,
+        env={**os.environ, EXECUTION_TAG_NAME: ctx.task_session_id},
     )
     ctx.process = process
     # Issue #407: capture pgid now — after wait() reaps the parent,
@@ -292,7 +302,7 @@ def _run_headless_subprocess(ctx: HeadlessRunContext) -> None:
                     # Kill the whole process group so stdout's readline()
                     # gets EOF and we unwind cleanly (Issue #407).
                     try:
-                        _terminate_process_group(process, graceful_timeout=2, pgid=ctx.process_pgid)
+                        _terminate_process_group(process, graceful_timeout=2, pgid=ctx.process_pgid, execution_tag=ctx.task_session_id)
                     except Exception as kill_err:
                         logger.error(
                             f"[Headless Task] Failed to kill process on auth abort: {kill_err}"
@@ -369,7 +379,7 @@ def _run_headless_subprocess(ctx: HeadlessRunContext) -> None:
                                     f"Killing process tree to prevent silent timeout. "
                                     f"Task: {ctx.task_session_id}"
                                 )
-                                _terminate_process_group(process, graceful_timeout=2, pgid=ctx.process_pgid)
+                                _terminate_process_group(process, graceful_timeout=2, pgid=ctx.process_pgid, execution_tag=ctx.task_session_id)
                                 raise RuntimeError(
                                     f"Permission bypass failed: permissionMode={perm_mode}. "
                                     f"This may be caused by a stale Claude Code session process "
@@ -405,7 +415,7 @@ def _run_headless_subprocess(ctx: HeadlessRunContext) -> None:
             ctx.stdout_exc.append(e)
             # Wake the main thread's process.wait() by killing the group
             try:
-                _terminate_process_group(process, graceful_timeout=2, pgid=ctx.process_pgid)
+                _terminate_process_group(process, graceful_timeout=2, pgid=ctx.process_pgid, execution_tag=ctx.task_session_id)
             except Exception:
                 pass
 
@@ -448,16 +458,18 @@ def _run_headless_subprocess(ctx: HeadlessRunContext) -> None:
             f"[Headless Task] Task {ctx.task_session_id} timed out after {ctx.effective_timeout}s "
             f"— killing process group"
         )
-        _terminate_process_group(process, graceful_timeout=5, pgid=ctx.process_pgid)
+        _terminate_process_group(process, graceful_timeout=5, pgid=ctx.process_pgid, execution_tag=ctx.task_session_id)
         _drain_bounded(process, stdout_thread, stderr_thread,
-                       grace=3, pgid=ctx.process_pgid)
+                       grace=3, pgid=ctx.process_pgid,
+                       execution_tag=ctx.task_session_id)
         raise
 
     # Subprocess exited. Drain readers — if a hook grandchild still
     # holds a pipe, the helper will close the pipe FDs so the
     # reader threads can exit.
     _drain_bounded(process, stdout_thread, stderr_thread,
-                   grace=5, pgid=ctx.process_pgid)
+                   grace=5, pgid=ctx.process_pgid,
+                   execution_tag=ctx.task_session_id)
 
     # Re-raise permission-mode failure captured by stdout thread
     if ctx.stdout_exc:

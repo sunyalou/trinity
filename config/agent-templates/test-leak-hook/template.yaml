@@ -1,0 +1,13 @@
+name: Test Subprocess-Leak Hook
+display_name: Test Leak Hook
+description: Engineered subprocess-leak harness for Issue #817 regression repro. Spawns a setsid CPU burner from a UserPromptSubmit hook so the burner escapes Claude's pgid and survives terminate_process_group. Intended ONLY for local automated tests — do NOT deploy in production.
+version: "1.0.0"
+author: Trinity Platform
+
+resources:
+  cpu: "1"
+  memory: "2g"
+
+mcp_servers: []
+
+credentials: {}

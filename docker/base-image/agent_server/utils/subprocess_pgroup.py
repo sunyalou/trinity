@@ -32,9 +32,25 @@ import stat as _stat
 import subprocess
 import threading
 import time
-from typing import Optional
+from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# Issue #817: env tag we inject into every Claude Popen so the cleanup path
+# can identify subprocess descendants that escape both terminate_process_group
+# (different pgid via setsid) AND _kill_orphan_pipe_writers (no shared pipe
+# FDs). Env vars are inherited at every fork/exec/setsid and survive
+# double-fork daemonization, so the tag is the most reliable "we own this"
+# signal we can plant without privileged operations.
+EXECUTION_TAG_NAME = "TRINITY_EXECUTION_ID"
+
+
+# Cap log lines from the env-tag killer for the same reason
+# _ORPHAN_LOG_DETAIL_CAP exists: a runaway MCP fan-out can leave dozens of
+# orphans and we don't want one cleanup to flood the logs. Beyond this many
+# distinct PIDs killed in a single call, we emit one count-only summary line.
+_ENV_TAG_LOG_DETAIL_CAP = 10
 
 
 def capture_pgid(process: subprocess.Popen) -> Optional[int]:
@@ -72,11 +88,99 @@ def _signal_group_or_process(
         pass
 
 
+def kill_processes_by_env_tag(
+    tag_name: str,
+    tag_value: str,
+    *,
+    exclude_pids: Optional[Iterable[int]] = None,
+    sig: int = signal.SIGKILL,
+) -> int:
+    """SIGKILL every process whose ``/proc/<pid>/environ`` contains
+    ``tag_name=tag_value``.
+
+    Issue #817: catches subprocess descendants that escape both existing
+    cleanup passes:
+      - ``terminate_process_group`` (caught by killpg) — escaped by setsid
+      - ``_kill_orphan_pipe_writers`` (caught by FD identity) — escaped by
+        redirecting stdin/stdout/stderr to /dev/null
+
+    Env tags are inherited at every fork/exec/setsid AND survive double-fork
+    daemonization (parent dies, child reparented to PID 1, env intact), so
+    a process that drops the tag has either explicitly ``unsetenv()``'d it
+    or been exec'd through an env-scrubbing wrapper (sudo, ssh, env -i).
+    None of those sit in Claude Code's typical descendant set.
+
+    Permissions: ``/proc/<pid>/environ`` is readable only when the calling
+    UID matches the target's UID. Inside an agent container all processes
+    run as developer:1000, so we can read every other process's environ.
+
+    Always excludes the calling PID. Caller can pass additional PIDs to
+    skip via ``exclude_pids``.
+
+    Returns the number of processes signaled (whether or not they actually
+    died — the kernel will reap them asynchronously).
+    """
+    needle = f"{tag_name}={tag_value}".encode()
+    excluded = set(exclude_pids or ())
+    excluded.add(os.getpid())
+
+    try:
+        proc_entries = os.listdir("/proc")
+    except OSError:
+        return 0
+
+    killed = 0
+    for pid_str in proc_entries:
+        if not pid_str.isdigit():
+            continue
+        pid = int(pid_str)
+        if pid in excluded:
+            continue
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as f:
+                env_blob = f.read()
+        except OSError:
+            # ESRCH (process gone), EACCES (different uid), ENOENT (race)
+            continue
+        # /proc/<pid>/environ is NUL-separated; split for exact-match so
+        # a tag value of "abc" doesn't false-positive on
+        # "TRINITY_EXECUTION_ID_OTHER=abc".
+        if needle not in env_blob.split(b"\x00"):
+            continue
+        if killed < _ENV_TAG_LOG_DETAIL_CAP:
+            cmdline = _read_proc_cmdline(pid)
+            ppid = _read_proc_field(pid, "PPid") or "?"
+            try:
+                pgid_str = str(os.getpgid(pid))
+            except OSError:
+                pgid_str = "?"
+            logger.info(
+                "[Subprocess] Env-tagged orphan SIGKILL: "
+                "pid=%s ppid=%s pgid=%s tag=%s=%s cmd=%s",
+                pid, ppid, pgid_str, tag_name, tag_value, cmdline,
+            )
+        try:
+            os.kill(pid, sig)
+            killed += 1
+        except OSError:
+            pass
+
+    if killed > _ENV_TAG_LOG_DETAIL_CAP:
+        logger.info(
+            "[Subprocess] Env-tagged orphan SIGKILL: %s additional pid(s) "
+            "killed (detail logging capped at %s)",
+            killed - _ENV_TAG_LOG_DETAIL_CAP, _ENV_TAG_LOG_DETAIL_CAP,
+        )
+
+    return killed
+
+
 def terminate_process_group(
     process: subprocess.Popen,
     graceful_timeout: int = 5,
     *,
     pgid: Optional[int] = None,
+    execution_tag: Optional[str] = None,
 ) -> None:
     """Terminate the subprocess AND its entire process group.
 
@@ -89,6 +193,15 @@ def terminate_process_group(
     they captured at spawn time, otherwise the helper falls back to
     signaling the single (already-reaped) pid and grandchildren are
     left running.
+
+    Issue #817: when ``execution_tag`` is provided, runs a final cleanup
+    pass via ``kill_processes_by_env_tag(EXECUTION_TAG_NAME, execution_tag)``
+    after the killpg sequence. This catches descendants that escaped the
+    pgid-based kill via ``setsid()`` AND escaped the FD-based orphan-pipe
+    sweep via FD redirection — the gap that produces the runaway-CPU
+    scenario in the ticket. Callers that spawn Claude with the matching
+    env var (``TRINITY_EXECUTION_ID=<execution_tag>``) should pass it
+    here; callers that don't can omit and get the legacy behavior.
 
     Safe to call on already-exited processes and safe to call multiple
     times.
@@ -116,6 +229,25 @@ def terminate_process_group(
         except subprocess.TimeoutExpired:
             logger.error(
                 "[Subprocess] pid=%s did not exit after SIGKILL", process.pid
+            )
+
+    # Issue #817: env-tag sweep for setsid'd, FD-detached orphans that
+    # escaped both prior passes. Best-effort — never fail termination on
+    # this path's exceptions.
+    if execution_tag:
+        try:
+            killed = kill_processes_by_env_tag(EXECUTION_TAG_NAME, execution_tag)
+            if killed:
+                logger.info(
+                    "[Subprocess] Killed %s env-tagged orphan(s) for "
+                    "execution=%s after pgid sweep",
+                    killed, execution_tag,
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[Subprocess] kill_processes_by_env_tag(%s) raised — "
+                "continuing termination",
+                execution_tag,
             )
 
 
@@ -347,6 +479,7 @@ async def drain_reader_threads(
     grace: int = 5,
     post_kill_grace: int = 30,
     pgid: Optional[int] = None,
+    execution_tag: Optional[str] = None,
 ) -> None:
     """Join subprocess reader threads with a bounded timeout.
 
@@ -367,6 +500,13 @@ async def drain_reader_threads(
     must pass ``pgid`` — after reaping, the pid is gone and we'd
     otherwise lose the ability to signal grandchildren.
 
+    Issue #817: when ``execution_tag`` is provided, runs a final env-tag
+    sweep regardless of whether reader threads were stuck. This catches
+    setsid'd, FD-detached descendants on the *successful*-completion path
+    too — claude can spawn a leaking grandchild and then exit cleanly,
+    leaving the reader threads to EOF naturally; without this pass the
+    orphan would survive until the next task.
+
     This function is ``async`` so every ``t.join()`` runs off the event-loop
     thread via ``asyncio.to_thread``.  ``asyncio.wait_for`` enforces the
     deadline at the event-loop level, preventing the asyncio event loop from
@@ -375,6 +515,43 @@ async def drain_reader_threads(
     thread functions) must wrap this with ``asyncio.run(drain_reader_threads(…))``.
     Issue #657.
     """
+    try:
+        await _drain_reader_threads_inner(
+            process, *threads,
+            grace=grace, post_kill_grace=post_kill_grace, pgid=pgid,
+        )
+    finally:
+        # Issue #817: env-tag sweep ALWAYS runs at end of drain regardless
+        # of which exit path we took (no-stuck, drained-naturally, or
+        # force-closed). Catches descendants spawned via setsid + FD
+        # detachment, on both timeout AND successful-completion paths.
+        if execution_tag:
+            try:
+                killed = kill_processes_by_env_tag(EXECUTION_TAG_NAME, execution_tag)
+                if killed:
+                    logger.info(
+                        "[Subprocess] Killed %s env-tagged orphan(s) for "
+                        "execution=%s after drain",
+                        killed, execution_tag,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "[Subprocess] kill_processes_by_env_tag(%s) raised in "
+                    "drain_reader_threads — continuing",
+                    execution_tag,
+                )
+
+
+async def _drain_reader_threads_inner(
+    process: subprocess.Popen,
+    *threads: Optional[threading.Thread],
+    grace: int = 5,
+    post_kill_grace: int = 30,
+    pgid: Optional[int] = None,
+) -> None:
+    """Pre-#817 body of drain_reader_threads. Extracted so the env-tag
+    sweep can wrap it via try/finally without touching every existing
+    early-return path."""
     alive_threads = [t for t in threads if t is not None]
 
     # Initial grace-period joins — each runs in a worker thread so the event

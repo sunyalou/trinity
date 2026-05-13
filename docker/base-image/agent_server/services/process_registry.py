@@ -15,7 +15,11 @@ from datetime import datetime
 from typing import Dict, Optional, List, AsyncIterator
 from threading import Lock
 
-from ..utils.subprocess_pgroup import signal_process_tree as _signal_process_tree
+from ..utils.subprocess_pgroup import (
+    EXECUTION_TAG_NAME,
+    kill_processes_by_env_tag,
+    signal_process_tree as _signal_process_tree,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +146,25 @@ class ProcessRegistry:
                     )
 
             returncode = process.returncode
+
+            # Issue #817: env-tag sweep for descendants that escaped the
+            # pgid kill via setsid + FD detachment. Best-effort — never
+            # fail termination on this. Mirrors the post-kill pass added
+            # to terminate_process_group; ProcessRegistry.terminate uses
+            # _signal_process_tree directly (different kill primitive)
+            # so we run the env-tag pass here too.
+            try:
+                killed = kill_processes_by_env_tag(EXECUTION_TAG_NAME, execution_id)
+                if killed:
+                    logger.info(
+                        f"[ProcessRegistry] Killed {killed} env-tagged "
+                        f"orphan(s) for execution {execution_id} after pgid sweep"
+                    )
+            except Exception:
+                logger.exception(
+                    f"[ProcessRegistry] kill_processes_by_env_tag({execution_id}) "
+                    "raised — continuing termination"
+                )
 
             with self._lock:
                 if execution_id in self._processes:

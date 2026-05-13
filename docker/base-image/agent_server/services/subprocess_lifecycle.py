@@ -50,6 +50,7 @@ def _drain_bounded(
     *threads: Optional[threading.Thread],
     grace: int = 5,
     pgid: Optional[int] = None,
+    execution_tag: Optional[str] = None,
 ) -> None:
     """Run drain_reader_threads with a hard _DRAIN_BUDGET_SECONDS time cap.
 
@@ -58,12 +59,18 @@ def _drain_bounded(
     Uses the same asyncio.run() pattern required by drain_reader_threads'
     async-to-sync callers (established in #657); adds a daemon-thread wrapper
     so the budget is enforced at the threading level, not the asyncio level.
+
+    Issue #817: ``execution_tag`` is threaded through to the underlying
+    ``drain_reader_threads`` so the env-tag sweep runs after every drain.
     """
     done = threading.Event()
 
     def _target() -> None:
         try:
-            asyncio.run(_drain_reader_threads(process, *threads, grace=grace, pgid=pgid))
+            asyncio.run(_drain_reader_threads(
+                process, *threads, grace=grace, pgid=pgid,
+                execution_tag=execution_tag,
+            ))
         except Exception:
             pass
         finally:

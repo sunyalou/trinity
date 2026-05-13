@@ -13,6 +13,7 @@ Refactored per #122 (split of the original 2137-LOC monolith).
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import threading
 import uuid
@@ -46,6 +47,7 @@ from .subprocess_lifecycle import (
     _safe_close_pipes,
     _terminate_process_group,
 )
+from ..utils.subprocess_pgroup import EXECUTION_TAG_NAME
 
 __all__ = [
     "ClaudeCodeRuntime",
@@ -269,6 +271,10 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
         # it spawns) into their own process group so we can reap the whole
         # tree on exit — hook grandchildren can otherwise outlive claude
         # and wedge readline() forever via inherited pipe FDs.
+        # Issue #817: TRINITY_EXECUTION_ID env var is inherited by every
+        # descendant across fork/exec/setsid/double-fork. Cleanup uses it
+        # to identify and kill orphans that escape both the pgid sweep
+        # and the FD-based pipe-writer sweep.
         process = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -277,6 +283,7 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
             text=True,
             bufsize=1,  # Line buffered
             start_new_session=True,
+            env={**os.environ, EXECUTION_TAG_NAME: execution_id},
         )
         # Issue #407: capture pgid now — after wait() reaps the parent,
         # the pid is gone and we lose the ability to signal the group.
@@ -368,13 +375,15 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
                     f"[Chat] Session {execution_id} timed out after {timeout_seconds}s "
                     f"— killing process group"
                 )
-                _terminate_process_group(process, graceful_timeout=5, pgid=process_pgid)
+                _terminate_process_group(process, graceful_timeout=5, pgid=process_pgid, execution_tag=execution_id)
                 _drain_bounded(process, stdout_thread, stderr_thread,
-                               grace=3, pgid=process_pgid)
+                               grace=3, pgid=process_pgid,
+                               execution_tag=execution_id)
                 raise
 
             _drain_bounded(process, stdout_thread, stderr_thread,
-                           grace=5, pgid=process_pgid)
+                           grace=5, pgid=process_pgid,
+                           execution_tag=execution_id)
 
             stderr = ''.join(stderr_lines)
             stderr = sanitize_text(stderr) if stderr else stderr
@@ -400,7 +409,7 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
                 # off-load to the executor so the event loop stays responsive while we tear down.
                 await loop.run_in_executor(
                     None,
-                    lambda: _terminate_process_group(process, graceful_timeout=2, pgid=process_pgid),
+                    lambda: _terminate_process_group(process, graceful_timeout=2, pgid=process_pgid, execution_tag=execution_id),
                 )
                 await loop.run_in_executor(None, _safe_close_pipes, process)
                 raise HTTPException(
