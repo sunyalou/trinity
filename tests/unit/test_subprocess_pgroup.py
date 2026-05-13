@@ -39,8 +39,10 @@ if _agent_utils_path not in sys.path:
 
 import subprocess_pgroup  # noqa: E402
 from subprocess_pgroup import (  # noqa: E402
+    EXECUTION_TAG_NAME,
     capture_pgid,
     drain_reader_threads,
+    kill_processes_by_env_tag,
     safe_close_pipes,
     signal_process_tree,
     terminate_process_group,
@@ -857,3 +859,208 @@ class TestSetIdlePriority:
         import subprocess_pgroup as spg
         spg._set_idle_priority()
         spg._set_idle_priority()
+
+
+# ---------------------------------------------------------------------------
+# Issue #817 — env-tag sweep: kill_processes_by_env_tag
+# ---------------------------------------------------------------------------
+#
+# Spawns a long-sleep child with TRINITY_EXECUTION_ID set in its env, then
+# verifies the sweep can identify and SIGKILL it (or correctly skip it). All
+# tests are Linux-only because the implementation reads /proc/<pid>/environ
+# which does not exist on macOS.
+
+import uuid as _uuid
+
+
+def _spawn_tagged_sleep(tag_value: str | None = None) -> subprocess.Popen:
+    """Spawn `sleep 60` with TRINITY_EXECUTION_ID=tag_value in its env.
+    If tag_value is None, no tag is injected (control case)."""
+    env = dict(os.environ)
+    if tag_value is not None:
+        env[EXECUTION_TAG_NAME] = tag_value
+    return subprocess.Popen(
+        ["sleep", "60"],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _wait_for_exit(proc: subprocess.Popen, timeout: float = 3.0) -> int | None:
+    """Poll until the process exits or timeout. Returns return code or None."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        rc = proc.poll()
+        if rc is not None:
+            return rc
+        time.sleep(0.05)
+    return None
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="kill_processes_by_env_tag uses /proc/<pid>/environ (Linux only)",
+)
+class TestKillProcessesByEnvTag:
+    """Issue #817: env-tag sweep catches descendants that escape both
+    pgid- and FD-based cleanup."""
+
+    def test_kills_process_with_matching_tag(self):
+        """A process whose env contains the tag is SIGKILLed and the
+        return value reflects the kill."""
+        tag_value = f"test-{_uuid.uuid4().hex[:8]}"
+        proc = _spawn_tagged_sleep(tag_value)
+        try:
+            killed = kill_processes_by_env_tag(EXECUTION_TAG_NAME, tag_value)
+            assert killed == 1, f"expected 1 killed, got {killed}"
+            rc = _wait_for_exit(proc)
+            assert rc is not None, "tagged process did not exit after sweep"
+            # SIGKILL exit: -9 from Popen
+            assert rc == -9, f"expected SIGKILL (-9), got {rc}"
+        finally:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+    def test_does_not_kill_process_with_different_tag(self):
+        """A process whose env contains a *different* tag is left alive."""
+        our_tag = f"target-{_uuid.uuid4().hex[:8]}"
+        other_tag = f"other-{_uuid.uuid4().hex[:8]}"
+        proc = _spawn_tagged_sleep(other_tag)
+        try:
+            killed = kill_processes_by_env_tag(EXECUTION_TAG_NAME, our_tag)
+            assert killed == 0, (
+                f"expected 0 killed (different tag), got {killed}"
+            )
+            assert proc.poll() is None, "non-matching process was killed"
+        finally:
+            proc.kill()
+            proc.wait(timeout=2)
+
+    def test_does_not_kill_process_without_tag(self):
+        """A process with no tag at all is invisible to the sweep."""
+        our_tag = f"target-{_uuid.uuid4().hex[:8]}"
+        proc = _spawn_tagged_sleep(tag_value=None)
+        try:
+            killed = kill_processes_by_env_tag(EXECUTION_TAG_NAME, our_tag)
+            assert killed == 0
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait(timeout=2)
+
+    def test_does_not_kill_calling_pid(self):
+        """The caller's own PID is always excluded — even if its env
+        carries the tag (guards against killing agent-server itself)."""
+        tag_value = f"self-{_uuid.uuid4().hex[:8]}"
+        # Inject the tag into our own env so we'd "match" without the guard
+        os.environ[EXECUTION_TAG_NAME] = tag_value
+        try:
+            killed = kill_processes_by_env_tag(EXECUTION_TAG_NAME, tag_value)
+            # Our PID must be skipped — we should still be alive after
+            # this line. If the kill went through, the process would be
+            # gone before this assertion ran.
+            assert killed == 0, (
+                f"sweep killed {killed} including possibly self — "
+                f"calling-PID exclusion broken"
+            )
+        finally:
+            os.environ.pop(EXECUTION_TAG_NAME, None)
+
+    def test_exclude_pids_param(self):
+        """Caller can pass additional PIDs to exclude from the sweep."""
+        tag_value = f"excl-{_uuid.uuid4().hex[:8]}"
+        keeper = _spawn_tagged_sleep(tag_value)
+        victim = _spawn_tagged_sleep(tag_value)
+        try:
+            killed = kill_processes_by_env_tag(
+                EXECUTION_TAG_NAME, tag_value, exclude_pids=[keeper.pid],
+            )
+            assert killed == 1, (
+                f"expected 1 killed (victim) with keeper excluded, got {killed}"
+            )
+            rc = _wait_for_exit(victim)
+            assert rc == -9, "victim should be SIGKILLed"
+            assert keeper.poll() is None, "keeper was not in exclude_pids"
+        finally:
+            for p in (keeper, victim):
+                try:
+                    p.kill()
+                except OSError:
+                    pass
+
+    def test_exact_match_not_substring_prefix(self):
+        """Tag value 'abc' must not match 'abcdef' (NUL-separated split).
+        Guards against false positives on similarly-named env vars."""
+        proc = _spawn_tagged_sleep("abcdef")
+        try:
+            killed = kill_processes_by_env_tag(EXECUTION_TAG_NAME, "abc")
+            assert killed == 0, (
+                f"sweep matched substring 'abc' against env value 'abcdef' — "
+                f"expected exact match"
+            )
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait(timeout=2)
+
+    def test_exact_match_not_different_var_name(self):
+        """A different env var with the same value must not match.
+        Guards against the tag value appearing in some other variable."""
+        # Spawn a sleep with a different env var carrying our value
+        env = dict(os.environ)
+        env["UNRELATED_VAR"] = "shared-value"
+        # Strip our tag if it happens to be in our env
+        env.pop(EXECUTION_TAG_NAME, None)
+        proc = subprocess.Popen(
+            ["sleep", "60"], env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            killed = kill_processes_by_env_tag(
+                EXECUTION_TAG_NAME, "shared-value",
+            )
+            assert killed == 0, (
+                f"sweep killed process with different env var name — "
+                f"matching is not name-scoped"
+            )
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait(timeout=2)
+
+    def test_returns_count_of_killed(self):
+        """Count returned == number of distinct tagged processes killed."""
+        tag_value = f"multi-{_uuid.uuid4().hex[:8]}"
+        procs = [_spawn_tagged_sleep(tag_value) for _ in range(3)]
+        try:
+            killed = kill_processes_by_env_tag(EXECUTION_TAG_NAME, tag_value)
+            assert killed == 3, (
+                f"expected 3 killed for 3 tagged procs, got {killed}"
+            )
+            for p in procs:
+                rc = _wait_for_exit(p)
+                assert rc == -9
+        finally:
+            for p in procs:
+                try:
+                    p.kill()
+                except OSError:
+                    pass
+
+    def test_returns_zero_when_proc_unavailable(self, monkeypatch):
+        """If /proc cannot be listed (e.g., not Linux), return 0 cleanly
+        without raising — allows the helper to be a no-op safety net on
+        environments that don't have /proc."""
+        def _raise(*_a, **_kw):
+            raise OSError("simulated /proc unavailable")
+        monkeypatch.setattr(os, "listdir", _raise)
+        # Must not raise; must return 0
+        killed = kill_processes_by_env_tag(EXECUTION_TAG_NAME, "any-value")
+        assert killed == 0
