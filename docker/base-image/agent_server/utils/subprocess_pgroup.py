@@ -336,12 +336,19 @@ async def drain_reader_threads(
     if not stuck:
         return
 
+    # Slow-path counters surfaced in the per-branch [METRIC] drain_outcome
+    # emissions below. Explicit at slow-path entry so every later branch sees
+    # them in scope without relying on locals() inspection.
     drain_start = time.monotonic()
+    stuck_initial_count: int = len(stuck)
+    orphan_kill_count: int = 0
+    orphan_scan_completed: bool = False
+
     logger.warning(
         "[Subprocess] Reader thread(s) still busy after process exit "
         "(pid=%s, stuck_count=%s) — killing process group, then waiting "
         "%ss for natural drain",
-        process.pid, len(stuck), post_kill_grace,
+        process.pid, stuck_initial_count, post_kill_grace,
     )
     terminate_process_group(process, graceful_timeout=1, pgid=pgid)
 
@@ -393,12 +400,17 @@ async def drain_reader_threads(
                     "10s (pid=%s) — /proc scan may be blocked on a D-state process",
                     process.pid,
                 )
-            elif _orphan_result[0]:
-                logger.info(
-                    "[Subprocess] Killed %s orphan stdout pipe-writer(s) "
-                    "outside pgid=%s (pid=%s) — likely npx MCP server(s)",
-                    _orphan_result[0], pgid, process.pid,
-                )
+            else:
+                # Only read _orphan_result once the daemon thread has signalled
+                # completion, otherwise we'd race with its write.
+                orphan_scan_completed = True
+                orphan_kill_count = _orphan_result[0]
+                if orphan_kill_count:
+                    logger.info(
+                        "[Subprocess] Killed %s orphan stdout pipe-writer(s) "
+                        "outside pgid=%s (pid=%s) — likely npx MCP server(s)",
+                        orphan_kill_count, pgid, process.pid,
+                    )
 
     # All writers are now dead (or we timed out trying to kill them).
     # Use wall-clock accounting: subtract time already spent so the caller's
@@ -425,6 +437,17 @@ async def drain_reader_threads(
             "grandchild termination (pid=%s, elapsed=%.1fs)",
             process.pid, time.monotonic() - drain_start,
         )
+        # Site B — natural drain after kill phase. orphan_kill_count is -1
+        # when the /proc scan timed out and we cannot trust _orphan_result.
+        logger.info(
+            "[METRIC] drain_outcome pid=%s pgid=%s orphan_kill_count=%s "
+            "outcome=%s drain_elapsed_ms=%s stuck_initial=%s",
+            process.pid, pgid,
+            orphan_kill_count if orphan_scan_completed else -1,
+            "natural",
+            int((time.monotonic() - drain_start) * 1000),
+            stuck_initial_count,
+        )
         return
 
     # Genuine wedge — reader did not return even after grandchildren died
@@ -450,6 +473,31 @@ async def drain_reader_threads(
             "[Subprocess] %s reader thread(s) leaked for pid=%s after "
             "force-close; continuing anyway",
             len(leaked), process.pid,
+        )
+
+    # Site C — force-close path. This is the bug-class regression site:
+    # operators alert on a non-zero rate of these emissions. leaked_count
+    # is appended only when daemon reader threads survived force-close.
+    if leaked:
+        logger.info(
+            "[METRIC] drain_outcome pid=%s pgid=%s orphan_kill_count=%s "
+            "outcome=%s drain_elapsed_ms=%s stuck_initial=%s leaked_count=%s",
+            process.pid, pgid,
+            orphan_kill_count if orphan_scan_completed else -1,
+            "leaked",
+            int((time.monotonic() - drain_start) * 1000),
+            stuck_initial_count,
+            len(leaked),
+        )
+    else:
+        logger.info(
+            "[METRIC] drain_outcome pid=%s pgid=%s orphan_kill_count=%s "
+            "outcome=%s drain_elapsed_ms=%s stuck_initial=%s",
+            process.pid, pgid,
+            orphan_kill_count if orphan_scan_completed else -1,
+            "force_close",
+            int((time.monotonic() - drain_start) * 1000),
+            stuck_initial_count,
         )
 
 
