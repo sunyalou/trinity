@@ -85,41 +85,16 @@ async def wait_for_agent_ready(
 
 
 # =============================================================================
-# Container Security Capability Sets
+# Container Security Capability Sets — see capabilities.py for definitions
 # =============================================================================
-# These define the Linux capabilities granted to agent containers.
-# Security principle: Always drop ALL caps, then add back only what's needed.
-
-# Restricted mode capabilities - minimum for agent operation (default)
-RESTRICTED_CAPABILITIES = [
-    'NET_BIND_SERVICE',  # Bind to ports < 1024
-    'SETGID', 'SETUID',  # Change user/group (for su/sudo)
-    'CHOWN',             # Change file ownership
-    'SYS_CHROOT',        # Use chroot
-    'AUDIT_WRITE',       # Write to audit log
-]
-
-# Full capabilities mode - adds package installation support
-# Used when agents need apt-get, pip install, etc.
-FULL_CAPABILITIES = RESTRICTED_CAPABILITIES + [
-    'DAC_OVERRIDE',      # Bypass file permission checks (needed for apt)
-    'FOWNER',            # Bypass permission checks on file owner
-    'FSETID',            # Don't clear setuid/setgid bits
-    'KILL',              # Send signals to processes
-    'MKNOD',             # Create special files
-    'NET_RAW',           # Use raw sockets (ping, etc.)
-    'SYS_PTRACE',        # Trace processes (debugging)
-]
-
-# These capabilities are NEVER granted - they pose significant security risks
-# Listed for documentation; we achieve this by always using cap_drop=['ALL']
-PROHIBITED_CAPABILITIES = [
-    'SYS_ADMIN',         # Mount filesystems, configure namespace - too powerful
-    'NET_ADMIN',         # Network administration - could escape container
-    'SYS_RAWIO',         # Raw I/O access - direct hardware access
-    'SYS_MODULE',        # Load kernel modules - kernel compromise
-    'SYS_BOOT',          # Reboot system
-]
+# Re-exported from .capabilities so that test code (and other callers
+# that only need the constants) can import them without dragging the
+# docker / fastapi / database transitive imports of this module.
+from .capabilities import (  # noqa: F401
+    RESTRICTED_CAPABILITIES,
+    FULL_CAPABILITIES,
+    PROHIBITED_CAPABILITIES,
+)
 
 
 async def inject_assigned_credentials(agent_name: str, max_retries: int = 3, retry_delay: float = 2.0) -> dict:
