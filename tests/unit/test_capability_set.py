@@ -35,9 +35,11 @@ _CAPS_PATH = (
 
 
 def _load_caps():
+    # capabilities.py is pure list literals with no decorators that
+    # introspect via sys.modules — no need to register the loaded module
+    # there (which would trip tests/lint_sys_modules.py, #762).
     spec = importlib.util.spec_from_file_location("caps_under_test", _CAPS_PATH)
     module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
