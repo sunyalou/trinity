@@ -27,8 +27,12 @@ ENV MCP_PORT=8080
 ENV TRINITY_API_URL=http://backend:8000
 
 # Health check
+# #443: probe /health, not /mcp. The MCP endpoint rejects HEAD requests
+# with 400 BadRequest (wget --spider sends HEAD), so the previous probe
+# reported the container as `unhealthy` despite the service serving
+# traffic. /health returns 200 to both HEAD and GET.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/mcp || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1
 
 # Run the server
 CMD ["node", "dist/index.js"]

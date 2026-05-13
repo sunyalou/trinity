@@ -56,7 +56,7 @@ async function main() {
             2
           )
         );
-        console.log(`\nGet your API key from the Trinity web UI: http://localhost:3000/api-keys`);
+        console.log(`\nGet your API key from your Trinity web UI → Settings → MCP Keys`);
       } else {
         console.log(
           JSON.stringify(

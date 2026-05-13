@@ -16,15 +16,42 @@ if [ ! -f .env ]; then
     echo ""
 fi
 
-# Auto-generate CREDENTIAL_ENCRYPTION_KEY if not set
-if grep -qE '^CREDENTIAL_ENCRYPTION_KEY=$' .env 2>/dev/null || ! grep -q 'CREDENTIAL_ENCRYPTION_KEY' .env 2>/dev/null; then
-    NEW_KEY=$(openssl rand -hex 32)
-    if grep -q 'CREDENTIAL_ENCRYPTION_KEY' .env; then
-        sed -i.bak "s/^CREDENTIAL_ENCRYPTION_KEY=$/CREDENTIAL_ENCRYPTION_KEY=${NEW_KEY}/" .env && rm -f .env.bak
-    else
-        echo "CREDENTIAL_ENCRYPTION_KEY=${NEW_KEY}" >> .env
+# Auto-generate openssl-hex-32 secrets if blank.
+# CREDENTIAL_ENCRYPTION_KEY, SECRET_KEY, and INTERNAL_API_SECRET are all
+# 32-byte hex strings with no rotation story today — operator either has
+# one or doesn't, and a fresh install needs one. Generating them on first
+# boot is friendlier than the prior "boot, fail with a cryptic JWT error,
+# go read the docs" path. (#443)
+ensure_hex32_secret() {
+    local var="$1"
+    if grep -qE "^${var}=.+" .env 2>/dev/null; then
+        return 0
     fi
-    echo "Auto-generated CREDENTIAL_ENCRYPTION_KEY"
+    local val
+    val=$(openssl rand -hex 32)
+    if grep -qE "^${var}=$" .env 2>/dev/null; then
+        sed -i.bak "s/^${var}=$/${var}=${val}/" .env && rm -f .env.bak
+    else
+        echo "${var}=${val}" >> .env
+    fi
+    echo "Auto-generated ${var}"
+}
+
+ensure_hex32_secret CREDENTIAL_ENCRYPTION_KEY
+ensure_hex32_secret SECRET_KEY
+ensure_hex32_secret INTERNAL_API_SECRET
+
+# ADMIN_PASSWORD has no sensible default — operator must choose. Fail fast
+# rather than booting into a state the operator can't log into. (#443)
+if ! grep -qE '^ADMIN_PASSWORD=.+' .env 2>/dev/null; then
+    cat >&2 <<EOF
+
+ERROR: ADMIN_PASSWORD is blank in .env.
+       Choose a strong password (12+ chars; the backend will reject
+       weak defaults like "password" or "admin"), then re-run start.sh.
+
+EOF
+    exit 1
 fi
 
 # Issue #589 — Redis passwords are mandatory.
@@ -95,9 +122,9 @@ FRONTEND_PORT=${FRONTEND_PORT:-80}
 
 echo "Access points:"
 if [ "$FRONTEND_PORT" = "80" ]; then
-    echo "  - Web UI:       http://localhost (login: admin/password)"
+    echo "  - Web UI:       http://localhost (login: admin / ADMIN_PASSWORD from .env)"
 else
-    echo "  - Web UI:       http://localhost:$FRONTEND_PORT (login: admin/password)"
+    echo "  - Web UI:       http://localhost:$FRONTEND_PORT (login: admin / ADMIN_PASSWORD from .env)"
 fi
 echo "  - Backend API:  http://localhost:8000/docs"
 echo "  - MCP Server:   http://localhost:8080/mcp"

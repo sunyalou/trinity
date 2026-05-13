@@ -59,7 +59,7 @@ MCP_REQUIRE_API_KEY=true npm run dev
 
 ### Getting an API Key
 
-1. Go to the Trinity web UI: http://localhost:3000/api-keys
+1. Open your Trinity web UI → Settings → MCP Keys
 2. Click "Create API Key"
 3. Name your key (e.g., "My Claude Code Key")
 4. Copy the API key - **it's only shown once!**
