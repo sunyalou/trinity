@@ -59,24 +59,11 @@ class MetadataMixin:
         """
         Rename an agent by updating all database references.
 
-        This updates agent_name in all tables that reference it:
-        - agent_ownership (primary)
-        - agent_sharing
-        - agent_schedules
-        - schedule_executions
-        - chat_sessions
-        - chat_messages
-        - agent_activities
-        - agent_permissions (source and target)
-        - agent_shared_folder_config
-        - agent_git_config
-        - agent_skills
-        - agent_tags
-        - agent_public_links
-        - mcp_api_keys
-        - agent_health_checks
-        - agent_dashboard_values
-        - monitoring_alert_cooldowns
+        Issue #816: the per-table UPDATE list is now driven by the single
+        source of truth at `db.agent_cleanup.AGENT_REFS`. Adding a new
+        agent-referencing column anywhere requires an entry there — the
+        parity check at `tests/unit/test_agent_cleanup_parity.py` fails
+        otherwise.
 
         Args:
             old_name: Current agent name
@@ -85,6 +72,10 @@ class MetadataMixin:
         Returns:
             True if rename succeeded, False if failed
         """
+        # Import here to avoid a circular: agent_cleanup → db.connection
+        # → db package init → agent_settings → metadata.
+        from db.agent_cleanup import cascade_rename
+
         with get_db_connection() as conn:
             cursor = conn.cursor()
             try:
@@ -98,120 +89,15 @@ class MetadataMixin:
                 if cursor.fetchone():
                     return False
 
-                # Update all tables in order
-                # Primary table
+                # Parent table (NOT in AGENT_REFS — agent_ownership is the
+                # primary; cascade_rename handles every child reference).
                 cursor.execute(
                     "UPDATE agent_ownership SET agent_name = ? WHERE agent_name = ?",
                     (new_name, old_name)
                 )
 
-                # Sharing
-                cursor.execute(
-                    "UPDATE agent_sharing SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # Schedules
-                cursor.execute(
-                    "UPDATE agent_schedules SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # Executions
-                cursor.execute(
-                    "UPDATE schedule_executions SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # Chat sessions
-                cursor.execute(
-                    "UPDATE chat_sessions SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # Chat messages
-                cursor.execute(
-                    "UPDATE chat_messages SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # Activities
-                cursor.execute(
-                    "UPDATE agent_activities SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # Permissions (both source and target)
-                cursor.execute(
-                    "UPDATE agent_permissions SET source_agent = ? WHERE source_agent = ?",
-                    (new_name, old_name)
-                )
-                cursor.execute(
-                    "UPDATE agent_permissions SET target_agent = ? WHERE target_agent = ?",
-                    (new_name, old_name)
-                )
-
-                # Shared folder config
-                cursor.execute(
-                    "UPDATE agent_shared_folder_config SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # Git config
-                cursor.execute(
-                    "UPDATE agent_git_config SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # Skills
-                cursor.execute(
-                    "UPDATE agent_skills SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # Tags
-                cursor.execute(
-                    "UPDATE agent_tags SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # Public links
-                cursor.execute(
-                    "UPDATE agent_public_links SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # MCP API keys
-                cursor.execute(
-                    "UPDATE mcp_api_keys SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # Health checks
-                cursor.execute(
-                    "UPDATE agent_health_checks SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # Dashboard values
-                cursor.execute(
-                    "UPDATE agent_dashboard_values SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # Monitoring cooldowns
-                cursor.execute(
-                    "UPDATE monitoring_alert_cooldowns SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
-
-                # Shared files (outbound — amazing-file-outbound).
-                # FK has ON UPDATE CASCADE as belt-and-suspenders; this keeps
-                # the explicit cascade list complete for visibility.
-                cursor.execute(
-                    "UPDATE agent_shared_files SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
-                )
+                # Single-source-of-truth pass over every child reference.
+                cascade_rename(conn, old_name, new_name)
 
                 conn.commit()
                 return True

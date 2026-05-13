@@ -435,10 +435,6 @@ async def delete_agent_endpoint(agent_name: str, request: Request, current_user:
     except Exception as e:
         logger.warning(f"Failed to delete workspace volume for agent {agent_name}: {e}")
 
-    # Delete all schedules for this agent
-    # Dedicated scheduler syncs from database automatically
-    db.delete_agent_schedules(agent_name)
-
     # BACKLOG-001: Cancel any queued backlog items before deleting the agent
     # so they don't sit around in schedule_executions pointing at a dead agent.
     # CAPACITY-CONSOLIDATE (#428): single CapacityManager.cancel_all_overflow
@@ -451,36 +447,45 @@ async def delete_agent_endpoint(agent_name: str, request: Request, current_user:
     except Exception as e:
         logger.warning(f"Failed to cancel backlog for agent {agent_name}: {e}")
 
-    # Delete git config if exists
-    git_service.delete_agent_git_config(agent_name)
-
-    # Delete agent's MCP API key
+    # Capture shared-file filenames before cascade so we can unlink the bytes
+    # on disk (FILES-001). The row-level DELETE itself is handled by
+    # cascade_delete() below; this call only reads + returns the stored names.
+    stored_filenames = []
     try:
-        db.delete_agent_mcp_api_key(agent_name)
+        stored_filenames = db.delete_shared_files_for_agent(agent_name)
     except Exception as e:
-        logger.warning(f"Failed to delete MCP API key for agent {agent_name}: {e}")
+        logger.warning(f"Failed to read shared files for agent {agent_name}: {e}")
 
-    # Delete agent permissions
+    # Issue #816: single source of truth for which tables follow an agent's
+    # lifecycle. cascade_delete walks db.agent_cleanup.AGENT_REFS — any new
+    # agent-referencing table must add an entry there (parity test enforces
+    # this). Replaces the previous hand-written list which had drifted ~20
+    # tables behind the schema.
     try:
-        db.delete_agent_permissions(agent_name)
+        from db.agent_cleanup import cascade_delete
+        from db.connection import get_db_connection
+        with get_db_connection() as conn:
+            removed = cascade_delete(conn, agent_name)
+        if removed:
+            logger.info(
+                f"cascade_delete agent={agent_name} removed={removed}"
+            )
     except Exception as e:
-        logger.warning(f"Failed to delete permissions for agent {agent_name}: {e}")
+        logger.warning(f"cascade_delete failed for agent {agent_name}: {e}")
 
-    # Delete agent event subscriptions (EVT-001)
-    try:
-        db.delete_agent_event_subscriptions(agent_name)
-    except Exception as e:
-        logger.warning(f"Failed to delete event subscriptions for agent {agent_name}: {e}")
+    # Filesystem cleanup (not row-level — separate from cascade_delete) -----
 
-    # Delete agent skills
-    try:
-        db.delete_agent_skills(agent_name)
-    except Exception as e:
-        logger.warning(f"Failed to delete skills for agent {agent_name}: {e}")
+    # Unlink shared file bytes captured above
+    for stored in stored_filenames:
+        try:
+            path = Path("/data/agent-files") / stored
+            if path.exists():
+                path.unlink()
+        except Exception as e:
+            logger.warning(f"Failed to unlink shared file {stored}: {e}")
 
-    # Delete shared folder config and shared volume
+    # Shared folder volume
     try:
-        db.delete_shared_folder_config(agent_name)
         shared_volume_name = db.get_shared_volume_name(agent_name)
         try:
             shared_volume = await volume_get(shared_volume_name)
@@ -488,23 +493,10 @@ async def delete_agent_endpoint(agent_name: str, request: Request, current_user:
         except docker.errors.NotFound:
             pass
     except Exception as e:
-        logger.warning(f"Failed to delete shared folder config for agent {agent_name}: {e}")
+        logger.warning(f"Failed to delete shared volume for agent {agent_name}: {e}")
 
-    # Delete per-agent public volume + shared-file rows + on-disk bytes
-    # (FILES-001). Backend connections don't PRAGMA foreign_keys=ON, so
-    # we can't rely on the FK ON DELETE CASCADE — follow the same explicit
-    # pattern used elsewhere in the codebase (see db.agent_settings.metadata
-    # :rename_agent which also manually updates all 16 child tables).
+    # Public volume (FILES-001)
     try:
-        stored_filenames = db.delete_shared_files_for_agent(agent_name)
-        for stored in stored_filenames:
-            try:
-                path = Path("/data/agent-files") / stored
-                if path.exists():
-                    path.unlink()
-            except Exception as e:
-                logger.warning(f"Failed to unlink shared file {stored}: {e}")
-
         public_volume_name = db.get_public_volume_name(agent_name)
         try:
             public_volume = await volume_get(public_volume_name)
@@ -513,12 +505,6 @@ async def delete_agent_endpoint(agent_name: str, request: Request, current_user:
             pass
     except Exception as e:
         logger.warning(f"Failed to delete public volume for agent {agent_name}: {e}")
-
-    # Delete agent tags (ORG-001)
-    try:
-        db.delete_agent_tags(agent_name)
-    except Exception as e:
-        logger.warning(f"Failed to delete tags for agent {agent_name}: {e}")
 
     # Delete cached avatar, reference, and emotion images (AVATAR-001, AVATAR-002)
     try:
