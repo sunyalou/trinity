@@ -101,14 +101,31 @@ RESTRICTED_CAPABILITIES = [
 
 # Full capabilities mode - adds package installation support
 # Used when agents need apt-get, pip install, etc.
+#
+# Issue #602 / Phase 3c (cap tightening): four caps removed from this
+# set after AISEC-C2 review. The remaining set is the minimum that keeps
+# `sudo apt install` working inside an agent container.
+#
+# Dropped (no defensible agent use case — kept here for documentation):
+#   SYS_PTRACE  Lets a process read another process's memory. A malicious
+#               MCP server could read Claude Code's heap and exfil the
+#               OAuth token even if the token isn't in env. This is the
+#               direct AISEC-C2 escalation path; removing it closes it
+#               without waiting for Layer 3b (bubblewrap sandbox).
+#   MKNOD       Creates device nodes under /dev. Agents have no use case
+#               for /dev/* manipulation; primarily a container-escape
+#               primitive (e.g. creating a writable raw disk device).
+#   NET_RAW     Raw / ICMP sockets. Trinity's "ping another agent" UX is
+#               HTTP-level, not ICMP. Removing this prevents raw-packet
+#               crafting (TCP RST injection, ARP spoofing on the docker
+#               bridge, etc.).
+#   FSETID     Lets a process keep setuid/setgid bits on chmod after a
+#               non-owner write — used to plant a setuid binary the next
+#               privileged path can run. No agent workflow needs it.
 FULL_CAPABILITIES = RESTRICTED_CAPABILITIES + [
-    'DAC_OVERRIDE',      # Bypass file permission checks (needed for apt)
+    'DAC_OVERRIDE',      # Bypass file permission checks (needed for sudo apt)
     'FOWNER',            # Bypass permission checks on file owner
-    'FSETID',            # Don't clear setuid/setgid bits
     'KILL',              # Send signals to processes
-    'MKNOD',             # Create special files
-    'NET_RAW',           # Use raw sockets (ping, etc.)
-    'SYS_PTRACE',        # Trace processes (debugging)
 ]
 
 # These capabilities are NEVER granted - they pose significant security risks
