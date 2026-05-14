@@ -401,7 +401,7 @@ class CleanupService:
 
             raw_sd_days = db.get_setting_value(
                 "agent_soft_delete_retention_days",
-                OPS_SETTINGS_DEFAULTS.get("agent_soft_delete_retention_days", "30"),
+                OPS_SETTINGS_DEFAULTS.get("agent_soft_delete_retention_days", "180"),
             )
             try:
                 sd_days = max(int(raw_sd_days), 0)

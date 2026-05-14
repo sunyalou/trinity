@@ -51,7 +51,7 @@ OPS_SETTINGS_DEFAULTS = {
     # child tables via #816's purge primitive). "0" disables the
     # sweep entirely — soft-deleted rows then persist until manually
     # purged.
-    "agent_soft_delete_retention_days": "30",
+    "agent_soft_delete_retention_days": "180",
 }
 
 # Descriptions for each ops setting
@@ -68,7 +68,7 @@ OPS_SETTINGS_DESCRIPTIONS = {
     "execution_log_retention_days": "Days to retain the JSONL transcript on schedule_executions (default: 30, 0 = disabled, #772)",
     "execution_row_retention_days": "Days to retain finished schedule_execution rows; rows older than this are deleted (default: 90, 0 = disabled, #772)",
     "health_check_retention_days": "Days to retain agent_health_checks rows (default: 7, 0 = disabled, #772)",
-    "agent_soft_delete_retention_days": "Days to retain soft-deleted agents before hard-purge (default: 30, 0 = disabled, #834)",
+    "agent_soft_delete_retention_days": "Days to retain soft-deleted agents before hard-purge (default: 180, 0 = disabled, #834)",
 }
 
 

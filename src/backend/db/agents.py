@@ -159,7 +159,7 @@ class AgentOperations(
         Marks `deleted_at = NOW`. Child rows (sharing, access requests,
         schedules, chat history, …) are left intact — the retention sweep
         in `cleanup_service.py` runs `cascade_delete()` to remove them
-        when the soft-delete window expires (default 30 days, configurable
+        when the soft-delete window expires (default 180 days, configurable
         via `agent_soft_delete_retention_days` in system_settings).
 
         Idempotent: if the row is already soft-deleted, the UPDATE is a
