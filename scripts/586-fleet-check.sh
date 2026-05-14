@@ -31,7 +31,7 @@ docker exec trinity-vector sh -c "
 
 echo
 echo "Per-container summary:"
-jq -rc 'group_by(.container) | map({container: .[0].container, count: length})' "${OUT}"
+jq -src 'group_by(.container) | map({container: .[0].container, count: length})' "${OUT}"
 
 # Gate the close: any "still stuck after Ns" or "no result message after"
 # match means the platform fix did not fully cover the case.
