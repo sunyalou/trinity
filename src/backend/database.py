@@ -355,6 +355,12 @@ class DatabaseManager:
     def is_agent_name_reserved(self, agent_name: str):
         return self._agent_ops.is_agent_name_reserved(agent_name)
 
+    def recover_agent_ownership(self, agent_name: str):
+        return self._agent_ops.recover_agent_ownership(agent_name)
+
+    def list_soft_deleted_agents(self, limit: int = 200):
+        return self._agent_ops.list_soft_deleted_agents(limit)
+
     def rename_agent(self, old_name: str, new_name: str):
         return self._agent_ops.rename_agent(old_name, new_name)
 
@@ -715,6 +721,12 @@ class DatabaseManager:
 
     def find_soft_deleted_schedules_past_retention(self, retention_days: int, limit: int = 5000):
         return self._schedule_ops.find_soft_deleted_schedules_past_retention(retention_days, limit)
+
+    def recover_schedule(self, schedule_id: str):
+        return self._schedule_ops.recover_schedule(schedule_id)
+
+    def list_soft_deleted_schedules(self, agent_name=None, limit: int = 200):
+        return self._schedule_ops.list_soft_deleted_schedules(agent_name, limit)
 
     # Webhook token management (WEBHOOK-001, #291)
     def generate_webhook_token(self, schedule_id: str):

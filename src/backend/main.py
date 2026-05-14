@@ -92,6 +92,7 @@ from routers.event_subscriptions import router as event_subscriptions_router, se
 from routers.users import router as users_router
 from routers.debug import router as debug_router  # #306 soak instrumentation
 from routers.a2a import router as a2a_router  # #737 A2A Agent Cards
+from routers.admin_recovery import router as admin_recovery_router  # #834 Phase 1c
 from routers.messages import router as messages_router  # Proactive Messaging (#321)
 from routers.public_memory import router as public_memory_router  # MEM-001 write path (#888)
 from routers.webhooks import router as webhooks_router  # Webhook triggers (WEBHOOK-001, #291)
@@ -847,6 +848,7 @@ app.include_router(event_subscriptions_router)  # Agent Event Subscriptions (EVT
 app.include_router(users_router)  # User Management (ROLE-001)
 app.include_router(debug_router)  # #306 soak dashboard
 app.include_router(a2a_router)  # A2A Agent Cards (#737)
+app.include_router(admin_recovery_router)  # Soft-delete admin recovery (#834 Phase 1c)
 app.include_router(webhooks_router)  # Webhook Triggers (WEBHOOK-001, #291)
 app.include_router(ws_tickets_router)  # WebSocket auth tickets (#550)
 

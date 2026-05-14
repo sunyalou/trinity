@@ -530,6 +530,61 @@ class ScheduleOperations:
             conn.commit()
             return cursor.rowcount > 0
 
+    def recover_schedule(self, schedule_id: str) -> bool:
+        """Recover a soft-deleted schedule by clearing `deleted_at` (#834).
+
+        Refuses to operate on a row that doesn't exist or is already
+        live (`deleted_at IS NULL`). Returns True on successful
+        recovery. The schedule reappears on the scheduler's
+        firing list on the next poll cycle if it was enabled at the
+        time of soft-delete.
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE agent_schedules SET deleted_at = NULL "
+                "WHERE id = ? AND deleted_at IS NOT NULL",
+                (schedule_id,),
+            )
+            if cursor.rowcount > 0:
+                conn.commit()
+                return True
+            return False
+
+    def list_soft_deleted_schedules(
+        self, agent_name: Optional[str] = None, limit: int = 200
+    ) -> list:
+        """List currently-soft-deleted schedules with their `deleted_at`.
+
+        If `agent_name` is given, scopes to that agent's schedules
+        (admin endpoint pattern: GET /api/admin/agents/{name}/schedules/
+        soft-deleted). With `agent_name=None`, returns soft-deleted
+        schedules across the fleet (admin-only).
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            if agent_name is None:
+                cursor.execute(
+                    "SELECT id, agent_name, name, cron_expression, message, "
+                    "       owner_id, enabled, deleted_at "
+                    "FROM agent_schedules "
+                    "WHERE deleted_at IS NOT NULL "
+                    "ORDER BY deleted_at DESC "
+                    "LIMIT ?",
+                    (limit,),
+                )
+            else:
+                cursor.execute(
+                    "SELECT id, agent_name, name, cron_expression, message, "
+                    "       owner_id, enabled, deleted_at "
+                    "FROM agent_schedules "
+                    "WHERE deleted_at IS NOT NULL AND agent_name = ? "
+                    "ORDER BY deleted_at DESC "
+                    "LIMIT ?",
+                    (agent_name, limit),
+                )
+            return [dict(row) for row in cursor.fetchall()]
+
     def find_soft_deleted_schedules_past_retention(
         self, retention_days: int, limit: int = 5000
     ) -> list:
