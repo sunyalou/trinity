@@ -18,6 +18,7 @@ Covered:
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 import os
@@ -26,6 +27,7 @@ import time
 import uuid
 from pathlib import Path
 
+import httpx
 import pytest
 import redis as _redis
 
@@ -384,3 +386,329 @@ class TestFailOpen:
         assert cs.state == "closed"
         # record_success is a no-op in fail-open mode but must not raise.
         cs.record_success()
+
+
+# ── Failure classification (#474) ────────────────────────────────────────────
+
+class TestFailureClassification:
+    """#474 — only TCP-level unreachability (ConnectError / ConnectTimeout)
+    counts toward the circuit threshold. Read timeouts, broken pipes,
+    pool exhaustion, and any HTTP response (incl. 5xx) must NOT trip it.
+
+    Each test injects a MockTransport-wrapped AsyncClient into
+    agent_client._client_pool for the test's synthetic agent, so
+    AgentClient._request() drives the handler we specify. Cleans up the
+    pool entry on teardown to avoid cross-test pollution.
+    """
+
+    def _drive(self, agent_name: str, handler, *, timeout: float = 1.0):
+        """Drive AgentClient._request() through a MockTransport handler.
+
+        Returns whatever _request returns (or raises). Closes and pops the
+        mock client from _client_pool on the way out.
+        """
+        base_url = f"http://agent-{agent_name}:8000"
+
+        async def runner():
+            mock_client = httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                base_url=base_url,
+            )
+            agent_client._client_pool[base_url] = mock_client
+            try:
+                client = agent_client.AgentClient(agent_name)
+                return await client._request("GET", "/health", timeout=timeout)
+            finally:
+                await mock_client.aclose()
+                agent_client._client_pool.pop(base_url, None)
+
+        return asyncio.run(runner())
+
+    # ─── Hard failures: must increment the circuit ──────────────────────
+
+    def test_connect_error_records_failure(self, agent_name):
+        """Case 1: ConnectError → +1 failure, stays closed below threshold."""
+        def handler(_req):
+            raise httpx.ConnectError("refused")
+
+        with pytest.raises(agent_client.AgentNotReachableError):
+            self._drive(agent_name, handler)
+
+        cs = agent_client.CircuitState(agent_name)
+        assert cs.failure_count == 1
+        assert cs.state == "closed"
+
+    def test_connect_timeout_records_failure(self, agent_name):
+        """Case 2: ConnectTimeout (a TimeoutException subclass) → +1 failure."""
+        def handler(_req):
+            raise httpx.ConnectTimeout("handshake timed out")
+
+        with pytest.raises(agent_client.AgentNotReachableError):
+            self._drive(agent_name, handler)
+
+        cs = agent_client.CircuitState(agent_name)
+        assert cs.failure_count == 1
+        assert cs.state == "closed"
+
+    # ─── Soft failures: must NOT increment the circuit ──────────────────
+
+    def test_read_timeout_does_not_record(self, agent_name):
+        """Case 3: 5× ReadTimeout in a row — the core #474 regression guard.
+
+        On a busy agent, background pollers regularly hit ReadTimeout. They
+        must not trip the circuit; we feed 5 in a row (≥ threshold) and
+        assert failures stays at 0.
+        """
+        def handler(_req):
+            raise httpx.ReadTimeout("slow")
+
+        for _ in range(5):
+            with pytest.raises(agent_client.AgentNotReachableError):
+                self._drive(agent_name, handler)
+
+        cs = agent_client.CircuitState(agent_name)
+        assert cs.failure_count == 0
+        assert cs.state == "closed"
+
+    def test_write_error_does_not_record(self, agent_name):
+        """Case 4: httpx.WriteError (wraps BrokenPipeError) — literal #474."""
+        def handler(_req):
+            raise httpx.WriteError("[Errno 32] Broken pipe")
+
+        with pytest.raises(agent_client.AgentNotReachableError):
+            self._drive(agent_name, handler)
+
+        cs = agent_client.CircuitState(agent_name)
+        assert cs.failure_count == 0
+        assert cs.state == "closed"
+
+    def test_raw_broken_pipe_does_not_record(self, agent_name):
+        """Case 5: raw BrokenPipeError surfaced un-wrapped.
+
+        Some transports (and MockTransport) can surface OSError subclasses
+        directly. The plan intentionally does NOT add a raw OSError catch
+        (would mask local resource bugs) — so the exception propagates
+        uncaught from _request, but more importantly, no record_failure().
+        """
+        def handler(_req):
+            raise BrokenPipeError("epipe")
+
+        with pytest.raises(BrokenPipeError):
+            self._drive(agent_name, handler)
+
+        cs = agent_client.CircuitState(agent_name)
+        assert cs.failure_count == 0
+        assert cs.state == "closed"
+
+    def test_raw_connection_reset_does_not_record(self, agent_name):
+        """Case 6: raw ConnectionResetError — sibling of #5."""
+        def handler(_req):
+            raise ConnectionResetError("reset by peer")
+
+        with pytest.raises(ConnectionResetError):
+            self._drive(agent_name, handler)
+
+        cs = agent_client.CircuitState(agent_name)
+        assert cs.failure_count == 0
+        assert cs.state == "closed"
+
+    def test_remote_protocol_error_does_not_record(self, agent_name):
+        """Case 7: RemoteProtocolError (HTTP/2 GOAWAY / framing issues)."""
+        def handler(_req):
+            raise httpx.RemoteProtocolError("bad framing")
+
+        with pytest.raises(agent_client.AgentNotReachableError):
+            self._drive(agent_name, handler)
+
+        cs = agent_client.CircuitState(agent_name)
+        assert cs.failure_count == 0
+        assert cs.state == "closed"
+
+    def test_pool_timeout_does_not_record(self, agent_name):
+        """Case 8: PoolTimeout = client-side pool exhaustion, not agent unhealth.
+
+        PoolTimeout is raised by httpx's connection pool, not the transport,
+        so MockTransport can't naturally produce it. We raise it from the
+        handler — the exception type is what _request() classifies on.
+        """
+        def handler(_req):
+            raise httpx.PoolTimeout("pool exhausted")
+
+        with pytest.raises(agent_client.AgentNotReachableError):
+            self._drive(agent_name, handler)
+
+        cs = agent_client.CircuitState(agent_name)
+        assert cs.failure_count == 0
+        assert cs.state == "closed"
+
+    # ─── HTTP responses: 200..599 record success ────────────────────────
+
+    def test_5xx_response_records_success(self, agent_name):
+        """Case 9: 500 response → record_success() (agent is reachable).
+
+        Pre-seeds the circuit with 2 failures, then asserts a 500 response
+        clears them.
+        """
+        cs = agent_client.CircuitState(agent_name)
+        cs.record_failure()
+        cs.record_failure()
+        assert cs.failure_count == 2
+
+        def handler(_req):
+            return httpx.Response(500, json={"detail": "task error"})
+
+        response = self._drive(agent_name, handler)
+        assert response.status_code == 500
+
+        # 500 hit record_success → counter cleared.
+        cs2 = agent_client.CircuitState(agent_name)
+        assert cs2.failure_count == 0
+        assert cs2.state == "closed"
+
+    # ─── Mixed-signal interleave ────────────────────────────────────────
+
+    def test_mixed_signals_only_hard_failures_count(self, agent_name):
+        """Case 10: 2× ReadTimeout + 3× ConnectError → exactly 3 failures, opens.
+
+        Soft failures must not contaminate the hard counter. Three
+        ConnectErrors (the threshold) trip the circuit; the interleaved
+        ReadTimeouts are invisible to it.
+        """
+        def soft_handler(_req):
+            raise httpx.ReadTimeout("busy")
+
+        def hard_handler(_req):
+            raise httpx.ConnectError("refused")
+
+        # 2 soft failures
+        for _ in range(2):
+            with pytest.raises(agent_client.AgentNotReachableError):
+                self._drive(agent_name, soft_handler)
+
+        # 3 hard failures → trip threshold (default 3)
+        for _ in range(agent_client.CIRCUIT_FAILURE_THRESHOLD):
+            with pytest.raises(agent_client.AgentNotReachableError):
+                self._drive(agent_name, hard_handler)
+
+        cs = agent_client.CircuitState(agent_name)
+        assert cs.failure_count == agent_client.CIRCUIT_FAILURE_THRESHOLD
+        assert cs.state == "open"
+
+    # ─── Pile-on guard ──────────────────────────────────────────────────
+
+    def test_open_circuit_fast_fails_before_transport(self, agent_name):
+        """Case 11: once circuit is open, _request raises AgentCircuitOpenError
+        *before* the transport is hit. record_failure is NOT called again.
+        """
+        def hard_handler(_req):
+            raise httpx.ConnectError("refused")
+
+        # Drive to open via 3 ConnectErrors.
+        for _ in range(agent_client.CIRCUIT_FAILURE_THRESHOLD):
+            with pytest.raises(agent_client.AgentNotReachableError):
+                self._drive(agent_name, hard_handler)
+
+        cs = agent_client.CircuitState(agent_name)
+        assert cs.state == "open"
+        baseline_failures = cs.failure_count
+
+        # Sentinel that records whether handler was invoked.
+        invoked = []
+
+        def post_open_handler(_req):
+            invoked.append(True)
+            raise httpx.ConnectError("would record another failure")
+
+        # Next call must short-circuit with AgentCircuitOpenError.
+        with pytest.raises(agent_client.AgentCircuitOpenError):
+            self._drive(agent_name, post_open_handler)
+
+        # Transport was never hit.
+        assert invoked == [], "transport should not be invoked when circuit is open"
+
+        # Failure counter unchanged.
+        cs2 = agent_client.CircuitState(agent_name)
+        assert cs2.failure_count == baseline_failures
+
+    # ─── Recovery on success ────────────────────────────────────────────
+
+    def test_recovery_on_success_after_open(self, agent_name, monkeypatch):
+        """Case 12: after open, a 200 response inside the probe window
+        resets failures to 0 and closes the circuit.
+        """
+        # Shrink cooldown so the probe window opens almost immediately.
+        monkeypatch.setattr(agent_client, "CIRCUIT_BASE_COOLDOWN_SECONDS", 0.05)
+        monkeypatch.setattr(agent_client, "CIRCUIT_MAX_COOLDOWN_SECONDS", 0.05)
+
+        def hard_handler(_req):
+            raise httpx.ConnectError("refused")
+
+        def ok_handler(_req):
+            return httpx.Response(200, json={"ok": True})
+
+        # Drive to open.
+        for _ in range(agent_client.CIRCUIT_FAILURE_THRESHOLD):
+            with pytest.raises(agent_client.AgentNotReachableError):
+                self._drive(agent_name, hard_handler)
+        assert agent_client.CircuitState(agent_name).state == "open"
+
+        # Sleep past the cooldown so the half-open probe is admitted.
+        time.sleep(0.15)
+
+        response = self._drive(agent_name, ok_handler)
+        assert response.status_code == 200
+
+        cs = agent_client.CircuitState(agent_name)
+        assert cs.state == "closed"
+        assert cs.failure_count == 0
+
+    # ─── Half-open + soft failure interaction (accepted behaviour) ──────
+
+    def test_half_open_soft_failure_holds_probe_lock(self, agent_name, monkeypatch):
+        """Case 13: when the half-open probe gets a ReadTimeout (soft), we
+        do NOT call record_failure(), so the probe-lock is released only
+        via its 10s TTL. Locking in the accepted behaviour — the proper
+        fix (a separate soft-failure counter that releases the probe lock
+        without tripping the hard-failure threshold) is intentionally
+        out of scope for #474.
+        """
+        monkeypatch.setattr(agent_client, "CIRCUIT_BASE_COOLDOWN_SECONDS", 0.05)
+        monkeypatch.setattr(agent_client, "CIRCUIT_MAX_COOLDOWN_SECONDS", 0.05)
+
+        def hard_handler(_req):
+            raise httpx.ConnectError("refused")
+
+        def soft_handler(_req):
+            raise httpx.ReadTimeout("still busy")
+
+        # Drive to open.
+        for _ in range(agent_client.CIRCUIT_FAILURE_THRESHOLD):
+            with pytest.raises(agent_client.AgentNotReachableError):
+                self._drive(agent_name, hard_handler)
+
+        # Wait past cooldown so probe is eligible.
+        time.sleep(0.15)
+
+        # First call wins the probe lock, hits ReadTimeout — soft, no record_failure.
+        with pytest.raises(agent_client.AgentNotReachableError):
+            self._drive(agent_name, soft_handler)
+
+        cs = agent_client.CircuitState(agent_name)
+        # Failures unchanged from when we drove to open.
+        assert cs.failure_count == agent_client.CIRCUIT_FAILURE_THRESHOLD
+        # Still open (no advance, no recovery).
+        assert cs.state == "open"
+
+        # Probe-lock still held → next allow_request denied without invoking
+        # transport. Accepted behaviour for #474 — see this test's docstring
+        # for the deferred soft-failure-counter fix.
+        invoked = []
+
+        def handler(_req):
+            invoked.append(True)
+            return httpx.Response(200)
+
+        with pytest.raises(agent_client.AgentCircuitOpenError):
+            self._drive(agent_name, handler)
+
+        assert invoked == [], "probe-lock should still be held; transport not hit"

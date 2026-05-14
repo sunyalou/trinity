@@ -11,6 +11,7 @@ Alerts are sent via the notification system when status changes.
 """
 
 import asyncio
+import logging
 import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any, Tuple
@@ -32,6 +33,8 @@ from db_models import (
     MonitoringConfig,
 )
 from utils.helpers import utc_now_iso
+
+logger = logging.getLogger(__name__)
 
 
 # =========================================================================
@@ -179,12 +182,17 @@ async def check_network_health(
     - Response time (latency)
     - HTTP status code
 
-    #631 — feed the result into the per-agent circuit breaker. Monitoring
-    used to talk to agents through raw httpx and never recorded its failures
-    on the circuit, so a dead agent kept generating health-check rows
-    forever (the SQLite-contention source). With this hookup, ~3 failures
-    flip the circuit to open, ~10 more flip it to dormant, and dormant
-    short-circuits the whole `perform_health_check` (no DB writes).
+    #631 — feeds the result into the per-agent circuit breaker so a dead
+    agent's repeated unreachability eventually trips dormant and stops the
+    health-check write flood.
+
+    #474 — failure classification mirrors AgentClient._request(). Only
+    CIRCUIT_FAILURE_EXCEPTIONS (ConnectError, ConnectTimeout) count toward
+    the circuit; transient socket teardowns and read-timeouts do not. Any
+    HTTP response (200..599) records success — symmetric with _request()
+    so stale failure counters clear as soon as the agent proves reachable.
+    A wedged-but-listening agent (e.g. /health 5xx) is still flagged via
+    aggregate_health()'s status_code >= 500 check, not via the circuit.
     """
     now = utc_now_iso()
     url = f"http://agent-{agent_name}:8000/health"
@@ -192,10 +200,23 @@ async def check_network_health(
     # Lazy import — keeps services.agent_client → services.monitoring_service
     # circular-import risk at zero even if reachability ever flips.
     try:
-        from services.agent_client import CircuitState
+        from services.agent_client import (
+            CircuitState,
+            CIRCUIT_FAILURE_EXCEPTIONS,
+            TRANSIENT_TRANSPORT_EXCEPTIONS,
+        )
         circuit = CircuitState(agent_name)
     except Exception:
         circuit = None
+        CIRCUIT_FAILURE_EXCEPTIONS = (httpx.ConnectError, httpx.ConnectTimeout)
+        TRANSIENT_TRANSPORT_EXCEPTIONS = (
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.PoolTimeout,
+            httpx.WriteError,
+            httpx.ReadError,
+            httpx.RemoteProtocolError,
+        )
 
     start = time.monotonic()
     try:
@@ -203,11 +224,13 @@ async def check_network_health(
             response = await client.get(url)
             latency_ms = (time.monotonic() - start) * 1000
 
+            # Any httpx.Response (status_code in 100..599) proves TCP/HTTP
+            # reachability, so the circuit records success unconditionally —
+            # symmetric with AgentClient._request() at line ~642. 5xx is
+            # NOT a circuit signal; aggregate_health() below flags it as
+            # UNHEALTHY using the explicit status_code >= 500 check.
             if circuit is not None:
-                if 200 <= response.status_code < 500:
-                    circuit.record_success()
-                else:
-                    circuit.record_failure()
+                circuit.record_success()
 
             return NetworkHealthCheck(
                 agent_name=agent_name,
@@ -216,31 +239,44 @@ async def check_network_health(
                 latency_ms=round(latency_ms, 2),
                 checked_at=now
             )
-    except httpx.TimeoutException:
+
+    except asyncio.CancelledError:
+        # Don't swallow cancellation during shutdown.
+        raise
+
+    except CIRCUIT_FAILURE_EXCEPTIONS as e:
+        # Real unreachability — TCP refused or connect handshake timed out.
         if circuit is not None:
             circuit.record_failure()
         return NetworkHealthCheck(
             agent_name=agent_name,
             reachable=False,
-            error="HTTP timeout",
+            error=f"{type(e).__name__}: {e}"[:200],
             checked_at=now
         )
-    except httpx.ConnectError:
-        if circuit is not None:
-            circuit.record_failure()
+
+    except TRANSIENT_TRANSPORT_EXCEPTIONS as e:
+        # Read/write timeout, pool exhaustion, broken-pipe / reset on a
+        # half-written request, garbled HTTP framing. NOT a circuit signal.
         return NetworkHealthCheck(
             agent_name=agent_name,
             reachable=False,
-            error="Connection refused",
+            error=f"{type(e).__name__}: {e}"[:200],
             checked_at=now
         )
+
     except Exception as e:
-        if circuit is not None:
-            circuit.record_failure()
+        # Unexpected — log with traceback. Unknown errors are almost always
+        # our bug, not evidence of agent unhealth, so DO NOT trip the
+        # circuit here.
+        logger.exception(
+            "check_network_health(%s) unexpected %s",
+            agent_name, type(e).__name__,
+        )
         return NetworkHealthCheck(
             agent_name=agent_name,
             reachable=False,
-            error=str(e)[:200],
+            error=f"{type(e).__name__}: {e}"[:200],
             checked_at=now
         )
 
@@ -374,6 +410,14 @@ def aggregate_health(
     # Unhealthy: Network or runtime failures
     if not network.reachable:
         issues.append(f"Network unreachable: {network.error or 'unknown'}")
+        return AgentHealthStatus.UNHEALTHY, issues
+
+    # /health returned but with a server-error status — agent is reachable
+    # but its HTTP layer is broken. Mark UNHEALTHY (#474 eng review). Without
+    # this, the new "any HTTP response = reachable" rule would silently rate
+    # a wedged-but-listening agent as HEALTHY.
+    if network.status_code is not None and network.status_code >= 500:
+        issues.append(f"Network /health returned {network.status_code}")
         return AgentHealthStatus.UNHEALTHY, issues
 
     if business.runtime_available is False:

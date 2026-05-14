@@ -205,6 +205,47 @@ def _ensure_scripts(client: _redis.Redis):
     return _ALLOW_SCRIPT, _RECORD_FAILURE_SCRIPT, _RECORD_SUCCESS_SCRIPT
 
 
+# ----- Failure classification (#474) ---------------------------------------
+#
+# Single source of truth for which exception types should increment the
+# circuit-breaker failure counter. Imported by services/monitoring_service.py
+# so the /health probe applies the same rule as inline /api/* requests.
+#
+# Rationale (#474): a dropped MCP sync connection produces a fan-out of
+# transient socket teardowns (broken pipe, connection reset, mid-write
+# errors) plus read-timeouts from background pollers polling a *busy* (not
+# unhealthy) agent. Those signals are noisy — only TCP-level unreachability
+# should open the circuit.
+
+CIRCUIT_FAILURE_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+)
+
+# Exceptions we should re-raise as AgentNotReachableError (so existing
+# callers' `except AgentClientError` blocks keep working) but NOT count
+# toward the circuit threshold. httpx.PoolTimeout is included because
+# pool exhaustion is a client-side resource issue, not agent unhealth.
+TRANSIENT_TRANSPORT_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.WriteError,
+    httpx.ReadError,
+    httpx.RemoteProtocolError,
+)
+
+
+def is_circuit_failure(exc: BaseException) -> bool:
+    """Return True if `exc` represents a real "agent unreachable" signal.
+
+    Single source of truth shared by AgentClient._request() and
+    monitoring_service.check_network_health() so both surfaces apply the
+    same rule. See CIRCUIT_FAILURE_EXCEPTIONS for the canonical list.
+    """
+    return isinstance(exc, CIRCUIT_FAILURE_EXCEPTIONS)
+
+
 # ----- Public state object --------------------------------------------------
 
 class CircuitState:
@@ -600,15 +641,38 @@ class AgentClient:
             )
             self._circuit.record_success()
             return response
-        except httpx.ConnectError as e:
+
+        except asyncio.CancelledError:
+            # Cancellation (e.g. MCP client drop propagating through FastAPI)
+            # is not an agent-health signal. Explicit re-raise so a future
+            # maintainer can't shadow it with a broader catch.
+            raise
+
+        except CIRCUIT_FAILURE_EXCEPTIONS as e:
+            # ConnectError / ConnectTimeout — agent is genuinely unreachable.
+            # ConnectTimeout is a TimeoutException subclass, so this branch
+            # must come before any TimeoutException catch.
             self._circuit.record_failure()
             raise AgentNotReachableError(
-                f"Cannot connect to agent {self.agent_name}: {e}"
+                f"Cannot reach agent {self.agent_name}: "
+                f"{type(e).__name__}: {e}"[:200]
             )
-        except httpx.TimeoutException as e:
-            self._circuit.record_failure()
+
+        except TRANSIENT_TRANSPORT_EXCEPTIONS as e:
+            # Read/Write timeouts, pool exhaustion, mid-write broken-pipe /
+            # reset, garbled HTTP framing. Surface to the caller as the
+            # existing typed error so `except AgentClientError` blocks keep
+            # working, but DO NOT count toward the circuit threshold (#474).
+            #
+            # NOT caught here (propagate raw, bypass the AgentClientError
+            # typing contract): httpx.CloseError, httpx.LocalProtocolError,
+            # httpx.ProxyError, httpx.UnsupportedProtocol, httpx.InvalidURL,
+            # and raw OSError subclasses (BrokenPipeError, ConnectionResetError).
+            # Those are client-side / configuration bugs, not agent-health
+            # signals — letting them surface loudly is intentional.
             raise AgentNotReachableError(
-                f"Request to agent {self.agent_name} timed out after {timeout}s"
+                f"Transient transport error to agent {self.agent_name}: "
+                f"{type(e).__name__}: {e}"[:200]
             )
 
     async def get(self, path: str, timeout: float = None, **kwargs) -> httpx.Response:

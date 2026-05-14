@@ -49,11 +49,13 @@ Layer 1: Docker          Layer 2: Network          Layer 3: Business
 Docker > Network > Business
 
 CRITICAL: Container not found / stopped / OOM killed
-UNHEALTHY: Network unreachable / Runtime not available
+UNHEALTHY: Network unreachable / /health 5xx response / Runtime not available
 DEGRADED: High CPU/Memory / High latency / High context usage / Stuck executions
          (credential_status == "missing" no longer triggers DEGRADED — removed in SUB-002)
 HEALTHY: All checks passing
 ```
+
+**Note (#474)**: A `/health` probe that completes with any HTTP response (200..599) records circuit-breaker success — the agent is TCP-reachable. To prevent a wedged-but-listening agent from being silently HEALTHY, `aggregate_health()` has an explicit `status_code >= 500 → UNHEALTHY` branch (`monitoring_service.py:419`). 5xx is **not** a circuit signal; only `ConnectError`/`ConnectTimeout` count toward the per-agent circuit threshold.
 
 ---
 
@@ -407,21 +409,42 @@ def check_docker_health(agent_name: str) -> DockerHealthCheck:
     )
 ```
 
-**Network Health Check** (lines 134-182):
+**Network Health Check** (`monitoring_service.py:175-281`, refined by #474):
+
+Mirrors `AgentClient._request()`'s failure classification — single source of truth lives in `services/agent_client.py` (`CIRCUIT_FAILURE_EXCEPTIONS`, `TRANSIENT_TRANSPORT_EXCEPTIONS`). The probe records circuit-breaker success on any HTTP response, fails the circuit only on `ConnectError`/`ConnectTimeout`, and surfaces transient transport errors as `reachable=False` without touching the circuit.
+
 ```python
 async def check_network_health(agent_name: str, timeout: float = 10.0) -> NetworkHealthCheck:
+    from services.agent_client import (
+        CircuitState, CIRCUIT_FAILURE_EXCEPTIONS, TRANSIENT_TRANSPORT_EXCEPTIONS,
+    )
+    circuit = CircuitState(agent_name)
     url = f"http://agent-{agent_name}:8000/health"
     start = time.monotonic()
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.get(url)
-        latency_ms = (time.monotonic() - start) * 1000
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url)
+            # Any 100..599 response proves TCP/HTTP reachability — circuit
+            # records success unconditionally (symmetric with _request()).
+            circuit.record_success()
+            return NetworkHealthCheck(
+                reachable=True, status_code=response.status_code,
+                latency_ms=(time.monotonic() - start) * 1000,
+            )
 
-    return NetworkHealthCheck(
-        reachable=True,
-        status_code=response.status_code,
-        latency_ms=latency_ms
-    )
+    except asyncio.CancelledError:
+        raise  # Don't swallow shutdown cancellation.
+
+    except CIRCUIT_FAILURE_EXCEPTIONS as e:
+        # ConnectError / ConnectTimeout — real unreachability.
+        circuit.record_failure()
+        return NetworkHealthCheck(reachable=False, error=str(e)[:200])
+
+    except TRANSIENT_TRANSPORT_EXCEPTIONS as e:
+        # Read/write timeout, pool exhaustion, mid-write broken pipe / reset,
+        # garbled framing. NOT a circuit signal.
+        return NetworkHealthCheck(reachable=False, error=str(e)[:200])
 ```
 
 **Business Health Check** (lines 185-277):
@@ -858,6 +881,7 @@ Monitoring service stopped
 
 | Date | Changes |
 |------|---------|
+| 2026-05-12 | **Circuit-breaker classification mirrored on the /health probe (#474)**: `check_network_health()` now lazy-imports `CIRCUIT_FAILURE_EXCEPTIONS` / `TRANSIENT_TRANSPORT_EXCEPTIONS` from `services/agent_client.py` and applies the same rule as inline `/api/*` requests. Any HTTP response (200..599) records circuit success so stale failure counters clear as soon as the agent answers. Only `ConnectError`/`ConnectTimeout` increment the failure counter; read-timeouts, pool exhaustion, mid-write broken-pipe/reset, and garbled framing surface as `reachable=False` but don't poison the circuit. `aggregate_health()` adds an explicit `network.status_code >= 500 → UNHEALTHY` branch (`monitoring_service.py:419`) so a wedged-but-listening agent isn't silently HEALTHY under the new rule. |
 | 2026-03-03 | **SUB-002 credential monitoring removal**: Removed credential file checks from `check_business_health()`, `aggregate_health()`, and `perform_health_check()`. Removed `alert_subscription_credentials_missing()` from `monitoring_alerts.py`. Removed auto-remediation via `inject_subscription_on_start()`. `credential_status` field deprecated (always `None`). Tokens now injected as container env vars. |
 | 2026-02-23 | **Admin-only access restriction**: NavBar "Health" link now requires admin (`v-if="isAdmin"` at NavBar.vue:26), route meta updated to `requiresAdmin: true` (router/index.js:39). Frontend Layer section already documented this correctly. |
 | 2026-02-23 | Initial documentation for MON-001 implementation |

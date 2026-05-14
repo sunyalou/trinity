@@ -18,6 +18,7 @@ import importlib
 import os
 import sys
 
+import httpx
 import pytest
 
 # Add backend to path and import only agent_client (avoid triggering
@@ -40,6 +41,7 @@ AgentClientError = agent_client.AgentClientError
 _client_pool = agent_client._client_pool
 _get_http_client = agent_client._get_http_client
 close_all_clients = agent_client.close_all_clients
+is_circuit_failure = agent_client.is_circuit_failure
 
 
 pytestmark = pytest.mark.unit
@@ -104,3 +106,60 @@ class TestExceptionHierarchy:
             raise AgentCircuitOpenError("circuit open")
         except AgentClientError:
             pass  # This should catch it
+
+    # ─── #474: is_circuit_failure() classification contract ─────────────────
+
+    def test_classifier_connect_error_counts(self):
+        """ConnectError = TCP refused / DNS unresolvable → agent unreachable."""
+        assert is_circuit_failure(httpx.ConnectError("refused")) is True
+
+    def test_classifier_connect_timeout_counts(self):
+        """ConnectTimeout = TCP handshake didn't ack → agent unreachable.
+
+        Must be matched as a CIRCUIT_FAILURE_EXCEPTION even though it's a
+        TimeoutException subclass.
+        """
+        assert is_circuit_failure(httpx.ConnectTimeout("timed out")) is True
+
+    def test_classifier_read_timeout_does_not_count(self):
+        """ReadTimeout = agent stopped responding mid-request → usually busy."""
+        assert is_circuit_failure(httpx.ReadTimeout("slow")) is False
+
+    def test_classifier_write_error_does_not_count(self):
+        """WriteError covers wrapped BrokenPipeError / ConnectionResetError."""
+        assert is_circuit_failure(httpx.WriteError("epipe")) is False
+
+    def test_classifier_pool_timeout_does_not_count(self):
+        """PoolTimeout = client-side pool exhaustion, not agent unhealth."""
+        assert is_circuit_failure(httpx.PoolTimeout("pool")) is False
+
+    def test_classifier_read_error_does_not_count(self):
+        """ReadError = mid-read socket loss → transient."""
+        assert is_circuit_failure(httpx.ReadError("dropped")) is False
+
+    def test_classifier_remote_protocol_error_does_not_count(self):
+        """RemoteProtocolError = garbled response framing → transient."""
+        assert is_circuit_failure(httpx.RemoteProtocolError("bad frame")) is False
+
+    def test_classifier_raw_broken_pipe_does_not_count(self):
+        """Raw BrokenPipeError (some transports surface it un-wrapped)."""
+        assert is_circuit_failure(BrokenPipeError("epipe")) is False
+
+    def test_classifier_raw_connection_reset_does_not_count(self):
+        """Raw ConnectionResetError (sibling of BrokenPipeError)."""
+        assert is_circuit_failure(ConnectionResetError("reset")) is False
+
+    def test_classifier_raw_os_error_does_not_count(self):
+        """OSError(EPIPE) directly — must NOT trip the circuit."""
+        assert is_circuit_failure(OSError(32, "Broken pipe")) is False
+
+    def test_classifier_runtime_error_does_not_count(self):
+        """Unrelated RuntimeError → never a circuit signal."""
+        assert is_circuit_failure(RuntimeError("oops")) is False
+
+    def test_classifier_tuples_are_disjoint(self):
+        """No exception type should be in both CIRCUIT_FAILURE and TRANSIENT
+        tuples — that would make classification ambiguous."""
+        cf = set(agent_client.CIRCUIT_FAILURE_EXCEPTIONS)
+        tt = set(agent_client.TRANSIENT_TRANSPORT_EXCEPTIONS)
+        assert cf.isdisjoint(tt), f"overlap: {cf & tt}"
