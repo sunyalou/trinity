@@ -52,6 +52,11 @@ OPS_SETTINGS_DEFAULTS = {
     # sweep entirely — soft-deleted rows then persist until manually
     # purged.
     "agent_soft_delete_retention_days": "180",
+    # Issue #834 Phase 1b: per-schedule soft-delete. Schedules are
+    # higher-churn than agents (users tweak/replace cron expressions
+    # often), so default is shorter than the agent window. "0"
+    # disables the sweep.
+    "schedule_soft_delete_retention_days": "30",
 }
 
 # Descriptions for each ops setting
@@ -69,6 +74,7 @@ OPS_SETTINGS_DESCRIPTIONS = {
     "execution_row_retention_days": "Days to retain finished schedule_execution rows; rows older than this are deleted (default: 90, 0 = disabled, #772)",
     "health_check_retention_days": "Days to retain agent_health_checks rows (default: 7, 0 = disabled, #772)",
     "agent_soft_delete_retention_days": "Days to retain soft-deleted agents before hard-purge (default: 180, 0 = disabled, #834)",
+    "schedule_soft_delete_retention_days": "Days to retain soft-deleted schedules before hard-purge (default: 30, 0 = disabled, #834)",
 }
 
 

@@ -130,48 +130,64 @@ class SchedulerDatabase:
     # =========================================================================
 
     def get_schedule(self, schedule_id: str) -> Optional[Schedule]:
-        """Get a schedule by ID."""
+        """Get a schedule by ID. Excludes soft-deleted (#834 Phase 1b)."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM agent_schedules WHERE id = ?", (schedule_id,))
+            cursor.execute(
+                "SELECT * FROM agent_schedules WHERE id = ? AND deleted_at IS NULL",
+                (schedule_id,),
+            )
             row = cursor.fetchone()
             return self._row_to_schedule(row) if row else None
 
     def list_all_enabled_schedules(self) -> List[Schedule]:
         """List all enabled schedules.
 
-        This is the primary cron-firing list. Excludes schedules whose
-        agent has been soft-deleted (#834 Phase 1a) — otherwise the
-        scheduler fires every enabled schedule for a soft-deleted agent
-        and writes a `schedule_executions` failure row per attempt until
-        the retention purge runs (up to 180 days later).
+        This is the primary cron-firing list. Two soft-delete filters
+        apply:
+        - #834 Phase 1a: skip schedules whose *agent* is soft-deleted
+          (`agent_ownership.deleted_at`) — otherwise the scheduler fires
+          every enabled schedule for a soft-deleted agent and writes a
+          `schedule_executions` failure row per tick until purge.
+        - #834 Phase 1b: skip *schedules* that are themselves
+          soft-deleted (`agent_schedules.deleted_at`).
         """
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT s.* FROM agent_schedules s
                 JOIN agent_ownership ao ON ao.agent_name = s.agent_name
-                WHERE s.enabled = 1 AND ao.deleted_at IS NULL
+                WHERE s.enabled = 1
+                  AND s.deleted_at IS NULL
+                  AND ao.deleted_at IS NULL
                 ORDER BY s.agent_name, s.name
             """)
             return [self._row_to_schedule(row) for row in cursor.fetchall()]
 
     def list_all_schedules(self) -> List[Schedule]:
-        """List all schedules (enabled and disabled) for sync detection."""
+        """List all schedules (enabled and disabled) for sync detection.
+
+        Excludes soft-deleted (#834 Phase 1b).
+        """
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT * FROM agent_schedules
+                WHERE deleted_at IS NULL
                 ORDER BY agent_name, name
             """)
             return [self._row_to_schedule(row) for row in cursor.fetchall()]
 
     def list_agent_schedules(self, agent_name: str) -> List[Schedule]:
-        """List all schedules for a specific agent."""
+        """List all schedules for a specific agent.
+
+        Excludes soft-deleted (#834 Phase 1b).
+        """
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT * FROM agent_schedules WHERE agent_name = ?
+                SELECT * FROM agent_schedules
+                WHERE agent_name = ? AND deleted_at IS NULL
                 ORDER BY name
             """, (agent_name,))
             return [self._row_to_schedule(row) for row in cursor.fetchall()]

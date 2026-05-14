@@ -710,6 +710,12 @@ class DatabaseManager:
     def delete_schedule(self, schedule_id: str, username: str):
         return self._schedule_ops.delete_schedule(schedule_id, username)
 
+    def purge_schedule(self, schedule_id: str):
+        return self._schedule_ops.purge_schedule(schedule_id)
+
+    def find_soft_deleted_schedules_past_retention(self, retention_days: int, limit: int = 5000):
+        return self._schedule_ops.find_soft_deleted_schedules_past_retention(retention_days, limit)
+
     # Webhook token management (WEBHOOK-001, #291)
     def generate_webhook_token(self, schedule_id: str):
         return self._schedule_ops.generate_webhook_token(schedule_id)

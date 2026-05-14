@@ -183,6 +183,7 @@ TABLES = {
             validation_timeout_seconds INTEGER DEFAULT 120,
             webhook_token TEXT,
             webhook_enabled INTEGER DEFAULT 0,
+            deleted_at TEXT,
             FOREIGN KEY (owner_id) REFERENCES users(id)
         )
     """,
@@ -1065,6 +1066,10 @@ INDEXES = [
 
     # Schedule indexes
     "CREATE INDEX IF NOT EXISTS idx_schedules_agent ON agent_schedules(agent_name)",
+    # Issue #834 Phase 1b: partial index for retention sweep over
+    # soft-deleted schedules.
+    "CREATE INDEX IF NOT EXISTS idx_agent_schedules_deleted_at "
+    "ON agent_schedules(deleted_at) WHERE deleted_at IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_schedules_owner ON agent_schedules(owner_id)",
     "CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON agent_schedules(enabled)",
 

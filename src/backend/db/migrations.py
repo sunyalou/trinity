@@ -2099,6 +2099,29 @@ def _migrate_default_execution_timeout_to_3600(cursor, conn):
     conn.commit()
 
 
+def _migrate_agent_schedules_soft_delete(cursor, conn):
+    """Issue #834 Phase 1b: soft-delete column + partial index on agent_schedules.
+
+    Mirrors Phase 1a's agent_ownership column. `DELETE /api/agents/{name}/
+    schedules/{id}` becomes UPDATE deleted_at; the cleanup_service sweep
+    hard-deletes rows past `schedule_soft_delete_retention_days`.
+
+    Partial index narrows the retention-sweep scan to actually-deleted
+    rows so it stays cheap as the schedule count grows.
+    """
+    _safe_add_column(
+        cursor,
+        "agent_schedules",
+        "deleted_at",
+        "ALTER TABLE agent_schedules ADD COLUMN deleted_at TEXT",
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_schedules_deleted_at "
+        "ON agent_schedules(deleted_at) WHERE deleted_at IS NOT NULL"
+    )
+    conn.commit()
+
+
 def _migrate_agent_ownership_soft_delete(cursor, conn):
     """Issue #834 Phase 1a: soft-delete column + partial index on agent_ownership.
 
@@ -2189,4 +2212,5 @@ MIGRATIONS = [
     ("fix_retention_index_status_values", _migrate_fix_retention_index_status_values),
     ("agent_ownership_soft_delete", _migrate_agent_ownership_soft_delete),
     ("execution_retry_count", _migrate_execution_retry_count),
+    ("agent_schedules_soft_delete", _migrate_agent_schedules_soft_delete),
 ]

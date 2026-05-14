@@ -289,19 +289,23 @@ class ScheduleOperations:
                 return None
 
     def get_schedule(self, schedule_id: str) -> Optional[Schedule]:
-        """Get a schedule by ID."""
+        """Get a schedule by ID. Excludes soft-deleted schedules (#834)."""
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM agent_schedules WHERE id = ?", (schedule_id,))
+            cursor.execute(
+                "SELECT * FROM agent_schedules WHERE id = ? AND deleted_at IS NULL",
+                (schedule_id,),
+            )
             row = cursor.fetchone()
             return self._row_to_schedule(row) if row else None
 
     def list_agent_schedules(self, agent_name: str) -> List[Schedule]:
-        """List all schedules for an agent."""
+        """List all schedules for an agent. Excludes soft-deleted (#834)."""
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT * FROM agent_schedules WHERE agent_name = ?
+                SELECT * FROM agent_schedules
+                WHERE agent_name = ? AND deleted_at IS NULL
                 ORDER BY created_at DESC
             """, (agent_name,))
             return [self._row_to_schedule(row) for row in cursor.fetchall()]
@@ -309,38 +313,50 @@ class ScheduleOperations:
     def list_all_enabled_schedules(self) -> List[Schedule]:
         """List all enabled schedules (for scheduler initialization).
 
-        Excludes schedules whose agent has been soft-deleted (#834
-        Phase 1a): without the `agent_ownership` join the scheduler
-        would fire every enabled schedule for a soft-deleted agent and
-        write a `schedule_executions` failure row on each attempt until
-        the retention purge runs (up to 180 days later).
+        Two soft-delete filters apply:
+        - #834 Phase 1a: skip schedules whose *agent* is soft-deleted
+          (`agent_ownership.deleted_at`) — otherwise the scheduler fires
+          every enabled schedule for a soft-deleted agent and writes a
+          `schedule_executions` failure row per tick until purge.
+        - #834 Phase 1b: skip *schedules* that are themselves
+          soft-deleted (`agent_schedules.deleted_at`).
         """
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT s.* FROM agent_schedules s
                 JOIN agent_ownership ao ON ao.agent_name = s.agent_name
-                WHERE s.enabled = 1 AND ao.deleted_at IS NULL
+                WHERE s.enabled = 1
+                  AND s.deleted_at IS NULL
+                  AND ao.deleted_at IS NULL
                 ORDER BY s.agent_name, s.name
             """)
             return [self._row_to_schedule(row) for row in cursor.fetchall()]
 
     def list_all_disabled_schedules(self) -> List[Schedule]:
-        """List all disabled schedules (for resume operations)."""
+        """List all disabled schedules (for resume operations).
+
+        Excludes soft-deleted (#834).
+        """
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT * FROM agent_schedules WHERE enabled = 0
+                SELECT * FROM agent_schedules
+                WHERE enabled = 0 AND deleted_at IS NULL
                 ORDER BY agent_name, name
             """)
             return [self._row_to_schedule(row) for row in cursor.fetchall()]
 
     def list_all_schedules(self) -> List[Schedule]:
-        """List all schedules across all agents (for system agent overview)."""
+        """List all schedules across all agents (for system agent overview).
+
+        Excludes soft-deleted (#834).
+        """
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT * FROM agent_schedules
+                WHERE deleted_at IS NULL
                 ORDER BY agent_name, name
             """)
             return [self._row_to_schedule(row) for row in cursor.fetchall()]
@@ -431,7 +447,22 @@ class ScheduleOperations:
             return self.get_schedule(schedule_id)
 
     def delete_schedule(self, schedule_id: str, username: str) -> bool:
-        """Delete a schedule and its executions."""
+        """Soft-delete a schedule (Issue #834 Phase 1b).
+
+        Sets `agent_schedules.deleted_at = NOW`. Executions stay intact —
+        they're billing-relevant (subscription_id rollup) and #772's
+        retention sweep ages them out independently.
+
+        The scheduler service filters `deleted_at IS NULL` on its
+        enabled-schedules poll, so soft-deleted schedules stop firing
+        immediately. `cleanup_service.py` hard-purges rows past
+        `schedule_soft_delete_retention_days` (default 30).
+
+        Idempotent: re-deleting an already-soft-deleted schedule still
+        returns True provided the caller has permission.
+        """
+        from utils.helpers import utc_now_iso
+
         user = self._user_ops.get_user_by_username(username)
         if not user:
             return False
@@ -446,12 +477,71 @@ class ScheduleOperations:
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # Delete executions first
-            cursor.execute("DELETE FROM schedule_executions WHERE schedule_id = ?", (schedule_id,))
-            # Delete schedule
-            cursor.execute("DELETE FROM agent_schedules WHERE id = ?", (schedule_id,))
+            cursor.execute(
+                "UPDATE agent_schedules SET deleted_at = ? "
+                "WHERE id = ? AND deleted_at IS NULL",
+                (utc_now_iso(), schedule_id),
+            )
+            if cursor.rowcount > 0:
+                conn.commit()
+                return True
+            # rowcount==0 — already soft-deleted (still True; permission
+            # check above confirmed the caller's right to delete it).
+            return True
+
+    def purge_schedule(self, schedule_id: str) -> bool:
+        """Hard-delete a soft-deleted schedule (#834 Phase 1b).
+
+        Called by the cleanup_service retention sweep. Refuses to purge
+        a live (non-soft-deleted) row — callers must soft-delete first.
+        Also removes `schedule_executions` rows for the schedule —
+        consistent with the previous hard-delete behavior and with
+        what cascade_delete does at agent purge time.
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT deleted_at FROM agent_schedules WHERE id = ?",
+                (schedule_id,),
+            )
+            row = cursor.fetchone()
+            if not row or row["deleted_at"] is None:
+                return False
+
+            cursor.execute(
+                "DELETE FROM schedule_executions WHERE schedule_id = ?",
+                (schedule_id,),
+            )
+            cursor.execute(
+                "DELETE FROM agent_schedules WHERE id = ?",
+                (schedule_id,),
+            )
             conn.commit()
             return cursor.rowcount > 0
+
+    def find_soft_deleted_schedules_past_retention(
+        self, retention_days: int, limit: int = 5000
+    ) -> list:
+        """List schedule ids whose `deleted_at` is older than `retention_days`.
+
+        Used by the cleanup sweep to find rows ready for hard-purge.
+        Bounded by `limit`.
+        """
+        from utils.helpers import iso_cutoff
+
+        if retention_days <= 0 or limit <= 0:
+            return []
+
+        cutoff = iso_cutoff(hours=retention_days * 24)
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM agent_schedules "
+                "WHERE deleted_at IS NOT NULL AND deleted_at < ? "
+                "LIMIT ?",
+                (cutoff, limit),
+            )
+            return [row["id"] for row in cursor.fetchall()]
 
     def set_schedule_enabled(self, schedule_id: str, enabled: bool) -> bool:
         """Enable or disable a schedule.
@@ -559,7 +649,8 @@ class ScheduleOperations:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM agent_schedules WHERE webhook_token = ?",
+                "SELECT * FROM agent_schedules "
+                "WHERE webhook_token = ? AND deleted_at IS NULL",
                 (token,),
             )
             row = cursor.fetchone()
@@ -596,7 +687,8 @@ class ScheduleOperations:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT webhook_token, webhook_enabled FROM agent_schedules WHERE id = ?",
+                "SELECT webhook_token, webhook_enabled FROM agent_schedules "
+                "WHERE id = ? AND deleted_at IS NULL",
                 (schedule_id,),
             )
             row = cursor.fetchone()
@@ -1347,6 +1439,7 @@ class ScheduleOperations:
                     COUNT(*) as total,
                     SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled
                 FROM agent_schedules
+                WHERE deleted_at IS NULL
                 GROUP BY agent_name
             """)
 
