@@ -183,6 +183,13 @@ def _preload_backend_routers_namespace():
 _preload_backend_models()
 _preload_backend_routers_namespace()
 
+# Pre-load services.agent_client so CircuitState is in sys.modules before
+# test_voice_tools.py installs an incomplete stub (#762 followup).
+try:
+    import services.agent_client  # noqa: F401
+except Exception:
+    pass
+
 # ---------------------------------------------------------------------------
 # Issue #762: cross-file sys.modules pollution baseline + autouse restore.
 #
@@ -227,8 +234,9 @@ _SYS_MODULES_INVARIANT_KEYS = (
     "database",
     # Services: stubbed by test_validation.py (task_execution_service),
     # test_telegram_webhook_backfill.py (platform_audit_service,
-    # settings_service), etc.
+    # settings_service), test_voice_tools.py (agent_client), etc.
     "services",
+    "services.agent_client",
     "services.platform_audit_service",
     "services.settings_service",
     "services.task_execution_service",

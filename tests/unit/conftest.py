@@ -141,8 +141,54 @@ _preload_backend_utils()
 # Evict any tests/agent_server shadow and register the real base-image package.
 _preload_real_agent_server()
 
+# Pre-load services.agent_client so CircuitState is in sys.modules before
+# test_fleet_status_resilience.py / test_voice_tools.py install partial stubs
+# at module-collection time. The autouse restore below then replaces any such
+# stub with the real module before each test runs (#762 followup).
+try:
+    import services.agent_client  # noqa: F401
+except Exception:
+    pass
+
+# ---------------------------------------------------------------------------
+# Issue #762 followup: cross-file sys.modules pollution for unit tier.
+#
+# test_fleet_status_resilience.py (module-collection scope) does
+#   sys.modules.setdefault("services.agent_client", types.SimpleNamespace(...))
+# with a stub missing CircuitState. test_voice_tools.py also installs partial
+# stubs (its per-test fixture only protects its own class). Both leak across
+# files and break `from services.agent_client import CircuitState` in
+# task_execution_service.py, cascading into test_file_upload.py and
+# test_session_persistence_flag.py.
+#
+# Mirror the parent conftest's baseline+autouse mechanism (tests/conftest.py:
+# 186-281) for the unit tier, which uses its own rootdir (norecursedirs = ..).
+# ---------------------------------------------------------------------------
+_SYS_MODULES_INVARIANT_KEYS = (
+    "services",
+    "services.agent_client",
+)
+
+_SYS_MODULES_BASELINE = {
+    k: sys.modules.get(k) for k in _SYS_MODULES_INVARIANT_KEYS
+}
+
+
+def _restore_invariant_sys_modules() -> None:
+    """Restore invariant keys whose baseline value was a real module object.
+    Keys that had no baseline (None) are left untouched — they may be
+    deliberate stubs installed by individual test files for their own use."""
+    for k, baseline in _SYS_MODULES_BASELINE.items():
+        if baseline is not None:
+            sys.modules[k] = baseline
+
 
 @pytest.fixture(autouse=True)
 def cleanup_after_test():
-    """Override parent's cleanup_after_test that requires api_client."""
+    """Override parent's cleanup_after_test that requires api_client.
+
+    Also restores the post-preload sys.modules baseline before AND after every
+    test to defend against cross-file pollution (#762 followup)."""
+    _restore_invariant_sys_modules()
     yield
+    _restore_invariant_sys_modules()
