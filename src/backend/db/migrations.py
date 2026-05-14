@@ -2022,6 +2022,39 @@ def _migrate_execution_retention_index(cursor, conn):
     conn.commit()
 
 
+def _migrate_default_execution_timeout_to_3600(cursor, conn):
+    """Issue #665: bump default chat execution timeout from 15min → 60min.
+
+    Rewrites any `agent_ownership.execution_timeout_seconds` row that
+    is still at the old 900s default to the new 3600s. Rows where the
+    operator explicitly set a different value (which is every value
+    except 900) are untouched — the assumption is that 900 means
+    "never customised; tracking the platform default."
+
+    Risk: an operator who deliberately set 900 to keep the old window
+    gets upgraded. Acceptable per the issue text; the per-agent
+    timeout endpoint (PUT /api/agents/{name}/timeout) is the explicit
+    override for that case.
+
+    Idempotent: subsequent runs find nothing at 900 and no-op.
+    """
+    cursor.execute(
+        "UPDATE agent_ownership SET execution_timeout_seconds = 3600 "
+        "WHERE execution_timeout_seconds = 900"
+    )
+    # Per-schedule override column has its own DEFAULT 900 in the DDL.
+    # Without this bump the watchdog's
+    # COALESCE(s.timeout_seconds, ao.execution_timeout_seconds, 900)
+    # would still pick up 900 from the schedule row before falling
+    # through to the agent's 3600 — defeating the intent of #665 for
+    # scheduled tasks.
+    cursor.execute(
+        "UPDATE agent_schedules SET timeout_seconds = 3600 "
+        "WHERE timeout_seconds = 900"
+    )
+    conn.commit()
+
+
 MIGRATIONS = [
     ("agent_sharing", _migrate_agent_sharing_table),
     ("schedule_executions_observability", _migrate_schedule_executions_observability),
@@ -2081,4 +2114,5 @@ MIGRATIONS = [
     ("slack_bot_token_encryption", _migrate_slack_bot_token_encryption),
     ("canary_violations_table", _migrate_canary_violations_table),
     ("execution_retention_index", _migrate_execution_retention_index),
+    ("default_execution_timeout_to_3600", _migrate_default_execution_timeout_to_3600),
 ]

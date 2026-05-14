@@ -92,7 +92,7 @@ class ScheduleOperations:
             updated_at=parse_iso_timestamp(row["updated_at"]),
             last_run_at=parse_iso_timestamp(row["last_run_at"]) if row["last_run_at"] else None,
             next_run_at=parse_iso_timestamp(row["next_run_at"]) if row["next_run_at"] else None,
-            timeout_seconds=row["timeout_seconds"] if "timeout_seconds" in row_keys and row["timeout_seconds"] else 900,
+            timeout_seconds=row["timeout_seconds"] if "timeout_seconds" in row_keys and row["timeout_seconds"] else 3600,
             allowed_tools=allowed_tools,
             model=row["model"] if "model" in row_keys else None,
             # Retry configuration (RETRY-001)
@@ -1787,7 +1787,7 @@ class ScheduleOperations:
         Timeout resolution order:
         1. Schedule's timeout_seconds (for scheduled executions)
         2. Agent's execution_timeout_seconds (for manual/MCP executions)
-        3. Fallback default of 900s
+        3. Fallback default of 3600s (#665)
 
         Returns:
             List of dicts with id, schedule_id, agent_name, started_at,
@@ -1797,7 +1797,7 @@ class ScheduleOperations:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT e.id, e.schedule_id, e.agent_name, e.started_at,
-                       COALESCE(s.timeout_seconds, ao.execution_timeout_seconds, 900) as timeout_seconds
+                       COALESCE(s.timeout_seconds, ao.execution_timeout_seconds, 3600) as timeout_seconds
                 FROM schedule_executions e
                 LEFT JOIN agent_schedules s ON e.schedule_id = s.id
                 LEFT JOIN agent_ownership ao ON e.agent_name = ao.agent_name

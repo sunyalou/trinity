@@ -576,7 +576,7 @@ watch(selectedModel, (val) => {
 
 // Timeout selection
 const taskTimeoutKey = computed(() => `trinity-task-timeout-${props.agentName}`)
-const taskTimeout = ref(parseInt(localStorage.getItem(`trinity-task-timeout-${props.agentName}`)) || 900)
+const taskTimeout = ref(parseInt(localStorage.getItem(`trinity-task-timeout-${props.agentName}`)) || 3600)  // #665: 60min default
 watch(taskTimeout, (val) => {
   localStorage.setItem(taskTimeoutKey.value, val)
 })

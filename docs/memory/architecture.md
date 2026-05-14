@@ -509,7 +509,7 @@ picks up on its next poll. (#389 S1a)
 | GET | `/api/agents/{name}/read-only` | Get read-only mode status and config (NEW: 2026-02-17) |
 | PUT | `/api/agents/{name}/read-only` | Enable/disable read-only mode (blocks source file writes) |
 | GET | `/api/agents/{name}/timeout` | Get execution timeout setting (NEW: 2026-03-12) |
-| PUT | `/api/agents/{name}/timeout` | Set execution timeout (60-7200s, default 900s = 15min) |
+| PUT | `/api/agents/{name}/timeout` | Set execution timeout (60-7200s, default 3600s = 60min, #665) |
 | GET | `/api/agents/{name}/guardrails` | Get per-agent guardrails config (NEW: 2026-04-15) |
 | PUT | `/api/agents/{name}/guardrails` | Set per-agent guardrails overrides (GUARD-001) |
 | GET | `/api/agents/{name}/file-sharing` | Get outbound file-sharing status + quota (NEW: 2026-04-24, FILES-001) |
@@ -871,7 +871,7 @@ CREATE TABLE agent_ownership (
     read_only_config TEXT,
     subscription_id TEXT,
     max_parallel_tasks INTEGER DEFAULT 3,          -- CAPACITY-001
-    execution_timeout_seconds INTEGER DEFAULT 900, -- TIMEOUT-001 (15 min)
+    execution_timeout_seconds INTEGER DEFAULT 3600, -- TIMEOUT-001 (60 min, #665)
     avatar_identity_prompt TEXT,
     avatar_updated_at TEXT,
     is_default_avatar INTEGER DEFAULT 0,

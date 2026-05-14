@@ -116,9 +116,9 @@
                   class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-action-primary-500"
                 >
                   <option :value="300">5 minutes</option>
-                  <option :value="900">15 minutes (default)</option>
+                  <option :value="900">15 minutes</option>
                   <option :value="1800">30 minutes</option>
-                  <option :value="3600">1 hour</option>
+                  <option :value="3600">1 hour (default)</option>
                   <option :value="7200">2 hours</option>
                 </select>
               </div>
@@ -676,7 +676,7 @@ const formData = ref({
   description: '',
   timezone: 'UTC',
   enabled: true,
-  timeout_seconds: 900,
+  timeout_seconds: 3600,  // 60 min default (#665)
   allowed_tools: null,  // null = all tools allowed
   model: '',  // '' = use platform default (#831); non-empty = explicit override
   // RETRY-001: Retry configuration. 0 = disabled (default, #476); 1-5 opt-in.
@@ -807,7 +807,7 @@ function closeForm() {
     description: '',
     timezone: 'UTC',
     enabled: true,
-    timeout_seconds: 900,
+    timeout_seconds: 3600,  // 60 min default (#665)
     allowed_tools: null,
     model: '',  // '' = use platform default (#831)
     // RETRY-001
@@ -826,7 +826,7 @@ function editSchedule(schedule) {
     description: schedule.description || '',
     timezone: schedule.timezone,
     enabled: schedule.enabled,
-    timeout_seconds: schedule.timeout_seconds || 900,
+    timeout_seconds: schedule.timeout_seconds || 3600,  // #665
     allowed_tools: schedule.allowed_tools || null,
     model: schedule.model || '',  // '' = use platform default (#831)
     // RETRY-001
@@ -1051,7 +1051,7 @@ watch(() => props.initialMessage, (newMessage) => {
     formData.value.description = ''
     formData.value.timezone = 'UTC'
     formData.value.enabled = true
-    formData.value.timeout_seconds = 900
+    formData.value.timeout_seconds = 3600  // #665
     formData.value.allowed_tools = null
     showCreateForm.value = true
   }
