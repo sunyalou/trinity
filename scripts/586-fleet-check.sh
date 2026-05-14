@@ -35,7 +35,8 @@ jq -src 'group_by(.container) | map({container: .[0].container, count: length})'
 
 # Gate the close: any "still stuck after Ns" or "no result message after"
 # match means the platform fix did not fully cover the case.
-if jq -e 'select(.msg | test("still stuck after [0-9.]+s|no result message after"))' "${OUT}" >/dev/null 2>&1; then
+if jq -r 'select(.msg | test("still stuck after [0-9.]+s|no result message after")) | .msg' "${OUT}" \
+     | grep -q .; then
     echo "FAIL: residual #586-class events found — DO NOT close." >&2
     exit 1
 fi
