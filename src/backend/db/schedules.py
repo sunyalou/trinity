@@ -467,27 +467,38 @@ class ScheduleOperations:
         if not user:
             return False
 
-        schedule = self.get_schedule(schedule_id)
-        if not schedule:
-            return False
-
-        # Check permission (owner or admin)
-        if user["role"] != "admin" and schedule.owner_id != user["id"]:
-            return False
-
         with get_db_connection() as conn:
             cursor = conn.cursor()
+            # Permission check must read the row *including* soft-deleted
+            # ones. `get_schedule()` filters `deleted_at IS NULL` (#834
+            # Phase 1b), so using it here made a retry on an
+            # already-soft-deleted schedule fall through to `return
+            # False` → the router turned that into a misleading 403
+            # "access denied" for the legitimate owner. Read owner_id
+            # directly so re-delete is genuinely idempotent.
+            cursor.execute(
+                "SELECT owner_id, deleted_at FROM agent_schedules WHERE id = ?",
+                (schedule_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False
+
+            if user["role"] != "admin" and row["owner_id"] != user["id"]:
+                return False
+
+            if row["deleted_at"] is not None:
+                # Already soft-deleted and the caller is authorised —
+                # idempotent success (router → 204).
+                return True
+
             cursor.execute(
                 "UPDATE agent_schedules SET deleted_at = ? "
                 "WHERE id = ? AND deleted_at IS NULL",
                 (utc_now_iso(), schedule_id),
             )
-            if cursor.rowcount > 0:
-                conn.commit()
-                return True
-            # rowcount==0 — already soft-deleted (still True; permission
-            # check above confirmed the caller's right to delete it).
-            return True
+            conn.commit()
+            return cursor.rowcount > 0
 
     def purge_schedule(self, schedule_id: str) -> bool:
         """Hard-delete a soft-deleted schedule (#834 Phase 1b).

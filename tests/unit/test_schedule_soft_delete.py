@@ -32,8 +32,15 @@ def _make_db_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE users (
             id INTEGER PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
+            password_hash TEXT,
+            role TEXT DEFAULT 'user',
+            auth0_sub TEXT,
+            name TEXT,
+            picture TEXT,
             email TEXT,
-            role TEXT DEFAULT 'user'
+            created_at TEXT,
+            updated_at TEXT,
+            last_login TEXT
         )
         """
     )
