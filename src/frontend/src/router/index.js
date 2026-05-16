@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { useSessionsStore } from '../stores/sessions'
 
 const routes = [
   {
@@ -48,7 +49,16 @@ const routes = [
     path: '/agents/:name/workspace',
     name: 'AgentWorkspace',
     component: () => import('../views/AgentWorkspace.vue'),
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true },
+    beforeEnter: async (to, from, next) => {
+      const sessionsStore = useSessionsStore()
+      await sessionsStore.loadFeatureFlags()
+      if (!sessionsStore.workspaceAvailable) {
+        next({ name: 'AgentDetail', params: { name: to.params.name } })
+      } else {
+        next()
+      }
+    },
   },
   {
     path: '/agents/:name/executions/:executionId',
