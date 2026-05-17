@@ -11,6 +11,31 @@ def _reload_config():
     return importlib.import_module("config")
 
 
+@pytest.fixture(autouse=True)
+def _restore_config_module():
+    """Snapshot sys.modules["config"] and restore it after each test.
+
+    Without this guard, `test_config_accepts_url_with_credentials` reloads
+    `config` against the *current* env (with REDIS_URL/SECRET_KEY mutated by
+    monkeypatch + whatever later tests have setdefault'd into os.environ) and
+    leaves the new module in sys.modules. Subsequent tests that do a runtime
+    `from config import SECRET_KEY, ALGORITHM` (e.g. routers/voice.py inside
+    test_voice_auth.py) then read a SECRET_KEY that differs from the one
+    captured at their module-collection time — JWT decode fails, the
+    ownership-gate tests close 4001 instead of 4003/accept, and CI goes red
+    only under seeds that order test_config_fail_fast before test_voice_auth.
+
+    Restoring the pre-test module here keeps each test's reload scoped to
+    itself.
+    """
+    original = sys.modules.get("config")
+    yield
+    if original is not None:
+        sys.modules["config"] = original
+    else:
+        sys.modules.pop("config", None)
+
+
 def test_config_raises_when_redis_url_missing(monkeypatch):
     monkeypatch.delenv("REDIS_URL", raising=False)
     with pytest.raises(RuntimeError, match="REDIS_URL must include credentials"):
