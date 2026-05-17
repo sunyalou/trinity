@@ -36,7 +36,7 @@ collaboration edges after a laptop sleep.
     `event_bus.publish(event, scope=SCOPE_SCOPED)`.
 - **Publisher core**: `src/backend/services/event_bus.py:EventBus.publish`
 - **WebSocket endpoints**:
-  - `GET /ws?token=<jwt>&last-event-id=<stream_id>` — `src/backend/main.py:634+`
+  - `GET /ws?ticket=<opaque>&last-event-id=<stream_id>` — `@app.websocket("/ws")` handler in `src/backend/main.py` (ticket minted via `POST /api/ws/ticket`; see C-002 / #550)
   - `GET /ws/events?token=trinity_mcp_...&last-event-id=<stream_id>` —
     `src/backend/main.py:697+`
 - **Frontend WebSocket clients**:
