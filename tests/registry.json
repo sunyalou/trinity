@@ -439,18 +439,6 @@
       "description": "Unit tests for the Slack mrkdwn renderer that replaces slackify-markdown 0.2.2 (#293): nested-list indentation preserved (2-3 levels, mixed bullet/ordered), blank line before headings (H1-H6), blockquote `>` prefix on every line (multi-line + softbreak continuation), table conversion to fenced code-block with column alignment, horizontal rule emits visible separator. Plus inline formatting regression coverage (bold, italic, strikethrough, links with/without label, image-as-link, code blocks with language fence stripping), real agent response patterns (status report, code review, blockquoted attribution), edge cases (empty/None/non-string input, HTML-as-literal-text). Pairs with tests/unit/test_slack_rich_text.py (13 tests, retargeted to new renderer)."
     },
     {
-      "file": "test_site_proxy.py",
-      "feature": "SITE-001",
-      "added": "2026-05-03",
-      "categories": [
-        "backend",
-        "api",
-        "public-links",
-        "proxy"
-      ],
-      "description": "Tests for agent website proxy (#633): site link creation, link_type field, URL format, token validation (invalid/wrong-type/disabled), 502 when web server not running, redirect on missing trailing slash."
-    },
-    {
       "file": "unit/test_database_facade_delegation.py",
       "feature": "Issue #647 / WEBHOOK-001 facade gap",
       "added": "2026-05-04",
@@ -507,6 +495,57 @@
         "integration",
         "backend",
         "settings"
+      ]
+    },
+    {
+      "file": "unit/test_circuit_breaker.py",
+      "feature": "#474",
+      "added": "2026-05-12",
+      "categories": [
+        "unit",
+        "backend",
+        "service",
+        "resilience",
+        "circuit-breaker"
+      ],
+      "description": "Tests that the AgentClient circuit breaker only counts TCP unreachability (connect errors/timeouts) toward opening — HTTP errors, read/write/pool failures, and protocol errors are excluded"
+    },
+    {
+      "file": "integration/test_circuit_breaker.py",
+      "feature": "#474",
+      "added": "2026-05-12",
+      "categories": [
+        "integration",
+        "backend",
+        "service",
+        "resilience",
+        "circuit-breaker",
+        "redis"
+      ],
+      "description": "Drives the real AgentClient through httpx.MockTransport against real Redis circuit state — hard vs soft failures, mixed interleave, open-circuit fast-fail, recovery on 200, and the deferred half-open soft-failure probe-lock behaviour"
+    },
+    {
+      "file": "integration/test_monitoring_service.py",
+      "feature": "#474",
+      "added": "2026-05-12",
+      "categories": [
+        "integration",
+        "backend",
+        "service",
+        "monitoring",
+        "circuit-breaker"
+      ],
+      "description": "Mirrors the #474 classification rule on the /health probe path and pins the `status_code >= 500 → UNHEALTHY` aggregator branch"
+    },
+    {
+      "file": "unit/test_platform_default_model_regression.py",
+      "feature": "MODEL-DEFAULT-001",
+      "added": "2026-05-13",
+      "categories": [
+        "unit",
+        "regression",
+        "backend",
+        "agent-server"
       ]
     }
   ]

@@ -118,14 +118,19 @@ async def get_public_feature_flags(
     - ``session_tab_enabled`` — gates the Session tab in AgentDetail.
       Reads through ``services.settings_service.is_session_tab_enabled()``
       so the resolution order (DB → env → False default) stays in one place.
+    - ``workspace_available`` — gates the Agent Workspace (voice + canvas).
+      Requires both voice infrastructure (VOICE_ENABLED + GEMINI_API_KEY) AND
+      ``WORKSPACE_ENABLED=true`` (or DB override). Defaults to False (#860).
 
     Auth required (any role) — these flags reveal nothing sensitive but we
     still keep them out of the unauthenticated surface.
     """
     from config import GEMINI_API_KEY, VOICE_ENABLED
+    voice_available = VOICE_ENABLED and bool(GEMINI_API_KEY)
     return {
         "session_tab_enabled": settings_service.is_session_tab_enabled(),
-        "voice_available": VOICE_ENABLED and bool(GEMINI_API_KEY),
+        "voice_available": voice_available,
+        "workspace_available": voice_available and settings_service.is_workspace_enabled(),
         "platform_default_model": settings_service.get_platform_default_model(),
     }
 

@@ -66,6 +66,7 @@
             :has-avatar-prompt="!!avatarIdentityPrompt"
             :emotion-avatar-url="emotionAvatarUrl"
             :voice-available="sessionsStore.voiceAvailable"
+            :workspace-available="sessionsStore.workspaceAvailable"
           />
 
           <!-- Tabs -->

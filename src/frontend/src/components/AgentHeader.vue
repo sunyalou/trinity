@@ -149,7 +149,7 @@
         <div class="flex items-center space-x-3">
           <!-- Workspace button (voice + canvas, BETA) -->
           <button
-            v-if="voiceAvailable"
+            v-if="workspaceAvailable"
             @click="goToWorkspace"
             :disabled="agent.status !== 'running'"
             class="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition-colors"
@@ -556,6 +556,10 @@ const props = defineProps({
     default: null
   },
   voiceAvailable: {
+    type: Boolean,
+    default: false
+  },
+  workspaceAvailable: {
     type: Boolean,
     default: false
   }

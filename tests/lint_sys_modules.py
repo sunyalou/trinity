@@ -51,7 +51,11 @@ BANNED_METHODS = {"setdefault", "update", "pop"}
 FIX_HINT = (
     "use monkeypatch.setitem(sys.modules, ...) or "
     "monkeypatch.delitem(sys.modules, ..., raising=False), "
-    "or move to conftest.py"
+    "or move to conftest.py. "
+    "For import-time stubs that monkeypatch can't reach (e.g. preloads "
+    "of heavy backend deps before any fixture runs), declare a top-level "
+    "`_STUBBED_MODULE_NAMES = [...]` list + an autouse `_restore_sys_modules` "
+    "fixture in this file (precedent: tests/unit/test_telegram_webhook_backfill.py)"
 )
 
 

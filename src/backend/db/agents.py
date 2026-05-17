@@ -74,10 +74,18 @@ class AgentOperations(
         with get_db_connection() as conn:
             cursor = conn.cursor()
             try:
+                # #665: explicitly pass execution_timeout_seconds = 3600.
+                # SQLite stores the column's DEFAULT at column-creation
+                # time and doesn't honour later DDL changes — so on
+                # existing DBs the column's baked-in default is still
+                # 900 even after the new schema.py landed. Passing the
+                # value explicitly here keeps new-agent timeouts at
+                # 60min on both fresh installs (where the schema.py
+                # default already lands as 3600) and existing instances.
                 cursor.execute("""
-                    INSERT INTO agent_ownership (agent_name, owner_id, created_at, is_system)
-                    VALUES (?, ?, ?, ?)
-                """, (agent_name, user["id"], utc_now_iso(), 1 if is_system else 0))
+                    INSERT INTO agent_ownership (agent_name, owner_id, created_at, is_system, execution_timeout_seconds)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (agent_name, user["id"], utc_now_iso(), 1 if is_system else 0, 3600))
                 conn.commit()
                 return True
             except sqlite3.IntegrityError:

@@ -84,6 +84,42 @@ def _stub_docker_and_database(monkeypatch):
         monkeypatch.setitem(sys.modules, "database", MagicMock(name="database_stub"))
 
 
+# ─── sys.modules snapshot/restore (Issue #762) ───────────────────────────
+#
+# The three preload blocks above plant stubs at module-import time —
+# monkeypatch is fixture-scoped and structurally cannot rewind them, and
+# moving them to conftest would leak the stubs across the whole tests/unit/
+# directory (the exact #762 failure mode). Adopt the named snapshot/restore
+# escape hatch documented in `tests/lint_sys_modules.py` (precedent:
+# `tests/unit/test_telegram_webhook_backfill.py`): the autouse fixture
+# snapshots these slots at test setup and restores them at teardown so
+# the stubs cannot leak into other tests in the same pytest session.
+
+_STUBBED_MODULE_NAMES = [
+    "docker",
+    "services.docker_service",
+    "database",
+]
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_modules():
+    """Snapshot sys.modules before each test and restore after.
+
+    Bounds the blast radius of this file's import-time stubs so they
+    cannot leak into other test files in the same pytest session.
+    """
+    saved = {name: sys.modules.get(name) for name in _STUBBED_MODULE_NAMES}
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = value
+
+
 def _iso_past_minutes(minutes: int) -> str:
     return (
         datetime.now(timezone.utc).replace(microsecond=0) - _td(minutes=minutes)

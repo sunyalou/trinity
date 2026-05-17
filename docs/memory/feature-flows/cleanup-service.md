@@ -133,7 +133,7 @@ Nine sequential operations plus an hourly maintenance gate, each wrapped in indi
    if hc_days > 0:
        report.health_checks_pruned = db.cleanup_old_health_records(hc_days, RETENTION_CHUNK_SIZE_PER_CYCLE)
    ```
-   Three independent sweeps, each gated on its own ops-config retention window (`execution_log_retention_days` default 30, `execution_row_retention_days` default 90, `health_check_retention_days` default 7). `0` disables the corresponding sweep. Per-cycle row budget capped at `RETENTION_CHUNK_SIZE_PER_CYCLE = 5000` so the first post-deploy backfill spreads across multiple ticks rather than holding the write lock end-to-end. All cutoffs use `iso_cutoff()` (Architectural Invariant #16). The two execution sweeps share the partial index `idx_executions_completed_terminal ON schedule_executions(completed_at) WHERE status IN ('completed','failed','terminated')`.
+   Three independent sweeps, each gated on its own ops-config retention window (`execution_log_retention_days` default 30, `execution_row_retention_days` default 90, `health_check_retention_days` default 7). `0` disables the corresponding sweep. Per-cycle row budget capped at `RETENTION_CHUNK_SIZE_PER_CYCLE = 5000` so the first post-deploy backfill spreads across multiple ticks rather than holding the write lock end-to-end. All cutoffs use `iso_cutoff()` (Architectural Invariant #16). The two execution sweeps share the partial index `idx_executions_completed_terminal ON schedule_executions(completed_at) WHERE status IN ('success','failed','cancelled','skipped')` (fix: #862 — original #772 used wrong values 'completed'/'terminated' that never matched real rows).
 
 8. **WAL checkpoint after reclaim** (Issue #772)
    ```python

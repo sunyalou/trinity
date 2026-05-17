@@ -139,7 +139,6 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 *Public Access & Monetization:*
 - `public_links.py` - Public agent link management
 - `public.py` - Public chat endpoints
-- `site.py` - Agent website proxy — reverse-proxies `/site/{token}/{path}` to agent port 3000 (SITE-001)
 - `paid.py` - x402 payment-gated chat (NVM-001)
 - `nevermined.py` - Nevermined payment config management
 - `slack.py` - Slack integration (OAuth, events, multi-agent channel routing, per-agent channel binding) (SLACK-001/002)
@@ -167,7 +166,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - `docker_service.py` - Docker container management
 - `docker_utils.py` - Docker utility helpers
 - `template_service.py` - GitHub template cloning and processing
-- `agent_client.py` - HTTP client for agent container communication (chat, session, injection); Redis-backed circuit breaker with exponential backoff + dormant state (#631)
+- `agent_client.py` - HTTP client for agent container communication (chat, session, injection); Redis-backed circuit breaker with exponential backoff + dormant state (#631); only TCP/connection failures count toward the circuit — HTTP 4xx/5xx and 502/503/504 are treated as application errors and skip the failure counter (#474)
 - `settings_service.py` - Centralized settings retrieval (API keys, ops config, agent quotas)
 
 *Execution & Scheduling:*
@@ -509,7 +508,7 @@ picks up on its next poll. (#389 S1a)
 | GET | `/api/agents/{name}/read-only` | Get read-only mode status and config (NEW: 2026-02-17) |
 | PUT | `/api/agents/{name}/read-only` | Enable/disable read-only mode (blocks source file writes) |
 | GET | `/api/agents/{name}/timeout` | Get execution timeout setting (NEW: 2026-03-12) |
-| PUT | `/api/agents/{name}/timeout` | Set execution timeout (60-7200s, default 900s = 15min) |
+| PUT | `/api/agents/{name}/timeout` | Set execution timeout (60-7200s, default 3600s = 60min, #665) |
 | GET | `/api/agents/{name}/guardrails` | Get per-agent guardrails config (NEW: 2026-04-15) |
 | PUT | `/api/agents/{name}/guardrails` | Set per-agent guardrails overrides (GUARD-001) |
 | GET | `/api/agents/{name}/file-sharing` | Get outbound file-sharing status + quota (NEW: 2026-04-24, FILES-001) |
@@ -758,15 +757,6 @@ anywhere — the canary's value depends on determinism.
 
 Storage: `/data/agent-files/{file_id}` under the existing `trinity-data` volume (no compose changes). Agent writes to `/home/developer/public/` (Docker volume `agent-{name}-public`); backend uses Docker SDK `get_archive` to extract the named file on demand — never mounts the agent workspace.
 
-### Agent Website Proxy (SITE-001, NEW: 2026-05-03)
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/site/{token}` | Token (URL) | Redirect to `/site/{token}/` (301) |
-| GET/POST/… | `/site/{token}/{path}` | Token (URL) | Reverse-proxy to agent's web server at port 3000. 401 on invalid/disabled token, 410 on expired, 429 on rate limit, 502 on unreachable agent. Audit event `site_link_visit`. |
-
-Rate limiting: dual-bucket (120 req/min per IP + 300 req/min per token). Request headers `authorization`, `cookie`, `x-internal-secret` stripped before forwarding. Hop-by-hop and server-banner response headers stripped. SSRF guard: agent name validated against `^[a-z0-9][a-z0-9\-]*$`. WebSocket upgrades not supported. Token is a `site`-type `agent_public_links` row.
-
 ### Platform Settings (5 endpoints)
 
 | Method | Path | Description |
@@ -871,7 +861,7 @@ CREATE TABLE agent_ownership (
     read_only_config TEXT,
     subscription_id TEXT,
     max_parallel_tasks INTEGER DEFAULT 3,          -- CAPACITY-001
-    execution_timeout_seconds INTEGER DEFAULT 900, -- TIMEOUT-001 (15 min)
+    execution_timeout_seconds INTEGER DEFAULT 3600, -- TIMEOUT-001 (60 min, #665)
     avatar_identity_prompt TEXT,
     avatar_updated_at TEXT,
     is_default_avatar INTEGER DEFAULT 0,

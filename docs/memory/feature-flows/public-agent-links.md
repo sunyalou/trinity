@@ -1489,109 +1489,15 @@ const scrollToBottom = () => {
 
 ## Agent Website Proxy (SITE-001 / Issue #633)
 
-**Status**: Implemented (2026-05-03)
+**Status**: RETIRED — removed in #865 (2026-05-17)
 
-A public link with `type='site'` reverse-proxies HTTP requests to a web server running inside the agent container on port 3000. This allows agents to serve a full website or web app through a Trinity-managed public URL, with the same token-based access control used by chat links.
-
-### Architecture
-
-```
-Browser → nginx /site/{token}/{path}
-        → backend:8000/site/{token}/{path}
-        → routers/site.py: validate token (type=site, enabled, not expired)
-        → rate limit: Redis per-IP + per-token
-        → httpx.AsyncClient.stream() → http://agent-{name}:3000/{path}
-        → StreamingResponse back to browser
-```
-
-### Entry Points
-
-- **UI**: `src/frontend/src/components/PublicLinksPanel.vue` — "Website" option in link type selector in create modal; "Website" badge rendered on site link rows
-- **nginx**: `src/frontend/nginx.conf` — `location /site/` proxy block routes requests to backend
-- **Redirect**: `GET /site/{token}` → 301 to `/site/{token}/` (trailing-slash normalisation)
-- **Proxy**: `GET /site/{token}/{path:path}` — main streaming handler
-
-### Backend Layer
-
-#### Endpoints (`src/backend/routers/site.py`)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/site/{token}` | 301 redirect to `/site/{token}/` |
-| GET | `/site/{token}/{path:path}` | Validate, rate-limit, proxy to agent port 3000, stream response |
-
-#### Request Handling
-
-1. Look up `agent_public_links` row by `token` — must have `type='site'`, `enabled=1`, and not be past `expires_at`.
-2. Rate-limit check: Redis counters for per-IP and per-token request rates (429 on breach).
-3. SSRF guard: `agent_name` validated against `^[a-z0-9][a-z0-9\-]*$` before URL construction.
-4. Strip sensitive inbound headers: `Authorization`, `Cookie`, `X-Internal-Secret`.
-5. Open `httpx.AsyncClient.stream()` to `http://agent-{agent_name}:3000/{path}` forwarding method, path, query string, and sanitised headers.
-6. Strip hop-by-hop and security-overriding response headers: `Content-Security-Policy`, `X-Frame-Options`, `Server`, `X-Powered-By`, plus standard hop-by-hop headers.
-7. Return `StreamingResponse` with upstream status code and cleaned response headers.
-8. Log `site_link_visit` audit event (`AuditEventType.SITE_ACCESS`).
-
-#### Error Responses
-
-| Condition | Status | Notes |
-|-----------|--------|-------|
-| Token missing / wrong type / disabled | 401 | Constant-time `INVALID_LINK_MESSAGE` to prevent token enumeration |
-| Token expired | 410 | Separate path from disabled to give user actionable feedback |
-| Rate limit exceeded (IP or token) | 429 | |
-| Agent web server unreachable (`ConnectError`, `TimeoutException`) | 502 | Agent not running or port 3000 not open |
-| WebSocket upgrade | Not supported | httpx does not support the `Upgrade` header; proxying WebSocket connections from agent web servers is out of scope |
-
-### Database Changes
-
-#### `agent_public_links` schema
-
-A `type TEXT NOT NULL DEFAULT 'chat'` column was added by migration `public_links_type` in `src/backend/db/migrations.py`. All existing rows default to `'chat'`. Valid values: `'chat'`, `'site'`.
-
-Relevant DB-layer changes in `src/backend/db/public_links.py`:
-- `create_public_link()` accepts a `link_type` parameter passed through from the router.
-- All `SELECT` queries include the `type` column at position 8 in `_row_to_link()`.
-
-#### Pydantic Models (`src/backend/db_models.py`)
-
-| Field | Model | Description |
-|-------|-------|-------------|
-| `link_type: str = "chat"` | `PublicLinkCreate` | Accepted values: `"chat"`, `"site"` |
-| `link_type: str` | `PublicLink` | Persisted type of the link |
-| `link_type: str` | `PublicLinkWithUrl` | Surfaced to UI for badge rendering |
-
-### URL Format
-
-| Link Type | Internal URL | External URL (if `PUBLIC_CHAT_URL` set) |
-|-----------|-------------|----------------------------------------|
-| `chat` | `{FRONTEND_URL}/chat/{token}` | `{PUBLIC_CHAT_URL}/chat/{token}` |
-| `site` | `{FRONTEND_URL}/site/{token}/` | `{PUBLIC_CHAT_URL}/site/{token}/` |
-
-The trailing slash on site URLs is intentional: it ensures relative asset paths in the agent's HTML are resolved correctly under the `/site/{token}/` prefix.
-
-### Security Notes
-
-- **SSRF mitigation**: Agent name is validated against `^[a-z0-9][a-z0-9\-]*$` before interpolation into the upstream URL. Requests never escape the internal Docker network.
-- **Header stripping (inbound)**: `Authorization`, `Cookie`, `X-Internal-Secret` are removed before forwarding to prevent credential leakage into the agent web process.
-- **Header stripping (outbound)**: `Content-Security-Policy`, `X-Frame-Options`, `Server`, `X-Powered-By`, and all hop-by-hop headers are stripped from the upstream response so the agent web server cannot override Trinity-level security policies or expose internal server details.
-- **Token enumeration**: All invalid/disabled/wrong-type tokens return the same `INVALID_LINK_MESSAGE` constant with the same 401 status. Expired tokens return 410.
-- **WebSocket not supported**: The `Upgrade` / `Connection: Upgrade` flow is not proxied (httpx limitation). Document this limitation for template authors.
-- **Audit trail**: Every proxied request logs a `site_access` audit event via `PlatformAuditService`.
-
-### Audit Events
-
-| Event Type | Action | Trigger |
-|------------|--------|---------|
-| `site_access` | `site_link_visit` | Each proxied request through a site link |
-
-### Frontend Changes
-
-**`PublicLinksPanel.vue`**:
-- Create modal now shows a "Link Type" selector with two options: "Chat" (default) and "Website".
-- Existing link rows render a "Website" badge (distinct styling from the chat link display) when `link.link_type === 'site'`.
-- The selected `link_type` is passed in the `POST /api/agents/{name}/public-links` payload as `link_type`.
-
-**`src/frontend/nginx.conf`**:
-- A `location /site/` block proxies requests matching `/site/` to the backend, mirroring the existing `/api/` and `/chat/` proxy rules. This ensures the Vite dev server and production nginx both route site link traffic to the backend.
+> **Design decision (2026-05-17):** The port-3000 reverse-proxy approach was retired after design review. Three problems: (1) agents must manage a live web server process — fragile, no standardization; (2) arbitrary HTML/JS served from the same origin as the Trinity frontend creates XSS risk; (3) `file_sharing_enabled` permission gate was not enforced.
+>
+> The replacement design uses `dashboard.yaml` — Trinity owns the renderer, agents push structured data, no arbitrary HTML reaches the browser. See companion issue for SITE-002.
+>
+> **What was removed**: `src/backend/routers/site.py`, `SITE_PORT` constant, router mount in `main.py`, `location /site/` nginx block, "Website" link-type option in `PublicLinksPanel.vue`.
+>
+> **What was kept for SITE-002 reuse**: `agent_public_links.type` DB column and schema, `AuditEventType.SITE_ACCESS`, Docker volume infrastructure (`agent-{name}-public`, `/home/developer/public/`), `file_sharing_enabled` flag on `agent_ownership`, rate-limiting helpers pattern, token validation pattern.
 
 ### Related Flows
 

@@ -663,7 +663,7 @@ self.db.update_execution_status(
 
 **Important**: The scheduler uses `task()` not `chat()`. The `task()` method calls `/api/task` which returns raw Claude Code `stream-json` format required by the log viewer. The `chat()` method calls `/api/chat` which returns a simplified format that is not compatible with `parseExecutionLog()`.
 
-**Reliability (RELIABILITY-001)**: All calls go through a per-agent circuit breaker. After 3 consecutive failures, the circuit opens and subsequent calls fail immediately with `AgentCircuitOpenError` (30s cooldown). Only idempotent calls (`health_check`, `get_session`) have automatic retries (3 attempts, exponential backoff). `task()` and `chat()` are NOT retried to prevent double-execution. Connection pooling reuses persistent `httpx.AsyncClient` instances per agent.
+**Reliability (RELIABILITY-001, refined by #474)**: All calls go through a per-agent circuit breaker. After 3 consecutive `ConnectError`/`ConnectTimeout` failures (the `CIRCUIT_FAILURE_EXCEPTIONS` tuple in `services/agent_client.py`), the circuit opens and subsequent calls fail immediately with `AgentCircuitOpenError` (30s cooldown). Read/write timeouts, pool exhaustion, mid-write broken-pipe/reset, and garbled HTTP framing (the `TRANSIENT_TRANSPORT_EXCEPTIONS` tuple) still surface as `AgentNotReachableError` but do **not** count toward the threshold — those are client-side / mid-request noise, not agent unhealth. Only idempotent calls (`health_check`, `get_session`) have automatic retries (3 attempts, exponential backoff). `task()` and `chat()` are NOT retried to prevent double-execution. Connection pooling reuses persistent `httpx.AsyncClient` instances per agent.
 
 ### Response Models
 
