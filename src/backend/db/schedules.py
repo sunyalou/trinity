@@ -1712,7 +1712,7 @@ class ScheduleOperations:
                 cursor.execute(
                     """
                     SELECT id FROM schedule_executions
-                    WHERE status IN ('completed', 'failed', 'terminated')
+                    WHERE status IN ('success', 'failed', 'cancelled', 'skipped')
                       AND completed_at IS NOT NULL
                       AND completed_at < ?
                       AND execution_log IS NOT NULL
@@ -1759,7 +1759,7 @@ class ScheduleOperations:
                 cursor.execute(
                     """
                     SELECT id FROM schedule_executions
-                    WHERE status IN ('completed', 'failed', 'terminated')
+                    WHERE status IN ('success', 'failed', 'cancelled', 'skipped')
                       AND completed_at IS NOT NULL
                       AND completed_at < ?
                     LIMIT ?

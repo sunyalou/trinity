@@ -1072,9 +1072,10 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_executions_business_status ON schedule_executions(business_status)",
     "CREATE INDEX IF NOT EXISTS idx_executions_validates ON schedule_executions(validates_execution_id)",
     # Issue #772: partial index drives execution_log null + row delete retention sweeps.
+    # Status values match TaskExecutionStatus terminal set (fix: #862).
     "CREATE INDEX IF NOT EXISTS idx_executions_completed_terminal "
     "ON schedule_executions(completed_at) "
-    "WHERE status IN ('completed', 'failed', 'terminated')",
+    "WHERE status IN ('success', 'failed', 'cancelled', 'skipped')",
 
     # Git config indexes
     "CREATE INDEX IF NOT EXISTS idx_git_config_agent ON agent_git_config(agent_name)",

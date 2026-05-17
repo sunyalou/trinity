@@ -2022,6 +2022,29 @@ def _migrate_execution_retention_index(cursor, conn):
     conn.commit()
 
 
+def _migrate_fix_retention_index_status_values(cursor, conn):
+    """Issue #862: fix idx_executions_completed_terminal to use correct status values.
+
+    The original migration (_migrate_execution_retention_index, #772) created
+    the partial index with status IN ('completed', 'failed', 'terminated'), but
+    TaskExecutionStatus uses 'success', 'failed', 'cancelled', 'skipped'.
+    Only 'failed' rows were ever in the index — 'success' rows (99%+) were
+    silently excluded, causing the execution_log and row-delete sweeps to
+    report 0 pruned rows on every cycle despite eligible rows accumulating.
+
+    Fix: drop the wrong index and recreate with the correct status set.
+    CREATE INDEX IF NOT EXISTS alone would be a no-op on existing installs
+    because the index already exists (with wrong predicate).
+    """
+    cursor.execute("DROP INDEX IF EXISTS idx_executions_completed_terminal")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_executions_completed_terminal "
+        "ON schedule_executions(completed_at) "
+        "WHERE status IN ('success', 'failed', 'cancelled', 'skipped')"
+    )
+    conn.commit()
+
+
 def _migrate_default_execution_timeout_to_3600(cursor, conn):
     """Issue #665: bump default chat execution timeout from 15min → 60min.
 
@@ -2115,4 +2138,5 @@ MIGRATIONS = [
     ("canary_violations_table", _migrate_canary_violations_table),
     ("execution_retention_index", _migrate_execution_retention_index),
     ("default_execution_timeout_to_3600", _migrate_default_execution_timeout_to_3600),
+    ("fix_retention_index_status_values", _migrate_fix_retention_index_status_values),
 ]
