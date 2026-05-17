@@ -57,7 +57,6 @@
 2 tests/unit/test_slack_dm_default.py
 7 tests/unit/test_slack_multi_connection.py
 4 tests/unit/test_slack_watchdog.py
-6 tests/unit/test_slot_per_slot_ttl.py
 2 tests/unit/test_ssh_service.py
 8 tests/unit/test_start_agent_skip_inject.py
 7 tests/unit/test_subscription_auto_switch_pingpong.py
