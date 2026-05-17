@@ -853,6 +853,25 @@ async def execute_headless_task(
 
     except HTTPException:
         raise
+    except (BrokenPipeError, ConnectionResetError) as pipe_err:
+        # Subprocess stdin pipe closed before write completed — typically the
+        # child Claude process exited early (auth abort, permission-mode kill,
+        # or upstream cancellation). NOT a server-side fault; logging at ERROR
+        # spams operators with misleading [Errno 32] noise (#474).
+        #
+        # 502 (not 503): SUB-003 (task_execution_service.py:628) interprets 503
+        # from agent endpoints as auth-class failure and auto-switches the
+        # subscription. 502 ("Bad Gateway to Claude subprocess") is semantically
+        # correct and collision-free with the auto-switch path.
+        logger.info(
+            f"[Headless Task] Subprocess pipe closed before write completed: {pipe_err}. "
+            f"This typically means the child Claude process exited early (auth abort, "
+            f"permission validation kill, or upstream cancellation)."
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Agent subprocess closed before task could complete",
+        )
     except Exception as e:
         logger.error(f"[Headless Task] Execution error: {e}")
         raise HTTPException(status_code=500, detail=f"Task execution error: {str(e)}")
