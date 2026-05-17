@@ -139,7 +139,6 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 *Public Access & Monetization:*
 - `public_links.py` - Public agent link management
 - `public.py` - Public chat endpoints
-- `site.py` - Agent website proxy — reverse-proxies `/site/{token}/{path}` to agent port 3000 (SITE-001)
 - `paid.py` - x402 payment-gated chat (NVM-001)
 - `nevermined.py` - Nevermined payment config management
 - `slack.py` - Slack integration (OAuth, events, multi-agent channel routing, per-agent channel binding) (SLACK-001/002)
@@ -757,15 +756,6 @@ anywhere — the canary's value depends on determinism.
 | POST | `/api/internal/agent-files/share` | `X-Internal-Secret` | Agent-server path — mint a download URL (used by agent-server direct calls, not the MCP tool) |
 
 Storage: `/data/agent-files/{file_id}` under the existing `trinity-data` volume (no compose changes). Agent writes to `/home/developer/public/` (Docker volume `agent-{name}-public`); backend uses Docker SDK `get_archive` to extract the named file on demand — never mounts the agent workspace.
-
-### Agent Website Proxy (SITE-001, NEW: 2026-05-03)
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/site/{token}` | Token (URL) | Redirect to `/site/{token}/` (301) |
-| GET/POST/… | `/site/{token}/{path}` | Token (URL) | Reverse-proxy to agent's web server at port 3000. 401 on invalid/disabled token, 410 on expired, 429 on rate limit, 502 on unreachable agent. Audit event `site_link_visit`. |
-
-Rate limiting: dual-bucket (120 req/min per IP + 300 req/min per token). Request headers `authorization`, `cookie`, `x-internal-secret` stripped before forwarding. Hop-by-hop and server-banner response headers stripped. SSRF guard: agent name validated against `^[a-z0-9][a-z0-9\-]*$`. WebSocket upgrades not supported. Token is a `site`-type `agent_public_links` row.
 
 ### Platform Settings (5 endpoints)
 
