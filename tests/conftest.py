@@ -42,10 +42,17 @@ if _dot_env_754.exists():
     try:
         from dotenv import dotenv_values as _dotenv_values_754
         _env_vals_754 = _dotenv_values_754(_dot_env_754)
-        for _k754 in ("INTERNAL_API_SECRET", "SECRET_KEY"):
+        for _k754 in ("INTERNAL_API_SECRET", "SECRET_KEY", "REDIS_BACKEND_PASSWORD"):
             _v754 = _env_vals_754.get(_k754)
             if _v754:
                 _os_589.environ.setdefault(_k754, _v754)
+        # TRINITY_TEST_PASSWORD aliases ADMIN_PASSWORD so the api_client
+        # default ("password") doesn't trip the per-account rate limiter
+        # (5 fails / 900s at routers/auth.py:35-46).
+        if "TRINITY_TEST_PASSWORD" not in _os_589.environ:
+            _admin_pw = _env_vals_754.get("ADMIN_PASSWORD")
+            if _admin_pw:
+                _os_589.environ["TRINITY_TEST_PASSWORD"] = _admin_pw
     except ImportError:
         pass  # python-dotenv not installed; env vars must be set manually
 
