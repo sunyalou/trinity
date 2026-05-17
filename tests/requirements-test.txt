@@ -37,5 +37,8 @@ pydantic-settings>=2.0.0
 google-genai>=1.0.0
 payments-py>=1.0.0
 # CLI package — required for test_cli_admin_login.py and test_cli_profiles.py.
-# Editable so changes to src/cli/ are picked up without reinstall.
--e ../src/cli
+# Editable so changes to src/cli/ are picked up without reinstall. pip resolves
+# this path against the current working directory (not the requirements file),
+# so `pip install -r tests/requirements-test.txt` must be invoked from the repo
+# root — which is what every CI workflow does.
+-e ./src/cli

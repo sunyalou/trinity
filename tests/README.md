@@ -3,11 +3,13 @@
 ## Quick start
 
 ```bash
-cd tests
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements-test.txt
-bash run-integration.sh   # ~30 sec, 25 tests — verifies env
-bash run-core.sh          # ~30 min, full core + unit tier (requires running backend)
+# From repo root — pip resolves the `-e ./src/cli` editable install relative
+# to CWD, so the repo root is the working directory the requirements file
+# assumes (this is also how CI invokes it).
+python -m venv tests/.venv && source tests/.venv/bin/activate
+pip install -r tests/requirements-test.txt
+bash tests/run-integration.sh   # ~30 sec, 25 tests — verifies env
+bash tests/run-core.sh          # ~30 min, full core + unit tier (requires running backend)
 ```
 
 ## Required env vars
@@ -63,11 +65,14 @@ docker compose exec backend python -c \
 
 ### `ModuleNotFoundError: No module named 'trinity_cli'`
 
-`tests/requirements-test.txt` includes `-e ../src/cli`, so a fresh
-`pip install -r requirements-test.txt` should resolve this. If not:
+`tests/requirements-test.txt` includes `-e ./src/cli` (pip resolves the
+path against CWD, not the requirements file — see the comment in the
+file), so a fresh `pip install -r tests/requirements-test.txt` **from the
+repo root** should resolve this. If not:
 
 ```bash
-.venv/bin/pip install -e ../src/cli
+# From repo root:
+.venv/bin/pip install -e ./src/cli
 ```
 
 ### Conductor workspaces: backend mounts the *original* repo, not the worktree
