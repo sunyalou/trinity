@@ -44,18 +44,26 @@ def _load_env_password() -> str:
     """Pull REDIS_BACKEND_PASSWORD out of the repo .env."""
     env_path = _REPO / ".env"
     if not env_path.exists():
-        pytest.skip(".env missing — cannot derive Redis credentials")
+        pytest.skip(".env missing — cannot derive Redis credentials", allow_module_level=True)
     for line in env_path.read_text().splitlines():
         if line.startswith("REDIS_BACKEND_PASSWORD="):
             return line.split("=", 1)[1].strip()
-    pytest.skip("REDIS_BACKEND_PASSWORD not found in .env")
+    pytest.skip("REDIS_BACKEND_PASSWORD not found in .env", allow_module_level=True)
 
 
 # Point config.py at the local stack BEFORE importing agent_client.
-_PASSWORD = _load_env_password()
-os.environ["REDIS_URL"] = f"redis://backend:{_PASSWORD}@localhost:6379"
+# Honor a pre-set REDIS_URL (sibling-stack workflows / CI on alternate
+# ports). Default: derive from .env + localhost:6379 for the standard
+# `./scripts/deploy/start.sh` dev stack.
+if "REDIS_URL" not in os.environ:
+    _PASSWORD = _load_env_password()
+    os.environ["REDIS_URL"] = f"redis://backend:{_PASSWORD}@localhost:6379"
+# REDIS_PASSWORD / REDIS_BACKEND_PASSWORD aren't read by config.py (which
+# only consumes REDIS_URL), but a few test paths still reach for them.
+# Setdefault keeps the contract backward-compatible without overwriting
+# values supplied by the caller's environment.
 os.environ.setdefault("REDIS_PASSWORD", "test")
-os.environ.setdefault("REDIS_BACKEND_PASSWORD", _PASSWORD)
+os.environ.setdefault("REDIS_BACKEND_PASSWORD", "test")
 
 
 # Import via importlib to avoid pulling in the full services/__init__.py
@@ -111,6 +119,20 @@ def _ensure_redis_client_cached():
     agent_client._reset_circuit_redis_client()
     yield
     agent_client._reset_circuit_redis_client()
+
+
+@pytest.fixture(autouse=True)
+def cleanup_after_test():
+    """Override the parent conftest's `cleanup_after_test` autouse fixture.
+
+    The parent fixture pulls in `api_client`, which authenticates against
+    `http://localhost:8000/token` — a dependency these tests don't actually
+    need (they exercise the Redis-backed circuit primitives in-process).
+    Without this override, running `pytest tests/integration/test_circuit_breaker.py`
+    fails with 401 when the dev backend isn't reachable on 8000, even
+    though the tests would otherwise pass cleanly against just Redis.
+    """
+    yield
 
 
 # ── State machine ────────────────────────────────────────────────────────────
@@ -486,14 +508,19 @@ class TestFailureClassification:
         """Case 5: raw BrokenPipeError surfaced un-wrapped.
 
         Some transports (and MockTransport) can surface OSError subclasses
-        directly. The plan intentionally does NOT add a raw OSError catch
-        (would mask local resource bugs) — so the exception propagates
-        uncaught from _request, but more importantly, no record_failure().
+        directly. The #474 follow-up DID add a raw OSError catch — for
+        drop-grace coordination (stamp + pool eviction) — but it raises
+        AgentConnectionDroppedError, a subclass of AgentNotReachableError,
+        rather than letting the raw exception propagate. The primary
+        assertion of this test — no record_failure() — is unchanged: the
+        AgentConnectionDroppedError path explicitly skips the circuit
+        counter. Asserting the subclass also pins the typed-error contract
+        so `except AgentNotReachableError` blocks still pick it up.
         """
         def handler(_req):
             raise BrokenPipeError("epipe")
 
-        with pytest.raises(BrokenPipeError):
+        with pytest.raises(agent_client.AgentConnectionDroppedError):
             self._drive(agent_name, handler)
 
         cs = agent_client.CircuitState(agent_name)
@@ -501,11 +528,15 @@ class TestFailureClassification:
         assert cs.state == "closed"
 
     def test_raw_connection_reset_does_not_record(self, agent_name):
-        """Case 6: raw ConnectionResetError — sibling of #5."""
+        """Case 6: raw ConnectionResetError — sibling of #5.
+
+        Same reclassification as case 5: caught at the drop handler,
+        raised as AgentConnectionDroppedError, no record_failure().
+        """
         def handler(_req):
             raise ConnectionResetError("reset by peer")
 
-        with pytest.raises(ConnectionResetError):
+        with pytest.raises(agent_client.AgentConnectionDroppedError):
             self._drive(agent_name, handler)
 
         cs = agent_client.CircuitState(agent_name)
@@ -712,3 +743,91 @@ class TestFailureClassification:
             self._drive(agent_name, handler)
 
         assert invoked == [], "probe-lock should still be held; transport not hit"
+
+
+# ── Concurrent transport drops keep circuit closed (#474) ────────────────────
+
+class TestConcurrentTransportDrops:
+    """Real-Redis regression for #474.
+
+    When N concurrent requests against the same agent all see a transport
+    drop (BrokenPipeError / httpx.ReadError / httpx.RemoteProtocolError),
+    none of them must trip the circuit. Verifies via CircuitState.to_dict()
+    (handles missing-hash case gracefully — the dict shows `state=closed`
+    even when no Redis hash exists for the agent yet) that:
+      - state stays 'closed'
+      - failure_count is zero
+      - no `Circuit OPENED` log line was emitted
+      - the pooled httpx client was evicted (no broken keepalive socket left)
+    """
+
+    @pytest.mark.parametrize(
+        "exc_factory",
+        [
+            lambda: BrokenPipeError(32, "Broken pipe"),
+            lambda: __import__("httpx").ReadError("read"),
+            lambda: __import__("httpx").RemoteProtocolError(
+                "Server disconnected without sending a response."
+            ),
+        ],
+        ids=["BrokenPipeError", "httpx.ReadError", "httpx.RemoteProtocolError"],
+    )
+    def test_concurrent_broken_pipe_events_keep_circuit_closed(
+        self, agent_name, exc_factory, caplog, monkeypatch
+    ):
+        import asyncio
+        import logging
+
+        # AgentClient builds a CircuitState in __init__ — we let the real
+        # Redis-backed CircuitState be constructed (so the cleanup fixture
+        # wipes its keys) and just observe state after the burst.
+        client = agent_client.AgentClient(agent_name)
+        base_url = client.base_url
+
+        # Pre-warm the pool so we can install a raising .request method on
+        # the pooled client object.
+        pooled = agent_client._get_http_client(base_url)
+
+        async def _raise(*_a, **_kw):
+            raise exc_factory()
+
+        monkeypatch.setattr(pooled, "request", _raise)
+
+        async def _burst():
+            # 10 concurrent calls all hitting the patched pooled client.
+            results = await asyncio.gather(
+                *[client._request("GET", "/health") for _ in range(10)],
+                return_exceptions=True,
+            )
+            return results
+
+        with caplog.at_level(logging.WARNING, logger=agent_client.logger.name):
+            results = asyncio.run(_burst())
+
+        # Every call should have raised AgentConnectionDroppedError (not
+        # AgentNotReachableError → ConnectError → record_failure).
+        assert all(
+            isinstance(r, agent_client.AgentConnectionDroppedError)
+            for r in results
+        ), f"unexpected exception types: {[type(r).__name__ for r in results]}"
+
+        # Circuit must remain closed via to_dict() — the API that handles
+        # missing-hash gracefully (Phase 3 Eng finding #8).
+        state = agent_client.CircuitState(agent_name).to_dict()
+        assert state["state"] == "closed", f"state was {state}"
+        assert state.get("failure_count", 0) == 0, f"failure_count was {state}"
+
+        # No transition log fired.
+        opened_logs = [
+            r for r in caplog.records
+            if "Circuit OPENED" in r.getMessage() and agent_name in r.getMessage()
+        ]
+        assert opened_logs == [], (
+            f"unexpected OPENED log: {[r.getMessage() for r in opened_logs]}"
+        )
+
+        # Pool must be evicted — concurrency guard ensures the first worker
+        # to land in the except block wins the pop; siblings see empty pool.
+        assert base_url not in agent_client._client_pool, (
+            "pooled client should be evicted after a transport drop"
+        )
