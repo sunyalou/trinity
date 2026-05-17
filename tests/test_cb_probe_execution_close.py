@@ -40,11 +40,24 @@ _helpers_mod.parse_iso_timestamp = lambda s: datetime.utcnow()
 _helpers_mod.to_utc_iso = lambda *a, **k: datetime.utcnow().isoformat() + "Z"
 sys.modules.setdefault("utils.helpers", _helpers_mod)
 
-_sanitizer_mod = types.ModuleType("utils.credential_sanitizer")
-_sanitizer_mod.sanitize_response = lambda x: x
-_sanitizer_mod.sanitize_execution_log = lambda x: x
-_sanitizer_mod.sanitize_text = lambda x: x
-sys.modules.setdefault("utils.credential_sanitizer", _sanitizer_mod)
+def _install_sanitizer_stub() -> None:
+    """Install our credential_sanitizer stub even if another test (e.g.
+    test_validation.py) already cached an incomplete one in sys.modules.
+
+    Using setdefault here was a bug: test_validation.py installs a partial
+    stub at module-collection time with only `sanitize_text`, so our
+    setdefault is a no-op and `from utils.credential_sanitizer import
+    sanitize_execution_log` (inside the real task_execution_service.py)
+    fails with ImportError when our fixture re-imports the service.
+    """
+    sanitizer = types.ModuleType("utils.credential_sanitizer")
+    sanitizer.sanitize_response = lambda x: x
+    sanitizer.sanitize_execution_log = lambda x: x
+    sanitizer.sanitize_text = lambda x: x
+    sys.modules["utils.credential_sanitizer"] = sanitizer
+
+
+_install_sanitizer_stub()
 
 sys.modules.setdefault("database", MagicMock())
 
@@ -84,7 +97,16 @@ class TestCircuitBreakerFastFail:
 
     @pytest.fixture(autouse=True)
     def _patch_env(self):
-        """Ensure backend config can load without real env vars."""
+        """Ensure backend config can load without real env vars.
+
+        Also evict any cross-file `services.task_execution_service` stub
+        (test_validation.py installs a plain MagicMock at module-collection
+        time). The conftest baseline-restore can't help because the baseline
+        was None — the real module isn't preloadable from conftest without
+        TRINITY_DB_PATH set. Force a fresh import so `TaskExecutionService`
+        resolves to the real coroutine class, not a MagicMock attribute that
+        would fail `await svc.execute_task(...)`.
+        """
         env_patch = {
             "REDIS_URL": "redis://test:test@localhost:6379",
             "REDIS_PASSWORD": "test",
@@ -92,6 +114,8 @@ class TestCircuitBreakerFastFail:
             "SECRET_KEY": "test-secret-key",
         }
         with patch.dict(os.environ, env_patch, clear=False):
+            _install_sanitizer_stub()
+            sys.modules.pop("services.task_execution_service", None)
             yield
 
     def _make_task_service(self):
@@ -294,6 +318,7 @@ class TestCancelledErrorInExecuteTask:
 
     @pytest.fixture(autouse=True)
     def _patch_env(self):
+        """See TestCircuitBreakerFastFail._patch_env — same stub-eviction rationale."""
         env_patch = {
             "REDIS_URL": "redis://test:test@localhost:6379",
             "REDIS_PASSWORD": "test",
@@ -301,6 +326,8 @@ class TestCancelledErrorInExecuteTask:
             "SECRET_KEY": "test-secret-key",
         }
         with patch.dict(os.environ, env_patch, clear=False):
+            _install_sanitizer_stub()
+            sys.modules.pop("services.task_execution_service", None)
             yield
 
     @pytest.mark.asyncio
