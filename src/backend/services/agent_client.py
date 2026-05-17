@@ -226,10 +226,15 @@ CIRCUIT_FAILURE_EXCEPTIONS: tuple[type[BaseException], ...] = (
 # callers' `except AgentClientError` blocks keep working) but NOT count
 # toward the circuit threshold. httpx.PoolTimeout is included because
 # pool exhaustion is a client-side resource issue, not agent unhealth.
+#
+# httpx.TimeoutException is the parent class of {Connect,Read,Write,Pool}
+# Timeout. ConnectTimeout is intentionally in CIRCUIT_FAILURE_EXCEPTIONS
+# above and is caught by the *first* `except` arm in _request(), so the
+# parent class here only intercepts bare TimeoutException and any future
+# subclass we don't enumerate — making the drop-grace reclassification
+# total over the timeout hierarchy minus ConnectTimeout.
 TRANSIENT_TRANSPORT_EXCEPTIONS: tuple[type[BaseException], ...] = (
-    httpx.ReadTimeout,
-    httpx.WriteTimeout,
-    httpx.PoolTimeout,
+    httpx.TimeoutException,
     httpx.WriteError,
     httpx.ReadError,
     httpx.RemoteProtocolError,

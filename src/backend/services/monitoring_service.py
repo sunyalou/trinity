@@ -34,6 +34,31 @@ from db_models import (
 )
 from utils.helpers import utc_now_iso
 
+# Exception classification tuples are pure constants — no Redis / circular
+# risk — so they're safe at module-top. Only `CircuitState` (which touches
+# Redis) stays lazy below. Importing the tuples at module-top also keeps
+# them stable under test patches that replace `services.agent_client` with
+# a MagicMock, which would otherwise turn the names into mocks that fail
+# `except <not-an-exception>` at runtime.
+#
+# The ImportError fallback supports fixtures that stub services.agent_client
+# with just CircuitState (e.g. test_monitoring_dormant_skip.py) and don't
+# bother to populate these tuples. The literals here MUST track
+# agent_client.py — keep both lists in sync.
+try:
+    from services.agent_client import (
+        CIRCUIT_FAILURE_EXCEPTIONS,
+        TRANSIENT_TRANSPORT_EXCEPTIONS,
+    )
+except ImportError:
+    CIRCUIT_FAILURE_EXCEPTIONS = (httpx.ConnectError, httpx.ConnectTimeout)
+    TRANSIENT_TRANSPORT_EXCEPTIONS = (
+        httpx.TimeoutException,
+        httpx.WriteError,
+        httpx.ReadError,
+        httpx.RemoteProtocolError,
+    )
+
 logger = logging.getLogger(__name__)
 
 
@@ -206,26 +231,15 @@ async def check_network_health(
     now = utc_now_iso()
     url = f"http://agent-{agent_name}:8000/health"
 
-    # Lazy import — keeps services.agent_client → services.monitoring_service
-    # circular-import risk at zero even if reachability ever flips.
+    # `CircuitState` stays lazy — it touches Redis on construction and
+    # could plausibly grow a backwards dependency on this module later.
+    # The exception tuples it shares with us are imported at module-top
+    # (constants, no circular risk).
     try:
-        from services.agent_client import (
-            CircuitState,
-            CIRCUIT_FAILURE_EXCEPTIONS,
-            TRANSIENT_TRANSPORT_EXCEPTIONS,
-        )
+        from services.agent_client import CircuitState
         circuit = CircuitState(agent_name)
     except Exception:
         circuit = None
-        CIRCUIT_FAILURE_EXCEPTIONS = (httpx.ConnectError, httpx.ConnectTimeout)
-        TRANSIENT_TRANSPORT_EXCEPTIONS = (
-            httpx.ReadTimeout,
-            httpx.WriteTimeout,
-            httpx.PoolTimeout,
-            httpx.WriteError,
-            httpx.ReadError,
-            httpx.RemoteProtocolError,
-        )
 
     start = time.monotonic()
     try:
@@ -255,12 +269,19 @@ async def check_network_health(
 
     except CIRCUIT_FAILURE_EXCEPTIONS as e:
         # Real unreachability — TCP refused or connect handshake timed out.
+        # User-facing string is stable ("Connection refused") so dashboards
+        # don't change on httpx version bumps and exception messages don't
+        # leak into UI; full classname+message stays in logs for triage.
+        logger.debug(
+            "check_network_health(%s) circuit failure %s: %s",
+            agent_name, type(e).__name__, e,
+        )
         if circuit is not None:
             circuit.record_failure()
         return NetworkHealthCheck(
             agent_name=agent_name,
             reachable=False,
-            error=f"{type(e).__name__}: {e}"[:200],
+            error="Connection refused",
             checked_at=now
         )
 
@@ -306,13 +327,39 @@ async def check_network_health(
             checked_at=now
         )
 
+    except httpx.TimeoutException as e:
+        # /health is supposed to be a small, fast endpoint that responds
+        # immediately. A timeout here is a liveness signal — the agent is
+        # wedged (event-loop blocked, GIL contention, runaway compute) —
+        # so record_failure() applies even though in AgentClient._request()
+        # the same exception is circuit-neutral.
+        #
+        # /health-specific OVERRIDE of TRANSIENT_TRANSPORT_EXCEPTIONS
+        # below (TimeoutException is the tuple's parent class). Layered
+        # ABOVE so the timeout subset gets the liveness contract instead
+        # of the transient one. Note: ConnectTimeout is intercepted by
+        # CIRCUIT_FAILURE_EXCEPTIONS above (first-match wins) and never
+        # reaches here.
+        logger.debug(
+            "check_network_health(%s) timeout %s: %s",
+            agent_name, type(e).__name__, e,
+        )
+        if circuit is not None:
+            circuit.record_failure()
+        return NetworkHealthCheck(
+            agent_name=agent_name,
+            reachable=False,
+            error="HTTP timeout",
+            checked_at=now
+        )
+
     except TRANSIENT_TRANSPORT_EXCEPTIONS as e:
-        # Read/write timeout, pool exhaustion, garbled HTTP framing. NOT a
-        # circuit signal. The ReadError/WriteError/RemoteProtocolError
-        # entries of this tuple are no longer reachable from here — the
-        # /health-specific handler above intercepts them with the opposite
-        # contract. Only the *Timeout / PoolTimeout members hit this branch
-        # in practice.
+        # Garbled HTTP framing or other transient transport hiccup. NOT a
+        # circuit signal. The ReadError/WriteError/RemoteProtocolError and
+        # TimeoutException entries of this tuple are no longer reachable
+        # from here — the /health-specific handlers above intercept them
+        # with the opposite contract. Kept as a defensive default for any
+        # future member added to the shared tuple.
         return NetworkHealthCheck(
             agent_name=agent_name,
             reachable=False,
