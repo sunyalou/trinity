@@ -47,10 +47,29 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 
+# Modules this test stubs into sys.modules (directly or via the
+# importlib-loaded slot_service_direct / cleanup_service_direct helpers)
+# — restored after each test so they don't leak into other test files in
+# the same pytest session. Declaring this at module level (paired with
+# the `_restore_sys_modules` fixture below) is the sanctioned
+# snapshot/restore pattern recognised by tests/lint_sys_modules.py
+# (precedent: tests/unit/test_telegram_webhook_backfill.py).
+_STUBBED_MODULE_NAMES = [
+    "config",
+    "redis",
+    "utils.helpers",
+    "utils.credential_sanitizer",
+    "database",
+    "models",
+    "services.capacity_manager",
+    "slot_service_direct",
+    "cleanup_service_direct",
+]
+
+
 @pytest.fixture(autouse=True)
 def _restore_sys_modules():
-    names = ["config", "slot_service_direct", "utils.helpers", "redis"]
-    saved = {n: sys.modules.get(n) for n in names}
+    saved = {n: sys.modules.get(n) for n in _STUBBED_MODULE_NAMES}
     try:
         yield
     finally:
