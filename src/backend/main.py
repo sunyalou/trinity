@@ -92,6 +92,7 @@ from routers.event_subscriptions import router as event_subscriptions_router, se
 from routers.users import router as users_router
 from routers.debug import router as debug_router  # #306 soak instrumentation
 from routers.messages import router as messages_router  # Proactive Messaging (#321)
+from routers.public_memory import router as public_memory_router  # MEM-001 write path (#888)
 from routers.webhooks import router as webhooks_router  # Webhook triggers (WEBHOOK-001, #291)
 from routers.ws_tickets import router as ws_tickets_router  # /ws ticket auth (#550)
 
@@ -826,6 +827,7 @@ app.include_router(tags_router)  # Agent Tags (ORG-001)
 app.include_router(system_views_router)  # System Views (ORG-001 Phase 2)
 app.include_router(notifications_router)  # Agent Notifications (NOTIF-001)
 app.include_router(messages_router)  # Proactive Messaging (#321)
+app.include_router(public_memory_router)  # MEM-001 write path (#888)
 app.include_router(subscriptions_router)  # Subscription Management (SUB-001)
 app.include_router(monitoring_router)  # Agent Monitoring (MON-001)
 app.include_router(slack_public_router)  # Slack Integration Public (SLACK-001)

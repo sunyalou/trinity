@@ -432,6 +432,7 @@ class TaskExecutionService:
                     schedule_name=(schedule_context or {}).get("name"),
                     schedule_cron=(schedule_context or {}).get("cron"),
                     schedule_next_run=(schedule_context or {}).get("next_run"),
+                    execution_id=execution_id,
                 )
                 effective_system_prompt = compose_system_prompt(
                     execution_context=exec_ctx,

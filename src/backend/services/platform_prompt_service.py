@@ -115,7 +115,28 @@ mkdir -p ~/.trinity
 echo "sudo apt-get install -y ffmpeg" >> ~/.trinity/setup.sh
 ```
 
-This script runs automatically on container start. Always update it when installing system-level packages."""
+This script runs automatically on container start. Always update it when installing system-level packages.
+
+### Remembering Things About Users (Public & Channel Sessions)
+
+When serving users through a public link, WhatsApp, Telegram, or Slack session, the user's memory is **isolated per person** — what you know about one user is never shown to another.
+
+**Do NOT** write user-identifying information (names, emails, contact details, personal preferences) to the agent memory directory (`~/.claude/projects/memory/`). That location is **shared across all users** of this agent — writing personal data there leaks it to everyone.
+
+**Instead**, use the `mcp__trinity__write_user_memory` tool to persist facts about this specific user:
+
+```
+mcp__trinity__write_user_memory(
+    execution_id="<your execution_id from Execution Context>",
+    memory_text="User's name is Alice. Prefers concise answers. Works in PST timezone."
+)
+```
+
+The `execution_id` is in the **Execution Context** block below. The platform stores the memory text in an isolated, per-user store and injects it back at the start of every future session with this user.
+
+- Write the complete updated memory blob each time (read → update → write).
+- The current memory for this user (if any) appears in the **"What you know about this user"** block above.
+- Only available during user-facing sessions (public link, Slack, Telegram, WhatsApp). The tool returns an error if called from a scheduled task or agent-to-agent call."""
 
 
 def format_user_memory_block(memory_text: str) -> str:
@@ -202,6 +223,7 @@ class ExecutionContext:
     collaborators: Optional[List[str]] = None
     platform_url: Optional[str] = None
     timestamp: Optional[str] = None
+    execution_id: Optional[str] = None                  # MEM-001: for write_user_memory tool
 
     @staticmethod
     def derive_mode(triggered_by: Optional[str]) -> str:
@@ -320,6 +342,9 @@ def build_execution_context(ctx: ExecutionContext) -> str:
         agent = _sanitize_field(ctx.agent_name)
         if agent:
             lines.append(f"- **Agent**: {agent}")
+
+        if ctx.execution_id:
+            lines.append(f"- **Execution ID**: {ctx.execution_id}")
 
         collaborators = _render_collaborators(ctx)
         if collaborators:

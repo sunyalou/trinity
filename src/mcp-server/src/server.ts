@@ -23,6 +23,7 @@ import { createEventTools } from "./tools/events.js";
 import { createChannelTools } from "./tools/channels.js";
 import { createMessageTools } from "./tools/messages.js";
 import { createFileTools } from "./tools/files.js";
+import { createMemoryTools } from "./tools/memory.js";
 import { withAudit } from "./audit.js";
 import type { McpAuthContext } from "./types.js";
 
@@ -213,6 +214,7 @@ export async function createServer(config: ServerConfig = {}) {
     createEventTools(client, requireApiKey),
     createChannelTools(client, requireApiKey),
     createMessageTools(client, requireApiKey),
+    createMemoryTools(client, requireApiKey),     // MEM-001 write path (#888)
   ];
   for (const group of toolGroups) {
     addAllTools(group);
