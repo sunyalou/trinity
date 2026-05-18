@@ -34,7 +34,37 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND = Path(__file__).resolve().parent.parent.parent / "src" / "backend"
+
+# Synthetic module names registered into sys.modules at import time so
+# `@dataclass` can resolve `sys.modules[cls.__module__]` while exec'ing
+# db/agent_cleanup.py (it inspects annotations under
+# `from __future__ import annotations`). These are import-time stubs
+# that monkeypatch can't reach (loaded before any fixture runs), so we
+# use the sanctioned top-level `_STUBBED_MODULE_NAMES` +
+# `_restore_sys_modules` pattern recognised by
+# tests/lint_sys_modules.py (precedent:
+# tests/unit/test_telegram_webhook_backfill.py) — keeps the synthetic
+# modules from leaking into sibling test files in the same session.
+_STUBBED_MODULE_NAMES = [
+    "trinity_db_schema",
+    "trinity_db_agent_cleanup",
+]
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_modules():
+    saved = {n: sys.modules.get(n) for n in _STUBBED_MODULE_NAMES}
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = value
 
 
 def _load(mod_name: str, rel_path: str):
