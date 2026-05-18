@@ -140,7 +140,7 @@ Public User -> GET /api/public/link/{token}
 
 Public User -> POST /api/public/verify/request
             -> Backend generates 6-digit code
-            -> Email service sends code
+            -> Email service sends code (subject/body now include agent name — #890)
             -> Return {expires_in_seconds: 600}
 
 Public User -> POST /api/public/verify/confirm
@@ -1978,6 +1978,7 @@ const viewingHistorySession = ref(null)   // non-null = read-only history mode
 
 | Date | Changes |
 |------|---------|
+| 2026-05-18 | **#890**: `request_verification_code()` now passes `agent_name` to `email_service.send_verification_code()` so the verification email subject and body name the agent. |
 | 2026-04-29 | **#587 Chat History for Logged-In Users**: Two new JWT-authenticated endpoints (`GET /api/public/sessions/{token}`, `GET /api/public/sessions/{token}/{session_id}`) in `public.py`. New `ChatHistoryDropdown.vue` component. `PublicChat.vue` gains `viewingHistorySession` ref, `handleHistorySessionSelected()`, `exitHistoryView()`, amber read-only banner, and hidden `ChatInput` while in history mode. No new DB tables — reuses `chat_sessions`/`chat_messages`. |
 | 2026-04-27 | **fix #539 Context duplication**: `build_public_chat_context()` was called AFTER `add_public_chat_message(role="user")`, causing the current user message to appear twice in every agent prompt (once in "Previous conversation:", once in "Current message:"). Fixed by swapping the call order — context built first from prior history, user message stored after. Added 6 unit tests in `tests/unit/test_public_chat_context.py`. Updated PUB-005 data flow and backend implementation step ordering to reflect correct call order. |
 | 2026-02-19 | **CHAT-001 Shared Components Refactor**: PublicChat.vue now uses shared components from `components/chat/` (ChatMessages, ChatInput, ChatBubble, ChatLoadingIndicator). Shared with new ChatPanel.vue authenticated chat. Updated method line numbers, added Shared Chat Components section. File now 611 lines. |
