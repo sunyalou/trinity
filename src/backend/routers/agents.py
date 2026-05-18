@@ -426,7 +426,7 @@ async def delete_agent_endpoint(agent_name: str, request: Request, current_user:
     # sharing, permissions, MCP key, credentials, avatars — is
     # preserved until the retention sweep in cleanup_service.py runs
     # `purge_agent_ownership()` after `agent_soft_delete_retention_days`
-    # (default 30). At that point the #816 cascade_delete primitive
+    # (default 180). At that point the #816 cascade_delete primitive
     # tears down all the child rows and on-disk artifacts in one shot.
 
     try:
