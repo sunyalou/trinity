@@ -87,6 +87,19 @@ def _make_db_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # list_all_enabled_schedules() JOINs agent_ownership and filters
+    # ao.deleted_at IS NULL (#834 Phase 1a agent-level soft-delete);
+    # the firing-list query needs this table present + an owner row.
+    cur.execute(
+        """
+        CREATE TABLE agent_ownership (
+            agent_name TEXT PRIMARY KEY,
+            owner_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            deleted_at TEXT
+        )
+        """
+    )
     cur.execute(
         "CREATE INDEX idx_agent_schedules_deleted_at "
         "ON agent_schedules(deleted_at) WHERE deleted_at IS NOT NULL"
@@ -130,6 +143,15 @@ def _seed_schedule(db_path: str, sid: str, agent_name: str = "agent-1",
                    enabled: bool = True, deleted_at: str | None = None,
                    webhook_token: str | None = None):
     conn = sqlite3.connect(db_path)
+    # Live owner row so the agent-level JOIN in
+    # list_all_enabled_schedules() passes (these tests exercise
+    # *schedule* soft-delete; the agent itself stays live).
+    conn.execute(
+        "INSERT OR IGNORE INTO agent_ownership"
+        "(agent_name, owner_id, created_at, deleted_at) "
+        "VALUES (?, 1, '2026-01-01T00:00:00Z', NULL)",
+        (agent_name,),
+    )
     conn.execute(
         """
         INSERT INTO agent_schedules

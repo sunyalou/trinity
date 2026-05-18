@@ -399,7 +399,7 @@ Services that run continuously in the backend process:
 
 | Service | Module | Description |
 |---------|--------|-------------|
-| **Cleanup Service** | `cleanup_service.py` | Active watchdog reconciliation against agent process registries (orphan recovery, auto-terminate timeouts) + passive stale recovery. Runs every 5 min. Also runs the #772 retention sweeps: nulls `schedule_executions.execution_log` past `execution_log_retention_days` (default 30), DELETEs terminal `schedule_executions` rows past `execution_row_retention_days` (default 90), and DELETEs `agent_health_checks` rows past `health_check_retention_days` (default 7). Also runs the #834 Phase 1a soft-deleted-agent purge: hard-deletes `agent_ownership` rows whose `deleted_at` is older than `agent_soft_delete_retention_days` (default 180, `0` = disabled), cascading child tables via the #816 `purge_agent_ownership`/`cascade_delete` primitive. Each sweep is capped at 5000 rows/cycle so the first post-deploy backfill spans hours, not minutes; `0` disables a sweep. Triggers `PRAGMA wal_checkpoint(TRUNCATE)` when any sweep reclaims rows. (CLEANUP-001, #129, #772, #834) |
+| **Cleanup Service** | `cleanup_service.py` | Active watchdog reconciliation against agent process registries (orphan recovery, auto-terminate timeouts) + passive stale recovery. Runs every 5 min. Also runs the #772 retention sweeps: nulls `schedule_executions.execution_log` past `execution_log_retention_days` (default 30), DELETEs terminal `schedule_executions` rows past `execution_row_retention_days` (default 90), and DELETEs `agent_health_checks` rows past `health_check_retention_days` (default 7). Also runs the #834 Phase 1a soft-deleted-agent purge: hard-deletes `agent_ownership` rows whose `deleted_at` is older than `agent_soft_delete_retention_days` (default 180, `0` = disabled), cascading child tables via the #816 `purge_agent_ownership`/`cascade_delete` primitive. Also runs the #834 Phase 1b soft-deleted-schedule purge: hard-deletes `agent_schedules` rows whose `deleted_at` is older than `schedule_soft_delete_retention_days` (default 30, `0` = disabled) via `purge_schedule()`, which cascades the row's `schedule_executions` (no #816 chain — schedules have no #816-registered children). Each sweep is capped at 5000 rows/cycle so the first post-deploy backfill spans hours, not minutes; `0` disables a sweep. Triggers `PRAGMA wal_checkpoint(TRUNCATE)` when any sweep reclaims rows. (CLEANUP-001, #129, #772, #834) |
 | **Operator Queue Sync** | `operator_queue_service.py` | Polls running agents every 5s, reads `~/.trinity/operator-queue.json`, syncs to DB, writes responses back. (OPS-001) |
 | **Sync Health Service** | `sync_health_service.py` | Polls git-enabled agents every 60s, upserts `agent_sync_state`, emits `sync_failing` operator-queue entries when consecutive_failures ≥ 3. (#389 S1) |
 | **Monitoring Service** | `monitoring_service.py` | Fleet-wide health checks on configurable interval. (MON-001) |
@@ -1027,9 +1027,28 @@ CREATE TABLE agent_schedules (
     model TEXT,                                  -- MODEL-001: Model override (NULL = agent default)
     webhook_token TEXT,                          -- WEBHOOK-001: opaque 43-char urlsafe token, nullable
     webhook_enabled INTEGER DEFAULT 0,           -- WEBHOOK-001: 0 = disabled, 1 = active
+    deleted_at TEXT,                             -- #834 Phase 1b: NULL = live; set = soft-deleted
     FOREIGN KEY (owner_id) REFERENCES users(id)
 );
+
+-- #834 Phase 1b: partial index narrows the schedule retention sweep to
+-- soft-deleted rows.
+CREATE INDEX idx_agent_schedules_deleted_at
+    ON agent_schedules(deleted_at) WHERE deleted_at IS NOT NULL;
 ```
+
+**Schedule soft-delete (#834 Phase 1b)**: `DELETE
+/api/agents/{name}/schedules/{id}` marks `agent_schedules.deleted_at =
+NOW` instead of hard-deleting; the row and its `schedule_executions`
+are preserved for the retention window. All schedule read paths —
+including the cron-firing `list_all_enabled_schedules()` in both the
+backend and the standalone scheduler process — filter `deleted_at IS
+NULL`, so a soft-deleted schedule stops firing immediately. The Cleanup
+Service hard-purges rows past `schedule_soft_delete_retention_days`
+(default 30, `0` = disabled); `purge_schedule()` cascades the
+`schedule_executions` delete alongside the row (consistent with the
+prior hard-delete behavior and with agent-purge `cascade_delete`).
+`delete_schedule()` is idempotent on an already-soft-deleted row.
 
 **schedule_executions:**
 ```sql

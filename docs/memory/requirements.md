@@ -2144,9 +2144,39 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
   `agent_ownership_soft_delete`.
 
 ### 33.2 Schedule Soft-Delete (#834 — Phase 1b)
-- **Status**: 🚧 In progress (PR #839). `agent_schedules.deleted_at`;
-  all schedule read paths filter `deleted_at IS NULL`; configurable
-  `schedule_soft_delete_retention_days`.
+- **Implements**: Issue #834 Phase 1b (PR #839)
+- **Description**: `DELETE /api/agents/{name}/schedules/{id}` marks
+  `agent_schedules.deleted_at = NOW` instead of hard-deleting. The row
+  and its `schedule_executions` are preserved for the retention window
+  so an accidentally-deleted schedule (and its run history) is
+  recoverable.
+- **Read paths**: every schedule read filters `deleted_at IS NULL` —
+  including the cron-firing `list_all_enabled_schedules()` in **both**
+  the backend (`db/schedules.py`) and the standalone scheduler process
+  (`src/scheduler/database.py`), so a soft-deleted schedule stops firing
+  immediately. That firing query also retains the Phase 1a
+  `agent_ownership` join (`ao.deleted_at IS NULL`), so a schedule is
+  skipped if **either** it or its agent is soft-deleted.
+- **Idempotency**: `delete_schedule()` on an already-soft-deleted row is
+  a no-op success (no double-soft-delete, no error).
+- **Retention purge**: the Cleanup Service hard-purges `agent_schedules`
+  rows past `schedule_soft_delete_retention_days` (default **30** —
+  shorter than the 180-day agent window because schedules are
+  higher-churn; `0` = disabled). `purge_schedule()` refuses to purge a
+  live row and cascades the schedule's `schedule_executions` delete
+  alongside the parent row — consistent with the previous hard-delete
+  behavior and with agent-purge `cascade_delete`. No #816 chain
+  (schedules have no #816-registered child tables). Bounded by the
+  shared 5000-row/cycle cap.
+- **Execution-row ownership**: pre-purge, a soft-deleted schedule's
+  `schedule_executions` are #772's responsibility (its 90-day
+  terminal-row sweep ages them out independently); at purge they are
+  deleted with the row.
+- **Setting**: `schedule_soft_delete_retention_days` in the ops
+  settings block (default `"30"`, `"0"` disables).
+- **Storage**: `agent_schedules.deleted_at TEXT` + partial index
+  `idx_agent_schedules_deleted_at ON agent_schedules(deleted_at) WHERE
+  deleted_at IS NOT NULL`. Migration in `db/migrations.py`.
 
 ### 33.3 Admin Recovery Endpoints (#834 — Phase 1c)
 - **Status**: 🚧 In progress (PR #840). Admin surface to list and
