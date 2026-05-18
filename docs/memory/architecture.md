@@ -640,6 +640,20 @@ picks up on its next poll. (#389 S1a)
 | GET | `/oauth/{provider}/callback` | OAuth callback |
 | GET | `/health` | Health check (unauthenticated, top-level — no `/api/` prefix) |
 
+### Soft-Delete Admin Recovery (#834 Phase 1c)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/admin/soft-deleted/agents` | Admin | List soft-deleted agents (newest first); each row has computed `purge_eta` (null if `agent_soft_delete_retention_days=0`). `limit` capped at 500. |
+| POST | `/api/admin/soft-deleted/agents/{name}/recover` | Admin | Clear `agent_ownership.deleted_at`. 404 if not soft-deleted. Metadata-only — container NOT recreated (`needs_container_recreate=true`); operator runs `POST /api/agents/{name}/start`. Audit `agent_lifecycle:recover`. |
+| GET | `/api/admin/soft-deleted/schedules` | Admin | List soft-deleted schedules (optional `?agent_name=`); `purge_eta` from `schedule_soft_delete_retention_days`. `limit` capped at 500. |
+| POST | `/api/admin/soft-deleted/schedules/{id}/recover` | Admin | Clear `agent_schedules.deleted_at`. 404 if not soft-deleted. Rejoins the scheduler firing list next poll if enabled. Audit `agent_lifecycle:schedule_recover`. |
+
+Recovery is metadata-only (`deleted_at → NULL`); preserved child rows
+make the entity immediately usable via the regular
+`deleted_at`-filtered read paths. Response models `SoftDeletedAgent` /
+`SoftDeletedSchedule` are in `models.py` (Invariant #14).
+
 ### Fleet Sync Audit (#390 / S6)
 
 | Method | Path | Description |

@@ -30,12 +30,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from database import db
 from dependencies import require_admin
-from models import User
+from models import User, SoftDeletedAgent, SoftDeletedSchedule
 from services.platform_audit_service import (
     platform_audit_service,
     AuditEventType,
@@ -44,32 +43,9 @@ from services.settings_service import OPS_SETTINGS_DEFAULTS
 
 router = APIRouter(prefix="/api/admin/soft-deleted", tags=["admin-recovery"])
 
-
-# -----------------------------------------------------------------------------
-# Response models
-# -----------------------------------------------------------------------------
-
-
-class SoftDeletedAgent(BaseModel):
-    agent_name: str
-    owner_id: int
-    created_at: str
-    deleted_at: str
-    # When the retention sweep would hard-purge this row (None when
-    # the retention setting is 0 = disabled).
-    purge_eta: Optional[str]
-
-
-class SoftDeletedSchedule(BaseModel):
-    id: str
-    agent_name: str
-    name: str
-    cron_expression: str
-    message: str
-    owner_id: int
-    enabled: bool
-    deleted_at: str
-    purge_eta: Optional[str]
+# Response models SoftDeletedAgent / SoftDeletedSchedule live in
+# models.py (Architectural Invariant #14 — Pydantic response models are
+# centralized in models.py, not declared in router files).
 
 
 # -----------------------------------------------------------------------------
@@ -108,7 +84,7 @@ def _purge_eta(deleted_at_iso: str, retention_days: int) -> Optional[str]:
 
 @router.get("/agents", response_model=List[SoftDeletedAgent])
 async def list_soft_deleted_agents(
-    limit: int = 200,
+    limit: int = Query(200, le=500),
     _: User = Depends(require_admin),
 ):
     """List currently-soft-deleted agents, newest first.
@@ -187,7 +163,7 @@ async def recover_agent(
 @router.get("/schedules", response_model=List[SoftDeletedSchedule])
 async def list_soft_deleted_schedules(
     agent_name: Optional[str] = None,
-    limit: int = 200,
+    limit: int = Query(200, le=500),
     _: User = Depends(require_admin),
 ):
     """List soft-deleted schedules across the fleet (or scoped to one

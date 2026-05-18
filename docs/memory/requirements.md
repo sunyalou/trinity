@@ -2277,8 +2277,36 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
   deleted_at IS NOT NULL`. Migration in `db/migrations.py`.
 
 ### 33.3 Admin Recovery Endpoints (#834 — Phase 1c)
-- **Status**: 🚧 In progress (PR #840). Admin surface to list and
-  recover soft-deleted agents/schedules before the retention purge.
+- **Implements**: Issue #834 Phase 1c (PR #840)
+- **Description**: Admin-only surface to list and recover soft-deleted
+  agents/schedules before the retention purge hard-deletes them.
+  Replaces the prior shell-only workaround (manual `UPDATE ... SET
+  deleted_at = NULL`), which required DB access and was unauditable.
+- **Endpoints** (all `require_admin`, all audit-logged):
+  - `GET /api/admin/soft-deleted/agents` — list soft-deleted agents,
+    newest first. Each row carries a computed `purge_eta` (when the
+    retention sweep would hard-purge it; `null` when
+    `agent_soft_delete_retention_days = 0`). `limit` capped at 500.
+  - `POST /api/admin/soft-deleted/agents/{name}/recover` — clear
+    `deleted_at`. 404 if not in the soft-deleted set. **Metadata-only**:
+    the Docker container is *not* recreated (removed at soft-delete);
+    the agent shows `status=stopped` / `needs_container_recreate=true`.
+    Operator brings it back via `POST /api/agents/{name}/start` from the
+    preserved workspace volume. Container recreate-on-recover is #834
+    Phase 2.
+  - `GET /api/admin/soft-deleted/schedules` — list soft-deleted
+    schedules (optionally `?agent_name=`-scoped), with `purge_eta` from
+    `schedule_soft_delete_retention_days`. `limit` capped at 500.
+  - `POST /api/admin/soft-deleted/schedules/{id}/recover` — clear
+    `deleted_at`. 404 if not soft-deleted. The schedule rejoins the
+    scheduler firing list on the next poll if it was enabled.
+- **Recovery semantics**: flips `deleted_at` back to NULL; child rows
+  already survived the soft-delete so the entity is immediately usable
+  via the regular (deleted_at-filtered) read paths.
+- **Audit**: every recovery emits an `agent_lifecycle:recover` /
+  `agent_lifecycle:schedule_recover` platform-audit event.
+- **Models**: `SoftDeletedAgent` / `SoftDeletedSchedule` response
+  models live in `models.py` (Architectural Invariant #14).
 
 ---
 
