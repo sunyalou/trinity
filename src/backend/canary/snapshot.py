@@ -274,15 +274,17 @@ def _collect_zombie_counts() -> Dict[str, Any]:
     """Per-running-agent zombie-process count via Docker exec.
 
     For every running container labeled `trinity.platform=agent`, runs
-    `sh -c "ps -eo stat,comm | grep ' Z.*claude' | wc -l"` and parses
+    `sh -c "ps -eo stat,comm | grep '^Z.*claude' | wc -l"` and parses
     the integer result. Used by R-01 to detect unreaped Claude child
     processes (#407 bug class).
 
     The shell command pattern matters: `STAT` is the first column from
     `ps -eo stat,comm`, and a zombie's STAT field is `Z` (sometimes
-    with suffixes like `Z+`). `' Z.*claude'` matches a space-then-Z
-    boundary so we don't accidentally hit `S` (sleeping) processes
-    whose COMM happens to contain `Z`.
+    with suffixes like `Z+`). `^Z` anchors at the start of the line —
+    procps-ng on the agent base image emits STAT left-aligned with no
+    leading space for single-letter codes, so the catalog's space-Z
+    pattern misses. Verified live against a real zombie spawned via
+    `os.fork()` + `prctl(PR_SET_NAME, "claude")`.
 
     Returns a dict with two keys:
       "counts":     {agent_name: int}   for containers we successfully exec'd.

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -167,6 +168,18 @@ class CapacityManager:
         # The drain callback used to live in main.py wiring SlotService → Backlog;
         # CapacityManager owns it now so callers don't have to know.
         self._slots.register_on_release(self._on_slot_released)
+        # Seed the canary B-02 drain-tick heartbeat at construction so the
+        # on-demand `POST /api/canary/run-cycle` can never fire B-02 with
+        # `drain_tick_age_seconds: null` during the ~15s window between
+        # backend boot and the first `_capacity_maintenance_loop` tick.
+        # On every successful `run_maintenance()` this gets overwritten
+        # with a fresh timestamp; on init we only need a non-stale floor.
+        try:
+            self._redis.set("canary:drain_tick_at", str(time.time()))
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(
+                f"[Capacity] failed to seed canary drain-tick heartbeat: {e}"
+            )
 
     # ------------------------------------------------------------------
     # Acquire
@@ -414,9 +427,10 @@ class CapacityManager:
         "queue stuck waiting for drain" from "drain just hasn't run yet".
         Written at the END of the sweep so a crash mid-sweep doesn't
         falsely claim a successful tick — leaving the cursor stale and
-        letting B-02 catch the stuck drain.
+        letting B-02 catch the stuck drain. `__init__` seeds this key
+        with a fresh timestamp so the on-demand canary path never sees a
+        missing-heartbeat state during the boot window.
         """
-        import time
         await self._backlog.expire_stale(max_age_hours=max_age_hours)
         await self._backlog.drain_orphans_all()
         try:
