@@ -427,3 +427,67 @@ async def update_file(path: str, request: FileUpdateRequest, platform: bool = Fa
     except Exception as e:
         logger.error(f"File update error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to update file: {str(e)}")
+
+
+@router.post("/api/files/mkdir")
+async def create_folder(path: str):
+    """
+    Create a new directory in the workspace.
+    Only allows access to /home/developer for security.
+    Cannot create inside protected paths (.trinity, .git, etc.).
+    Creates intermediate parent directories. Rejects if the target
+    directory already exists (409).
+
+    Args:
+        path: Directory path to create (query parameter)
+
+    Returns:
+        Success status and directory info
+    """
+    # Security: Only allow workspace access (mirrors update_file)
+    allowed_base = Path("/home/developer")
+
+    if path.startswith('/'):
+        requested_path = Path(path).resolve()
+    else:
+        requested_path = (allowed_base / path).resolve()
+
+    # Ensure requested path is within workspace
+    if not str(requested_path).startswith(str(allowed_base)):
+        raise HTTPException(status_code=403, detail="Access denied: only /home/developer accessible")
+
+    # Cannot create the home directory itself
+    if requested_path == allowed_base:
+        raise HTTPException(status_code=400, detail="Directory already exists: /home/developer")
+
+    # Reject creation inside an edit-protected path (.trinity, .git, etc.).
+    # _is_edit_protected_path walks parents, so a nested target under a
+    # protected dir is rejected too.
+    if _is_edit_protected_path(requested_path):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot create folder in protected path: {requested_path.name}"
+        )
+
+    if requested_path.exists():
+        if requested_path.is_dir():
+            raise HTTPException(status_code=409, detail=f"Directory already exists: {path}")
+        raise HTTPException(status_code=409, detail=f"A file already exists at: {path}")
+
+    try:
+        requested_path.mkdir(parents=True, exist_ok=False)
+        stat = requested_path.stat()
+
+        logger.info(f"Created directory: {requested_path}")
+        return {
+            "success": True,
+            "path": path,
+            "type": "directory",
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Folder create error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create folder: {str(e)}")

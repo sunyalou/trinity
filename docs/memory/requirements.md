@@ -648,9 +648,9 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
 ## 13. Content & File Management
 
 ### 13.1 Per-Agent File Manager
-- **Status**: ✅ Implemented (Updated 2026-03-03, Issue #51)
+- **Status**: ✅ Implemented (Updated 2026-05-19, Issues #51, #37)
 - **Description**: Full-featured file manager in AgentDetail Files tab with two-panel layout (tree + preview)
-- **Key Features**: Tree view with search, image/video/audio/PDF/text preview, inline text editing, delete with protected path warnings, show hidden files toggle
+- **Key Features**: Tree view with search, image/video/audio/PDF/text preview, inline text editing, create folder (into selected directory or workspace root; nested via `/`), delete with protected path warnings, show hidden files toggle
 - **Components**: Reuses `file-manager/FileTreeNode.vue` and `file-manager/FilePreview.vue`
 - **Flow**: `docs/memory/feature-flows/file-browser.md`
 

@@ -367,6 +367,7 @@ docker exec trinity-vector sh -c "tail -50 /data/logs/agents.json" | jq .
 - `/api/chat/session` - Context window stats
 - `/api/files` - List workspace files (recursive tree structure)
 - `/api/files/download` - Download file content (100MB limit)
+- `/api/files/mkdir` - Create a directory (workspace-confined, edit-protected paths rejected) (#37)
 
 **Template-supplied pre-check** (optional, SCHED-COND-001): if the template ships an executable `~/.trinity/pre-check` file, the backend's internal endpoint `POST /api/internal/agents/{name}/pre-check` runs it via `docker exec` before the scheduler fires a cron-triggered chat. The hook is **language-agnostic** — interpreter is selected by the file's shebang line (Python, bash, node, compiled binary, …); Trinity does not invoke `python3` for it. The hook's stdout becomes the chat message; empty stdout + exit 0 records a skipped execution. No HTTP endpoint is exposed on the agent-server for this — the primitive is the same `execute_command_in_container` already used by `services/git_service.py` (persistent-state allowlist), `ssh_service.py`, and the agent terminal.
 
@@ -500,6 +501,7 @@ picks up on its next poll. (#389 S1a)
 | GET | `/api/agents/{name}/info` | Get template metadata |
 | GET | `/api/agents/{name}/files` | List workspace files (tree structure) |
 | GET | `/api/agents/{name}/files/download` | Download file |
+| POST | `/api/agents/{name}/files/mkdir` | Create a directory in the workspace (NEW: 2026-05-19, #37) |
 | GET | `/api/agents/{name}/folders` | Get shared folder config (NEW: 2025-12-13) |
 | PUT | `/api/agents/{name}/folders` | Update shared folder config |
 | GET | `/api/agents/{name}/folders/available` | List mountable folders from permitted agents |
