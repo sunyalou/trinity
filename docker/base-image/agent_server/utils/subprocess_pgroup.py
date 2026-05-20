@@ -259,6 +259,14 @@ async def drain_reader_threads(
         # necessary — killing on cgroup membership is strictly more
         # general and avoids the D-state ``os.stat`` deadlock.
 
+        # #586 metric: capture initial stuck count for the per-branch
+        # [METRIC] drain_outcome emissions below. orphan_kill_count is
+        # vestigial in the cgroup-sweep era (#817) — the explicit
+        # pipe-writer killer is gone; kill_cgroup_orphans() runs in
+        # finally and logs its own count. Field is held at 0 for
+        # operator-tooling stability.
+        stuck_initial = len(stuck)
+
         # Natural-drain joins — run off the event loop so the deadline
         # is enforced even if a CPU-heavy orphan starves the reader.
         elapsed = time.monotonic() - drain_start
@@ -278,6 +286,14 @@ async def drain_reader_threads(
                 "[Subprocess] Reader thread(s) drained naturally after "
                 "grandchild termination (pid=%s, elapsed=%.1fs)",
                 process.pid, time.monotonic() - drain_start,
+            )
+            # #586 Site B — natural drain after kill phase.
+            logger.info(
+                "[METRIC] drain_outcome pid=%s pgid=%s orphan_kill_count=%s "
+                "outcome=%s drain_elapsed_ms=%s stuck_initial=%s",
+                process.pid, pgid, 0, "natural",
+                int((time.monotonic() - drain_start) * 1000),
+                stuck_initial,
             )
             return
 
@@ -305,6 +321,28 @@ async def drain_reader_threads(
                 "[Subprocess] %s reader thread(s) leaked for pid=%s after "
                 "force-close; continuing anyway",
                 len(leaked), process.pid,
+            )
+
+        # #586 Site C — force-close path. Bug-class regression site:
+        # operators alert on a non-zero rate of these emissions.
+        # leaked_count appended only when daemon reader threads
+        # survived the force-close pipe-close.
+        if leaked:
+            logger.info(
+                "[METRIC] drain_outcome pid=%s pgid=%s orphan_kill_count=%s "
+                "outcome=%s drain_elapsed_ms=%s stuck_initial=%s leaked_count=%s",
+                process.pid, pgid, 0, "leaked",
+                int((time.monotonic() - drain_start) * 1000),
+                stuck_initial,
+                len(leaked),
+            )
+        else:
+            logger.info(
+                "[METRIC] drain_outcome pid=%s pgid=%s orphan_kill_count=%s "
+                "outcome=%s drain_elapsed_ms=%s stuck_initial=%s",
+                process.pid, pgid, 0, "force_close",
+                int((time.monotonic() - drain_start) * 1000),
+                stuck_initial,
             )
     finally:
         # Issue #817 follow-up: cgroup-walk runs on every exit path.
