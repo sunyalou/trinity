@@ -91,7 +91,9 @@ from routers.voice import router as voice_router
 from routers.event_subscriptions import router as event_subscriptions_router, set_websocket_manager as set_event_subs_ws_manager, set_filtered_websocket_manager as set_event_subs_filtered_ws_manager
 from routers.users import router as users_router
 from routers.debug import router as debug_router  # #306 soak instrumentation
+from routers.a2a import router as a2a_router  # #737 A2A Agent Cards
 from routers.messages import router as messages_router  # Proactive Messaging (#321)
+from routers.public_memory import router as public_memory_router  # MEM-001 write path (#888)
 from routers.webhooks import router as webhooks_router  # Webhook triggers (WEBHOOK-001, #291)
 from routers.ws_tickets import router as ws_tickets_router  # /ws ticket auth (#550)
 
@@ -826,6 +828,7 @@ app.include_router(tags_router)  # Agent Tags (ORG-001)
 app.include_router(system_views_router)  # System Views (ORG-001 Phase 2)
 app.include_router(notifications_router)  # Agent Notifications (NOTIF-001)
 app.include_router(messages_router)  # Proactive Messaging (#321)
+app.include_router(public_memory_router)  # MEM-001 write path (#888)
 app.include_router(subscriptions_router)  # Subscription Management (SUB-001)
 app.include_router(monitoring_router)  # Agent Monitoring (MON-001)
 app.include_router(slack_public_router)  # Slack Integration Public (SLACK-001)
@@ -843,6 +846,7 @@ app.include_router(voice_router)  # Voice Chat (VOICE-001)
 app.include_router(event_subscriptions_router)  # Agent Event Subscriptions (EVT-001)
 app.include_router(users_router)  # User Management (ROLE-001)
 app.include_router(debug_router)  # #306 soak dashboard
+app.include_router(a2a_router)  # A2A Agent Cards (#737)
 app.include_router(webhooks_router)  # Webhook Triggers (WEBHOOK-001, #291)
 app.include_router(ws_tickets_router)  # WebSocket auth tickets (#550)
 

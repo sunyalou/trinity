@@ -265,7 +265,7 @@ import os
 import pytest
 import uuid
 import time
-from typing import Generator
+from typing import Callable, Generator
 
 
 @pytest.fixture(autouse=True)
@@ -367,6 +367,20 @@ def unauthenticated_client(api_config: ApiConfig) -> Generator[TrinityApiClient,
 def resource_tracker() -> ResourceTracker:
     """Track created resources for cleanup."""
     return ResourceTracker()
+
+
+@pytest.fixture(scope="function")
+def ws_ticket(api_client: TrinityApiClient) -> Callable[[], str]:
+    """Mint a fresh single-use WebSocket ticket (#550).
+
+    Returned callable allows a single test to mint multiple tickets
+    (e.g. replay tests that need a second fresh ticket).
+    """
+    def _mint() -> str:
+        resp = api_client.post("/api/ws/ticket")
+        assert resp.status_code == 200, resp.text
+        return resp.json()["ticket"]
+    return _mint
 
 
 @pytest.fixture(scope="function")

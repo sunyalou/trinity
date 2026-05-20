@@ -15,7 +15,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, Tuple
 
 import httpx
 import redis as _redis
@@ -226,10 +226,15 @@ CIRCUIT_FAILURE_EXCEPTIONS: tuple[type[BaseException], ...] = (
 # callers' `except AgentClientError` blocks keep working) but NOT count
 # toward the circuit threshold. httpx.PoolTimeout is included because
 # pool exhaustion is a client-side resource issue, not agent unhealth.
+#
+# httpx.TimeoutException is the parent class of {Connect,Read,Write,Pool}
+# Timeout. ConnectTimeout is intentionally in CIRCUIT_FAILURE_EXCEPTIONS
+# above and is caught by the *first* `except` arm in _request(), so the
+# parent class here only intercepts bare TimeoutException and any future
+# subclass we don't enumerate — making the drop-grace reclassification
+# total over the timeout hierarchy minus ConnectTimeout.
 TRANSIENT_TRANSPORT_EXCEPTIONS: tuple[type[BaseException], ...] = (
-    httpx.ReadTimeout,
-    httpx.WriteTimeout,
-    httpx.PoolTimeout,
+    httpx.TimeoutException,
     httpx.WriteError,
     httpx.ReadError,
     httpx.RemoteProtocolError,
@@ -482,20 +487,76 @@ def reset_circuit(agent_name: str) -> None:
 
 _client_pool: Dict[str, httpx.AsyncClient] = {}
 
+# Per-base_url "recent transport drop" timestamps. When the first concurrent
+# caller catches a transport-level disconnect we stamp this map; siblings whose
+# fresh-client retry then dies with ConnectError/Timeout within the grace
+# window are classified as collateral drops (no record_failure). Without this
+# the eviction-then-fresh-client race makes 9-of-10 concurrent drops still
+# trip the breaker — see #474.
+#
+# Scope: both `_recent_drops` and `_client_pool` are process-local. Under
+# multi-uvicorn-worker deployments each worker has its own grace map and its
+# own pool, so the burst-neutralization is per-worker. The Redis-backed
+# circuit (`CircuitState`) remains the single fleet-wide source of truth, so
+# transport drops still never hit `record_failure()` in any worker — only the
+# specific in-burst sibling-collapse fix is per-worker, which is acceptable
+# because the underlying client pool is also per-worker.
+_recent_drops: Dict[str, float] = {}
+_DROP_GRACE_SEC = 2.0
 
-def _get_http_client(base_url: str) -> httpx.AsyncClient:
-    """Get or create a persistent HTTP client for a base URL."""
+
+def _stamp_drop(base_url: str) -> None:
+    _recent_drops[base_url] = time.monotonic()
+
+
+def _is_within_drop_grace(base_url: str) -> bool:
+    ts = _recent_drops.get(base_url)
+    if ts is None:
+        return False
+    if time.monotonic() - ts <= _DROP_GRACE_SEC:
+        return True
+    _recent_drops.pop(base_url, None)
+    return False
+
+
+def _build_http_client(base_url: str) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        base_url=base_url,
+        limits=httpx.Limits(
+            max_connections=10,
+            max_keepalive_connections=5,
+            keepalive_expiry=30.0,
+        ),
+    )
+
+
+def _acquire_client(base_url: str) -> Tuple[httpx.AsyncClient, bool]:
+    """Acquire an httpx client and report whether it is pooled.
+
+    Returns `(client, is_pooled)`. Non-pooled clients are single-use and
+    MUST be closed by the caller — the in-grace path returns a fresh
+    client so a concurrent drop burst can't repopulate the pool with
+    transient sockets, but the caller is then responsible for `aclose()`
+    to prevent a connection-handle leak.
+    """
+    if _is_within_drop_grace(base_url):
+        return _build_http_client(base_url), False
+
     client = _client_pool.get(base_url)
     if client is None or client.is_closed:
-        client = httpx.AsyncClient(
-            base_url=base_url,
-            limits=httpx.Limits(
-                max_connections=10,
-                max_keepalive_connections=5,
-                keepalive_expiry=30.0,
-            ),
-        )
+        client = _build_http_client(base_url)
         _client_pool[base_url] = client
+    return client, True
+
+
+def _get_http_client(base_url: str) -> httpx.AsyncClient:
+    """Get or create an httpx client for a base URL.
+
+    Backward-compatible wrapper around `_acquire_client` that discards the
+    pooled-ness flag. Callers that need to close non-pooled clients should
+    use `_acquire_client` directly. (`_request` does.)
+    """
+    client, _ = _acquire_client(base_url)
     return client
 
 
@@ -549,6 +610,17 @@ class AgentClientError(Exception):
 
 class AgentNotReachableError(AgentClientError):
     """Agent container is not responding."""
+    pass
+
+
+class AgentConnectionDroppedError(AgentNotReachableError):
+    """Connection dropped mid-flight (transport-level disconnect).
+
+    Distinguishes "in-flight transport broke" from "agent unreachable from the
+    start" so the circuit breaker can stay neutral. Inherits from
+    AgentNotReachableError so tenacity retries (`retry_if_exception_type`) and
+    callers catching `AgentNotReachableError` handle it correctly. (#474.)
+    """
     pass
 
 
@@ -633,7 +705,7 @@ class AgentClient:
             )
 
         timeout = timeout or self.DEFAULT_TIMEOUT
-        client = _get_http_client(self.base_url)
+        client, is_pooled = _acquire_client(self.base_url)
 
         try:
             response = await client.request(
@@ -645,35 +717,110 @@ class AgentClient:
         except asyncio.CancelledError:
             # Cancellation (e.g. MCP client drop propagating through FastAPI)
             # is not an agent-health signal. Explicit re-raise so a future
-            # maintainer can't shadow it with a broader catch.
+            # maintainer can't shadow it with a broader catch. (#798.)
             raise
 
         except CIRCUIT_FAILURE_EXCEPTIONS as e:
             # ConnectError / ConnectTimeout — agent is genuinely unreachable.
             # ConnectTimeout is a TimeoutException subclass, so this branch
-            # must come before any TimeoutException catch.
+            # must come before any TimeoutException catch. (#798.)
+            #
+            # Drop-grace override (#474 sibling-collapse fix): if a peer
+            # caller on the same base_url tripped a transport drop within
+            # the last _DROP_GRACE_SEC, this ConnectError is collateral —
+            # the pool was evicted under us and the fresh client failed
+            # to reconnect mid-burst on a still-healthy agent. Raise the
+            # AgentNotReachableError subclass instead of record_failure()
+            # so siblings of a single drop don't poison the circuit.
+            if _is_within_drop_grace(self.base_url):
+                raise AgentConnectionDroppedError(
+                    f"Connection to agent {self.agent_name} dropped mid-burst "
+                    f"(collateral {type(e).__name__}): {e}"
+                )
             self._circuit.record_failure()
             raise AgentNotReachableError(
                 f"Cannot reach agent {self.agent_name}: "
                 f"{type(e).__name__}: {e}"[:200]
             )
 
-        except TRANSIENT_TRANSPORT_EXCEPTIONS as e:
-            # Read/Write timeouts, pool exhaustion, mid-write broken-pipe /
-            # reset, garbled HTTP framing. Surface to the caller as the
-            # existing typed error so `except AgentClientError` blocks keep
-            # working, but DO NOT count toward the circuit threshold (#474).
+        except (
+            httpx.ReadError,
+            httpx.WriteError,
+            httpx.RemoteProtocolError,
+            BrokenPipeError,
+            ConnectionResetError,
+        ) as e:
+            # Transport drop mid-flight. NOT a circuit-health signal —
+            # the agent itself may be fine and the connection just died
+            # (upstream MCP-sync cancellation, transient socket reset,
+            # broken keepalive). Do NOT record_failure(). (#474.)
             #
-            # NOT caught here (propagate raw, bypass the AgentClientError
-            # typing contract): httpx.CloseError, httpx.LocalProtocolError,
-            # httpx.ProxyError, httpx.UnsupportedProtocol, httpx.InvalidURL,
-            # and raw OSError subclasses (BrokenPipeError, ConnectionResetError).
-            # Those are client-side / configuration bugs, not agent-health
-            # signals — letting them surface loudly is intentional.
+            # This branch is layered ABOVE TRANSIENT_TRANSPORT_EXCEPTIONS
+            # so the stamp+evict side effects always run on the genuine
+            # drop signals (httpx.ReadError / WriteError / RemoteProtocolError
+            # — which also appear in the tuple below — plus the raw
+            # OSError subclasses, which #798 deliberately let propagate).
+            # The tuple-based handler below is then left only with the
+            # timeout / pool-exhaustion members of the contract.
+            #
+            # Pool eviction: a pooled client must be removed so the next
+            # call doesn't reuse a broken keepalive socket. The `is
+            # client` identity check guarantees only the worker that
+            # still owns the pool entry closes it; siblings in a
+            # concurrent burst see the pool empty and skip. Non-pooled
+            # (fresh-during-grace) clients are not in the pool, so the
+            # eviction step is skipped — the outer `finally` closes
+            # them either way.
+            _stamp_drop(self.base_url)
+            if is_pooled:
+                evicted = _client_pool.pop(self.base_url, None)
+                if evicted is client:
+                    try:
+                        await client.aclose()
+                    except Exception:
+                        pass
+            raise AgentConnectionDroppedError(
+                f"Connection to agent {self.agent_name} dropped mid-flight: "
+                f"{type(e).__name__}: {e}"
+            )
+
+        except TRANSIENT_TRANSPORT_EXCEPTIONS as e:
+            # Read/Write timeouts and pool exhaustion. Surface to the
+            # caller as the existing typed error so `except AgentClientError`
+            # blocks keep working, but DO NOT count toward the circuit
+            # threshold (#474 / #798). The httpx.ReadError / WriteError /
+            # RemoteProtocolError members of this tuple are intercepted
+            # by the stamp+evict handler above so this branch sees only
+            # the *Timeout / PoolTimeout members in practice.
+            #
+            # Drop-grace override (#474 sibling-collapse fix): if a peer
+            # caller on the same base_url tripped a transport drop within
+            # the last _DROP_GRACE_SEC, surface as AgentConnectionDroppedError
+            # so tenacity / catch chains see a consistent "in-burst" signal
+            # rather than a plain transient.
+            if _is_within_drop_grace(self.base_url):
+                raise AgentConnectionDroppedError(
+                    f"Connection to agent {self.agent_name} dropped mid-burst "
+                    f"(collateral {type(e).__name__}): {e}"
+                )
             raise AgentNotReachableError(
                 f"Transient transport error to agent {self.agent_name}: "
                 f"{type(e).__name__}: {e}"[:200]
             )
+
+        finally:
+            # Non-pooled clients are single-use (returned by `_acquire_client`
+            # while a drop-grace window is active so the pool isn't
+            # repopulated with transient sockets). The body has already
+            # buffered any successful response (default httpx is non-
+            # streaming), so closing here is safe on every exit path and
+            # prevents the connection-handle leak that would otherwise
+            # accumulate during sustained drop bursts. (#474.)
+            if not is_pooled:
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
 
     async def get(self, path: str, timeout: float = None, **kwargs) -> httpx.Response:
         """Make a GET request to the agent."""

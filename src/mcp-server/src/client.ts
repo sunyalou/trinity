@@ -1076,6 +1076,33 @@ export class TrinityClient {
   }
 
   // ============================================================================
+  // Per-User Memory Write (MEM-001, #888)
+  // ============================================================================
+
+  /**
+   * Write the per-user memory blob for the user currently being served.
+   * The user email is resolved server-side from the execution record —
+   * the caller only supplies the execution_id and the memory text.
+   */
+  async writeUserMemory(
+    agentName: string,
+    data: {
+      execution_id: string;
+      memory_text: string;
+    }
+  ): Promise<{
+    success: boolean;
+    agent_name: string;
+    user_email: string;
+  }> {
+    return this.request(
+      "POST",
+      `/api/agents/${encodeURIComponent(agentName)}/user-memory`,
+      data
+    );
+  }
+
+  // ============================================================================
   // Agent Event Subscriptions (EVT-001)
   // ============================================================================
 

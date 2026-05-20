@@ -146,6 +146,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - `whatsapp.py` - WhatsApp via Twilio (webhook receiver, binding CRUD + test) (WHATSAPP-001)
 - `webhooks.py` - Public webhook trigger endpoint + JWT-auth webhook management (WEBHOOK-001, #291)
 - `messages.py` - Proactive agent-to-user messaging (#321)
+- `public_memory.py` - Per-user memory write endpoint for channel sessions (MEM-001, #888)
 
 *Subscriptions & Skills:*
 - `subscriptions.py` - Subscription management (SUB-002)
@@ -206,7 +207,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 
 *Core:*
 - `base.py` - `ChannelAdapter` ABC, `NormalizedMessage`, `ChannelResponse` models
-- `message_router.py` - `ChannelMessageRouter`: rate limiting, agent resolution, execution pipeline
+- `message_router.py` - `ChannelMessageRouter`: rate limiting, agent resolution, execution pipeline; injects MEM-001 per-user memory into `execute_task(system_prompt=…)` gated on `verified_email and not is_group` (#895)
 
 *Slack:*
 - `slack_adapter.py` - Slack adapter: DMs, @mentions, thread replies, agent identity via `chat:write.customize`
@@ -305,7 +306,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - Tools access auth context via `context.session` parameter
 - Agent-to-agent collaboration uses agent-scoped keys for access control
 
-**Tools** across 16 tool modules (`src/tools/`):
+**Tools** across 17 tool modules (`src/tools/`):
 
 | Module | Tools | Description |
 |--------|-------|-------------|
@@ -325,6 +326,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 | `channels.ts` (2) | `list_channel_groups`, `send_group_message` | Channel group discovery and proactive group messaging (#349) |
 | `messages.ts` (1) | `send_message` | Proactive user messaging by verified email (#321) |
 | `files.ts` (1) | `share_file` | Outbound file sharing — publish file from `/home/developer/public/` and return download URL (FILES-001) |
+| `memory.ts` (1) | `write_user_memory` | Write per-user memory blob in isolated store; resolves user email server-side from execution_id (MEM-001, #888) |
 
 ### Vector Log Aggregator (`config/vector.yaml`)
 
@@ -401,7 +403,7 @@ Services that run continuously in the backend process:
 | **Sync Health Service** | `sync_health_service.py` | Polls git-enabled agents every 60s, upserts `agent_sync_state`, emits `sync_failing` operator-queue entries when consecutive_failures ≥ 3. (#389 S1) |
 | **Monitoring Service** | `monitoring_service.py` | Fleet-wide health checks on configurable interval. (MON-001) |
 | **Scheduler Service** | `scheduler_service.py` | APScheduler-based cron job execution. Async fire-and-forget with DB polling for status. On each cron-triggered fire, optionally invokes the agent's executable `~/.trinity/pre-check` (interpreter chosen by shebang) via the backend's `POST /api/internal/agents/{name}/pre-check` (which `docker exec`s into the agent container). Empty stdout + exit 0 records a skipped execution and does not invoke Claude (SCHED-COND-001, #454). |
-| **Capacity Maintenance** | `capacity_manager.py` | Calls `CapacityManager.run_maintenance()` every 60s — expires stale queued tasks (>24h) and drains orphans after restart. (BACKLOG-001 / CAPACITY-CONSOLIDATE #428) |
+| **Capacity Maintenance** | `capacity_manager.py` | Calls `CapacityManager.run_maintenance()` every 60s — expires stale queued tasks (>24h) and drains orphans after restart. On each successful sweep, writes a unix-timestamp heartbeat to Redis key `canary:drain_tick_at` (read by canary B-02 to distinguish stuck drains from "drain just hasn't run yet"). (BACKLOG-001 / CAPACITY-CONSOLIDATE #428; B-02 heartbeat #882) |
 | **Audit Retention** | `audit_retention_service.py` | Daily APScheduler job at 04:15 UTC that DELETEs `audit_log` rows past the retention window. Configured via `AUDIT_LOG_RETENTION_DAYS` (default 365, floored at 365 — the `audit_log_no_delete` trigger refuses younger rows). Pruning ages out hash-chain history past the cutoff by design. (#552) |
 | **DB Vacuum** | `db_vacuum_service.py` | Daily APScheduler job at 04:30 UTC that runs `VACUUM` on `/data/trinity.db` to reclaim pages freed by the cleanup-service retention sweeps. Configurable via `DB_VACUUM_ENABLED` / `DB_VACUUM_HOUR` / `DB_VACUUM_MINUTE`. Opens an autocommit (`isolation_level=None`) connection because VACUUM cannot run inside a transaction; accepts the rare BUSY outcome rather than retrying. (#772) |
 | **Session Cleanup** | `session_cleanup_service.py` | Periodic JSONL reaper for the Session tab. Default 6h cycle (`poll_interval_seconds`); each cycle diffs every running agent's `~/.claude/projects/-home-developer/<uuid>.jsonl` set against `agent_sessions.cached_claude_session_id` and deletes JSONLs not in the keep set whose mtime is older than `min_age_seconds` (default 1h race guard). Synchronous best-effort `reap_jsonl()` is also called by the session router on user-initiated reset/delete so the disk reclaim is immediate. Uses `execute_command_in_container` (no agent-server endpoint required). Also reaps headless-task JSONLs created by long-running headless tasks (timeout > 600s) which auto-enable JSONL persistence so the stdout-race recovery code in `agent_server/services/jsonl_recovery.py` can fire — those UUIDs aren't in `agent_sessions`, so they fall out of the keep set automatically and the existing 1h age guard + 6h sweep removes them. (SESSION_TAB Phase 4.2; #678 JSONL persistence Option B) |
@@ -473,7 +475,7 @@ picks up on its next poll. (#389 S1a)
 
 ## API Endpoints
 
-### Agents (32 endpoints)
+### Agents (33 endpoints)
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/agents` | List all agents |
@@ -496,6 +498,7 @@ picks up on its next poll. (#389 S1a)
 | GET | `/api/agents/{name}/stats` | Get live telemetry |
 | GET | `/api/agents/{name}/activity` | Get activity summary |
 | GET | `/api/agents/{name}/info` | Get template metadata |
+| GET | `/api/agents/{name}/a2a/agent-card` | A2A v1.0 Agent Card for external orchestrator discovery (#737) |
 | GET | `/api/agents/{name}/files` | List workspace files (tree structure) |
 | GET | `/api/agents/{name}/files/download` | Download file |
 | GET | `/api/agents/{name}/folders` | Get shared folder config (NEW: 2025-12-13) |
@@ -516,6 +519,7 @@ picks up on its next poll. (#389 S1a)
 | POST | `/api/agents/{name}/shared-files` | Mint a download URL for a file in the publish dir (owner/admin or agent-scoped key; used by `share_file` MCP tool) |
 | GET | `/api/agents/{name}/shared-files` | List active (non-revoked, non-expired) shared files with download counts |
 | DELETE | `/api/agents/{name}/shared-files/{file_id}` | Revoke a shared file (owner-only; idempotent) |
+| POST | `/api/agents/{name}/user-memory` | Write per-user memory blob; resolves user email from execution_id server-side (MEM-001, #888) |
 
 **Note**: Route ordering is critical. `/context-stats` and `/autonomy-status` must be defined BEFORE `/{name}` catch-all route to avoid 404 errors.
 
@@ -697,7 +701,7 @@ export, enable/disable toggle. Issue #20 can be closed.
 **Storage**: `canary_violations` table in main SQLite DB. JSON-encoded
 `observed_state` column carries invariant-specific payload.
 
-**Phase 1 invariants** (S-01, E-02, L-03):
+**Phase 1 invariants** (#653 — S-01, E-02, L-03):
 - **S-01 — Slot–row bijection**: per agent, set of execution_ids in
   `agent:slots:{name}` (Redis ZSET, drain sentinels filtered) equals set
   of execution_ids in `schedule_executions WHERE status='running'`.
@@ -715,6 +719,51 @@ export, enable/disable toggle. Issue #20 can be closed.
   in `agent_ownership`; no Redis `agent:slots:{name}` for missing agent.
   Severity: critical for orphaned `schedule_executions` or Redis slots,
   major otherwise. Catches Issue #129 bug class.
+
+**Phase 2 invariants** (#882 — S-02, E-01, E-05, B-01):
+- **S-02 — No overbooking**: per agent, `ZCARD(agent:slots:{name})`
+  (drain sentinels filtered) ≤ `agent_ownership.max_parallel_tasks`.
+  Severity: critical. Catches `acquire_slot` concurrency-bypass
+  regressions — distinct from S-01 because the violation can be self-
+  consistent (Redis and SQL agree on N+1 running tasks against a cap of N).
+- **E-01 — Terminal-state closure**: no `status='running'` row whose
+  `started_at` is older than the agent's `execution_timeout_seconds + 300s`
+  (matches `SLOT_TTL_BUFFER` so the check fires *after* cleanup has had
+  its window to act). Severity: critical. Tier B.
+- **E-05 — Dispatched rows have session**: no `status='running'` row
+  older than 60s with `claude_session_id IS NULL`. Severity: major.
+  Tier B. Guards Issue #106.
+- **B-01 — Queue-status coherence**: per agent, `db.get_queued_count`
+  (the accessor `BacklogService` calls) agrees with the snapshot's
+  independently-collected `len(queued_exec_ids)`. Severity: critical.
+  Tier A. Trivially-green today after the #428 consolidation; exists as
+  a regression guard against a future cache layer or status-filter drift
+  on the production accessor.
+
+**Phase 3 invariants** (#882, same PR — S-03, B-02, R-01):
+- **S-03 — Slot TTL ≥ execution timeout**: for every member of
+  `agent:slots:{name}`, the companion `agent:slot:{name}:{eid}` HASH
+  has `TTL ≥ execution_timeout_seconds + 300s`. Three failure kinds
+  surfaced explicitly: `missing` (-2, metadata HASH expired ahead of
+  the ZSET — the #226 class), `no_expiry` (-1, `expire()` never set),
+  `below_floor` (positive TTL under the configured floor). Severity:
+  critical. Tier A.
+- **B-02 — No queued without slots-full**: if any agent has
+  `len(queued_exec_ids) > 0`, then either `slot_count == max_parallel`
+  OR a drain tick fired in the last 60s. Severity: critical. Tier B.
+  Heartbeat written by `CapacityManager.run_maintenance()` to
+  `canary:drain_tick_at` at the END of each successful sweep, so a
+  mid-sweep crash leaves the cursor stale and lets the check catch the
+  breakage.
+- **R-01 — No zombie Claude processes**: for every running
+  `trinity.platform=agent` container,
+  `ps -eo stat,comm | grep '^Z.*claude' | wc -l == 0`. Severity:
+  critical. Tier A. Guards PR #407. New source type for the canary
+  (docker exec); per-container failures recorded in
+  `sources_unavailable` so a single unhealthy container doesn't kill
+  the cycle. The regex is anchored at `^Z` rather than the catalog's
+  ` Z` (leading-space) — procps-ng on the agent base image emits STAT
+  left-aligned without padding.
 
 **Fleet**: `config/canary-fleet.yaml` — synthetic load generators
 (`canary-fleet-burst`, `canary-fleet-long`) deployed via the existing
@@ -764,7 +813,7 @@ Storage: `/data/agent-files/{file_id}` under the existing `trinity-data` volume 
 | GET | `/api/settings/mcp-url` | Get configured MCP server URL (any auth user) |
 | PUT | `/api/settings/mcp-url` | Set MCP server URL (admin-only) |
 | DELETE | `/api/settings/mcp-url` | Reset to auto-detect (admin-only) |
-| GET | `/api/settings/feature-flags` | Public-safe feature flags for UI gating (any auth user). Exposes `session_tab_enabled` (SESSION_TAB Phase 3) and `voice_available` (`VOICE_ENABLED && bool(GEMINI_API_KEY)`, #699). |
+| GET | `/api/settings/feature-flags` | Public-safe feature flags for UI gating (any auth user). Exposes `session_tab_enabled` (SESSION_TAB Phase 3), `voice_available` (`VOICE_ENABLED && bool(GEMINI_API_KEY)`, #699), and `workspace_available` (`voice_available AND WORKSPACE_ENABLED`, #860 — opt-in, default False). |
 | GET | `/api/settings/agent-defaults/resources` | Get fleet-wide default CPU/memory for new containers (admin-only, RES-001) |
 | PUT | `/api/settings/agent-defaults/resources` | Set fleet-wide default CPU/memory; valid CPU: 1/2/4/8/16; valid memory: 1g–32g (admin-only, RES-001) |
 

@@ -725,6 +725,18 @@ class GeminiRuntime(AgentRuntime):
         except TimeoutError as e:
             logger.error(f"[Headless Task] Timeout: {e}")
             raise HTTPException(status_code=504, detail=str(e))
+        except (BrokenPipeError, ConnectionResetError) as pipe_err:
+            # Subprocess stdin pipe closed before write completed — Gemini CLI
+            # child process exited early. Parallel surface to headless_executor.
+            # 502 not 503 to avoid SUB-003 auto-switch collision (#474).
+            logger.info(
+                f"[Headless Task] Subprocess pipe closed before write completed: {pipe_err}. "
+                f"This typically means the child Gemini process exited early."
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="Agent subprocess closed before task could complete",
+            )
         except Exception as e:
             logger.error(f"[Headless Task] Execution error: {e}")
             raise HTTPException(status_code=500, detail=f"Task execution error: {str(e)}")

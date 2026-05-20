@@ -780,8 +780,9 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
 - **Status**: ✅ Implemented (2026-03-19)
 - **Requirement ID**: MEM-001
 - **GitHub Issue**: #147
-- **Description**: Email-verified public chat sessions maintain persistent per-user memory (text blob) scoped to `(agent_name, user_email)`, injected into every agent call and updated via background summarization every 5 messages.
+- **Description**: Email-verified public chat sessions maintain persistent per-user memory (text blob) scoped to `(agent_name, user_email)`, injected into every agent call. Memory is updated via background summarization every 5 messages (auto) or explicitly via the `write_user_memory` MCP tool (agent-initiated, #888). The tool resolves the user email server-side from the execution record — agents never handle email addresses directly.
 - **Database Tables**: `public_user_memory`
+- **API**: `POST /api/agents/{name}/user-memory` (agent-scoped key + execution_id; user-facing triggers only)
 - **Flow**: `docs/memory/feature-flows/public-agent-links.md#per-user-persistent-memory-mem-001`
 
 ### 15.1a-3 Agent Website Proxy (SITE-001)
@@ -2071,6 +2072,35 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
   `docs/testing/orchestration-invariant-catalog.md`). Each adds as a new
   file under `src/backend/canary/invariants/` and a registry entry; the
   service and API surface stay unchanged.
+
+---
+
+## 32. A2A Agent Discoverability (#737)
+
+### 32.1 A2A v1.0 Agent Card Endpoint (#737 — Phase 1)
+- **Status**: 🚧 In Progress (Phase 1)
+- **Implements**: Issue #737
+- **Description**: Each Trinity agent exposes an A2A-protocol Agent
+  Card so external orchestrators (AWS Bedrock, Azure Copilot, Google
+  ADK) can discover its identity, skills, and auth requirements
+  without knowing Trinity's internal API. A2A is Google's open
+  agent-interoperability protocol (https://google.github.io/A2A/).
+- **Endpoint**: `GET /api/agents/{name}/a2a/agent-card` — returns a
+  valid A2A v1.0 card built from the agent's `template.yaml`
+  (`name`, `description`, `version`, `skills[]` mapped from
+  `capabilities[]` with `use_cases[]` as examples) plus declared
+  `securitySchemes.bearerAuth` (Trinity MCP API key) and
+  `capabilities.streaming = true`. Auth-gated by `AuthorizedAgentByName`.
+- **Behavior**: card data fetched from the agent-server's
+  `/api/template/info`; falls back to Docker labels when the agent
+  is stopped or unreachable (never 5xx's). The `url` field points at
+  the public chat endpoint as a working placeholder until the A2A
+  JSON-RPC endpoint ships.
+- **Phase 2 (deferred)**: Redis caching of the card; auth-gated
+  extended card with internal endpoint URLs + full skill schemas;
+  host-root `/.well-known/agent-card.json` proxy convention; MCP
+  `get_agent_card` tool; the A2A JSON-RPC server the card's `url`
+  should ultimately address.
 
 ---
 

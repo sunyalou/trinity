@@ -1,21 +1,30 @@
-// Regression test for #677 — API Keys page Copy buttons must reach the
-// clipboard. Prior to the fix, the buttons called `navigator.clipboard.writeText`
-// with no fallback and swallowed every rejection silently.
+// Regression test for #677 / #859 — MCP Keys Copy buttons must reach
+// the clipboard. #677: the buttons called `navigator.clipboard.writeText`
+// with no fallback and swallowed every rejection silently. #859: after
+// PR #700 moved the component views/ApiKeys.vue →
+// components/settings/McpKeysTab.vue, the `copyToClipboard` import was
+// dropped, so both buttons threw `ReferenceError` and failed silently.
 //
 // This test creates a fresh API key, clicks both copy actions in the
 // "Your MCP API Key is Ready!" modal, and reads the clipboard back to
-// verify the content actually landed.
+// verify the content actually landed. Tagged @smoke so CI runs it on
+// the canonical route (#859 acceptance criterion).
 
 import { test, expect } from '@playwright/test'
 
-test.describe('@interactive api-keys copy buttons (#677)', () => {
+// Canonical MCP Keys route since #302/#700 (the legacy /api-keys path
+// 301-redirects here). Hitting it directly keeps the smoke gate from
+// depending on the redirect.
+const MCP_KEYS_ROUTE = '/settings?tab=mcp-keys'
+
+test.describe('@smoke api-keys copy buttons (#677, #859)', () => {
   test.beforeEach(async ({ context }) => {
     // Headless browsers gate clipboard read by default — opt in for the test.
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   })
 
   test('Copy Config button writes MCP JSON to clipboard', async ({ page }) => {
-    await page.goto('/api-keys')
+    await page.goto(MCP_KEYS_ROUTE)
 
     await page.getByRole('button', { name: /create api key/i }).first().click()
 
@@ -45,7 +54,7 @@ test.describe('@interactive api-keys copy buttons (#677)', () => {
   })
 
   test('Copy key icon button writes raw key to clipboard', async ({ page }) => {
-    await page.goto('/api-keys')
+    await page.goto(MCP_KEYS_ROUTE)
 
     await page.getByRole('button', { name: /create api key/i }).first().click()
 
