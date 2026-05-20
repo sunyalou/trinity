@@ -85,67 +85,10 @@ jobs:
           done
           echo "backend never became healthy"; exit 1
 
-      - name: Verify non-root containers and Docker socket reachability
-        working-directory: ${{ github.workspace }}
-        # Issue #874: regression guard for Trinity-built backend images.
-        # Asserts that every container that holds platform credentials or
-        # the docker.sock mount runs as the expected non-root UID, and —
-        # load-bearing — that backend can still reach the Docker socket on
-        # Linux (group_add wired through correctly).
-        #
-        # The socket reachability check runs `docker.from_env().ping()` from
-        # INSIDE the backend container, exercising the same Docker SDK code
-        # path the platform uses at runtime. The previous /api/agents probe
-        # was a false positive — services.docker_service.list_all_agents_fast
-        # catches every Docker exception and returns []; an unreachable
-        # socket therefore yielded HTTP 200 with `[]`, passing CI while
-        # agent creation would still fail in production.
-        #
-        # ADMIN_PASSWORD is inherited from GITHUB_ENV (see the "Generate
-        # CI admin password" step). The prod frontend image is covered
-        # separately by the "Verify prod frontend image UID" step below.
-        run: |
-          set -euo pipefail
-          for c in trinity-backend trinity-scheduler trinity-mcp-server; do
-            UID_IN=$(docker exec "$c" id -u)
-            if [ "$UID_IN" != "1000" ]; then
-              echo "FAIL: $c runs as UID $UID_IN (expected 1000)"; exit 1
-            fi
-          done
-          # Real Docker-socket round-trip from inside the backend (group_add probe).
-          docker exec trinity-backend python3 -c \
-            "import docker, sys; sys.exit(0 if docker.from_env().ping() else 1)" \
-            || { echo "FAIL: backend cannot reach /var/run/docker.sock"; exit 1; }
-          # Auth + table read sanity (separate signal from the socket probe above).
-          TOKEN=$(curl -fs -X POST http://localhost:8000/api/token \
-            -d "username=admin&password=${ADMIN_PASSWORD}" | jq -r .access_token)
-          [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ] || { echo "FAIL: token mint"; exit 1; }
-          AGENTS_HTTP=$(curl -s -o /tmp/agents.json -w "%{http_code}" \
-            -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/agents)
-          [ "$AGENTS_HTTP" = "200" ] || { echo "FAIL: /api/agents returned $AGENTS_HTTP"; exit 1; }
-          jq -e 'type == "array"' /tmp/agents.json >/dev/null \
-            || { echo "FAIL: /api/agents response is not a JSON array"; exit 1; }
-          echo "verify-non-root: PASS"
-
-      - name: Verify prod frontend image UID
-        working-directory: ${{ github.workspace }}
-        # I-02 fix (cso-diff-2026-05-17): close the #874 CI gap for the
-        # prod frontend image. The e2e workflow boots the dev compose
-        # (Vite-dev image), so the prod image (nginxinc/nginx-unprivileged:alpine,
-        # UID 101) is built here out-of-band and its USER UID asserted
-        # directly. Build context matches docker-compose.prod.yml's
-        # `frontend.build` block (context=src/frontend, file=docker/frontend/Dockerfile.prod).
-        run: |
-          set -euo pipefail
-          docker build \
-            -f docker/frontend/Dockerfile.prod \
-            -t trinity-frontend:prod-check \
-            ./src/frontend
-          UID_FE=$(docker run --rm --entrypoint id trinity-frontend:prod-check -u)
-          if [ "$UID_FE" != "101" ]; then
-            echo "FAIL: prod frontend UID $UID_FE (expected 101)"; exit 1
-          fi
-          echo "verify-prod-frontend-uid: PASS"
+      # Issue #874 regression guards (`verify-non-root`,
+      # `verify-prod-frontend-uid`) moved to .github/workflows/container-security.yml
+      # so they run unconditionally on infrastructure PRs (this workflow
+      # is `ui`-label gated and would otherwise skip them on backend PRs).
 
       - name: Skip first-time setup wizard
         working-directory: ${{ github.workspace }}
