@@ -101,6 +101,16 @@ jobs:
           done
           echo "backend never became healthy"; exit 1
 
+      - name: Skip first-time setup wizard
+        # On a fresh DB the admin user is bootstrapped from ADMIN_PASSWORD,
+        # but `setup_completed` stays false — so /api/token returns 403
+        # `setup_required` until an operator completes the wizard. The
+        # auth+/api/agents probe below is a CI sanity check, not a setup
+        # flow exercise. Flip the flag directly so the probe can run.
+        # Mirrors the equivalent step in frontend-e2e.yml.
+        run: |
+          docker exec trinity-backend python3 -c "from database import db; db.set_setting('setup_completed', 'true'); print('setup_completed=true')"
+
       - name: Verify non-root containers and Docker socket reachability
         run: |
           set -euo pipefail
