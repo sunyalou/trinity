@@ -195,6 +195,8 @@ class ScheduleExecution(BaseModel):
     model_used: Optional[str] = None           # Model used for this execution
     # Fan-out linkage (FANOUT-001)
     fan_out_id: Optional[str] = None           # Parent fan-out operation ID
+    # Loop linkage (#740)
+    loop_id: Optional[str] = None              # Parent agent_loops.id for sequential-loop iterations
     # Subscription usage tracking (SUB-004)
     subscription_id: Optional[str] = None      # Subscription active at record time
     # Persistent backlog (BACKLOG-001)

@@ -808,6 +808,7 @@ class ScheduleOperations:
         source_mcp_key_name: str = None,
         model_used: str = None,
         fan_out_id: str = None,
+        loop_id: str = None,
         subscription_id: str = None,
     ) -> Optional[ScheduleExecution]:
         """Create a new execution record for a manual/API-triggered task (no schedule).
@@ -815,7 +816,7 @@ class ScheduleOperations:
         Args:
             agent_name: Target agent name
             message: Task message
-            triggered_by: Trigger type - "manual", "mcp", "agent", "fan_out"
+            triggered_by: Trigger type - "manual", "mcp", "agent", "fan_out", "loop"
             source_user_id: User ID who triggered (for manual/mcp triggers)
             source_user_email: User email (denormalized for queries)
             source_agent_name: Calling agent name (for agent-to-agent)
@@ -823,6 +824,7 @@ class ScheduleOperations:
             source_mcp_key_name: MCP API key name (denormalized)
             model_used: Model used for this execution (MODEL-001)
             fan_out_id: Parent fan-out operation ID (FANOUT-001)
+            loop_id: Parent loop ID (#740) — iterations of a sequential loop
             subscription_id: Subscription active at record time (SUB-004)
         """
         execution_id = self._generate_id()
@@ -835,8 +837,8 @@ class ScheduleOperations:
                     id, schedule_id, agent_name, status, started_at, message, triggered_by,
                     source_user_id, source_user_email, source_agent_name,
                     source_mcp_key_id, source_mcp_key_name, model_used, fan_out_id,
-                    subscription_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    loop_id, subscription_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 execution_id,
                 "__manual__",  # Special marker for manual/API-triggered tasks
@@ -852,6 +854,7 @@ class ScheduleOperations:
                 source_mcp_key_name,
                 model_used,
                 fan_out_id,
+                loop_id,
                 subscription_id,
             ))
             conn.commit()
@@ -871,6 +874,7 @@ class ScheduleOperations:
                 source_mcp_key_name=source_mcp_key_name,
                 model_used=model_used,
                 fan_out_id=fan_out_id,
+                loop_id=loop_id,
                 subscription_id=subscription_id,
             )
 

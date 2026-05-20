@@ -95,6 +95,11 @@ from routers.a2a import router as a2a_router  # #737 A2A Agent Cards
 from routers.admin_recovery import router as admin_recovery_router  # #834 Phase 1c
 from routers.messages import router as messages_router  # Proactive Messaging (#321)
 from routers.public_memory import router as public_memory_router  # MEM-001 write path (#888)
+from routers.loops import (
+    agent_router as loops_agent_router,
+    loop_router as loops_loop_router,
+)  # Sequential agent loops (#740)
+from services.loop_service import set_websocket_manager as set_loop_ws_manager
 from routers.webhooks import router as webhooks_router  # Webhook triggers (WEBHOOK-001, #291)
 from routers.ws_tickets import router as ws_tickets_router  # /ws ticket auth (#550)
 
@@ -236,6 +241,7 @@ set_operator_queue_ws_manager(manager)
 set_opqueue_sync_ws_manager(manager)
 set_event_subs_ws_manager(manager)
 set_event_subs_filtered_ws_manager(filtered_manager)
+set_loop_ws_manager(manager)  # #740
 
 # NOTE: Trinity platform instructions are now injected at runtime via
 # --append-system-prompt on every chat/task request (Issue #136).
@@ -849,6 +855,8 @@ app.include_router(users_router)  # User Management (ROLE-001)
 app.include_router(debug_router)  # #306 soak dashboard
 app.include_router(a2a_router)  # A2A Agent Cards (#737)
 app.include_router(admin_recovery_router)  # Soft-delete admin recovery (#834 Phase 1c)
+app.include_router(loops_agent_router)  # Sequential agent loops (#740)
+app.include_router(loops_loop_router)  # Sequential agent loops (#740)
 app.include_router(webhooks_router)  # Webhook Triggers (WEBHOOK-001, #291)
 app.include_router(ws_tickets_router)  # WebSocket auth tickets (#550)
 
