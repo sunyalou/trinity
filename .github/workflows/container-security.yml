@@ -40,6 +40,13 @@ on:
       - '.github/workflows/container-security.yml'
   workflow_dispatch:
 
+# Least-privilege GITHUB_TOKEN: only `contents: read` is needed for
+# actions/checkout. The workflow runs entirely on the runner (no PR
+# comments, no issue updates, no security-events writes), so anything
+# beyond `contents: read` would be unused authority.
+permissions:
+  contents: read
+
 jobs:
   verify-non-root:
     runs-on: ubuntu-latest
