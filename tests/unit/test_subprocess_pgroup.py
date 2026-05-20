@@ -498,6 +498,142 @@ sys.exit(0)
             except Exception:
                 pass
 
+    def test_emits_metric_on_natural_drain(self, monkeypatch, caplog):
+        """[METRIC] drain_outcome must fire on the natural-drain branch.
+
+        Operators query the log for ``outcome=natural`` to track how often
+        the orphan-killer rescued an execution from the force-close path.
+        Reader thread is constructed to exit briefly after the slow path
+        engages, simulating EOF arriving after kill phase.
+        """
+        import logging
+        import subprocess_pgroup as spg
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        pgid = capture_pgid(proc)
+        assert pgid is not None
+
+        # The reader appears stuck during the initial grace window, then
+        # exits cleanly. drain_reader_threads sees it alive after grace
+        # (slow path entry), kills the pgid, runs the orphan scan, and
+        # finds the reader has finished during the natural-drain join.
+        reader_exit_allowed = threading.Event()
+
+        def reader():
+            reader_exit_allowed.wait(timeout=10)
+
+        t = threading.Thread(target=reader, daemon=True)
+        t.start()
+
+        # No-op orphan killer — keeps the test fast on Linux (no /proc walk)
+        # and bypasses the macOS-incompatible code path so the test runs on
+        # both platforms.
+        # No-op the cgroup sweep — macOS lacks the /sys/fs/cgroup layout, and
+        # we don't want real orphan-killing in a unit test. Replaces the
+        # pre-#817 monkeypatch of _kill_orphan_pipe_writers.
+        monkeypatch.setattr(spg, "kill_cgroup_orphans", lambda: 0)
+
+        try:
+            with caplog.at_level(logging.INFO, logger="subprocess_pgroup"):
+                # Release the reader once the slow path is committed but
+                # before the natural-drain join completes.
+                def release_soon():
+                    time.sleep(0.5)
+                    reader_exit_allowed.set()
+
+                threading.Thread(target=release_soon, daemon=True).start()
+
+                asyncio.run(drain_reader_threads(
+                    proc, t, grace=0, post_kill_grace=5, pgid=pgid,
+                ))
+
+            assert not t.is_alive(), "reader should have exited via natural drain"
+
+            metric_lines = [
+                r.getMessage() for r in caplog.records
+                if r.getMessage().startswith("[METRIC] drain_outcome")
+            ]
+            assert metric_lines, "natural-drain path must emit drain_outcome metric"
+            msg = metric_lines[0]
+            assert "outcome=natural" in msg, msg
+            assert "stuck_initial=1" in msg, msg
+            assert "drain_elapsed_ms=" in msg, msg
+            assert "orphan_kill_count=0" in msg, msg
+        finally:
+            try:
+                terminate_process_group(proc, graceful_timeout=1, pgid=pgid)
+            except Exception:
+                pass
+
+    def test_emits_metric_on_force_close_path(self, monkeypatch, caplog):
+        """[METRIC] drain_outcome must fire on the force-close branch.
+
+        This is the bug-class regression site (Issue #586). Operators alert
+        on a non-zero rate of ``outcome=force_close`` / ``outcome=leaked``
+        emissions; without an assertion here, a future refactor of
+        drain_reader_threads would silently break the metric and the next
+        regression of this class would arrive unmetricked.
+        """
+        import logging
+        import subprocess_pgroup as spg
+
+        # Stub orphan killer to do nothing — reader stays blocked through
+        # the natural-drain window so force-close fires.
+        # No-op the cgroup sweep — macOS lacks the /sys/fs/cgroup layout, and
+        # we don't want real orphan-killing in a unit test. Replaces the
+        # pre-#817 monkeypatch of _kill_orphan_pipe_writers.
+        monkeypatch.setattr(spg, "kill_cgroup_orphans", lambda: 0)
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        pgid = capture_pgid(proc)
+        assert pgid is not None
+
+        # Reader is parked in a long sleep — neither natural drain nor
+        # safe_close_pipes unblocks it, so it leaks after force-close.
+        # Either ``outcome=force_close`` (reader exited on close) or
+        # ``outcome=leaked`` (reader survived) is an acceptable signal.
+        def slow_processor():
+            time.sleep(120)
+
+        t = threading.Thread(target=slow_processor, daemon=True)
+        t.start()
+
+        try:
+            with caplog.at_level(logging.INFO, logger="subprocess_pgroup"):
+                asyncio.run(drain_reader_threads(
+                    proc, t, grace=0, post_kill_grace=2, pgid=pgid,
+                ))
+
+            metric_lines = [
+                r.getMessage() for r in caplog.records
+                if r.getMessage().startswith("[METRIC] drain_outcome")
+            ]
+            assert metric_lines, "force-close path must emit drain_outcome metric"
+            msg = metric_lines[0]
+            assert "outcome=force_close" in msg or "outcome=leaked" in msg, msg
+            assert "stuck_initial=1" in msg, msg
+            assert "drain_elapsed_ms=" in msg, msg
+            assert "orphan_kill_count=0" in msg, msg
+            if "outcome=leaked" in msg:
+                assert "leaked_count=" in msg, msg
+        finally:
+            try:
+                terminate_process_group(proc, graceful_timeout=1, pgid=pgid)
+            except Exception:
+                pass
+
 
 @pytest.mark.unit
 class TestSafeClosePipes:
