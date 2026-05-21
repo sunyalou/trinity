@@ -2358,6 +2358,73 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
   (expressed as event chains between independent per-agent pipelines);
   GUI editor for `pipeline.yaml`; persisting pipeline state in
   Trinity's database.
+## 35. Enterprise Edition Architecture (#847)
+
+### 34.1 Open-Core Seam — Private Submodule Integration (#847 Phase 0)
+- **Status**: ✅ Implemented (2026-05-21)
+- **GitHub Issue**: #847
+- **Description**: Phase 0 of the enterprise edition split — establishes
+  the seam in the public Trinity backend for loading closed-source
+  compliance modules (SSO, SCIM, SIEM) from a private git submodule
+  at `src/backend/enterprise/` pointing to
+  `Abilityai/trinity-enterprise`. No license code yet; the
+  `EntitlementService` is a stub that returns True for every
+  feature_id, gated by `TRINITY_OSS_ONLY` for testing the deny path.
+- **Decision record**: `docs/planning/ENTERPRISE_ARCHITECTURE.md`
+- **Long-form research**: `docs/planning/OSS_ENTERPRISE_SPLIT_RESEARCH.md`
+- **Local-dev guide**: `docs/dev/ENTERPRISE_LOCAL_DEV.md`
+- **Key Features**:
+  - `EntitlementService` (`src/backend/services/entitlement_service.py`)
+    — Phase 0 stub returning all-entitled by default. Honours
+    `TRINITY_OSS_ONLY=1` for forced OSS-only mode (returns False for
+    every check). Module-level singleton + `_set_for_testing` seam.
+  - `requires_entitlement(feature_id)` (`src/backend/dependencies.py`)
+    — FastAPI dependency factory mirroring `require_role`. Raises
+    HTTP 403 with the feature_id in the detail string. Lazy-imports
+    the service so tests can swap singletons.
+  - Conditional submodule loader in `src/backend/main.py` —
+    `try: from enterprise import register_enterprise;
+    register_enterprise(app) except ImportError: pass`. OSS-only
+    builds (no submodule) silently no-op with an informational log.
+    Idempotent via `app.state.enterprise_registered`.
+  - `/api/settings/feature-flags` extended with
+    `enterprise_features: list[str]` — empty in OSS mode, populated
+    when entitled. UI uses this to hide enterprise-only tabs cleanly
+    without server-side conditional rendering.
+  - `.gitmodules` entry for `src/backend/enterprise` via SSH
+    (`git@github.com:Abilityai/trinity-enterprise.git`).
+  - `docker-compose.yml` env pass-through for `TRINITY_OSS_ONLY`.
+  - CI workflow `.github/workflows/build-without-submodule.yml` —
+    boots the backend with the submodule absent and asserts:
+    `/health` responds, `/api/settings/feature-flags` returns
+    `enterprise_features: []`, `/api/enterprise/sso/providers`
+    returns 404, and the OSS-only log line is emitted. Catches
+    regressions where the conditional import accidentally becomes
+    hard-required.
+- **Private repo (Abilityai/trinity-enterprise)**:
+  - `__init__.py` — `register_enterprise(app)` single entry point
+  - `sso/router.py` — `/api/enterprise/sso/{providers,login/{id}}`
+    stubs gated by `requires_entitlement("sso")`. `GET /providers`
+    returns the in-process registry (empty by default);
+    `POST /login/{id}` returns 501 "PoC stub" or 404 for unknown id.
+  - `sso/providers.py` — `SSOProvider` ABC (provider_id,
+    display_name, protocol, begin_login) + `StubProvider` for the
+    PoC.
+  - `pyproject.toml`, `LICENSE` (proprietary), `README.md`.
+- **Out of scope (separate follow-ups)**:
+  - Phase 1: Ed25519-signed license token, verify path, admin
+    License UI, grace + clock-tamper handling.
+  - Phase 2: Extract `audit_log` into the submodule as the first
+    real enterprise module.
+  - Phase 3: Prove the "core-primitive + enterprise-knob" pattern
+    via #834 (recovery API in OSS, license-capped retention in enterprise).
+  - Phase 4: Real SSO/SAML implementation (replaces PoC stubs).
+  - MCP entitlement edge (`GET /api/internal/entitlements` polled by
+    the TypeScript MCP server).
+  - Fixing the repo's license-of-record (currently `NOASSERTION`).
+- **Tunables (env)**:
+  - `TRINITY_OSS_ONLY` (`0`/`1`, default `0`) — force OSS-only mode
+    regardless of submodule presence.
 
 ---
 

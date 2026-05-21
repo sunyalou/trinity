@@ -92,6 +92,12 @@ services:
       # owned by the developer UID, not container UID 1000, so the writes
       # fail. macOS Docker Desktop masks the failure; set this for parity.
       - PYTHONDONTWRITEBYTECODE=1
+      # #847 — force OSS-only mode even when the enterprise submodule
+      # is mounted. With this set, EntitlementService.is_entitled()
+      # returns False for every feature, and the /api/settings/feature-flags
+      # `enterprise_features` list is empty. Default (unset = 0): allow
+      # entitlements based on license (Phase 0 stub: all-entitled).
+      - TRINITY_OSS_ONLY=${TRINITY_OSS_ONLY:-0}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./src/backend:/app
