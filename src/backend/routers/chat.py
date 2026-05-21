@@ -15,6 +15,7 @@ from typing import Optional
 
 from models import User, ChatMessageRequest, ModelChangeRequest, ParallelTaskRequest, ActivityType, ActivityState, TaskExecutionStatus, ExecutionSource
 from dependencies import get_current_user, get_authorized_agent, get_owned_agent
+from services.agent_call_limiter import BackendAgentCallBudgetExhausted
 from services.docker_service import get_agent_container
 from services.activity_service import activity_service
 from services.upload_service import process_file_uploads, decode_web_file, WEB_MAX_FILES, WEB_MAX_FILE_SIZE, WEB_MAX_IMAGE_SIZE, WEB_MAX_TOTAL_IMAGE_SIZE
@@ -458,6 +459,34 @@ async def chat_with_agent(
         }
 
         return response_data
+    except BackendAgentCallBudgetExhausted as _budget_e:
+        # #904 RC-1: backend agent-call budget exhausted. Translate to a
+        # 503 without firing SUB-003 (no Claude work started; the
+        # subscription is unrelated to the rejection). Close out the
+        # in-flight chat activity + execution row in the FAILED state
+        # so the timeline reflects the rejection accurately.
+        budget_msg = str(_budget_e)
+        await activity_service.complete_activity(
+            activity_id=chat_activity_id,
+            status=ActivityState.FAILED,
+            error=budget_msg,
+        )
+        if task_execution_id:
+            existing = db.get_execution(task_execution_id)
+            if not existing or existing.status != TaskExecutionStatus.CANCELLED:
+                db.update_execution_status(
+                    execution_id=task_execution_id,
+                    status=TaskExecutionStatus.FAILED,
+                    error=budget_msg,
+                )
+        if collaboration_activity_id:
+            await activity_service.complete_activity(
+                activity_id=collaboration_activity_id,
+                status=ActivityState.FAILED,
+                error=budget_msg,
+            )
+        raise HTTPException(status_code=503, detail=budget_msg)
+
     except httpx.HTTPError as e:
         import logging
         # Extract detailed error message from agent response if available
