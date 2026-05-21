@@ -150,15 +150,32 @@ def _make_db_schema(conn: sqlite3.Connection) -> None:
 
 @pytest.fixture
 def tmp_schedule_db(tmp_path, monkeypatch):
-    try:
-        import db.connection as connection_mod
-    except ImportError:
-        pytest.skip("backend venv required")
-
     db_path = tmp_path / "trinity.db"
     conn = sqlite3.connect(str(db_path))
     _make_db_schema(conn)
     conn.close()
+
+    # Belt-and-suspenders against sibling test pollution. The autouse
+    # `_restore_sys_modules` above pops stale stubs that bind
+    # `get_db_connection` to a now-deleted polluter tmp DB. But a stale
+    # `db.connection` itself (left by a polluter that replaced the
+    # module via plain assignment, vs. our autouse restore) would also
+    # break the patched-attribute approach. Defend against both:
+    #   1. set `TRINITY_DB_PATH` env so any fresh `db.connection` load
+    #      reads OUR tmp file as its module-level DB_PATH;
+    #   2. `monkeypatch.delitem` `db.connection` so the import on the
+    #      next line *is* a fresh load against the env var above
+    #      (auto-restored on teardown — we don't pollute);
+    #   3. ALSO `monkeypatch.setattr(connection_mod, "DB_PATH", ...)`
+    #      in case the fresh load picked up a different env value due
+    #      to ordering surprise.
+    monkeypatch.setenv("TRINITY_DB_PATH", str(db_path))
+    monkeypatch.delitem(sys.modules, "db.connection", raising=False)
+
+    try:
+        import db.connection as connection_mod
+    except ImportError:
+        pytest.skip("backend venv required")
 
     monkeypatch.setattr(connection_mod, "DB_PATH", str(db_path))
     return str(db_path)
