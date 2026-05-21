@@ -66,6 +66,13 @@ services:
       # credential — leaking it lets anyone post to that one channel.
       # Unset = canary cycles run silently (still persists violations).
       - CANARY_SLACK_WEBHOOK_URL=${CANARY_SLACK_WEBHOOK_URL:-}
+      # Backend agent-call budget (#904 RC-1). Caps how many concurrent
+      # outbound agent HTTP calls the backend will hold at once, plus
+      # the per-acquire wait ceiling before returning 503 to the caller.
+      # Defaults: 8 concurrent / 30s wait. Tune up for very small
+      # fleets, down for very large ones.
+      - BACKEND_AGENT_CALL_LIMIT=${BACKEND_AGENT_CALL_LIMIT:-8}
+      - BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S=${BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S:-30}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./src/backend:/app

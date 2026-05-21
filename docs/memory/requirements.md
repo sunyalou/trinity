@@ -396,6 +396,73 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
   - `src/backend/services/subscription_auto_switch.py` — negative markers in `is_auth_failure`
   - `src/scheduler/service.py` — same negative markers in `_is_auth_failure`
 
+### 10.4.2 Backend Agent-Call Semaphore (#904 RC-1)
+- **Status**: ✅ Implemented (2026-05-21)
+- **GitHub Issue**: #904 (RC-1 surface)
+- **Description**: Backpressure on outbound agent HTTP calls from
+  `task_execution_service.agent_post_with_retry`. Before this, one
+  misbehaving agent whose `/api/chat` or `/api/task` held for several
+  minutes could leave N parallel coroutines `await`ing on `httpx.post`
+  while each periodically issued **synchronous** `sqlite3` calls
+  (`db/connection.py`). Under enough contention the synchronous
+  writes stalled the event loop long enough that the Docker
+  healthcheck (10s) flipped the backend to `unhealthy` and the
+  dashboard's parallel API fan-out (`/api/agents`,
+  `/api/ops/fleet/health`, `/api/operator-queue?status=pending`,
+  `/api/agents/execution-stats`) appeared frozen to the operator.
+  Restarting the offending agent container was the only workaround.
+- **Key Features**:
+  - **Per-agent semaphore** sized to the agent's
+    `max_parallel_tasks` (default 3, set via
+    `db.get_max_parallel_tasks`). Lazily created the first time a
+    call to that agent reaches the wrapper. Limits how many backend
+    coroutines can be mid-call to a single agent at once — a
+    misbehaving agent can never dominate the backend's available
+    coroutines beyond its own ceiling.
+  - **Global semaphore** capped at
+    `BACKEND_AGENT_CALL_LIMIT` env var (default 8). Bounds the total
+    fan-out across all agents. With a default of 8, the backend
+    always has spare async capacity for dashboard / health requests
+    even when every agent is mid-call.
+  - **Bounded queue wait**: acquires use
+    `asyncio.wait_for(..., timeout=BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S)`
+    (default 30s). Past the timeout the wrapper raises
+    `BackendAgentCallBudgetExhausted`, which `execute_task` /
+    `routers/chat.py` translate to HTTP 503 with detail
+    `"Backend overloaded for agent X (call budget exhausted); try
+    again"`. Slow-callers can never block forever.
+  - **Fail-closed-but-fair**: when the per-agent or global cap is
+    saturated, the caller waits the configured timeout, then 503s.
+    The agent's task-execution slot
+    (`CapacityManager.admit`) is released on the 503 path so the
+    same `execution_id` can be retried (the rejection happened at
+    the HTTP layer, before any Claude work started).
+  - **Configurable** via env vars (no DB schema change):
+    - `BACKEND_AGENT_CALL_LIMIT` (int, default 8) — global cap
+    - `BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S` (float, default 30) —
+      acquire timeout
+- **Observability**:
+  - `[TaskExecService] Acquired agent-call slot for {agent} (agent_inflight=N/M, global_inflight=K/L)`
+    on every successful acquire (debug level for hot path).
+  - `[TaskExecService] Backend call budget exhausted for {agent}
+    after {wait_ms}ms (agent_cap={N}, global_cap={M})` warning on
+    timeout — surfaces in Vector platform.json.
+- **Out of scope (separate follow-ups)**:
+  - **Sync→async DB**: the sqlite3 calls that stall the event loop
+    remain synchronous. The semaphore mitigates the contention by
+    bounding fan-out, but a true fix needs
+    `run_in_executor`-wrapped DB calls. Larger refactor; tracked
+    separately.
+  - **RC-4 cgroup OOM observability**: not addressed in this PR.
+- **Files**:
+  - `src/backend/services/task_execution_service.py` — semaphore
+    primitives + `agent_post_with_retry` integration
+  - `src/backend/services/agent_call_limiter.py` — extracted
+    primitives (kept slim — module-level singletons +
+    `BackendAgentCallBudgetExhausted` exception)
+  - `src/backend/config.py` — env-var read of the two new knobs
+  - `docker-compose.yml` — env-var pass-through for backend service
+
 ### 10.5 Model Selection for Tasks & Schedules (MODEL-001)
 - **Status**: ✅ Implemented (2026-03-02)
 - **Description**: Select which Claude model to use for task execution and scheduled runs

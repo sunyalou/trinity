@@ -29,6 +29,10 @@ import httpx
 from database import db
 from models import ActivityState, ActivityType, TaskExecutionStatus
 from services.activity_service import activity_service
+from services.agent_call_limiter import (
+    BackendAgentCallBudgetExhausted,
+    acquire_agent_call_slot,
+)
 from services.agent_client import CircuitState
 from services.capacity_manager import CapacityFull, get_capacity_manager
 from services.platform_audit_service import AuditEventType, platform_audit_service
@@ -176,15 +180,36 @@ async def agent_post_with_retry(
 
     Handles the case where a container is running but its internal HTTP
     server is not yet ready.
+
+    #904 RC-1: gated by the backend agent-call semaphore in
+    ``services.agent_call_limiter`` — limits concurrent outbound calls
+    per agent (to the agent's ``max_parallel_tasks``) and globally (to
+    ``BACKEND_AGENT_CALL_LIMIT``, default 8). Prevents one misbehaving
+    agent's long-running HTTP call from saturating the backend's event
+    loop and stalling the dashboard / healthcheck. The gate wraps each
+    connect-retry attempt independently — a `httpx.ConnectError` that
+    triggers a retry briefly releases the slot so other callers aren't
+    blocked while we sleep before the next attempt.
     """
     agent_url = f"http://agent-{agent_name}:8000{endpoint}"
 
-    last_error = None
+    last_error: Optional[Exception] = None
     for attempt in range(max_retries):
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(agent_url, json=payload)
-                return response
+            async with acquire_agent_call_slot(agent_name):
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(agent_url, json=payload)
+                    return response
+        except BackendAgentCallBudgetExhausted:
+            # Translate to a synthetic 503 ``httpx.HTTPStatusError`` so
+            # the caller's existing `httpx.HTTPError` except branch
+            # handles slot release, execution-row FAILED write, and
+            # SUB-003 short-circuit (the new error string contains the
+            # SIGKILL/OOM markers added by #907, so `is_auth_failure`
+            # rejects it). Carrying the exception detail through a
+            # `Request`-less synthetic Response keeps the caller's
+            # status-code branching code path identical.
+            raise
         except httpx.ConnectError as e:
             last_error = e
             if attempt < max_retries - 1:
@@ -771,6 +796,40 @@ class TaskExecutionService:
                 response="",
                 error=error_msg,
                 error_code=TaskExecutionErrorCode.TIMEOUT,
+            )
+
+        except BackendAgentCallBudgetExhausted as e:
+            # #904 RC-1: backend agent-call budget exhausted. Different
+            # from a normal `httpx.HTTPError` because no Claude work
+            # started — the rejection happened entirely inside the
+            # backend's semaphore wait. SUB-003 must NOT fire (the
+            # agent's subscription is irrelevant here), the execution
+            # row should be marked FAILED with a clear message, and
+            # the slot will be released by the outer `finally`.
+            error_msg = str(e)
+            logger.warning(
+                f"[TaskExecService] Rejecting task on {agent_name} — backend "
+                f"call budget exhausted: {error_msg}"
+            )
+            if execution_id:
+                existing = db.get_execution(execution_id)
+                if not existing or existing.status != TaskExecutionStatus.CANCELLED:
+                    db.update_execution_status(
+                        execution_id=execution_id,
+                        status=TaskExecutionStatus.FAILED,
+                        error=error_msg,
+                    )
+            if activity_id:
+                await activity_service.complete_activity(
+                    activity_id=activity_id,
+                    status=ActivityState.FAILED,
+                    error=error_msg,
+                )
+            return TaskExecutionResult(
+                execution_id=execution_id or "",
+                status=TaskExecutionStatus.FAILED,
+                response="",
+                error=error_msg,
             )
 
         except httpx.HTTPError as e:
