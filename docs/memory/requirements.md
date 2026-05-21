@@ -424,23 +424,37 @@ Trinity is autonomous agent orchestration and infrastructure — sovereign infra
     fan-out across all agents. With a default of 8, the backend
     always has spare async capacity for dashboard / health requests
     even when every agent is mid-call.
-  - **Bounded queue wait**: acquires use
+  - **Backward-compatible queue wait**: acquires use
     `asyncio.wait_for(..., timeout=BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S)`
-    (default 30s). Past the timeout the wrapper raises
-    `BackendAgentCallBudgetExhausted`, which `execute_task` /
-    `routers/chat.py` translate to HTTP 503 with detail
-    `"Backend overloaded for agent X (call budget exhausted); try
-    again"`. Slow-callers can never block forever.
+    with a **default of 3600s** — matches the platform's max
+    `execution_timeout_seconds` (TIMEOUT-001, default 3600s, #665).
+    Pre-#904 the worst-case wall-clock per call was the agent
+    timeout (~610s default); 3600s leaves a generous margin so any
+    call that would have eventually succeeded still does. The cap
+    is NOT a "fail short-tail calls fast" knob — it's a deadlock
+    safety valve (see below). Past the timeout the wrapper raises
+    `BackendAgentCallBudgetExhausted`, translated to HTTP 503 in
+    `execute_task` / `routers/chat.py`. Set
+    `BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S=0` to disable entirely (opt-in
+    — accepts deadlock risk for zero false 503s).
+  - **Deadlock safety valve**: agent-to-agent chains
+    (`chat_with_agent` MCP tool, X→Y→Z collaborations) can
+    deadlock when concurrent chain depth exceeds the global
+    semaphore. Each chain holds a slot for its outer caller while
+    waiting on the next hop, which itself wants a slot. With
+    `cap=8` and >8 simultaneous deep chains the system would hang
+    forever without a timeout. The 3600s ceiling surfaces such a
+    deadlock as a 503 within an hour, lets the queue drain, and
+    keeps the system unstuck.
   - **Fail-closed-but-fair**: when the per-agent or global cap is
     saturated, the caller waits the configured timeout, then 503s.
     The agent's task-execution slot
     (`CapacityManager.admit`) is released on the 503 path so the
-    same `execution_id` can be retried (the rejection happened at
-    the HTTP layer, before any Claude work started).
+    same `execution_id` can be retried.
   - **Configurable** via env vars (no DB schema change):
     - `BACKEND_AGENT_CALL_LIMIT` (int, default 8) — global cap
-    - `BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S` (float, default 30) —
-      acquire timeout
+    - `BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S` (float, default 3600) —
+      acquire timeout; 0 = wait forever
 - **Observability**:
   - `[TaskExecService] Acquired agent-call slot for {agent} (agent_inflight=N/M, global_inflight=K/L)`
     on every successful acquire (debug level for hot path).

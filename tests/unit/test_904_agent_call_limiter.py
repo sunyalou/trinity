@@ -286,3 +286,58 @@ async def test_release_on_exception_inside_block(limiter):
     async with asyncio.timeout(0.5):
         async with limiter.acquire_agent_call_slot("agent-e"):
             pass
+
+
+# -----------------------------------------------------------------------------
+# Opt-in "wait forever" — operators who set queue_timeout_s=0 get
+# pre-#904 semantics (any call which would have eventually succeeded
+# still does) at the cost of deadlock risk on agent-to-agent chains
+# whose depth exceeds the global cap. Production default is 3600s.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_timeout_zero_opt_in_waits_indefinitely(limiter):
+    """`queue_timeout_s=0` disables the queue timeout. A queued caller
+    must NOT raise BackendAgentCallBudgetExhausted — they wait
+    indefinitely until the cap clears."""
+    limiter._reset_for_testing(global_limit=1, queue_timeout_s=0)
+    _install_db_stub({"agent-w": 10})
+
+    release_first = asyncio.Event()
+
+    async def first():
+        async with limiter.acquire_agent_call_slot("agent-w"):
+            await release_first.wait()
+
+    async def second():
+        async with limiter.acquire_agent_call_slot("agent-w"):
+            return "ok"
+
+    f = asyncio.create_task(first())
+    await asyncio.sleep(0.05)  # let first acquire
+
+    s = asyncio.create_task(second())
+    # second is queued — must NOT return for at least 1s under
+    # timeout=0, proving the wait isn't truncated.
+    done, _pending = await asyncio.wait([s], timeout=1.0)
+    assert not done, "second should still be queued, not raised/returned"
+
+    # Release first → second proceeds without raising
+    release_first.set()
+    await asyncio.gather(f)
+    assert await s == "ok"
+
+
+@pytest.mark.asyncio
+async def test_default_timeout_is_one_hour(limiter):
+    """Sanity-check the production default — 3600s. Both protects
+    against deadlocks AND leaves enough headroom that any call which
+    would have eventually succeeded pre-#904 still succeeds (the
+    worst-case agent timeout was ~610s)."""
+    # Re-read the module-level default without `_reset_for_testing`
+    # overriding it.
+    import importlib
+    import services.agent_call_limiter as _acl
+    importlib.reload(_acl)
+    assert _acl.BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S == 3600.0

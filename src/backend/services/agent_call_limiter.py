@@ -56,8 +56,25 @@ logger = logging.getLogger(__name__)
 # tests use `_reset_for_testing()` to re-create the primitives with
 # different bounds.
 BACKEND_AGENT_CALL_LIMIT: int = int(os.getenv("BACKEND_AGENT_CALL_LIMIT", "8"))
+
+# Queue-acquire timeout. Default 3600s (1 hour) — matches the
+# platform-wide max `execution_timeout_seconds` (TIMEOUT-001 ceiling
+# is 7200s, default 3600s, #665) so any task that would have
+# eventually succeeded pre-#904 still succeeds: pre-fix the worst
+# wall-clock was the agent timeout (max ~610s by default), and the
+# queue wait is on top of that, so 3600s leaves a generous margin
+# even under sustained backlog.
+#
+# Why we keep a finite cap instead of "wait forever":
+# agent-to-agent chat chains (chat_with_agent MCP tool, X→Y→Z
+# collaborations) can deadlock when concurrent chains exceed the
+# global semaphore: each chain holds slots for its outer caller
+# while waiting on the next-hop call which itself wants a slot.
+# A finite timeout surfaces such a deadlock as a 503 within an
+# hour, lets the queue drain, and keeps the system unstuck.
+# Setting this to 0 disables the cap — explicitly opt-in only.
 BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S: float = float(
-    os.getenv("BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S", "30")
+    os.getenv("BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S", "3600")
 )
 
 
@@ -136,13 +153,107 @@ async def _get_agent_sem(agent_name: str) -> tuple[asyncio.Semaphore, int]:
 _AGENT_SEMAPHORE_CAPS: dict[str, int] = {}
 
 
+async def _acquire_with_optional_timeout(
+    sem: asyncio.Semaphore,
+    agent_name: str,
+    where: str,
+    agent_cap: int,
+    global_cap: int,
+    t0: float,
+) -> None:
+    """Acquire ``sem``. If ``BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S`` is
+    > 0, enforce it and raise ``BackendAgentCallBudgetExhausted`` on
+    timeout. If 0 (the default), wait indefinitely — preserves the
+    pre-#904 semantics that calls which would have eventually
+    succeeded still do, just at higher latency under congestion. Also
+    surfaces a one-shot "queued > 5s" warning so operators can see
+    when the cap is actually biting.
+
+    ``where`` is "per-agent" or "global" for the log line. ``t0`` is
+    the monotonic timestamp captured before the first acquire so
+    `wait_ms` reflects total queue wait, not just this call.
+    """
+    timeout = BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S
+    if timeout > 0:
+        try:
+            await asyncio.wait_for(sem.acquire(), timeout=timeout)
+        except asyncio.TimeoutError:
+            wait_ms = int((time.monotonic() - t0) * 1000)
+            logger.warning(
+                f"[TaskExecService] Backend call budget exhausted ({where}) for "
+                f"{agent_name} after {wait_ms}ms "
+                f"(agent_cap={agent_cap}, global_cap={global_cap})"
+            )
+            raise BackendAgentCallBudgetExhausted(
+                agent_name, agent_cap, global_cap, wait_ms,
+            )
+        return
+
+    # Timeout disabled (default). Wait forever — never fail a caller
+    # that would have eventually succeeded pre-fix.
+    if not sem.locked():
+        # Fast path: a slot is immediately available, skip the
+        # monitoring task. `Semaphore.locked()` returns False when
+        # the internal counter is > 0, i.e. acquire() would not
+        # block. (Don't trust this on its own — race with another
+        # awaiter — so we still `acquire()` below; the check just
+        # gates the warning task spawn for the hot path.)
+        await sem.acquire()
+        return
+
+    # Slow path: at least one task is already queued ahead of us.
+    # Spawn a one-shot warning timer so a sustained queue surfaces in
+    # Vector logs without spamming every wait. Cancelled on acquire.
+    warning_task = asyncio.create_task(
+        _log_long_queue_wait(agent_name, where, agent_cap, global_cap, t0)
+    )
+    try:
+        await sem.acquire()
+    finally:
+        warning_task.cancel()
+
+
+async def _log_long_queue_wait(
+    agent_name: str,
+    where: str,
+    agent_cap: int,
+    global_cap: int,
+    t0: float,
+) -> None:
+    """Warn once if a queue wait exceeds 5 seconds. Cancelled by the
+    parent acquire when the slot is granted."""
+    try:
+        await asyncio.sleep(5.0)
+        waited_ms = int((time.monotonic() - t0) * 1000)
+        logger.warning(
+            f"[TaskExecService] Agent-call queue wait > 5s ({where}) for "
+            f"{agent_name} (waited={waited_ms}ms, "
+            f"agent_cap={agent_cap}, global_cap={global_cap}) — backend "
+            f"under sustained pressure"
+        )
+    except asyncio.CancelledError:
+        pass  # acquired in time — no warning needed
+
+
 @contextlib.asynccontextmanager
 async def acquire_agent_call_slot(agent_name: str):
     """Acquire per-agent + global slots for an outbound agent HTTP call.
 
-    Raises ``BackendAgentCallBudgetExhausted`` if either acquisition
-    takes longer than ``BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S``. On
-    successful entry, releases both semaphores on context exit
+    Acquire semantics depend on ``BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S``:
+
+    * **= 0** (default): wait indefinitely. The semaphore queues
+      callers; the caller's HTTP connection stays open the whole
+      time. Behavior matches pre-#904 except that fan-out is
+      bounded — any call that would have eventually succeeded
+      still does. A one-shot warning fires at 5s queue wait for
+      observability.
+    * **> 0**: enforce the timeout. Acquire failures raise
+      ``BackendAgentCallBudgetExhausted`` (caller translates to
+      HTTP 503). Opt-in only — for operators who want a hard
+      ceiling on queue wait and accept that some
+      previously-successful calls now 503.
+
+    On successful entry, releases both semaphores on context exit
     (including the exception path).
     """
     _ensure_globals()
@@ -157,36 +268,14 @@ async def acquire_agent_call_slot(agent_name: str):
     # against the global pool. Order matters for fairness: a single
     # bursty agent can't acquire the global slot before its per-agent
     # cap rejects it.
-    try:
-        await asyncio.wait_for(
-            agent_sem.acquire(),
-            timeout=BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S,
-        )
-    except asyncio.TimeoutError:
-        wait_ms = int((time.monotonic() - t0) * 1000)
-        logger.warning(
-            f"[TaskExecService] Backend call budget exhausted (per-agent) for "
-            f"{agent_name} after {wait_ms}ms (agent_cap={agent_cap})"
-        )
-        raise BackendAgentCallBudgetExhausted(
-            agent_name, agent_cap, global_cap, wait_ms,
-        )
+    await _acquire_with_optional_timeout(
+        agent_sem, agent_name, "per-agent", agent_cap, global_cap, t0,
+    )
 
     try:
-        try:
-            await asyncio.wait_for(
-                global_sem.acquire(),
-                timeout=BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S,
-            )
-        except asyncio.TimeoutError:
-            wait_ms = int((time.monotonic() - t0) * 1000)
-            logger.warning(
-                f"[TaskExecService] Backend call budget exhausted (global) for "
-                f"{agent_name} after {wait_ms}ms (global_cap={global_cap})"
-            )
-            raise BackendAgentCallBudgetExhausted(
-                agent_name, agent_cap, global_cap, wait_ms,
-            )
+        await _acquire_with_optional_timeout(
+            global_sem, agent_name, "global", agent_cap, global_cap, t0,
+        )
 
         try:
             wait_ms = int((time.monotonic() - t0) * 1000)
