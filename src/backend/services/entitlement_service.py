@@ -40,49 +40,85 @@ logger = logging.getLogger(__name__)
 
 
 class EntitlementService:
-    """In-process entitlement check.
+    """In-process entitlement check + module registry.
 
-    Phase 0 (this PR): all features entitled. The ``oss_only`` mode
-    (env ``TRINITY_OSS_ONLY=1``) flips every check to False, useful for
-    operators who want to lock down a Trinity instance to the OSS
-    surface even when the enterprise submodule is mounted (e.g. for
-    a clean compliance posture in a free-tier deployment).
+    Backed by an internal set of *registered* enterprise modules
+    populated when ``enterprise.backend.register_enterprise(app)``
+    runs in ``main.py``. OSS-only builds never call
+    ``register_module()`` → the registry stays empty → both
+    ``is_entitled()`` and ``list_entitled_features()`` deny everything
+    → the OSS frontend's `enterprise_features`-driven UI hides every
+    enterprise nav entry / login button / view automatically (same
+    pattern as `session_tab_enabled` and `voice_available`).
+
+    ``TRINITY_OSS_ONLY=1`` is a hard override that empties the
+    registry-derived list even when the enterprise submodule IS
+    mounted — useful for operators who want a compliance lockdown
+    or for CI builds exercising the deny path.
+
+    Phase 1 will layer a license-claim check on top of the registry:
+    ``is_entitled(f) = f in registered AND f in license_claims``.
     """
 
     def __init__(self) -> None:
-        # When TRINITY_OSS_ONLY=1, deny every feature. Use cases:
-        # operators running the public repo without enterprise, who
-        # still want UI affordances to hide enterprise tabs; CI builds
-        # that exercise the deny path.
+        # When TRINITY_OSS_ONLY=1, deny every feature regardless of
+        # what's registered. Use cases: operators running with the
+        # submodule present but wanting compliance lockdown; CI
+        # builds testing the deny path.
         self._oss_only = os.getenv("TRINITY_OSS_ONLY", "0").lower() in {"1", "true", "yes"}
+        # Module registry. Populated by `register_module()` from
+        # `enterprise.backend.register_enterprise(app)`. OSS-only
+        # builds never reach that code → stays empty → returns False
+        # from `is_entitled()` for every feature.
+        self._registered_modules: set[str] = set()
         if self._oss_only:
             logger.info(
                 "[EntitlementService] TRINITY_OSS_ONLY=1 — all enterprise "
                 "features will report as not-entitled"
             )
 
-    def is_entitled(self, feature_id: str) -> bool:
-        """Return True if the named feature is licensed for this instance.
+    def register_module(self, feature_id: str) -> None:
+        """Register an enterprise module by its feature_id.
 
-        Phase 0: True for any feature_id unless OSS-only mode is set.
-        Phase 1: cross-checks the license claim set.
+        Called from the private repo's
+        ``enterprise.backend.register_enterprise(app)`` for each
+        module it mounts. The registry drives
+        ``list_entitled_features()`` so the OSS frontend hides
+        surfaces for features that aren't actually present in this
+        build.
+
+        Idempotent — safe to call twice with the same feature_id.
+        """
+        if feature_id in self._registered_modules:
+            return
+        self._registered_modules.add(feature_id)
+        logger.info(
+            f"[EntitlementService] registered enterprise module: {feature_id!r} "
+            f"(total: {len(self._registered_modules)})"
+        )
+
+    def is_entitled(self, feature_id: str) -> bool:
+        """Return True if the named feature is licensed AND registered.
+
+        Phase 0: True iff the feature is in the registry (registered
+        by the private submodule on boot) AND OSS-only mode is not
+        set. Phase 1: also cross-checks the license claim set.
         """
         if self._oss_only:
             return False
-        # Phase 1 will replace this with a real license check.
-        return True
+        return feature_id in self._registered_modules
 
     def list_entitled_features(self) -> list[str]:
         """Return the set of feature IDs this instance is entitled to.
 
-        Used by ``GET /api/settings/feature-flags`` to drive UI tabs.
-        Phase 0: returns the well-known feature IDs when entitled.
+        Used by ``GET /api/settings/feature-flags`` to drive UI tab
+        visibility. Returns the registered modules in sorted order
+        (deterministic for tests + UI ordering). OSS-only builds
+        return ``[]`` because nothing ever registered.
         """
         if self._oss_only:
             return []
-        # Phase 0: the set known to the seam. Real implementations
-        # would derive from license claims.
-        return ["sso", "scim", "siem"]
+        return sorted(self._registered_modules)
 
 
 # Module-level singleton — what `dependencies.requires_entitlement` calls.

@@ -108,6 +108,19 @@ const routes = [
     path: '/network',
     redirect: '/'
   },
+  // #847 Phase 0 — enterprise SSO admin view. The Vue source ships in
+  // the OSS bundle but the route is gated by `requiresEntitlement`
+  // ('sso' must be in `enterpriseStore.enterpriseFeatures`). NavBar
+  // hides the link when not entitled. Backend `/api/enterprise/sso/*`
+  // returns 404 in OSS-only builds (no submodule mounted), so even a
+  // direct URL visit shows the view's empty/error state cleanly. See
+  // `docs/planning/ENTERPRISE_ARCHITECTURE.md`.
+  {
+    path: '/enterprise/sso',
+    name: 'EnterpriseSSO',
+    component: () => import('../views/enterprise/SSO.vue'),
+    meta: { requiresAuth: true, requiresEntitlement: 'sso' }
+  },
   // Mobile Admin PWA (MOB-001) — standalone, no NavBar
   {
     path: '/m',
@@ -186,7 +199,21 @@ router.beforeEach(async (to, from, next) => {
   // Check if route requires authentication
   if (to.meta.requiresAuth) {
     if (authStore.isAuthenticated) {
-      // User is authenticated, allow access
+      // #847 — enterprise entitlement guard. For routes carrying
+      // `meta.requiresEntitlement`, ensure the named feature is in
+      // the server-driven entitlement list before navigation. NavBar
+      // already hides links to non-entitled routes; this guard
+      // catches direct URL visits / bookmarks.
+      const entitlement = to.meta.requiresEntitlement
+      if (entitlement) {
+        const { useEnterpriseStore } = await import('../stores/enterprise')
+        const enterpriseStore = useEnterpriseStore()
+        await enterpriseStore.loadFeatureFlags()
+        if (!enterpriseStore.isEntitled(entitlement)) {
+          next('/')
+          return
+        }
+      }
       next()
     } else {
       // User is not authenticated, redirect to login

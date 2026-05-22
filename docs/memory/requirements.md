@@ -2367,46 +2367,56 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
   the seam in the public Trinity backend for loading closed-source
   compliance modules (SSO, SCIM, SIEM) from a private git submodule
   at `src/backend/enterprise/` pointing to
-  `Abilityai/trinity-enterprise`. No license code yet; the
-  `EntitlementService` is a stub that returns True for every
-  feature_id, gated by `TRINITY_OSS_ONLY` for testing the deny path.
+  `Abilityai/trinity-enterprise`. Backend-only private; enterprise
+  Vue components ship in the public OSS bundle and are gated
+  server-side via the `enterprise_features` list. The
+  `EntitlementService` is a registry — empty until
+  `register_enterprise(app)` calls `register_module(feature_id)` for
+  each loaded enterprise module, which only happens when the
+  private submodule is actually mounted. `TRINITY_OSS_ONLY=1` is a
+  hard override for the deny path.
 - **Decision record**: `docs/planning/ENTERPRISE_ARCHITECTURE.md`
 - **Long-form research**: `docs/planning/OSS_ENTERPRISE_SPLIT_RESEARCH.md`
 - **Local-dev guide**: `docs/dev/ENTERPRISE_LOCAL_DEV.md`
 - **Key Features**:
   - `EntitlementService` (`src/backend/services/entitlement_service.py`)
-    — Phase 0 stub returning all-entitled by default. Honours
-    `TRINITY_OSS_ONLY=1` for forced OSS-only mode (returns False for
-    every check). Module-level singleton + `_set_for_testing` seam.
+    — registry pattern. `register_module(feature_id)` populates a set;
+    `is_entitled()` and `list_entitled_features()` read from it. OSS
+    builds never call `register_module` → empty set → deny everything.
+    `TRINITY_OSS_ONLY=1` is a hard override (denies even when
+    modules ARE registered).
   - `requires_entitlement(feature_id)` (`src/backend/dependencies.py`)
     — FastAPI dependency factory mirroring `require_role`. Raises
     HTTP 403 with the feature_id in the detail string. Lazy-imports
     the service so tests can swap singletons.
   - Conditional submodule loader in `src/backend/main.py` —
-    `try: from enterprise import register_enterprise;
+    `try: from enterprise.backend import register_enterprise;
     register_enterprise(app) except ImportError: pass`. OSS-only
     builds (no submodule) silently no-op with an informational log.
-    Idempotent via `app.state.enterprise_registered`.
+    The loader calls `entitlement_service.register_module(...)` for
+    each registered feature, which drives feature-flag output.
   - `/api/settings/feature-flags` extended with
     `enterprise_features: list[str]` — empty in OSS mode, populated
-    when entitled. UI uses this to hide enterprise-only tabs cleanly
-    without server-side conditional rendering.
-  - `.gitmodules` — **dual-mount** of `Abilityai/trinity-enterprise`
-    at `src/backend/enterprise/` (Python consumes `backend/` subdir)
-    and `src/frontend/src/enterprise/` (Vite consumes `frontend/`
-    subdir). Same URL, two paths — keeps the enterprise codebase in
-    one repo while exposing clean import surfaces for each layer.
-  - Frontend integration in `src/frontend/src/main.js` —
-    `import.meta.glob('./enterprise/frontend/index.js', { eager: false })`.
-    Empty glob → no-op (OSS-only build). When present, the module's
-    `registerEnterprise(router, app)` runs after Pinia + Router setup
-    and adds routes via `router.addRoute`.
+    when the private backend submodule is mounted. The OSS frontend
+    reads this to decide what enterprise UI to render.
+  - `.gitmodules` — single submodule at `src/backend/enterprise/`
+    pointing to `Abilityai/trinity-enterprise` via SSH. Backend only.
+  - **Enterprise frontend ships in OSS** at
+    `src/frontend/src/views/enterprise/` — Vue components have no
+    algorithmic IP, the moat is the private backend logic. Same
+    feature-flag pattern as `session_tab_enabled` and
+    `voice_available`. Adding a new enterprise feature = Vue file
+    in OSS + private backend module + `register_module(id)`.
   - Pinia store `src/frontend/src/stores/enterprise.js` — caches
     `enterprise_features: list[str]` from `/api/settings/feature-flags`.
     Exposes `isEntitled(featureId)` + `hasAnyEnterprise` getters.
+  - Static route in `src/frontend/src/router/index.js` for
+    `/enterprise/sso` with `meta.requiresEntitlement: 'sso'`.
+    `beforeEach` guard redirects to `/` when not entitled
+    (defence-in-depth against direct URL visits / bookmarks).
   - `NavBar.vue` — new `Enterprise` link
     `v-if="enterpriseStore.isEntitled('sso')"` with a `PRO` badge.
-    Hidden in OSS-only mode (empty list) and when operator forces
+    Hidden in OSS-only mode and when operator forces
     `TRINITY_OSS_ONLY=1`.
   - `docker-compose.yml` env pass-through for `TRINITY_OSS_ONLY`.
   - CI workflow `.github/workflows/build-without-submodule.yml` —
@@ -2416,21 +2426,16 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
     returns 404, and the OSS-only log line is emitted. Catches
     regressions where the conditional import accidentally becomes
     hard-required.
-- **Private repo (Abilityai/trinity-enterprise)** — dual-mounted:
-  - `backend/__init__.py` — `register_enterprise(app)` single FastAPI
-    entry point.
+- **Private repo (Abilityai/trinity-enterprise) — backend only**:
+  - `backend/__init__.py` — `register_enterprise(app)` mounts
+    routers AND calls `entitlement_service.register_module(id)`
+    per feature.
   - `backend/sso/router.py` — `/api/enterprise/sso/{providers,login/{id}}`
     stubs gated by `requires_entitlement("sso")`. `GET /providers`
     returns the in-process registry (empty by default);
     `POST /login/{id}` returns 501 "PoC stub" or 404 for unknown id.
   - `backend/sso/providers.py` — `SSOProvider` ABC (provider_id,
     display_name, protocol, begin_login) + `StubProvider`.
-  - `frontend/index.js` — `registerEnterprise(router, app)` single
-    Vue Router entry point. Idempotent (module-local flag).
-  - `frontend/views/EnterpriseSSO.vue` — Vue view at
-    `/enterprise/sso`. Fetches `/api/enterprise/sso/providers`,
-    renders empty-state message in the PoC; provider rows with
-    disabled "Login (stub)" buttons when the list isn't empty.
   - `pyproject.toml`, `LICENSE` (proprietary), `README.md`.
 - **Out of scope (separate follow-ups)**:
   - Phase 1: Ed25519-signed license token, verify path, admin

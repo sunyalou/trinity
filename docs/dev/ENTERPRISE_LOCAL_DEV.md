@@ -38,22 +38,21 @@ submodules in:
 git submodule update --init --recursive
 ```
 
-`.gitmodules` mounts three private submodules (the enterprise repo is
-**dual-mounted** — same URL, two paths, so backend and frontend each
-get a clean import surface):
+`.gitmodules` mounts two private submodules:
 
-| Submodule | Path | Consumed by | Subdir read |
-|---|---|---|---|
-| `.claude` | `.claude/` | Claude Code skills (`/sprint`, `/cso`, …) | (all) |
-| `src/backend/enterprise` | `src/backend/enterprise/` | Python (`main.py`) | `backend/` |
-| `src/frontend/src/enterprise` | `src/frontend/src/enterprise/` | Vite (`main.js`) | `frontend/` |
+| Submodule | Path | Consumed by |
+|---|---|---|
+| `.claude` | `.claude/` | Claude Code skills (`/sprint`, `/cso`, …) |
+| `src/backend/enterprise` | `src/backend/enterprise/` | Python (`main.py`) — backend logic |
 
-The two enterprise mounts clone the same repo, so disk usage is ~2×
-the repo size. In exchange you get a single enterprise codebase to
-version, and each consumer imports only the subdir it needs.
+**Enterprise frontend lives in the public OSS bundle** at
+`src/frontend/src/views/enterprise/` and is gated server-side via the
+`enterprise_features` field in `/api/settings/feature-flags`. No
+frontend submodule. See `docs/planning/ENTERPRISE_ARCHITECTURE.md`
+for the rationale.
 
-Both use SSH (`git@github.com:...`). If you only have HTTPS auth
-configured, add an SSH override:
+The backend submodule uses SSH (`git@github.com:...`). If you only
+have HTTPS auth configured, add an SSH override:
 
 ```bash
 git config --global url."git@github.com:".insteadOf "https://github.com/"
@@ -100,32 +99,27 @@ import worked, and the entitlement seam reports all features enabled
 
 ## Working on the enterprise repo
 
-The repo is dual-mounted. Pick **one** of the two mounts to make
-changes in (typically `src/backend/enterprise/` since that's where
-you most often start) — `git push` from there updates the upstream,
-then the other mount can `git pull` to sync.
-
 ```bash
 cd src/backend/enterprise
 git checkout main                # submodules default to detached HEAD
-# … make changes (in backend/ or frontend/ subdir) …
+# … make changes (under backend/) …
 git commit -m "feat(sso): ..."
 git push origin main
-
-# Sync the other mount
-cd ../../../src/frontend/src/enterprise
-git checkout main
-git pull origin main
 ```
 
-Then, back in the public repo root, **bump both submodule pointers**:
+Then, back in the public repo root, **bump the submodule pointer**:
 
 ```bash
 cd <trinity-root>
-git add src/backend/enterprise src/frontend/src/enterprise
+git add src/backend/enterprise
 git commit -m "chore: bump enterprise submodule"
 git push
 ```
+
+For **frontend** changes (Vue views, nav entries), edit the public
+repo directly under `src/frontend/src/views/enterprise/`,
+`src/frontend/src/stores/enterprise.js`, etc. Hot-reload picks them
+up immediately.
 
 ## Forcing OSS-only mode (testing the deny path)
 

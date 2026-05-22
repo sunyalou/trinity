@@ -37,30 +37,46 @@ sys.path.insert(0, _BACKEND_STR)
 # -----------------------------------------------------------------------------
 
 
-def test_default_is_entitled_returns_true(monkeypatch):
-    """Stub mode (no TRINITY_OSS_ONLY): every feature_id is entitled."""
+def test_empty_registry_denies_every_feature(monkeypatch):
+    """Default (no `register_module` calls): everything denied.
+    This is the OSS-only build state — no enterprise submodule was
+    mounted, so `register_enterprise(app)` never ran, so the
+    registry stays empty."""
     monkeypatch.delenv("TRINITY_OSS_ONLY", raising=False)
     from services.entitlement_service import EntitlementService
 
     svc = EntitlementService()
+    assert svc.is_entitled("sso") is False
+    assert svc.is_entitled("scim") is False
+    assert svc.is_entitled("siem") is False
+    assert svc.list_entitled_features() == []
+
+
+def test_register_module_then_entitled(monkeypatch):
+    """After `register_module("sso")`, "sso" is entitled and listed."""
+    monkeypatch.delenv("TRINITY_OSS_ONLY", raising=False)
+    from services.entitlement_service import EntitlementService
+
+    svc = EntitlementService()
+    svc.register_module("sso")
+    svc.register_module("scim")
+
     assert svc.is_entitled("sso") is True
     assert svc.is_entitled("scim") is True
-    assert svc.is_entitled("siem") is True
-    # Unknown features also return True in stub mode — the seam doesn't
-    # pretend to know the catalogue yet (that's Phase 1 license claims).
-    assert svc.is_entitled("not-a-real-feature") is True
+    assert svc.is_entitled("siem") is False  # not registered
+    assert svc.list_entitled_features() == ["scim", "sso"]  # sorted
 
 
-def test_default_list_entitled_features(monkeypatch):
-    """Stub mode reports the known enterprise feature catalogue."""
+def test_register_module_is_idempotent(monkeypatch):
+    """Calling register_module twice with the same id doesn't grow
+    the list (idempotency contract from the docstring)."""
     monkeypatch.delenv("TRINITY_OSS_ONLY", raising=False)
     from services.entitlement_service import EntitlementService
 
     svc = EntitlementService()
-    features = svc.list_entitled_features()
-    assert "sso" in features
-    assert "scim" in features
-    assert "siem" in features
+    svc.register_module("sso")
+    svc.register_module("sso")  # second call should be a no-op
+    assert svc.list_entitled_features() == ["sso"]
 
 
 # -----------------------------------------------------------------------------
@@ -69,30 +85,31 @@ def test_default_list_entitled_features(monkeypatch):
 
 
 @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes"])
-def test_oss_only_denies_every_feature(monkeypatch, value):
-    """Any truthy spelling of TRINITY_OSS_ONLY flips all checks False."""
+def test_oss_only_denies_every_feature_even_when_registered(monkeypatch, value):
+    """TRINITY_OSS_ONLY hard-overrides the registry. Even after
+    `register_module("sso")`, the deny path fires."""
     monkeypatch.setenv("TRINITY_OSS_ONLY", value)
-    # Reimport so the constructor re-reads the env var.
     if "services.entitlement_service" in sys.modules:
         del sys.modules["services.entitlement_service"]
     from services.entitlement_service import EntitlementService
 
     svc = EntitlementService()
+    svc.register_module("sso")  # the override wins regardless
     assert svc.is_entitled("sso") is False
-    assert svc.is_entitled("scim") is False
     assert svc.list_entitled_features() == []
 
 
 @pytest.mark.parametrize("value", ["0", "false", "no", ""])
-def test_oss_only_falsy_keeps_entitlements(monkeypatch, value):
-    """Falsy spellings (and empty string) leave the default stub
-    behaviour intact."""
+def test_oss_only_falsy_keeps_registry_behaviour(monkeypatch, value):
+    """Falsy spellings leave the registry behaviour intact."""
     monkeypatch.setenv("TRINITY_OSS_ONLY", value)
     if "services.entitlement_service" in sys.modules:
         del sys.modules["services.entitlement_service"]
     from services.entitlement_service import EntitlementService
 
     svc = EntitlementService()
+    assert svc.is_entitled("sso") is False  # nothing registered yet
+    svc.register_module("sso")
     assert svc.is_entitled("sso") is True
 
 
@@ -116,11 +133,16 @@ def _import_requires_entitlement_or_skip():
 
 
 def test_requires_entitlement_allows_when_entitled(monkeypatch):
-    """The Depends() callable returns None on allow."""
+    """The Depends() callable returns None on allow. Allow path
+    requires registering the module first — empty registry denies."""
     monkeypatch.delenv("TRINITY_OSS_ONLY", raising=False)
     if "services.entitlement_service" in sys.modules:
         del sys.modules["services.entitlement_service"]
     requires_entitlement = _import_requires_entitlement_or_skip()
+
+    # Register "sso" so the dependency allows the call.
+    from services.entitlement_service import entitlement_service
+    entitlement_service.register_module("sso")
 
     inner = requires_entitlement("sso")
     assert inner() is None
@@ -168,7 +190,10 @@ def test_set_for_testing_swaps_singleton(monkeypatch):
         assert ent_mod.entitlement_service.list_entitled_features() == []
     finally:
         ent_mod._set_for_testing(None)  # restore default
-    # Restored — stub-default singleton behaviour returns True again
+    # Restored — fresh default singleton has empty registry, so
+    # still False until something calls register_module().
+    assert ent_mod.entitlement_service.is_entitled("sso") is False
+    ent_mod.entitlement_service.register_module("sso")
     assert ent_mod.entitlement_service.is_entitled("sso") is True
 
 

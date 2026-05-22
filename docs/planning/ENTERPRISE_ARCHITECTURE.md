@@ -33,56 +33,58 @@ abilityai/trinity                   (public, MIT/Apache after decision #6)
 │   ├── main.py                     conditional import + register_enterprise(app)
 │   ├── dependencies.py             requires_entitlement(feature_id) — Phase 0 seam
 │   ├── services/
-│   │   └── entitlement_service.py  EntitlementService (Phase 0 stub; Phase 1 license)
-│   └── enterprise/                 ← submodule mount #1 (Python imports backend/)
-│       └── (populated by submodule init — same repo, both subdirs)
+│   │   └── entitlement_service.py  EntitlementService — registry + license check (Phase 1)
+│   └── enterprise/                 ← single submodule mount (private backend)
+│       └── (populated by submodule init)
 ├── src/frontend/src/
-│   ├── main.js                     conditional `import.meta.glob` of enterprise/frontend/
-│   ├── stores/enterprise.js        enterprise feature-flags store
-│   └── enterprise/                 ← submodule mount #2 (Vite imports frontend/)
-│       └── (populated by submodule init — same repo, both subdirs)
+│   ├── stores/enterprise.js        enterprise feature-flags Pinia store
+│   ├── views/enterprise/
+│   │   └── SSO.vue                 #847 PoC view — lives in OSS, gated by feature-flag
+│   ├── components/NavBar.vue       v-if="enterpriseStore.isEntitled(...)" per link
+│   └── router/index.js             route guard checks meta.requiresEntitlement
 ├── docs/planning/
 │   ├── ENTERPRISE_ARCHITECTURE.md  this file
 │   └── OSS_ENTERPRISE_SPLIT_RESEARCH.md  long-form research
 └── docs/dev/
     └── ENTERPRISE_LOCAL_DEV.md     15-min onboarding guide
 
-Abilityai/trinity-enterprise        (private, proprietary, dual-mounted)
+Abilityai/trinity-enterprise        (private, proprietary, backend only)
 ├── backend/
 │   ├── __init__.py                 register_enterprise(app) entry point
+│   │                               + entitlement_service.register_module() per feature
 │   └── sso/                        #847 PoC (router + provider ABC + stubs)
-├── frontend/
-│   ├── index.js                    registerEnterprise(router, app) entry point
-│   └── views/
-│       └── EnterpriseSSO.vue       #847 PoC (Vue component)
 └── LICENSE                         commercial / proprietary
 ```
 
-### Why two mount points of the same repo (not two repos)
+### Why backend-only private (frontend ships in OSS)
 
-Symmetric to the backend/frontend split in the public repo — keeping
-the enterprise code in **one** private repo means a single version
-bump touches both backend and frontend together. The mild disk
-duplication (~1 MB cloned twice) is far cheaper than two repos
-drifting out of sync.
+Vue components for enterprise views (forms, layouts, copy) have no
+algorithmic IP. The real moat is in the **backend** — license
+verification, SAML signature checks, OAuth flows, SCIM endpoint
+implementations. Those stay private. The frontend ships in the OSS
+bundle and is gated purely server-side via the
+`enterprise_features` list returned at
+`GET /api/settings/feature-flags`. Same shape as existing flags
+(`session_tab_enabled`, `voice_available`, `workspace_available`):
+the server flips a bit, the OSS frontend hides every related surface.
 
-`.gitmodules` declares both mounts at the same URL but different
-paths:
+The registry primitive on `EntitlementService` is what closes the
+loop. Each enterprise backend module calls
+`entitlement_service.register_module(feature_id)` on boot; OSS-only
+builds never reach that code → the registry stays empty →
+`list_entitled_features()` returns `[]` → the frontend hides every
+enterprise nav entry, login button, and view. Adding a new feature
+is purely additive (Vue file in OSS + private backend module).
+
+`.gitmodules` declares one mount:
 
 ```ini
 [submodule "src/backend/enterprise"]
     path = src/backend/enterprise
     url  = git@github.com:Abilityai/trinity-enterprise.git
-[submodule "src/frontend/src/enterprise"]
-    path = src/frontend/src/enterprise
-    url  = git@github.com:Abilityai/trinity-enterprise.git
 ```
 
-Each consumer reads only its own subdir:
-- Python `from enterprise.backend import register_enterprise` resolves
-  to `src/backend/enterprise/backend/__init__.py`.
-- Vite `import.meta.glob('./enterprise/frontend/index.js')` resolves to
-  `src/frontend/src/enterprise/frontend/index.js`.
+Python imports as `from enterprise.backend import register_enterprise`.
 
 ## Why a submodule, not a Python package
 
@@ -123,26 +125,32 @@ job below proves the conditional import works.
   OSS-only (UI hides enterprise tabs).
 
 **`.gitmodules`**
-- Two submodule entries (`src/backend/enterprise` + `src/frontend/src/enterprise`)
-  same URL pointing at the private repo via SSH.
+- Single submodule entry at `src/backend/enterprise` pointing at the
+  private repo via SSH.
 
 **`docker-compose.yml`**
 - Pass-through for `TRINITY_OSS_ONLY` env var.
-
-**`src/frontend/src/main.js`**
-- Conditional `import.meta.glob('./enterprise/frontend/index.js')`.
-  Empty in OSS-only builds; module's `registerEnterprise(router, app)`
-  runs when present.
 
 **`src/frontend/src/stores/enterprise.js`** (new)
 - Pinia store. Loads `/api/settings/feature-flags` after auth, caches
   `enterprise_features: list[str]`. Exposes `isEntitled(featureId)` and
   `hasAnyEnterprise` getters.
 
+**`src/frontend/src/views/enterprise/SSO.vue`** (new — in OSS)
+- PoC view at route `/enterprise/sso`. Fetches
+  `/api/enterprise/sso/providers`, renders empty state in the PoC.
+  Lives in the OSS bundle; route is statically registered in
+  `router/index.js`.
+
+**`src/frontend/src/router/index.js`**
+- Static route entry with `meta.requiresEntitlement: 'sso'`.
+  `beforeEach` guard checks the entitlement store and redirects to
+  `/` when not entitled (defence-in-depth against direct URL visits).
+
 **`src/frontend/src/components/NavBar.vue`**
 - New `Enterprise` nav link `v-if="enterpriseStore.isEntitled('sso')"`.
-  Hidden in OSS-only builds (empty list) and when the operator forces
-  `TRINITY_OSS_ONLY=1`.
+  Hidden in OSS-only builds (registry empty → `enterprise_features: []`)
+  and when the operator forces `TRINITY_OSS_ONLY=1`.
 
 ## What the private repo holds (`Abilityai/trinity-enterprise`)
 
@@ -150,18 +158,16 @@ PoC scope (this PR):
 
 | File | Purpose |
 |---|---|
-| `backend/__init__.py` | `register_enterprise(app)` — FastAPI integration entry |
-| `backend/sso/router.py` | `/api/enterprise/sso/{providers,login/{id}}` — stubs, gated by `requires_entitlement("sso")` |
-| `backend/sso/providers.py` | `SSOProvider` ABC + `StubProvider` for the PoC registry |
-| `frontend/index.js` | `registerEnterprise(router, app)` — Vue Router integration entry |
-| `frontend/views/EnterpriseSSO.vue` | Vue component — providers list view (empty state in PoC) |
+| `backend/__init__.py` | `register_enterprise(app)` + `entitlement_service.register_module(...)` calls per feature |
+| `backend/sso/router.py` | `/api/enterprise/sso/{providers,login/{id}}` stubs, gated by `requires_entitlement("sso")` |
+| `backend/sso/providers.py` | `SSOProvider` ABC + `StubProvider` |
 | `pyproject.toml` | Metadata (no pip-install mode yet — submodule mount only) |
 | `LICENSE` | Proprietary |
 
 ## How CI handles "build without submodule"
 
 Workflow `.github/workflows/build-without-submodule.yml` boots the
-backend image with both submodule mounts **absent** and asserts:
+backend image with the enterprise submodule **absent** and asserts:
 
 1. Container starts cleanly
 2. `GET /api/settings/feature-flags` returns `enterprise_features: []`
@@ -170,9 +176,9 @@ backend image with both submodule mounts **absent** and asserts:
 
 This proves the conditional import doesn't break OSS-only deployments
 when the submodule URL access is revoked or the submodule is unchecked.
-The frontend side is symmetric: `import.meta.glob` returns `{}` when
-`src/frontend/src/enterprise/` is empty, so `main.js` silently no-ops
-and no enterprise route ever registers.
+The OSS frontend's Vue files for enterprise views are still in the
+bundle but every nav entry / link is hidden by the empty
+`enterprise_features` list.
 
 ## What's NOT in this PR (open follow-ups)
 
