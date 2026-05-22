@@ -32,7 +32,7 @@
 #   3. PUT /api/agents/canary-fleet-slow/capacity
 #        body: {"max_parallel_tasks": 1}
 #   4. PUT /api/agents/canary-fleet-slow/timeout
-#        body: {"timeout_seconds": 180}        # >75s sleep + buffer
+#        body: {"execution_timeout_seconds": 180}   # >75s sleep + buffer
 
 name: canary-fleet
 description: Canary harness load generators (Issue #411)
