@@ -62,6 +62,8 @@ Migration Order (as of 2026-05-07):
 55. public_links_type - SITE-001 type column on public links (chat | site)
 56. slack_bot_token_encryption - #453 encrypt Slack bot tokens at rest
 57. canary_violations_table - CANARY-001 / Issue #411 invariant harness violations
+58. execution_retention_index - #772 partial index on schedule_executions(completed_at)
+59. execution_retry_count - #678 retry_count column for reader-race auto-retry
 """
 import logging
 import sqlite3
@@ -2006,6 +2008,25 @@ def _migrate_canary_violations_table(cursor, conn):
     print("Created canary_violations table with indexes (CANARY-001)")
 
 
+def _migrate_execution_retry_count(cursor, conn):
+    """Issue #678: track auto-retry attempts on schedule_executions.
+
+    Backend's HTTPError handler detects the reader-race signature and
+    retries once with the same execution_id (cap at 1). The column lets
+    operators distinguish first-attempt failures from auto-retry outcomes
+    and is surfaced through the `get_execution_result` MCP tool so callers
+    can see when an implicit retry fired.
+    """
+    _safe_add_column(
+        cursor,
+        "schedule_executions",
+        "retry_count",
+        "ALTER TABLE schedule_executions ADD COLUMN retry_count INTEGER DEFAULT 0",
+        log_msg="Issue #678: adding retry_count to schedule_executions",
+    )
+    conn.commit()
+
+
 def _migrate_execution_retention_index(cursor, conn):
     """Issue #772: partial index on schedule_executions(completed_at) for terminal rows.
 
@@ -2074,6 +2095,29 @@ def _migrate_default_execution_timeout_to_3600(cursor, conn):
     cursor.execute(
         "UPDATE agent_schedules SET timeout_seconds = 3600 "
         "WHERE timeout_seconds = 900"
+    )
+    conn.commit()
+
+
+def _migrate_agent_schedules_soft_delete(cursor, conn):
+    """Issue #834 Phase 1b: soft-delete column + partial index on agent_schedules.
+
+    Mirrors Phase 1a's agent_ownership column. `DELETE /api/agents/{name}/
+    schedules/{id}` becomes UPDATE deleted_at; the cleanup_service sweep
+    hard-deletes rows past `schedule_soft_delete_retention_days`.
+
+    Partial index narrows the retention-sweep scan to actually-deleted
+    rows so it stays cheap as the schedule count grows.
+    """
+    _safe_add_column(
+        cursor,
+        "agent_schedules",
+        "deleted_at",
+        "ALTER TABLE agent_schedules ADD COLUMN deleted_at TEXT",
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_schedules_deleted_at "
+        "ON agent_schedules(deleted_at) WHERE deleted_at IS NOT NULL"
     )
     conn.commit()
 
@@ -2167,4 +2211,6 @@ MIGRATIONS = [
     ("default_execution_timeout_to_3600", _migrate_default_execution_timeout_to_3600),
     ("fix_retention_index_status_values", _migrate_fix_retention_index_status_values),
     ("agent_ownership_soft_delete", _migrate_agent_ownership_soft_delete),
+    ("execution_retry_count", _migrate_execution_retry_count),
+    ("agent_schedules_soft_delete", _migrate_agent_schedules_soft_delete),
 ]

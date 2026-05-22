@@ -355,6 +355,12 @@ class DatabaseManager:
     def is_agent_name_reserved(self, agent_name: str):
         return self._agent_ops.is_agent_name_reserved(agent_name)
 
+    def recover_agent_ownership(self, agent_name: str):
+        return self._agent_ops.recover_agent_ownership(agent_name)
+
+    def list_soft_deleted_agents(self, limit: int = 200):
+        return self._agent_ops.list_soft_deleted_agents(limit)
+
     def rename_agent(self, old_name: str, new_name: str):
         return self._agent_ops.rename_agent(old_name, new_name)
 
@@ -710,6 +716,18 @@ class DatabaseManager:
     def delete_schedule(self, schedule_id: str, username: str):
         return self._schedule_ops.delete_schedule(schedule_id, username)
 
+    def purge_schedule(self, schedule_id: str):
+        return self._schedule_ops.purge_schedule(schedule_id)
+
+    def find_soft_deleted_schedules_past_retention(self, retention_days: int, limit: int = 5000):
+        return self._schedule_ops.find_soft_deleted_schedules_past_retention(retention_days, limit)
+
+    def recover_schedule(self, schedule_id: str):
+        return self._schedule_ops.recover_schedule(schedule_id)
+
+    def list_soft_deleted_schedules(self, agent_name=None, limit: int = 200):
+        return self._schedule_ops.list_soft_deleted_schedules(agent_name, limit)
+
     # Webhook token management (WEBHOOK-001, #291)
     def generate_webhook_token(self, schedule_id: str):
         return self._schedule_ops.generate_webhook_token(schedule_id)
@@ -788,10 +806,10 @@ class DatabaseManager:
 
     def update_execution_status(self, execution_id: str, status: str, response: str = None, error: str = None,
                                 context_used: int = None, context_max: int = None, cost: float = None, tool_calls: str = None, execution_log: str = None,
-                                claude_session_id: str = None, compact_metadata: str = None):
+                                claude_session_id: str = None, compact_metadata: str = None, retry_count: int = None):
         return self._schedule_ops.update_execution_status(execution_id, status, response, error,
                                                           context_used, context_max, cost, tool_calls, execution_log, claude_session_id,
-                                                          compact_metadata)
+                                                          compact_metadata, retry_count)
 
     def mark_execution_dispatched(self, execution_id: str) -> bool:
         return self._schedule_ops.mark_execution_dispatched(execution_id)

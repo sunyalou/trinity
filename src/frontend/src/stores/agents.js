@@ -568,6 +568,16 @@ export const useAgentsStore = defineStore('agents', {
       return response.data
     },
 
+    async createAgentFolder(name, folderPath) {
+      const authStore = useAuthStore()
+      const response = await axios.post(`/api/agents/${name}/files/mkdir`, {
+        path: folderPath
+      }, {
+        headers: authStore.authHeader
+      })
+      return response.data
+    },
+
     async getFilePreviewBlob(name, filePath) {
       const authStore = useAuthStore()
       const response = await axios.get(`/api/agents/${name}/files/preview`, {

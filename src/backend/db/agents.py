@@ -211,6 +211,52 @@ class AgentOperations(
             )
             return [row["agent_name"] for row in cursor.fetchall()]
 
+    def recover_agent_ownership(self, agent_name: str) -> bool:
+        """Recover a soft-deleted agent by clearing `deleted_at` (#834).
+
+        Reverses a `delete_agent_ownership()` call within the retention
+        window. Refuses to operate on:
+          - a row that doesn't exist (returns False)
+          - a live row (already `deleted_at IS NULL`; returns False)
+
+        Returns True on successful recovery. Child rows survived the
+        soft-delete intact, so the agent is immediately accessible
+        again via the user-facing read paths. The Docker container is
+        NOT recreated — that's a separate operation (operator must
+        re-start the agent if they want a running container).
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE agent_ownership SET deleted_at = NULL "
+                "WHERE agent_name = ? AND deleted_at IS NOT NULL",
+                (agent_name,),
+            )
+            if cursor.rowcount > 0:
+                conn.commit()
+                return True
+            return False
+
+    def list_soft_deleted_agents(self, limit: int = 200) -> List[Dict]:
+        """List currently-soft-deleted agents with their `deleted_at`.
+
+        Used by the admin recovery endpoint. Returns agent_name,
+        owner_id (so admins can filter by owner), and the timestamp
+        the agent was soft-deleted. The purge ETA is computed at the
+        router layer using `agent_soft_delete_retention_days`.
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT agent_name, owner_id, deleted_at, created_at "
+                "FROM agent_ownership "
+                "WHERE deleted_at IS NOT NULL "
+                "ORDER BY deleted_at DESC "
+                "LIMIT ?",
+                (limit,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
     def purge_agent_ownership(self, agent_name: str) -> bool:
         """Hard-delete a soft-deleted agent (#834): runs #816 cascade_delete
         on child tables then removes the agent_ownership row itself.

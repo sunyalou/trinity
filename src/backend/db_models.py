@@ -207,6 +207,9 @@ class ScheduleExecution(BaseModel):
     validates_execution_id: Optional[str] = None   # FK to execution being validated (for validation records)
     # Auto-compact observability (Bundle B)
     compact_metadata: Optional[str] = None       # JSON list of compact events fired during this turn
+    # Reader-race auto-retry (#678): how many times this execution was retried in-line
+    # by the backend HTTPError handler. 0 = never retried; 1 = retried once (cap).
+    retry_count: int = 0
 
 
 # =========================================================================

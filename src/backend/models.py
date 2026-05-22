@@ -482,3 +482,31 @@ class AgentDefaultResourcesUpdate(BaseModel):
     """Body for PUT /api/settings/agent-defaults/resources (RES-001)."""
     cpu: Optional[str] = None
     memory: Optional[str] = None
+
+
+# =============================================================================
+# Soft-Delete Admin Recovery (#834 Phase 1c)
+# =============================================================================
+
+class SoftDeletedAgent(BaseModel):
+    """Response item for GET /api/admin/soft-deleted/agents."""
+    agent_name: str
+    owner_id: int
+    created_at: str
+    deleted_at: str
+    # When the retention sweep would hard-purge this row (None when
+    # the retention setting is 0 = disabled).
+    purge_eta: Optional[str]
+
+
+class SoftDeletedSchedule(BaseModel):
+    """Response item for GET /api/admin/soft-deleted/schedules."""
+    id: str
+    agent_name: str
+    name: str
+    cron_expression: str
+    message: str
+    owner_id: int
+    enabled: bool
+    deleted_at: str
+    purge_eta: Optional[str]

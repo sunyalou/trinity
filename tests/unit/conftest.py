@@ -28,9 +28,14 @@ os.environ.setdefault("REDIS_BACKEND_PASSWORD", "test")
 # need a real fixture DB still override via monkeypatch.setenv.
 import tempfile as _tempfile  # noqa: E402
 
+# Per-process tmp path so two concurrent `pytest unit/` invocations on the
+# same dev machine don't race on the same SQLite file. The DB is initialized
+# eagerly at conftest load (via the `import database` preload below), so the
+# race window without this PID suffix would be measurable. CI runs one
+# process per matrix job and is unaffected either way.
 os.environ.setdefault(
     "TRINITY_DB_PATH",
-    str(Path(_tempfile.gettempdir()) / "trinity-unit-tests.db"),
+    str(Path(_tempfile.gettempdir()) / f"trinity-unit-tests-{os.getpid()}.db"),
 )
 
 # Ensure src/backend is importable before test modules are collected.
@@ -181,6 +186,95 @@ def _restore_invariant_sys_modules() -> None:
     for k, baseline in _SYS_MODULES_BASELINE.items():
         if baseline is not None:
             sys.modules[k] = baseline
+
+
+# ---------------------------------------------------------------------------
+# Cross-test sys.modules baseline-restore (PR #797 follow-up).
+#
+# Unit tests run with `tests/unit/` as the pytest rootdir because
+# `tests/unit/pytest.ini` exists with `norecursedirs = ..`. As a result,
+# `tests/conftest.py`'s autouse `_restore_sys_modules_baseline_762`
+# fixture is NEVER loaded for the unit suite — the unit suite was the
+# blind spot. Without an autouse restore here, any collection-time
+# `sys.modules[name] = stub` in one test file leaks for the rest of the
+# pytest-randomly session, producing order-dependent failures (e.g. PR
+# #797's three `test_voice_auth` regressions, traced to `database` and
+# `config` stubs from other files reaching the voice handler).
+#
+# Mirrors `tests/conftest.py`'s pattern with two improvements:
+#  1. Explicit baseline `_VALUES` rather than `_INVARIANT_KEYS` — captures
+#     the real module objects so restore is unambiguous.
+#  2. Snapshot-and-pop: keys present at baseline are restored to their
+#     baseline value; keys absent from baseline but matching a documented
+#     `_POP_PREFIXES` are removed. Parent's "skip if baseline is None"
+#     rule leaves new stubs in place; we close that hole.
+# ---------------------------------------------------------------------------
+
+# Force-load `config` and `database` so they are part of the baseline.
+# Test files that stub these (test_voice_tools, test_config_fail_fast,
+# test_cleanup_unreachable_orphan) need a real-module baseline value to
+# restore against between tests. Both are safe to import here: REDIS_URL
+# and TRINITY_DB_PATH are pinned above (lines 19-34) before any backend
+# code runs.
+import config as _real_config  # noqa: E402,F401
+import database as _real_database  # noqa: E402,F401
+
+_SYS_MODULES_BASELINE_KEYS = frozenset(sys.modules)
+_SYS_MODULES_BASELINE_VALUES = {
+    k: sys.modules[k]
+    for k in (
+        "utils",
+        "utils.helpers",
+        "models",
+        "database",
+        "config",
+        # NOTE: `agent_server` is intentionally NOT in this list. Several
+        # unit tests (test_agent_server_auto_sync.py, test_git_status_dual_ahead_behind.py)
+        # force-reload `agent_server` at module collection with importlib,
+        # producing a different module object than the conftest's preload
+        # stub. Restoring our stub between tests then misaligns with
+        # references those test files captured at collection time. The
+        # per-file preload guards (`if "agent_server" not in sys.modules`)
+        # handle the cross-file case adequately.
+    )
+    if k in sys.modules
+}
+
+# Prefix policy for popping non-baseline keys after each test. Narrow on
+# purpose — aggressive popping (e.g. asyncio/httpx submodules loaded
+# transitively) churns the cache and slows the suite without buying
+# correctness. Widen this list when a specific cross-file leak is
+# observed.
+_POP_PREFIXES: tuple[str, ...] = (
+    "docker",
+    "services.docker_service",
+    "services.template_service",
+    "services.gemini_voice",
+    "services.platform_audit_service",
+    "passlib",
+)
+
+
+def _restore_unit_sys_modules() -> None:
+    for _k, _v in _SYS_MODULES_BASELINE_VALUES.items():
+        if _v is not None:
+            sys.modules[_k] = _v
+    for _k in list(sys.modules):
+        if _k in _SYS_MODULES_BASELINE_KEYS:
+            continue
+        if any(_k == p or _k.startswith(p + ".") for p in _POP_PREFIXES):
+            sys.modules.pop(_k, None)
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_modules_baseline_unit():
+    """Restore the pristine post-preload sys.modules baseline before AND
+    after every test. Defends against cross-file pollution from test
+    files that install stubs at module-collection time. Mirror of the
+    parent #762 fixture, which never runs for the unit suite."""
+    _restore_unit_sys_modules()
+    yield
+    _restore_unit_sys_modules()
 
 
 @pytest.fixture(autouse=True)

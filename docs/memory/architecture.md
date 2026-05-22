@@ -171,7 +171,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - `settings_service.py` - Centralized settings retrieval (API keys, ops config, agent quotas)
 
 *Execution & Scheduling:*
-- `task_execution_service.py` - Unified task execution lifecycle (slot mgmt, activity tracking, sanitization) (EXEC-024)
+- `task_execution_service.py` - Unified task execution lifecycle (slot mgmt, activity tracking, sanitization) (EXEC-024). On reader-race empty results (502 dict body with `num_turns < 5`, `raw_message_count == 0`, `parse_failure_count == 0`), fires one in-line auto-retry with the same `execution_id` capped at 300s, persisting `retry_count` and rolling previous-attempt cost into the terminal write (#678).
 - `capacity_manager.py` - **Unified capacity facade (#428, CAPACITY-CONSOLIDATE).** Single public API for admit/release/status across `/chat` (`max_concurrent=max_parallel_tasks`, `queue_in_memory` policy) and `/task` (`queue_persistent` policy). Composes `slot_service.py` and `backlog_service.py` internally; owns the in-memory overflow store (Redis LIST, depth 3). Replaces the prior three-class pyramid (`SlotService` + `ExecutionQueue` + `BacklogService`); `ExecutionQueue` deleted, the other two are now private internals.
 - `slot_service.py` - Internal: atomic N-ary capacity counter (Redis ZSET) with dynamic per-agent TTL (CAPACITY-001). Used only by `CapacityManager`.
 - `backlog_service.py` - Internal: persistent SQLite-backed FIFO overflow store with drain-on-release (BACKLOG-001). Used only by `CapacityManager`.
@@ -367,6 +367,7 @@ docker exec trinity-vector sh -c "tail -50 /data/logs/agents.json" | jq .
 - `/api/chat/session` - Context window stats
 - `/api/files` - List workspace files (recursive tree structure)
 - `/api/files/download` - Download file content (100MB limit)
+- `/api/files/mkdir` - Create a directory (workspace-confined, edit-protected paths rejected) (#37)
 
 **Template-supplied pre-check** (optional, SCHED-COND-001): if the template ships an executable `~/.trinity/pre-check` file, the backend's internal endpoint `POST /api/internal/agents/{name}/pre-check` runs it via `docker exec` before the scheduler fires a cron-triggered chat. The hook is **language-agnostic** — interpreter is selected by the file's shebang line (Python, bash, node, compiled binary, …); Trinity does not invoke `python3` for it. The hook's stdout becomes the chat message; empty stdout + exit 0 records a skipped execution. No HTTP endpoint is exposed on the agent-server for this — the primitive is the same `execute_command_in_container` already used by `services/git_service.py` (persistent-state allowlist), `ssh_service.py`, and the agent terminal.
 
@@ -398,7 +399,7 @@ Services that run continuously in the backend process:
 
 | Service | Module | Description |
 |---------|--------|-------------|
-| **Cleanup Service** | `cleanup_service.py` | Active watchdog reconciliation against agent process registries (orphan recovery, auto-terminate timeouts) + passive stale recovery. Runs every 5 min. Also runs the #772 retention sweeps: nulls `schedule_executions.execution_log` past `execution_log_retention_days` (default 30), DELETEs terminal `schedule_executions` rows past `execution_row_retention_days` (default 90), and DELETEs `agent_health_checks` rows past `health_check_retention_days` (default 7). Also runs the #834 Phase 1a soft-deleted-agent purge: hard-deletes `agent_ownership` rows whose `deleted_at` is older than `agent_soft_delete_retention_days` (default 180, `0` = disabled), cascading child tables via the #816 `purge_agent_ownership`/`cascade_delete` primitive. Each sweep is capped at 5000 rows/cycle so the first post-deploy backfill spans hours, not minutes; `0` disables a sweep. Triggers `PRAGMA wal_checkpoint(TRUNCATE)` when any sweep reclaims rows. (CLEANUP-001, #129, #772, #834) |
+| **Cleanup Service** | `cleanup_service.py` | Active watchdog reconciliation against agent process registries (orphan recovery, auto-terminate timeouts) + passive stale recovery. Runs every 5 min. Also runs the #772 retention sweeps: nulls `schedule_executions.execution_log` past `execution_log_retention_days` (default 30), DELETEs terminal `schedule_executions` rows past `execution_row_retention_days` (default 90), and DELETEs `agent_health_checks` rows past `health_check_retention_days` (default 7). Also runs the #834 Phase 1a soft-deleted-agent purge: hard-deletes `agent_ownership` rows whose `deleted_at` is older than `agent_soft_delete_retention_days` (default 180, `0` = disabled), cascading child tables via the #816 `purge_agent_ownership`/`cascade_delete` primitive. Also runs the #834 Phase 1b soft-deleted-schedule purge: hard-deletes `agent_schedules` rows whose `deleted_at` is older than `schedule_soft_delete_retention_days` (default 30, `0` = disabled) via `purge_schedule()`, which cascades the row's `schedule_executions` (no #816 chain — schedules have no #816-registered children). Each sweep is capped at 5000 rows/cycle so the first post-deploy backfill spans hours, not minutes; `0` disables a sweep. Triggers `PRAGMA wal_checkpoint(TRUNCATE)` when any sweep reclaims rows. (CLEANUP-001, #129, #772, #834) |
 | **Operator Queue Sync** | `operator_queue_service.py` | Polls running agents every 5s, reads `~/.trinity/operator-queue.json`, syncs to DB, writes responses back. (OPS-001) |
 | **Sync Health Service** | `sync_health_service.py` | Polls git-enabled agents every 60s, upserts `agent_sync_state`, emits `sync_failing` operator-queue entries when consecutive_failures ≥ 3. (#389 S1) |
 | **Monitoring Service** | `monitoring_service.py` | Fleet-wide health checks on configurable interval. (MON-001) |
@@ -406,7 +407,7 @@ Services that run continuously in the backend process:
 | **Capacity Maintenance** | `capacity_manager.py` | Calls `CapacityManager.run_maintenance()` every 60s — expires stale queued tasks (>24h) and drains orphans after restart. On each successful sweep, writes a unix-timestamp heartbeat to Redis key `canary:drain_tick_at` (read by canary B-02 to distinguish stuck drains from "drain just hasn't run yet"). (BACKLOG-001 / CAPACITY-CONSOLIDATE #428; B-02 heartbeat #882) |
 | **Audit Retention** | `audit_retention_service.py` | Daily APScheduler job at 04:15 UTC that DELETEs `audit_log` rows past the retention window. Configured via `AUDIT_LOG_RETENTION_DAYS` (default 365, floored at 365 — the `audit_log_no_delete` trigger refuses younger rows). Pruning ages out hash-chain history past the cutoff by design. (#552) |
 | **DB Vacuum** | `db_vacuum_service.py` | Daily APScheduler job at 04:30 UTC that runs `VACUUM` on `/data/trinity.db` to reclaim pages freed by the cleanup-service retention sweeps. Configurable via `DB_VACUUM_ENABLED` / `DB_VACUUM_HOUR` / `DB_VACUUM_MINUTE`. Opens an autocommit (`isolation_level=None`) connection because VACUUM cannot run inside a transaction; accepts the rare BUSY outcome rather than retrying. (#772) |
-| **Session Cleanup** | `session_cleanup_service.py` | Periodic JSONL reaper for the Session tab. Default 6h cycle (`poll_interval_seconds`); each cycle diffs every running agent's `~/.claude/projects/-home-developer/<uuid>.jsonl` set against `agent_sessions.cached_claude_session_id` and deletes JSONLs not in the keep set whose mtime is older than `min_age_seconds` (default 1h race guard). Synchronous best-effort `reap_jsonl()` is also called by the session router on user-initiated reset/delete so the disk reclaim is immediate. Uses `execute_command_in_container` (no agent-server endpoint required). (SESSION_TAB Phase 4.2) |
+| **Session Cleanup** | `session_cleanup_service.py` | Periodic JSONL reaper for the Session tab. Default 6h cycle (`poll_interval_seconds`); each cycle diffs every running agent's `~/.claude/projects/-home-developer/<uuid>.jsonl` set against `agent_sessions.cached_claude_session_id` and deletes JSONLs not in the keep set whose mtime is older than `min_age_seconds` (default 1h race guard). Synchronous best-effort `reap_jsonl()` is also called by the session router on user-initiated reset/delete so the disk reclaim is immediate. Uses `execute_command_in_container` (no agent-server endpoint required). Also reaps headless-task JSONLs created by long-running headless tasks (timeout > 600s) which auto-enable JSONL persistence so the stdout-race recovery code in `agent_server/services/jsonl_recovery.py` can fire — those UUIDs aren't in `agent_sessions`, so they fall out of the keep set automatically and the existing 1h age guard + 6h sweep removes them. (SESSION_TAB Phase 4.2; #678 JSONL persistence Option B) |
 | **Canary Watcher** | `canary_service.py` | Continuous orchestration-invariant harness (CANARY-001 / Issue #411). Every 5 min: `collect_snapshot()` over Redis × SQLite × agent registries, runs deterministic invariant library (S-01, E-02, L-03 in Phase 1), persists violations to `canary_violations`, classifies green→red transitions and fires one Slack webhook POST per transition (`CANARY_SLACK_WEBHOOK_URL` env var; unset = silent sink). Disabled by default; enable on staging/dev with `CANARY_ENABLED=1`. |
 
 The **agent server** also runs a 15-min `auto_sync` heartbeat loop (gated
@@ -501,6 +502,7 @@ picks up on its next poll. (#389 S1a)
 | GET | `/api/agents/{name}/a2a/agent-card` | A2A v1.0 Agent Card for external orchestrator discovery (#737) |
 | GET | `/api/agents/{name}/files` | List workspace files (tree structure) |
 | GET | `/api/agents/{name}/files/download` | Download file |
+| POST | `/api/agents/{name}/files/mkdir` | Create a directory in the workspace (NEW: 2026-05-19, #37) |
 | GET | `/api/agents/{name}/folders` | Get shared folder config (NEW: 2025-12-13) |
 | PUT | `/api/agents/{name}/folders` | Update shared folder config |
 | GET | `/api/agents/{name}/folders/available` | List mountable folders from permitted agents |
@@ -637,6 +639,20 @@ picks up on its next poll. (#389 S1a)
 | GET | `/oauth/{provider}/authorize` | Start OAuth |
 | GET | `/oauth/{provider}/callback` | OAuth callback |
 | GET | `/health` | Health check (unauthenticated, top-level — no `/api/` prefix) |
+
+### Soft-Delete Admin Recovery (#834 Phase 1c)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/admin/soft-deleted/agents` | Admin | List soft-deleted agents (newest first); each row has computed `purge_eta` (null if `agent_soft_delete_retention_days=0`). `limit` capped at 500. |
+| POST | `/api/admin/soft-deleted/agents/{name}/recover` | Admin | Clear `agent_ownership.deleted_at`. 404 if not soft-deleted. Metadata-only — container NOT recreated (`needs_container_recreate=true`); operator runs `POST /api/agents/{name}/start`. Audit `agent_lifecycle:recover`. |
+| GET | `/api/admin/soft-deleted/schedules` | Admin | List soft-deleted schedules (optional `?agent_name=`); `purge_eta` from `schedule_soft_delete_retention_days`. `limit` capped at 500. |
+| POST | `/api/admin/soft-deleted/schedules/{id}/recover` | Admin | Clear `agent_schedules.deleted_at`. 404 if not soft-deleted. Rejoins the scheduler firing list next poll if enabled. Audit `agent_lifecycle:schedule_recover`. |
+
+Recovery is metadata-only (`deleted_at → NULL`); preserved child rows
+make the entity immediately usable via the regular
+`deleted_at`-filtered read paths. Response models `SoftDeletedAgent` /
+`SoftDeletedSchedule` are in `models.py` (Invariant #14).
 
 ### Fleet Sync Audit (#390 / S6)
 
@@ -1025,9 +1041,28 @@ CREATE TABLE agent_schedules (
     model TEXT,                                  -- MODEL-001: Model override (NULL = agent default)
     webhook_token TEXT,                          -- WEBHOOK-001: opaque 43-char urlsafe token, nullable
     webhook_enabled INTEGER DEFAULT 0,           -- WEBHOOK-001: 0 = disabled, 1 = active
+    deleted_at TEXT,                             -- #834 Phase 1b: NULL = live; set = soft-deleted
     FOREIGN KEY (owner_id) REFERENCES users(id)
 );
+
+-- #834 Phase 1b: partial index narrows the schedule retention sweep to
+-- soft-deleted rows.
+CREATE INDEX idx_agent_schedules_deleted_at
+    ON agent_schedules(deleted_at) WHERE deleted_at IS NOT NULL;
 ```
+
+**Schedule soft-delete (#834 Phase 1b)**: `DELETE
+/api/agents/{name}/schedules/{id}` marks `agent_schedules.deleted_at =
+NOW` instead of hard-deleting; the row and its `schedule_executions`
+are preserved for the retention window. All schedule read paths —
+including the cron-firing `list_all_enabled_schedules()` in both the
+backend and the standalone scheduler process — filter `deleted_at IS
+NULL`, so a soft-deleted schedule stops firing immediately. The Cleanup
+Service hard-purges rows past `schedule_soft_delete_retention_days`
+(default 30, `0` = disabled); `purge_schedule()` cascades the
+`schedule_executions` delete alongside the row (consistent with the
+prior hard-delete behavior and with agent-purge `cascade_delete`).
+`delete_schedule()` is idempotent on an already-soft-deleted row.
 
 **schedule_executions:**
 ```sql
@@ -1046,6 +1081,7 @@ CREATE TABLE schedule_executions (
     model_used TEXT,                             -- MODEL-001: Which model was used
     queued_at TEXT,                              -- BACKLOG-001: When task entered backlog
     backlog_metadata TEXT,                       -- BACKLOG-001: JSON identity/request for drain replay
+    retry_count INTEGER DEFAULT 0,               -- #678: in-line auto-retry count for reader-race recovery
     FOREIGN KEY (schedule_id) REFERENCES agent_schedules(id)
 );
 

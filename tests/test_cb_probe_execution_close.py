@@ -54,6 +54,7 @@ def _install_sanitizer_stub() -> None:
     sanitizer.sanitize_response = lambda x: x
     sanitizer.sanitize_execution_log = lambda x: x
     sanitizer.sanitize_text = lambda x: x
+    sanitizer.sanitize_dict = lambda x: x
     sys.modules["utils.credential_sanitizer"] = sanitizer
 
 
@@ -84,6 +85,39 @@ def _make_execution(status="running"):
     ex.id = "exec-test-001"
     ex.status = status
     return ex
+
+
+# Issue #678 cluster A: cross-file sys.modules pollution defense.
+#
+# test_validation.py installs an incomplete `utils.credential_sanitizer`
+# stub at module-collection time:
+#     sys.modules["utils.credential_sanitizer"] = _stub  # only sanitize_text
+# Our file used `setdefault` (no-op once polluted), so the polluted stub
+# wins and the real `services.task_execution_service` re-import fails with
+#     ImportError: cannot import name 'sanitize_dict'
+#       from 'utils.credential_sanitizer'
+# (because #678 added sanitize_dict to the salvage path imports).
+#
+# In addition, some prior tests stub `services.task_execution_service`
+# itself as a MagicMock; tests/conftest.py's _SYS_MODULES_BASELINE captures
+# `None` for that key (not preloaded), so the autouse restore is a no-op
+# and the MagicMock persists. The re-import then returns a MagicMock
+# class, and `await svc.execute_task(...)` raises "MagicMock can't be used
+# in await expression".
+#
+# Defense: before every test, overwrite the sanitizer stub with our
+# complete one and evict the task_execution_service module so the test's
+# import statement loads the real class against our complete stub.
+@pytest.fixture(autouse=True)
+def _restore_complete_stubs(monkeypatch):
+    """Re-assert our complete stubs against cross-file pollution.
+
+    Uses monkeypatch so the lint at tests/lint_sys_modules.py (#762)
+    stays green and the mutations auto-revert on teardown.
+    """
+    monkeypatch.setitem(sys.modules, "utils.credential_sanitizer", _sanitizer_mod)
+    monkeypatch.delitem(sys.modules, "services.task_execution_service", raising=False)
+    yield
 
 
 # ===========================================================================

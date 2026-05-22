@@ -330,9 +330,37 @@ async def get_agent_endpoint(agent_name: AuthorizedAgentByName, request: Request
     """Get details of a specific agent."""
     agent = get_agent_by_name(agent_name)
     if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    agent_dict = agent.dict() if hasattr(agent, 'dict') else dict(agent)
+        # #834 Phase 1c: a just-recovered agent has a live
+        # agent_ownership row (deleted_at cleared, so the auth
+        # dependency above passed) but NO container — soft-delete
+        # removed it and recovery is metadata-only. Without this
+        # fallback the operator can't even see the recovered agent
+        # to start it: recovery would be a dead-end. Synthesize a
+        # DB-backed "stopped, no container" representation so the UI
+        # can list it and offer a Start button. (Container recreate
+        # on recover is deferred Phase 2.)
+        owner_row = db.get_agent_owner(agent_name)
+        if not owner_row:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        agent_dict = {
+            "name": agent_name,
+            "type": "",
+            "status": "stopped",
+            "port": 0,
+            "created": owner_row.get("created_at"),
+            "resources": db.get_resource_limits(agent_name) or {},
+            "container_id": None,
+            "template": None,
+            "runtime": "claude-code",
+            "base_image_version": None,
+            # Signal to the UI that this agent has no container yet —
+            # recovered (or otherwise container-less). Drives a
+            # "Start to bring online" affordance instead of the normal
+            # stopped-container controls.
+            "needs_start": True,
+        }
+    else:
+        agent_dict = agent.dict() if hasattr(agent, 'dict') else dict(agent)
     user_data = db.get_user_by_username(current_user.username)
     is_admin = user_data and user_data["role"] == "admin"
 

@@ -142,6 +142,8 @@ class CleanupReport:
     health_checks_pruned: int = 0
     # Issue #834 Phase 1a: soft-deleted agents purged past their retention window
     soft_deleted_agents_purged: int = 0
+    # Issue #834 Phase 1b: soft-deleted schedules purged past their retention window
+    soft_deleted_schedules_purged: int = 0
 
     @property
     def total(self) -> int:
@@ -150,7 +152,8 @@ class CleanupReport:
                 self.orphaned_skipped + self.stale_activities + self.stale_slots +
                 self.stale_slot_executions + self.shared_files_purged +
                 self.execution_logs_pruned + self.execution_rows_pruned +
-                self.health_checks_pruned + self.soft_deleted_agents_purged)
+                self.health_checks_pruned + self.soft_deleted_agents_purged +
+                self.soft_deleted_schedules_purged)
 
     def to_dict(self) -> Dict:
         return {
@@ -167,6 +170,7 @@ class CleanupReport:
             "execution_rows_pruned": self.execution_rows_pruned,
             "health_checks_pruned": self.health_checks_pruned,
             "soft_deleted_agents_purged": self.soft_deleted_agents_purged,
+            "soft_deleted_schedules_purged": self.soft_deleted_schedules_purged,
             "total": self.total,
         }
 
@@ -435,6 +439,51 @@ class CleanupService:
             except Exception as e:
                 logger.error(f"[Cleanup] Error pruning soft-deleted agents: {e}")
 
+        # 4c-ter. Issue #834 Phase 1b: hard-purge soft-deleted schedules
+        # past their retention window. Unlike the agent purge, this does
+        # not chain into cascade_delete — schedules don't have child
+        # rows registered with #816 (schedule_executions are KEEP-policy
+        # via subscription_id rollups, and the per-schedule cleanup of
+        # executions belongs to #772's separate sweep).
+        try:
+            from services.settings_service import OPS_SETTINGS_DEFAULTS
+
+            raw_schedule_days = db.get_setting_value(
+                "schedule_soft_delete_retention_days",
+                OPS_SETTINGS_DEFAULTS.get("schedule_soft_delete_retention_days", "30"),
+            )
+            try:
+                schedule_days = max(int(raw_schedule_days), 0)
+            except (TypeError, ValueError):
+                schedule_days = 0
+        except Exception as e:
+            logger.error(f"[Cleanup] Error reading schedule retention setting: {e}")
+            schedule_days = 0
+
+        if schedule_days > 0:
+            try:
+                ids = db.find_soft_deleted_schedules_past_retention(
+                    retention_days=schedule_days,
+                    limit=RETENTION_CHUNK_SIZE_PER_CYCLE,
+                )
+                purged = 0
+                for sid in ids:
+                    try:
+                        if db.purge_schedule(sid):
+                            purged += 1
+                    except Exception as e:
+                        logger.warning(
+                            f"[Cleanup] Failed to purge soft-deleted schedule {sid}: {e}"
+                        )
+                report.soft_deleted_schedules_purged = purged
+                if purged > 0:
+                    logger.info(
+                        f"[Cleanup] Hard-purged {purged} soft-deleted schedule(s) "
+                        f"past {schedule_days}-day retention (#834 Phase 1b)"
+                    )
+            except Exception as e:
+                logger.error(f"[Cleanup] Error pruning soft-deleted schedules: {e}")
+
         # 4d. Issue #772: after a retention sweep reclaims meaningful space,
         # truncate the WAL so the OS sees the free pages. Checkpoint is cheap
         # and safe to run per-cycle when there's work to do; full VACUUM is
@@ -442,7 +491,8 @@ class CleanupService:
         retention_total = (report.execution_logs_pruned
                            + report.execution_rows_pruned
                            + report.health_checks_pruned
-                           + report.soft_deleted_agents_purged)
+                           + report.soft_deleted_agents_purged
+                           + report.soft_deleted_schedules_purged)
         if retention_total > 0:
             try:
                 _wal_checkpoint_truncate()
