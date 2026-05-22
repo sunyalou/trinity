@@ -873,13 +873,17 @@ app.include_router(ws_tickets_router)  # WebSocket auth tickets (#550)
 try:
     from enterprise.backend import register_enterprise  # type: ignore[import-not-found]
     register_enterprise(app)
-    _logger = logging.getLogger(__name__)
-    _logger.info("Trinity Enterprise modules registered")
+    # `print(..., flush=True)`: this import block runs at module init,
+    # which is BEFORE `lifespan` calls `setup_logging()`. The default
+    # Python logger drops INFO-level records, so `logger.info` here
+    # would be silently swallowed. Print to stdout instead — docker
+    # logs captures it for ops + the CI workflow greps for it.
+    print("Trinity Enterprise modules registered", flush=True)
 except ImportError:
-    _logger = logging.getLogger(__name__)
-    _logger.info(
+    print(
         "Trinity Enterprise submodule not present — OSS-only build "
-        "(this is normal; enterprise modules are an optional private submodule)"
+        "(this is normal; enterprise modules are an optional private submodule)",
+        flush=True,
     )
 
 
