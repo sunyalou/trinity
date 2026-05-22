@@ -49,15 +49,20 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Confirm enterprise submodule is absent
+      - name: Confirm enterprise submodules are absent (both mounts)
         run: |
-          # Submodule mount point exists in tree but no checked-out content
-          # when --submodules=false.
-          if [ -f src/backend/enterprise/__init__.py ]; then
-            echo "::error::src/backend/enterprise/__init__.py present — checkout pulled the submodule. The job must run without it."
-            exit 1
-          fi
-          echo "OK: enterprise submodule absent as expected"
+          # Two mount points (#847 Phase 0.5 — dual-mount). Both must
+          # be empty when --submodules=false. The expected layout
+          # under each mount when populated:
+          #   src/backend/enterprise/backend/__init__.py    (Python)
+          #   src/frontend/src/enterprise/frontend/index.js (Vite)
+          for path in src/backend/enterprise/backend/__init__.py src/frontend/src/enterprise/frontend/index.js; do
+            if [ -f "$path" ]; then
+              echo "::error::$path present — checkout pulled the submodule. The job must run without it."
+              exit 1
+            fi
+          done
+          echo "OK: enterprise submodules absent as expected (both mount points empty)"
 
       - name: Generate ephemeral secrets for boot
         run: |

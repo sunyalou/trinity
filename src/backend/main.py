@@ -864,8 +864,14 @@ app.include_router(ws_tickets_router)  # WebSocket auth tickets (#550)
 # from `dependencies.py` — endpoints are mounted unconditionally and
 # the gate decides whether to serve them. This keeps the wiring
 # deterministic regardless of license state.
+#
+# Import path is `enterprise.backend.register_enterprise`: the private
+# repo is restructured into `backend/` and `frontend/` subdirs so the
+# same repo can be dual-mounted (`src/backend/enterprise/` for Python,
+# `src/frontend/src/enterprise/` for Vite). See
+# `docs/planning/ENTERPRISE_ARCHITECTURE.md` for rationale.
 try:
-    from enterprise import register_enterprise  # type: ignore[import-not-found]
+    from enterprise.backend import register_enterprise  # type: ignore[import-not-found]
     register_enterprise(app)
     _logger = logging.getLogger(__name__)
     _logger.info("Trinity Enterprise modules registered")

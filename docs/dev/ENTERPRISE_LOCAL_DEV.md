@@ -38,12 +38,19 @@ submodules in:
 git submodule update --init --recursive
 ```
 
-`.gitmodules` mounts two private submodules:
+`.gitmodules` mounts three private submodules (the enterprise repo is
+**dual-mounted** — same URL, two paths, so backend and frontend each
+get a clean import surface):
 
-| Submodule | Path | Purpose |
-|---|---|---|
-| `.claude` | `.claude/` | Dev-methodology skills (`/sprint`, `/cso`, `/autoplan`, etc.) |
-| `src/backend/enterprise` | `src/backend/enterprise/` | Enterprise compliance modules (SSO, SCIM, SIEM) |
+| Submodule | Path | Consumed by | Subdir read |
+|---|---|---|---|
+| `.claude` | `.claude/` | Claude Code skills (`/sprint`, `/cso`, …) | (all) |
+| `src/backend/enterprise` | `src/backend/enterprise/` | Python (`main.py`) | `backend/` |
+| `src/frontend/src/enterprise` | `src/frontend/src/enterprise/` | Vite (`main.js`) | `frontend/` |
+
+The two enterprise mounts clone the same repo, so disk usage is ~2×
+the repo size. In exchange you get a single enterprise codebase to
+version, and each consumer imports only the subdir it needs.
 
 Both use SSH (`git@github.com:...`). If you only have HTTPS auth
 configured, add an SSH override:
@@ -93,20 +100,29 @@ import worked, and the entitlement seam reports all features enabled
 
 ## Working on the enterprise repo
 
+The repo is dual-mounted. Pick **one** of the two mounts to make
+changes in (typically `src/backend/enterprise/` since that's where
+you most often start) — `git push` from there updates the upstream,
+then the other mount can `git pull` to sync.
+
 ```bash
 cd src/backend/enterprise
 git checkout main                # submodules default to detached HEAD
-# … make changes …
+# … make changes (in backend/ or frontend/ subdir) …
 git commit -m "feat(sso): ..."
 git push origin main
+
+# Sync the other mount
+cd ../../../src/frontend/src/enterprise
+git checkout main
+git pull origin main
 ```
 
-Then, back in the public repo, **bump the submodule pointer** so other
-developers see your changes:
+Then, back in the public repo root, **bump both submodule pointers**:
 
 ```bash
-cd ../../../              # back to trinity root
-git add src/backend/enterprise
+cd <trinity-root>
+git add src/backend/enterprise src/frontend/src/enterprise
 git commit -m "chore: bump enterprise submodule"
 git push
 ```

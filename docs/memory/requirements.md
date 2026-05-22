@@ -2391,8 +2391,23 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
     `enterprise_features: list[str]` — empty in OSS mode, populated
     when entitled. UI uses this to hide enterprise-only tabs cleanly
     without server-side conditional rendering.
-  - `.gitmodules` entry for `src/backend/enterprise` via SSH
-    (`git@github.com:Abilityai/trinity-enterprise.git`).
+  - `.gitmodules` — **dual-mount** of `Abilityai/trinity-enterprise`
+    at `src/backend/enterprise/` (Python consumes `backend/` subdir)
+    and `src/frontend/src/enterprise/` (Vite consumes `frontend/`
+    subdir). Same URL, two paths — keeps the enterprise codebase in
+    one repo while exposing clean import surfaces for each layer.
+  - Frontend integration in `src/frontend/src/main.js` —
+    `import.meta.glob('./enterprise/frontend/index.js', { eager: false })`.
+    Empty glob → no-op (OSS-only build). When present, the module's
+    `registerEnterprise(router, app)` runs after Pinia + Router setup
+    and adds routes via `router.addRoute`.
+  - Pinia store `src/frontend/src/stores/enterprise.js` — caches
+    `enterprise_features: list[str]` from `/api/settings/feature-flags`.
+    Exposes `isEntitled(featureId)` + `hasAnyEnterprise` getters.
+  - `NavBar.vue` — new `Enterprise` link
+    `v-if="enterpriseStore.isEntitled('sso')"` with a `PRO` badge.
+    Hidden in OSS-only mode (empty list) and when operator forces
+    `TRINITY_OSS_ONLY=1`.
   - `docker-compose.yml` env pass-through for `TRINITY_OSS_ONLY`.
   - CI workflow `.github/workflows/build-without-submodule.yml` —
     boots the backend with the submodule absent and asserts:
@@ -2401,15 +2416,21 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
     returns 404, and the OSS-only log line is emitted. Catches
     regressions where the conditional import accidentally becomes
     hard-required.
-- **Private repo (Abilityai/trinity-enterprise)**:
-  - `__init__.py` — `register_enterprise(app)` single entry point
-  - `sso/router.py` — `/api/enterprise/sso/{providers,login/{id}}`
+- **Private repo (Abilityai/trinity-enterprise)** — dual-mounted:
+  - `backend/__init__.py` — `register_enterprise(app)` single FastAPI
+    entry point.
+  - `backend/sso/router.py` — `/api/enterprise/sso/{providers,login/{id}}`
     stubs gated by `requires_entitlement("sso")`. `GET /providers`
     returns the in-process registry (empty by default);
     `POST /login/{id}` returns 501 "PoC stub" or 404 for unknown id.
-  - `sso/providers.py` — `SSOProvider` ABC (provider_id,
-    display_name, protocol, begin_login) + `StubProvider` for the
-    PoC.
+  - `backend/sso/providers.py` — `SSOProvider` ABC (provider_id,
+    display_name, protocol, begin_login) + `StubProvider`.
+  - `frontend/index.js` — `registerEnterprise(router, app)` single
+    Vue Router entry point. Idempotent (module-local flag).
+  - `frontend/views/EnterpriseSSO.vue` — Vue view at
+    `/enterprise/sso`. Fetches `/api/enterprise/sso/providers`,
+    renders empty-state message in the PoC; provider rows with
+    disabled "Login (stub)" buttons when the list isn't empty.
   - `pyproject.toml`, `LICENSE` (proprietary), `README.md`.
 - **Out of scope (separate follow-ups)**:
   - Phase 1: Ed25519-signed license token, verify path, admin

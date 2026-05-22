@@ -182,8 +182,13 @@ def test_main_py_uses_conditional_enterprise_import():
     OSS-only builds (no submodule) start cleanly."""
     src = (_BACKEND / "main.py").read_text(encoding="utf-8")
     # Find the import line
-    idx = src.find("from enterprise import register_enterprise")
-    assert idx != -1, "main.py must import register_enterprise from enterprise"
+    idx = src.find("from enterprise.backend import register_enterprise")
+    assert idx != -1, (
+        "main.py must import register_enterprise from `enterprise.backend` "
+        "(the private repo is dual-mounted at src/backend/enterprise/ and "
+        "src/frontend/src/enterprise/; backend Python imports the `backend/` "
+        "subdir)"
+    )
     # The preceding ~150 chars should contain `try:`
     window = src[max(0, idx - 200) : idx]
     assert "try:" in window, (

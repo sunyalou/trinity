@@ -6,3 +6,6 @@
 [submodule "src/backend/enterprise"]
 	path = src/backend/enterprise
 	url = git@github.com:Abilityai/trinity-enterprise.git
+[submodule "src/frontend/src/enterprise"]
+	path = src/frontend/src/enterprise
+	url = git@github.com:Abilityai/trinity-enterprise.git

@@ -34,21 +34,55 @@ abilityai/trinity                   (public, MIT/Apache after decision #6)
 │   ├── dependencies.py             requires_entitlement(feature_id) — Phase 0 seam
 │   ├── services/
 │   │   └── entitlement_service.py  EntitlementService (Phase 0 stub; Phase 1 license)
-│   └── enterprise/                 ← submodule mount point
-│       └── (populated by submodule init — see below)
+│   └── enterprise/                 ← submodule mount #1 (Python imports backend/)
+│       └── (populated by submodule init — same repo, both subdirs)
+├── src/frontend/src/
+│   ├── main.js                     conditional `import.meta.glob` of enterprise/frontend/
+│   ├── stores/enterprise.js        enterprise feature-flags store
+│   └── enterprise/                 ← submodule mount #2 (Vite imports frontend/)
+│       └── (populated by submodule init — same repo, both subdirs)
 ├── docs/planning/
 │   ├── ENTERPRISE_ARCHITECTURE.md  this file
 │   └── OSS_ENTERPRISE_SPLIT_RESEARCH.md  long-form research
 └── docs/dev/
     └── ENTERPRISE_LOCAL_DEV.md     15-min onboarding guide
 
-Abilityai/trinity-enterprise        (private, proprietary)
-├── __init__.py                     register_enterprise(app) entry point
-├── sso/                            #847 PoC (router + provider ABC + stubs)
-├── scim/                           planned (#???)
-├── siem/                           planned (#???)
+Abilityai/trinity-enterprise        (private, proprietary, dual-mounted)
+├── backend/
+│   ├── __init__.py                 register_enterprise(app) entry point
+│   └── sso/                        #847 PoC (router + provider ABC + stubs)
+├── frontend/
+│   ├── index.js                    registerEnterprise(router, app) entry point
+│   └── views/
+│       └── EnterpriseSSO.vue       #847 PoC (Vue component)
 └── LICENSE                         commercial / proprietary
 ```
+
+### Why two mount points of the same repo (not two repos)
+
+Symmetric to the backend/frontend split in the public repo — keeping
+the enterprise code in **one** private repo means a single version
+bump touches both backend and frontend together. The mild disk
+duplication (~1 MB cloned twice) is far cheaper than two repos
+drifting out of sync.
+
+`.gitmodules` declares both mounts at the same URL but different
+paths:
+
+```ini
+[submodule "src/backend/enterprise"]
+    path = src/backend/enterprise
+    url  = git@github.com:Abilityai/trinity-enterprise.git
+[submodule "src/frontend/src/enterprise"]
+    path = src/frontend/src/enterprise
+    url  = git@github.com:Abilityai/trinity-enterprise.git
+```
+
+Each consumer reads only its own subdir:
+- Python `from enterprise.backend import register_enterprise` resolves
+  to `src/backend/enterprise/backend/__init__.py`.
+- Vite `import.meta.glob('./enterprise/frontend/index.js')` resolves to
+  `src/frontend/src/enterprise/frontend/index.js`.
 
 ## Why a submodule, not a Python package
 
@@ -65,7 +99,7 @@ enterprise code in the same checkout as Trinity — no `pip install -e`
 dance, no symlink hacks. Compare CI cost: the `build-without-submodule`
 job below proves the conditional import works.
 
-## The seam (what landed in this PR — #847 Phase 0)
+## The seam (what landed in this PR — #847 Phase 0 + 0.5)
 
 **`src/backend/services/entitlement_service.py`**
 - `EntitlementService.is_entitled(feature_id) -> bool` — returns True
@@ -89,10 +123,26 @@ job below proves the conditional import works.
   OSS-only (UI hides enterprise tabs).
 
 **`.gitmodules`**
-- New `src/backend/enterprise` submodule entry pointing at the private repo via SSH.
+- Two submodule entries (`src/backend/enterprise` + `src/frontend/src/enterprise`)
+  same URL pointing at the private repo via SSH.
 
 **`docker-compose.yml`**
 - Pass-through for `TRINITY_OSS_ONLY` env var.
+
+**`src/frontend/src/main.js`**
+- Conditional `import.meta.glob('./enterprise/frontend/index.js')`.
+  Empty in OSS-only builds; module's `registerEnterprise(router, app)`
+  runs when present.
+
+**`src/frontend/src/stores/enterprise.js`** (new)
+- Pinia store. Loads `/api/settings/feature-flags` after auth, caches
+  `enterprise_features: list[str]`. Exposes `isEntitled(featureId)` and
+  `hasAnyEnterprise` getters.
+
+**`src/frontend/src/components/NavBar.vue`**
+- New `Enterprise` nav link `v-if="enterpriseStore.isEntitled('sso')"`.
+  Hidden in OSS-only builds (empty list) and when the operator forces
+  `TRINITY_OSS_ONLY=1`.
 
 ## What the private repo holds (`Abilityai/trinity-enterprise`)
 
@@ -100,23 +150,29 @@ PoC scope (this PR):
 
 | File | Purpose |
 |---|---|
-| `__init__.py` | `register_enterprise(app)` — single integration entry |
-| `sso/router.py` | `/api/enterprise/sso/{providers,login/{id}}` — stubs, gated by `requires_entitlement("sso")` |
-| `sso/providers.py` | `SSOProvider` ABC + `StubProvider` for the PoC registry |
+| `backend/__init__.py` | `register_enterprise(app)` — FastAPI integration entry |
+| `backend/sso/router.py` | `/api/enterprise/sso/{providers,login/{id}}` — stubs, gated by `requires_entitlement("sso")` |
+| `backend/sso/providers.py` | `SSOProvider` ABC + `StubProvider` for the PoC registry |
+| `frontend/index.js` | `registerEnterprise(router, app)` — Vue Router integration entry |
+| `frontend/views/EnterpriseSSO.vue` | Vue component — providers list view (empty state in PoC) |
 | `pyproject.toml` | Metadata (no pip-install mode yet — submodule mount only) |
 | `LICENSE` | Proprietary |
 
 ## How CI handles "build without submodule"
 
 Workflow `.github/workflows/build-without-submodule.yml` boots the
-backend image with the submodule **absent** and asserts:
+backend image with both submodule mounts **absent** and asserts:
 
 1. Container starts cleanly
 2. `GET /api/settings/feature-flags` returns `enterprise_features: []`
 3. `GET /api/enterprise/sso/providers` returns 404 (router not mounted)
+4. OSS-only log line emitted
 
 This proves the conditional import doesn't break OSS-only deployments
 when the submodule URL access is revoked or the submodule is unchecked.
+The frontend side is symmetric: `import.meta.glob` returns `{}` when
+`src/frontend/src/enterprise/` is empty, so `main.js` silently no-ops
+and no enterprise route ever registers.
 
 ## What's NOT in this PR (open follow-ups)
 

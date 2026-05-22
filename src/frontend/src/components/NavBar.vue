@@ -66,6 +66,21 @@
             >
               Settings
             </router-link>
+            <!-- #847 Phase 0 — Enterprise nav link, only rendered when the
+                 enterprise SSO feature is entitled. The enterprise frontend
+                 submodule registers `/enterprise/sso`; we don't link to it
+                 if the user can't reach it. The store's
+                 `featureFlagsLoaded` guard means this is hidden until the
+                 first fetch resolves (a few hundred ms after login). -->
+            <router-link
+              v-if="enterpriseStore.isEntitled('sso')"
+              to="/enterprise/sso"
+              class="border-transparent text-gray-500 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600 hover:text-gray-700 dark:hover:text-gray-200 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
+              :class="{ 'border-blue-500 dark:border-blue-400 text-gray-900 dark:text-white': $route.path.startsWith('/enterprise') }"
+            >
+              Enterprise
+              <span class="ml-1 px-1.5 py-0.5 text-[10px] font-bold leading-none rounded bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-200">PRO</span>
+            </router-link>
           </div>
         </div>
         <div class="flex items-center space-x-4">
@@ -254,6 +269,7 @@ import { useAuthStore } from '../stores/auth'
 import { useThemeStore } from '../stores/theme'
 import { useNotificationsStore } from '../stores/notifications'
 import { useOperatorQueueStore } from '../stores/operatorQueue'
+import { useEnterpriseStore } from '../stores/enterprise'
 import { useWebSocket } from '../utils/websocket'
 import { useBuildInfo } from '../composables/useBuildInfo'
 import axios from 'axios'
@@ -263,6 +279,9 @@ const authStore = useAuthStore()
 const themeStore = useThemeStore()
 const notificationsStore = useNotificationsStore()
 const operatorQueueStore = useOperatorQueueStore()
+// #847 Phase 0 — feature-flags load is fired on mount below; the
+// `Enterprise` nav link template is `v-if="enterpriseStore.isEntitled('sso')"`.
+const enterpriseStore = useEnterpriseStore()
 const { isConnected } = useWebSocket()
 
 // #926: cached fetch of /api/version (singleton across NavBar + Settings)
@@ -332,6 +351,11 @@ onMounted(async () => {
   } catch (e) {
     console.warn('Failed to fetch user role:', e)
   }
+
+  // #847 Phase 0 — load enterprise entitlements. Fires once per page
+  // load (the store gates on `featureFlagsLoaded`). The Enterprise nav
+  // link is hidden until this resolves.
+  enterpriseStore.loadFeatureFlags()
 })
 
 onUnmounted(() => {
