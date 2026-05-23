@@ -668,6 +668,33 @@ async def force_release_agent(
     return await force_release_agent_logic(agent_name, current_user)
 
 
+@router.post("/{agent_name}/circuit-breaker/reset")
+async def reset_circuit_breaker_endpoint(
+    agent_name: AuthorizedAgentByName,
+    current_user: User = Depends(require_role("admin")),
+):
+    """Force the agent's circuit breaker to closed (#921).
+
+    Admin only. Operator escape hatch for the dormant-CB cascade described
+    in #921 — equivalent to the manual `redis-cli DEL agent:circuit:{name}`
+    workaround. With the 1h auto-probe shipped in #921 this is rarely
+    needed (the breaker self-heals), but it stays as the first-response
+    tool when an operator already knows the agent is healthy and doesn't
+    want to wait a full cooldown.
+    """
+    from services.agent_client import CircuitState, reset_circuit
+    # Capture state-before for the response so postmortems can see what we
+    # reset out of. Racey against the DEL but fine — best-effort observability.
+    prior_state = CircuitState(agent_name).state
+    reset_circuit(agent_name)
+    return {
+        "agent_name": agent_name,
+        "prior_state": prior_state,
+        "new_state": "closed",
+        "reset_at": utc_now_iso(),
+    }
+
+
 # ============================================================================
 # Activity Stream Endpoints
 # ============================================================================
