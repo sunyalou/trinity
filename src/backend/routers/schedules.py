@@ -108,7 +108,8 @@ class ScheduleResponse(BaseModel):
     updated_at: datetime
     last_run_at: Optional[datetime]
     next_run_at: Optional[datetime]
-    timeout_seconds: int = 900
+    # #913: null means "inherit from agent_ownership.execution_timeout_seconds".
+    timeout_seconds: Optional[int] = None
     allowed_tools: Optional[List[str]] = None
     model: Optional[str] = None  # Model override (MODEL-001)
     # Validation configuration (VALIDATE-001)
