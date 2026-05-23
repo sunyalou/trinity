@@ -60,10 +60,16 @@ CIRCUIT_BASE_COOLDOWN_SECONDS = 30.0
 CIRCUIT_MAX_COOLDOWN_SECONDS = 300.0
 CIRCUIT_PROBE_LOCK_TTL_SECONDS = 10
 # After this many consecutive open-state probes without recovery, give up
-# active probing and wait for an external signal (container restart, manual
-# health-check trigger). 10 × exponentially-growing backoff ≈ 40min of
-# attempts before falling silent.
+# fast probing and switch to long-cooldown probing. 10 × exponentially-
+# growing backoff ≈ 40min before we slow down.
 CIRCUIT_DORMANT_AFTER_OPEN_PROBES = 10
+# Issue #921: dormant state no longer requires manual recovery — we still
+# probe occasionally on a long cooldown so the breaker self-heals when the
+# underlying problem clears. Bounds the worst-case false-fail outage to
+# ~DORMANT_COOLDOWN instead of "until a human notices". Set above the
+# open-state max cooldown so we don't churn probes pointlessly when the
+# agent really is down.
+CIRCUIT_DORMANT_COOLDOWN_SECONDS = 3600.0  # 1 hour
 
 
 # ----- Redis client (lazy, cached, fail-open on unreachability) -------------
@@ -114,17 +120,18 @@ def _reset_circuit_redis_client() -> None:
 # ----- Lua scripts (atomic state machine transitions) -----------------------
 
 # allow_request: returns "allow" | "probe" | "deny".
-#   closed   → "allow"
-#   dormant  → "deny"
-#   open     → if past next_probe_at AND we win SET-NX-EX on probe-lock → "probe"
-#              otherwise → "deny"
+#   closed         → "allow"
+#   open / dormant → if past next_probe_at AND we win SET-NX-EX on probe-lock
+#                    → "probe", otherwise → "deny"
+# Issue #921: dormant uses the same probe-on-cooldown logic as open, just
+# with a much longer next_probe_at interval set in _RECORD_FAILURE_LUA.
+# This restores baseline recovery behaviour: even if the breaker has been
+# dormant for hours, exactly one request per cooldown window goes through
+# to test whether the agent is back.
 _ALLOW_REQUEST_LUA = """
 local state = redis.call('HGET', KEYS[1], 'state')
 if not state or state == 'closed' then
     return 'allow'
-end
-if state == 'dormant' then
-    return 'deny'
 end
 local now = tonumber(ARGV[1])
 local next_probe_at = tonumber(redis.call('HGET', KEYS[1], 'next_probe_at') or '0')
@@ -151,6 +158,7 @@ local threshold = tonumber(ARGV[2])
 local base = tonumber(ARGV[3])
 local max_cd = tonumber(ARGV[4])
 local dormant_threshold = tonumber(ARGV[5])
+local dormant_cooldown = tonumber(ARGV[6])
 
 local failures = redis.call('HINCRBY', KEYS[1], 'failures', 1)
 redis.call('HSET', KEYS[1], 'last_failure_ts', ARGV[1])
@@ -167,11 +175,19 @@ if probe_count >= dormant_threshold then
     new_state = 'dormant'
 end
 
--- Cooldown = min(base * 2^(probe_count-1), max_cd). Cap exponent for safety.
-local exp = probe_count - 1
-if exp > 20 then exp = 20 end
-local cooldown = base * math.pow(2, exp)
-if cooldown > max_cd then cooldown = max_cd end
+-- Cooldown selection (#921):
+--   open:     exponential backoff capped at max_cd (~5min default)
+--   dormant:  long cooldown (~1h default) so we self-heal slowly instead
+--             of falling silent forever.
+local cooldown
+if new_state == 'dormant' then
+    cooldown = dormant_cooldown
+else
+    local exp = probe_count - 1
+    if exp > 20 then exp = 20 end
+    cooldown = base * math.pow(2, exp)
+    if cooldown > max_cd then cooldown = max_cd end
+end
 local next_probe_at = now + cooldown
 
 redis.call('HSET', KEYS[1], 'state', new_state, 'next_probe_at', next_probe_at)
@@ -308,6 +324,7 @@ class CircuitState:
                     CIRCUIT_BASE_COOLDOWN_SECONDS,
                     CIRCUIT_MAX_COOLDOWN_SECONDS,
                     CIRCUIT_DORMANT_AFTER_OPEN_PROBES,
+                    CIRCUIT_DORMANT_COOLDOWN_SECONDS,
                 ],
                 client=client,
             )
@@ -321,9 +338,11 @@ class CircuitState:
                     )
                 elif new_state == "dormant":
                     logger.warning(
-                        "Circuit DORMANT for agent %s — stopped probing after %d "
-                        "consecutive open-probe failures (manual recovery required)",
-                        self.agent_name, CIRCUIT_DORMANT_AFTER_OPEN_PROBES,
+                        "Circuit DORMANT for agent %s after %d consecutive open-probe "
+                        "failures — switching to %.0fs cooldown probing (#921)",
+                        self.agent_name,
+                        CIRCUIT_DORMANT_AFTER_OPEN_PROBES,
+                        CIRCUIT_DORMANT_COOLDOWN_SECONDS,
                     )
             return new_state
         except Exception as e:

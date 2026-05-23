@@ -246,14 +246,50 @@ class TestDormantState:
         assert last == "dormant", f"never transitioned to dormant; last={last}"
         assert cs.state == "dormant"
 
-    def test_dormant_denies_all_requests(self, agent_name):
+    def test_dormant_denies_within_cooldown(self, agent_name):
+        """While inside the dormant cooldown window, all requests are denied.
+
+        #921: dormant no longer means "never probe again" — it means probe
+        on a long cooldown. But within that window, no requests slip through.
+        """
         agent_client.force_circuit_dormant(agent_name, reason="test")
         cs = agent_client.CircuitState(agent_name)
         assert cs.state == "dormant"
         assert cs.allow_request() is False
-        # Repeated calls stay dormant — no half-open attempts.
         for _ in range(5):
             assert cs.allow_request() is False
+
+    def test_dormant_probes_after_cooldown(self, agent_name, monkeypatch):
+        """#921: once the dormant cooldown elapses, exactly one probe is
+        admitted per worker race. Restores baseline recovery behaviour
+        without requiring manual intervention."""
+        # Tiny cooldown so the test elapses it without sleeping for an hour.
+        monkeypatch.setattr(agent_client, "CIRCUIT_DORMANT_COOLDOWN_SECONDS", 0.05)
+        # Drive the breaker into dormant via failures (not the force-helper)
+        # so next_probe_at is set by the failure Lua path with the new
+        # CIRCUIT_DORMANT_COOLDOWN_SECONDS.
+        monkeypatch.setattr(agent_client, "CIRCUIT_DORMANT_AFTER_OPEN_PROBES", 4)
+        monkeypatch.setattr(agent_client, "CIRCUIT_BASE_COOLDOWN_SECONDS", 0.01)
+        monkeypatch.setattr(agent_client, "CIRCUIT_MAX_COOLDOWN_SECONDS", 0.01)
+
+        cs = agent_client.CircuitState(agent_name)
+        last = None
+        for _ in range(
+            agent_client.CIRCUIT_FAILURE_THRESHOLD
+            + agent_client.CIRCUIT_DORMANT_AFTER_OPEN_PROBES
+            + 2
+        ):
+            last = cs.record_failure()
+            if last == "dormant":
+                break
+        assert last == "dormant"
+        # Immediately after entering dormant, the cooldown has not elapsed.
+        assert cs.allow_request() is False
+        time.sleep(0.1)
+        # Cooldown elapsed — exactly one probe goes through.
+        assert cs.allow_request() is True
+        # The probe-lock is held, so a second request right after is denied.
+        assert cs.allow_request() is False
 
 
 # ── Probe-lock cross-worker semantics ────────────────────────────────────────
