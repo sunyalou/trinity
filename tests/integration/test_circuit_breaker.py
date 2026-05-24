@@ -246,14 +246,163 @@ class TestDormantState:
         assert last == "dormant", f"never transitioned to dormant; last={last}"
         assert cs.state == "dormant"
 
-    def test_dormant_denies_all_requests(self, agent_name):
+    def test_dormant_denies_within_cooldown(self, agent_name):
+        """While inside the dormant cooldown window, all requests are denied.
+
+        #921: dormant no longer means "never probe again" — it means probe
+        on a long cooldown. But within that window, no requests slip through.
+        """
         agent_client.force_circuit_dormant(agent_name, reason="test")
         cs = agent_client.CircuitState(agent_name)
         assert cs.state == "dormant"
         assert cs.allow_request() is False
-        # Repeated calls stay dormant — no half-open attempts.
         for _ in range(5):
             assert cs.allow_request() is False
+
+    def test_dormant_transition_emits_operator_queue_alert(self, agent_name, monkeypatch):
+        """#921: closed/open → dormant transition fires a
+        circuit_breaker_dormant entry in the Operating Room queue so
+        operators see the silently-failing agent without grepping logs.
+
+        Stubs the lazy `database` import inside `_emit_dormant_alert` with
+        an in-memory fake so we can drive the transition against the real
+        Redis CB without needing the live backend SQLite.
+        """
+        import sys
+        import types
+        from unittest.mock import MagicMock
+
+        # Faster transition into dormant.
+        monkeypatch.setattr(agent_client, "CIRCUIT_DORMANT_AFTER_OPEN_PROBES", 4)
+        monkeypatch.setattr(agent_client, "CIRCUIT_BASE_COOLDOWN_SECONDS", 0.01)
+        monkeypatch.setattr(agent_client, "CIRCUIT_MAX_COOLDOWN_SECONDS", 0.01)
+
+        fake_db = MagicMock()
+        fake_module = types.ModuleType("database")
+        fake_module.db = fake_db
+        monkeypatch.setitem(sys.modules, "database", fake_module)
+        # utils.helpers is normally available; we don't need to stub it,
+        # but if running on a stripped sys.path we provide a shim.
+        if "utils.helpers" not in sys.modules:
+            shim = types.ModuleType("utils.helpers")
+            shim.utc_now_iso = lambda: "2026-05-23T00:00:00Z"
+            monkeypatch.setitem(sys.modules, "utils.helpers", shim)
+
+        cs = agent_client.CircuitState(agent_name)
+        last = None
+        for _ in range(
+            agent_client.CIRCUIT_FAILURE_THRESHOLD
+            + agent_client.CIRCUIT_DORMANT_AFTER_OPEN_PROBES
+            + 2
+        ):
+            last = cs.record_failure()
+            if last == "dormant":
+                break
+        assert last == "dormant"
+
+        # Alert fired exactly once on the transition.
+        assert fake_db.create_operator_queue_item.call_count == 1
+        called_agent, item = fake_db.create_operator_queue_item.call_args.args
+        assert called_agent == agent_name
+        # Type is the generic 'alert' so the existing Operating Room UI
+        # renders an Acknowledge control. The narrower CB-specific marker
+        # is in context.alert_type for callers that need to filter.
+        assert item["type"] == "alert"
+        assert item["context"]["alert_type"] == "circuit_breaker_dormant"
+        assert item["priority"] == "high"
+        assert item["status"] == "pending"
+        assert item["agent_name"] == agent_name
+        assert "DORMANT" in item["title"]
+        assert item["context"]["transition"] == "dormant"
+        assert (
+            item["context"]["dormant_cooldown_seconds"]
+            == agent_client.CIRCUIT_DORMANT_COOLDOWN_SECONDS
+        )
+
+        # Subsequent failures stay dormant (prior==new) — no transition,
+        # no second alert. Verifies the once-per-entry guarantee.
+        for _ in range(3):
+            cs.record_failure()
+        assert fake_db.create_operator_queue_item.call_count == 1
+
+    def test_dormant_probes_after_cooldown(self, agent_name, monkeypatch):
+        """#921: once the dormant cooldown elapses, exactly one probe is
+        admitted per worker race. Restores baseline recovery behaviour
+        without requiring manual intervention."""
+        # Tiny cooldown so the test elapses it without sleeping for an hour.
+        monkeypatch.setattr(agent_client, "CIRCUIT_DORMANT_COOLDOWN_SECONDS", 0.05)
+        # Drive the breaker into dormant via failures (not the force-helper)
+        # so next_probe_at is set by the failure Lua path with the new
+        # CIRCUIT_DORMANT_COOLDOWN_SECONDS.
+        monkeypatch.setattr(agent_client, "CIRCUIT_DORMANT_AFTER_OPEN_PROBES", 4)
+        monkeypatch.setattr(agent_client, "CIRCUIT_BASE_COOLDOWN_SECONDS", 0.01)
+        monkeypatch.setattr(agent_client, "CIRCUIT_MAX_COOLDOWN_SECONDS", 0.01)
+
+        cs = agent_client.CircuitState(agent_name)
+        last = None
+        for _ in range(
+            agent_client.CIRCUIT_FAILURE_THRESHOLD
+            + agent_client.CIRCUIT_DORMANT_AFTER_OPEN_PROBES
+            + 2
+        ):
+            last = cs.record_failure()
+            if last == "dormant":
+                break
+        assert last == "dormant"
+        # Immediately after entering dormant, the cooldown has not elapsed.
+        assert cs.allow_request() is False
+        time.sleep(0.1)
+        # Cooldown elapsed — exactly one probe goes through.
+        assert cs.allow_request() is True
+        # The probe-lock is held, so a second request right after is denied.
+        assert cs.allow_request() is False
+
+    def test_dormant_probe_failure_rearms_full_dormant_cooldown(
+        self, agent_name, redis_client, monkeypatch
+    ):
+        """#921: when a dormant probe fails, next_probe_at must be rearmed to
+        the full DORMANT_COOLDOWN — NOT the open-state exponential backoff.
+
+        Locks in the cadence the fix promises: one probe per ~1h while
+        dormant, regardless of how many times the agent stays unreachable.
+        Without this guarantee a dormant CB could churn through fast
+        retries via the open-state backoff curve, defeating the purpose."""
+        # Wide gap between the two cooldown families so the assertion can
+        # distinguish them: dormant=0.5s, open exp cap=0.001s.
+        monkeypatch.setattr(agent_client, "CIRCUIT_DORMANT_COOLDOWN_SECONDS", 0.5)
+        monkeypatch.setattr(agent_client, "CIRCUIT_DORMANT_AFTER_OPEN_PROBES", 4)
+        monkeypatch.setattr(agent_client, "CIRCUIT_BASE_COOLDOWN_SECONDS", 0.001)
+        monkeypatch.setattr(agent_client, "CIRCUIT_MAX_COOLDOWN_SECONDS", 0.001)
+
+        cs = agent_client.CircuitState(agent_name)
+        # Drive into dormant.
+        for _ in range(
+            agent_client.CIRCUIT_FAILURE_THRESHOLD
+            + agent_client.CIRCUIT_DORMANT_AFTER_OPEN_PROBES
+            + 2
+        ):
+            if cs.record_failure() == "dormant":
+                break
+        assert cs.state == "dormant"
+
+        # Wait past the cooldown, take the probe, then simulate it failing.
+        time.sleep(0.6)
+        assert cs.allow_request() is True  # probe admitted
+        cs.record_failure()                # probe failed → record_failure on dormant
+
+        # next_probe_at should be ~0.5s in the future (DORMANT_COOLDOWN),
+        # not ~0.001s (open-state max). Use the redis_client fixture to
+        # read the raw value; the hash field is a unix timestamp.
+        key = f"agent:circuit:{agent_name}"
+        next_probe_at = float(redis_client.hget(key, "next_probe_at"))
+        gap = next_probe_at - time.time()
+        assert agent_client.CIRCUIT_DORMANT_COOLDOWN_SECONDS - 0.1 <= gap <= agent_client.CIRCUIT_DORMANT_COOLDOWN_SECONDS + 0.1, (
+            f"expected gap ~{agent_client.CIRCUIT_DORMANT_COOLDOWN_SECONDS}s "
+            f"(dormant cooldown), got {gap:.3f}s — open-state backoff would "
+            f"have yielded ~{agent_client.CIRCUIT_MAX_COOLDOWN_SECONDS}s"
+        )
+        # Still dormant, no state slide back to open.
+        assert cs.state == "dormant"
 
 
 # ── Probe-lock cross-worker semantics ────────────────────────────────────────

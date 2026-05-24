@@ -20,6 +20,11 @@ from typing import Optional, Dict, List
 
 import httpx
 
+try:
+    import redis.asyncio as aioredis
+except Exception:  # pragma: no cover — redis is a hard runtime dep
+    aioredis = None
+
 from database import db
 from models import TaskExecutionStatus
 from services.capacity_manager import get_capacity_manager
@@ -35,6 +40,14 @@ ACTIVITY_STALE_TIMEOUT_MINUTES = 120  # SCHED-ASYNC-001: increased from 30 to su
 NO_SESSION_TIMEOUT_SECONDS = 60  # Issue #106: fast-fail executions that never got a Claude session
 WATCHDOG_HTTP_TIMEOUT = 15.0  # Timeout for agent HTTP calls during reconciliation (#869: increased from 5s to handle agents under load)
 WATCHDOG_MIN_AGE_SECONDS = 60  # Don't orphan-recover executions younger than this (dispatch window)
+# Issue #921: two-cycle confirmation for orphan recovery. First time we see
+# (DB-running + agent-missing), we record a sentinel and defer; only on the
+# next cycle that also sees it missing do we actually recover. Closes the
+# false-positive window between the agent's in-finally `registry.unregister`
+# and the backend's success-write in `task_execution_service`. TTL spans
+# enough cycles that a one-shot Redis blip doesn't lose the deferred state.
+ORPHAN_SENTINEL_PREFIX = "watchdog:suspected_orphan:"
+ORPHAN_SENTINEL_TTL_SECONDS = 2 * CLEANUP_INTERVAL_SECONDS + 60  # 660s @ 5min cycle
 STARTUP_RECOVERY_GRACE_SECONDS = 15  # #748: skip startup orphan-recovery for rows
                                      # whose started_at is within this window — they
                                      # may be from an in-flight /internal/execute-task
@@ -129,6 +142,10 @@ class CleanupReport:
     """Results from a single cleanup cycle."""
     orphaned_executions: int = 0
     auto_terminated: int = 0
+    # Issue #921: count of executions deferred for two-cycle confirmation this
+    # cycle. Informational only — does not contribute to `total` because no
+    # state change occurred yet (the sentinel itself is not a "cleanup").
+    orphans_suspected: int = 0
     stale_executions: int = 0
     no_session_executions: int = 0
     orphaned_skipped: int = 0
@@ -159,6 +176,7 @@ class CleanupReport:
         return {
             "orphaned_executions": self.orphaned_executions,
             "auto_terminated": self.auto_terminated,
+            "orphans_suspected": self.orphans_suspected,
             "stale_executions": self.stale_executions,
             "no_session_executions": self.no_session_executions,
             "orphaned_skipped": self.orphaned_skipped,
@@ -193,6 +211,84 @@ class CleanupService:
         # inside the 5-min cleanup loop. First cycle runs maintenance
         # immediately; then every 12th cycle (60 min at 5-min interval).
         self._cycle_count: int = 0
+        # Issue #921: lazy Redis client for the orphan-confirmation sentinel.
+        # Lazy because cleanup_service is imported before Redis is reachable
+        # during the cold-start window.
+        self._redis: Optional["aioredis.Redis"] = None
+
+    async def _get_redis(self) -> Optional["aioredis.Redis"]:
+        """Return an async Redis client for the orphan-sentinel, or None if
+        Redis is unreachable.
+
+        Issue #921: the two-cycle orphan-confirmation needs cross-process
+        state. We fail OPEN — if Redis is gone we revert to the legacy
+        single-cycle behaviour so the watchdog still recovers true orphans
+        (the price is reintroducing the race during the outage; acceptable
+        since the rest of the platform is also degraded then).
+        """
+        if self._redis is not None:
+            return self._redis
+        if aioredis is None:
+            return None
+        try:
+            from config import REDIS_URL
+            client = aioredis.from_url(
+                REDIS_URL,
+                decode_responses=True,
+                socket_connect_timeout=1,
+                socket_timeout=1,
+            )
+            await client.ping()
+            self._redis = client
+            return self._redis
+        except Exception as e:
+            logger.warning("[Watchdog] Redis unavailable for orphan sentinel (%s) — failing open", e)
+            return None
+
+    async def _mark_suspected_orphan(self, execution_id: str) -> bool:
+        """Record the first observation of (DB-running + agent-missing).
+
+        Returns True if the sentinel was written, False on Redis failure.
+        """
+        client = await self._get_redis()
+        if client is None:
+            return False
+        try:
+            await client.setex(
+                f"{ORPHAN_SENTINEL_PREFIX}{execution_id}",
+                ORPHAN_SENTINEL_TTL_SECONDS,
+                utc_now_iso(),
+            )
+            return True
+        except Exception as e:
+            logger.warning("[Watchdog] SETEX sentinel for %s failed (%s)", execution_id, e)
+            return False
+
+    async def _is_suspected_orphan(self, execution_id: str) -> bool:
+        """Has this execution been flagged in a previous cycle?
+
+        Fail-open: on Redis failure return True so we recover (legacy
+        behaviour). This is intentional — see `_get_redis` docstring.
+        """
+        client = await self._get_redis()
+        if client is None:
+            return True
+        try:
+            return await client.exists(f"{ORPHAN_SENTINEL_PREFIX}{execution_id}") > 0
+        except Exception as e:
+            logger.warning("[Watchdog] EXISTS sentinel for %s failed (%s)", execution_id, e)
+            return True
+
+    async def _clear_suspected_orphan(self, execution_id: str) -> None:
+        """Drop the sentinel — either because the agent brought the execution
+        back or because we just confirmed-and-recovered it."""
+        client = await self._get_redis()
+        if client is None:
+            return
+        try:
+            await client.delete(f"{ORPHAN_SENTINEL_PREFIX}{execution_id}")
+        except Exception as e:
+            logger.warning("[Watchdog] DEL sentinel for %s failed (%s)", execution_id, e)
 
     def start(self):
         """Start the background cleanup loop."""
@@ -229,17 +325,22 @@ class CleanupService:
         # from falsely failing executions the watchdog verified as alive.
         confirmed_running_ids: set = set()
         try:
-            orphaned, terminated, confirmed_running_ids = (
+            orphaned, terminated, confirmed_running_ids, suspected = (
                 await self._reconcile_orphaned_executions()
             )
             report.orphaned_executions = orphaned
             report.auto_terminated = terminated
+            report.orphans_suspected = suspected
             self.cumulative_orphaned += orphaned
             self.cumulative_auto_terminated += terminated
             if orphaned > 0:
                 logger.info(f"[Watchdog] Recovered {orphaned} orphaned executions")
             if terminated > 0:
                 logger.info(f"[Watchdog] Auto-terminated {terminated} timed-out executions")
+            if suspected > 0:
+                logger.info(
+                    f"[Watchdog] Deferred {suspected} suspected orphans for two-cycle confirmation"
+                )
         except Exception as e:
             logger.error(f"[Watchdog] Reconciliation error: {e}")
 
@@ -663,22 +764,26 @@ class CleanupService:
                             f"[Cleanup] Error failing {execution_id} after slot reclaim: {e}"
                         )
 
-    async def _reconcile_orphaned_executions(self) -> tuple[int, int, set]:
+    async def _reconcile_orphaned_executions(self) -> tuple[int, int, set, int]:
         """Reconcile DB execution state against agent process registries.
 
         For each execution marked 'running' in the DB:
         1. Check if the agent's process registry still has it
-        2. If not found (orphaned): mark failed, release resources
-        3. If found but exceeded timeout: terminate, mark failed, release resources
+        2. If not found AND previously flagged (Issue #921): mark failed, release resources
+        3. If not found but seen for the first time: write Redis sentinel, defer
+        4. If found but exceeded timeout: terminate, mark failed, release resources
 
         Returns:
-            Tuple of (orphaned_count, auto_terminated_count, confirmed_running_ids)
-            where confirmed_running_ids is the set of execution IDs verified as still
-            running on their agents (used by slot cleanup to avoid false failures, #226).
+            Tuple of (orphaned_count, auto_terminated_count, confirmed_running_ids,
+            suspected_count) where:
+              - confirmed_running_ids: execution IDs verified as still running on
+                their agents (used by slot cleanup, #226)
+              - suspected_count: executions seen as missing for the first time this
+                cycle and deferred for two-cycle confirmation (#921)
         """
         running_executions = db.get_running_executions_with_agent_info()
         if not running_executions:
-            return (0, 0, set())
+            return (0, 0, set(), 0)
 
         # Group by agent for batch HTTP calls (one call per agent)
         agents: Dict[str, List[Dict]] = defaultdict(list)
@@ -702,6 +807,7 @@ class CleanupService:
 
             orphaned_count = 0
             terminated_count = 0
+            suspected_count = 0  # #921: first-cycle deferrals
             recovery_attempts = 0
             recovery_failures = 0
             confirmed_running: set = set()  # #226: track IDs verified as still running
@@ -730,7 +836,25 @@ class CleanupService:
                                 )
                                 continue
 
-                            # Orphan: execution not found on agent
+                            # Issue #921: two-cycle confirmation. The agent's
+                            # `registry.unregister` in `claude_code.py`'s
+                            # `finally` block fires BEFORE the backend writes
+                            # `success` in `task_execution_service`. A single
+                            # snapshot can't tell that race apart from a true
+                            # orphan. Defer the decision by one cycle: the
+                            # natural-completion case will have the DB row in
+                            # a terminal status by then and won't appear in
+                            # the next cycle's running query.
+                            if not await self._is_suspected_orphan(execution_id):
+                                await self._mark_suspected_orphan(execution_id)
+                                suspected_count += 1
+                                logger.info(
+                                    f"[Watchdog] Suspected orphan {execution_id} on "
+                                    f"'{agent_name}' — deferring recovery to next cycle"
+                                )
+                                continue
+
+                            # Second consecutive sighting — confirmed orphan
                             recovery_attempts += 1
                             error_msg = (
                                 "Execution completed on agent but status not reported "
@@ -741,8 +865,16 @@ class CleanupService:
                             )
                             if recovered:
                                 orphaned_count += 1
+                            # Clear the sentinel regardless: either we recovered
+                            # (so the row will no longer appear running), or the
+                            # recovery raced and lost — in both cases a fresh
+                            # observation starts the cycle over.
+                            await self._clear_suspected_orphan(execution_id)
                         else:
-                            # Execution is on agent — check timeout
+                            # Execution is on agent — check timeout.
+                            # #921: agent vouches for it, clear any stale sentinel
+                            # from a previous flap.
+                            await self._clear_suspected_orphan(execution_id)
                             timeout_seconds = ex.get("timeout_seconds") or 900
 
                             if age_seconds <= timeout_seconds:
@@ -788,7 +920,7 @@ class CleanupService:
                 f"recovery attempts failed in this cycle"
             )
 
-        return (orphaned_count, terminated_count, confirmed_running)
+        return (orphaned_count, terminated_count, confirmed_running, suspected_count)
 
     async def _get_agent_running_ids(
         self, client: httpx.AsyncClient, agent_name: str

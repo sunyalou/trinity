@@ -408,20 +408,27 @@ class TestReconcileOrphanedExecutions:
         # Mock _get_agent_running_ids to return None (unreachable)
         service._get_agent_running_ids = AsyncMock(return_value=None)
 
-        orphaned, terminated, confirmed_running = asyncio.run(
+        orphaned, terminated, confirmed_running, suspected = asyncio.run(
             service._reconcile_orphaned_executions()
         )
 
         assert orphaned == 0
         assert terminated == 0
         assert confirmed_running == set()
+        assert suspected == 0
         mock_db.mark_execution_failed_by_watchdog.assert_not_called()
 
     @patch("services.cleanup_service.httpx.AsyncClient")
     @patch("services.cleanup_service.db")
     @patch("services.cleanup_service.get_capacity_manager")
     def test_orphan_not_found_on_agent(self, mock_capacity_fn, mock_db, mock_httpx):
-        """Execution not found on agent -> orphan recovery."""
+        """Execution not found on agent -> orphan recovery (second cycle).
+
+        Issue #921: orphan recovery now requires two consecutive sightings.
+        This test simulates the second sighting by pre-asserting the sentinel
+        already exists; see TestTwoCycleOrphanConfirmation for the first-
+        sighting deferral behaviour.
+        """
         mock_cm, _ = self._mock_httpx_client()
         mock_httpx.return_value = mock_cm
 
@@ -436,18 +443,25 @@ class TestReconcileOrphanedExecutions:
         service = self._make_service()
         service._get_agent_running_ids = AsyncMock(return_value=set())
         service._broadcast_watchdog_event = AsyncMock()
+        # #921: pretend this is the second cycle — the sentinel already exists.
+        service._is_suspected_orphan = AsyncMock(return_value=True)
+        service._mark_suspected_orphan = AsyncMock(return_value=True)
+        service._clear_suspected_orphan = AsyncMock()
 
-        orphaned, terminated, confirmed_running = asyncio.run(
+        orphaned, terminated, confirmed_running, suspected = asyncio.run(
             service._reconcile_orphaned_executions()
         )
 
         assert orphaned == 1
         assert terminated == 0
         assert confirmed_running == set()
+        assert suspected == 0
         mock_db.mark_execution_failed_by_watchdog.assert_called_once()
         # CAPACITY-CONSOLIDATE (#428): one TOCTOU-safe release call covers
         # both the slot count and the in-memory queue bookkeeping.
         mock_capacity.release_if_matches.assert_called_once_with("agent-a", "exec-1")
+        # Sentinel cleared after recovery so a fresh observation starts over.
+        service._clear_suspected_orphan.assert_called_with("exec-1")
 
     @patch("services.cleanup_service.httpx.AsyncClient")
     @patch("services.cleanup_service.db")
@@ -463,13 +477,15 @@ class TestReconcileOrphanedExecutions:
 
         service = self._make_service()
         service._get_agent_running_ids = AsyncMock(return_value={"exec-1"})
+        service._clear_suspected_orphan = AsyncMock()
 
-        orphaned, terminated, confirmed_running = asyncio.run(
+        orphaned, terminated, confirmed_running, suspected = asyncio.run(
             service._reconcile_orphaned_executions()
         )
 
         assert orphaned == 0
         assert terminated == 0
+        assert suspected == 0
         # #226: Execution confirmed as still running within timeout
         assert confirmed_running == {"exec-1"}
         mock_db.mark_execution_failed_by_watchdog.assert_not_called()
@@ -494,13 +510,15 @@ class TestReconcileOrphanedExecutions:
         service._get_agent_running_ids = AsyncMock(return_value={"exec-1"})
         service._terminate_on_agent = AsyncMock(return_value=True)
         service._broadcast_watchdog_event = AsyncMock()
+        service._clear_suspected_orphan = AsyncMock()
 
-        orphaned, terminated, confirmed_running = asyncio.run(
+        orphaned, terminated, confirmed_running, suspected = asyncio.run(
             service._reconcile_orphaned_executions()
         )
 
         assert orphaned == 0
         assert terminated == 1
+        assert suspected == 0
         assert confirmed_running == set()  # Over timeout, so not confirmed
         service._terminate_on_agent.assert_called_once_with(ANY, "agent-a", "exec-1")
         mock_db.mark_execution_failed_by_watchdog.assert_called_once()
@@ -524,13 +542,15 @@ class TestReconcileOrphanedExecutions:
         service._get_agent_running_ids = AsyncMock(return_value={"exec-1"})
         service._terminate_on_agent = AsyncMock(return_value=False)
         service._broadcast_watchdog_event = AsyncMock()
+        service._clear_suspected_orphan = AsyncMock()
 
-        orphaned, terminated, confirmed_running = asyncio.run(
+        orphaned, terminated, confirmed_running, suspected = asyncio.run(
             service._reconcile_orphaned_executions()
         )
 
         # Terminate failed — should NOT mark as failed or release resources
         assert terminated == 0
+        assert suspected == 0
         assert confirmed_running == set()
         mock_db.mark_execution_failed_by_watchdog.assert_not_called()
         mock_capacity.release_if_matches.assert_not_called()
@@ -539,7 +559,14 @@ class TestReconcileOrphanedExecutions:
     @patch("services.cleanup_service.db")
     @patch("services.cleanup_service.get_capacity_manager")
     def test_race_condition_db_update_noop(self, mock_capacity_fn, mock_db, mock_httpx):
-        """When DB update returns False (race), skip slot/queue release."""
+        """When DB update returns False (race), skip slot/queue release.
+
+        #921: the inner TOCTOU race (DB-update-while-watchdog-decides) is
+        still possible on the second cycle even after the two-cycle defer.
+        This test simulates that: sentinel exists (second cycle), but the
+        conditional UPDATE returns False because task_execution_service
+        landed its success-write just before we tried to mark failed.
+        """
         mock_cm, _ = self._mock_httpx_client()
         mock_httpx.return_value = mock_cm
 
@@ -554,12 +581,16 @@ class TestReconcileOrphanedExecutions:
         service = self._make_service()
         service._get_agent_running_ids = AsyncMock(return_value=set())
         service._broadcast_watchdog_event = AsyncMock()
+        service._is_suspected_orphan = AsyncMock(return_value=True)
+        service._mark_suspected_orphan = AsyncMock(return_value=True)
+        service._clear_suspected_orphan = AsyncMock()
 
-        orphaned, terminated, confirmed_running = asyncio.run(
+        orphaned, terminated, confirmed_running, suspected = asyncio.run(
             service._reconcile_orphaned_executions()
         )
 
         assert orphaned == 0
+        assert suspected == 0
         assert confirmed_running == set()
         mock_capacity.release_if_matches.assert_not_called()
 
@@ -587,14 +618,225 @@ class TestReconcileOrphanedExecutions:
         service = self._make_service()
         service._get_agent_running_ids = AsyncMock(return_value=set())
         service._broadcast_watchdog_event = AsyncMock()
+        # #921: second-cycle scenario — sentinel pre-exists for both rows.
+        service._is_suspected_orphan = AsyncMock(return_value=True)
+        service._mark_suspected_orphan = AsyncMock(return_value=True)
+        service._clear_suspected_orphan = AsyncMock()
 
-        orphaned, terminated, confirmed_running = asyncio.run(
+        orphaned, terminated, confirmed_running, suspected = asyncio.run(
             service._reconcile_orphaned_executions()
         )
 
         assert orphaned == 1
+        assert suspected == 0
         assert confirmed_running == set()
         assert mock_db.mark_execution_failed_by_watchdog.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Two-cycle orphan confirmation (Issue #921)
+# ---------------------------------------------------------------------------
+
+
+class TestTwoCycleOrphanConfirmation:
+    """Regression tests for #921: the false-positive orphan-recovery race.
+
+    The agent's `claude_code.py` unregisters its process registry in a
+    `finally` block BEFORE the backend writes the success status to the DB.
+    A single watchdog snapshot taken in that window cannot distinguish a
+    completing execution from a true orphan. Recovery now requires two
+    consecutive sightings of (DB-running + agent-missing); the natural
+    completion case never reaches the second sighting because the DB row
+    has transitioned to a terminal status by then.
+    """
+
+    pytestmark = pytest.mark.unit
+
+    def _make_service(self):
+        from services.cleanup_service import CleanupService
+        return CleanupService()
+
+    def _mock_httpx_client(self):
+        mock_client = AsyncMock()
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        return mock_cm, mock_client
+
+    @patch("services.cleanup_service.httpx.AsyncClient")
+    @patch("services.cleanup_service.db")
+    @patch("services.cleanup_service.get_capacity_manager")
+    def test_first_cycle_missing_defers_no_recovery(self, mock_capacity_fn, mock_db, mock_httpx):
+        """First sighting of agent-missing => write sentinel, no DB write,
+        no slot release. This is the heart of the #921 fix."""
+        mock_cm, _ = self._mock_httpx_client()
+        mock_httpx.return_value = mock_cm
+
+        mock_db.get_running_executions_with_agent_info.return_value = [
+            {"id": "exec-1", "agent_name": "agent-a", "started_at": _past_iso(10), "timeout_seconds": 900, "schedule_id": "s1"},
+        ]
+
+        mock_capacity = AsyncMock()
+        mock_capacity_fn.return_value = mock_capacity
+
+        service = self._make_service()
+        service._get_agent_running_ids = AsyncMock(return_value=set())
+        service._broadcast_watchdog_event = AsyncMock()
+        # First cycle — no sentinel exists yet.
+        service._is_suspected_orphan = AsyncMock(return_value=False)
+        service._mark_suspected_orphan = AsyncMock(return_value=True)
+        service._clear_suspected_orphan = AsyncMock()
+
+        orphaned, terminated, confirmed_running, suspected = asyncio.run(
+            service._reconcile_orphaned_executions()
+        )
+
+        # The crucial assertions: row NOT recovered, sentinel written instead.
+        assert orphaned == 0
+        assert suspected == 1
+        assert confirmed_running == set()
+        mock_db.mark_execution_failed_by_watchdog.assert_not_called()
+        mock_capacity.release_if_matches.assert_not_called()
+        service._mark_suspected_orphan.assert_called_once_with("exec-1")
+
+    @patch("services.cleanup_service.httpx.AsyncClient")
+    @patch("services.cleanup_service.db")
+    @patch("services.cleanup_service.get_capacity_manager")
+    def test_second_cycle_still_missing_recovers(self, mock_capacity_fn, mock_db, mock_httpx):
+        """Sentinel pre-exists + still missing on agent => recover and clear sentinel."""
+        mock_cm, _ = self._mock_httpx_client()
+        mock_httpx.return_value = mock_cm
+
+        mock_db.get_running_executions_with_agent_info.return_value = [
+            {"id": "exec-1", "agent_name": "agent-a", "started_at": _past_iso(10), "timeout_seconds": 900, "schedule_id": "s1"},
+        ]
+        mock_db.mark_execution_failed_by_watchdog.return_value = True
+
+        mock_capacity = AsyncMock()
+        mock_capacity_fn.return_value = mock_capacity
+
+        service = self._make_service()
+        service._get_agent_running_ids = AsyncMock(return_value=set())
+        service._broadcast_watchdog_event = AsyncMock()
+        service._is_suspected_orphan = AsyncMock(return_value=True)
+        service._mark_suspected_orphan = AsyncMock(return_value=True)
+        service._clear_suspected_orphan = AsyncMock()
+
+        orphaned, terminated, confirmed_running, suspected = asyncio.run(
+            service._reconcile_orphaned_executions()
+        )
+
+        assert orphaned == 1
+        assert suspected == 0
+        mock_db.mark_execution_failed_by_watchdog.assert_called_once()
+        mock_capacity.release_if_matches.assert_called_once_with("agent-a", "exec-1")
+        service._clear_suspected_orphan.assert_called_with("exec-1")
+        # No new sentinel written on the recovery cycle.
+        service._mark_suspected_orphan.assert_not_called()
+
+    @patch("services.cleanup_service.httpx.AsyncClient")
+    @patch("services.cleanup_service.db")
+    @patch("services.cleanup_service.get_capacity_manager")
+    def test_natural_completion_race_resolves_without_recovery(self, mock_capacity_fn, mock_db, mock_httpx):
+        """The #921 smoking-gun scenario.
+
+        Cycle N: backend has dispatched a long task. Agent finished it, ran
+        `registry.unregister` in `finally`, but the backend hasn't yet
+        written `success` to the DB. Watchdog sees agent-missing + DB-
+        running. With the fix it defers.
+
+        Cycle N+1: between cycles, task_execution_service finished its
+        success-write. The DB row is now in a terminal status, so
+        `get_running_executions_with_agent_info` no longer returns it.
+        Nothing to act on — the false positive is avoided entirely.
+        """
+        mock_cm, _ = self._mock_httpx_client()
+        mock_httpx.return_value = mock_cm
+
+        mock_capacity = AsyncMock()
+        mock_capacity_fn.return_value = mock_capacity
+
+        # Persistent in-memory "Redis" so cycle N+1 sees cycle N's sentinel.
+        sentinel_store: set = set()
+
+        async def _mark(eid):
+            sentinel_store.add(eid)
+            return True
+
+        async def _check(eid):
+            return eid in sentinel_store
+
+        async def _clear(eid):
+            sentinel_store.discard(eid)
+
+        service = self._make_service()
+        service._get_agent_running_ids = AsyncMock(return_value=set())
+        service._broadcast_watchdog_event = AsyncMock()
+        service._is_suspected_orphan = _check
+        service._mark_suspected_orphan = _mark
+        service._clear_suspected_orphan = _clear
+
+        # ---- Cycle N: race window. DB still says running, agent unregistered.
+        mock_db.get_running_executions_with_agent_info.return_value = [
+            {"id": "exec-1", "agent_name": "agent-a", "started_at": _past_iso(10), "timeout_seconds": 900, "schedule_id": "s1"},
+        ]
+        orphaned_n, _, _, suspected_n = asyncio.run(
+            service._reconcile_orphaned_executions()
+        )
+        assert orphaned_n == 0
+        assert suspected_n == 1
+        assert "exec-1" in sentinel_store  # sentinel survives between cycles
+        mock_db.mark_execution_failed_by_watchdog.assert_not_called()
+
+        # ---- Cycle N+1: backend wrote `success` between cycles. The row no
+        #      longer appears in the running query — watchdog never even looks
+        #      at exec-1 again. False positive avoided.
+        mock_db.get_running_executions_with_agent_info.return_value = []
+        orphaned_n1, _, _, suspected_n1 = asyncio.run(
+            service._reconcile_orphaned_executions()
+        )
+        assert orphaned_n1 == 0
+        assert suspected_n1 == 0
+        mock_db.mark_execution_failed_by_watchdog.assert_not_called()
+        mock_capacity.release_if_matches.assert_not_called()
+        # The sentinel will expire on its own via TTL; explicit cleanup is
+        # not required for correctness, only for tidiness.
+
+    @patch("services.cleanup_service.httpx.AsyncClient")
+    @patch("services.cleanup_service.db")
+    @patch("services.cleanup_service.get_capacity_manager")
+    def test_agent_flap_clears_sentinel(self, mock_capacity_fn, mock_db, mock_httpx):
+        """If the agent's registry shows the execution again on the next cycle
+        (transient flap), the sentinel is cleared so a single bad sample
+        doesn't accumulate toward a false-positive recovery."""
+        mock_cm, _ = self._mock_httpx_client()
+        mock_httpx.return_value = mock_cm
+
+        mock_db.get_running_executions_with_agent_info.return_value = [
+            {"id": "exec-1", "agent_name": "agent-a", "started_at": _past_iso(5), "timeout_seconds": 900, "schedule_id": "s1"},
+        ]
+
+        mock_capacity = AsyncMock()
+        mock_capacity_fn.return_value = mock_capacity
+
+        service = self._make_service()
+        # Agent confirms execution is running this cycle.
+        service._get_agent_running_ids = AsyncMock(return_value={"exec-1"})
+        service._broadcast_watchdog_event = AsyncMock()
+        service._is_suspected_orphan = AsyncMock(return_value=True)
+        service._mark_suspected_orphan = AsyncMock(return_value=True)
+        service._clear_suspected_orphan = AsyncMock()
+
+        orphaned, terminated, confirmed_running, suspected = asyncio.run(
+            service._reconcile_orphaned_executions()
+        )
+
+        assert orphaned == 0
+        assert suspected == 0
+        assert confirmed_running == {"exec-1"}
+        # Most important: the stale sentinel is cleared.
+        service._clear_suspected_orphan.assert_called_with("exec-1")
+        mock_db.mark_execution_failed_by_watchdog.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
