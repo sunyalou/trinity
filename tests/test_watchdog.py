@@ -5,8 +5,11 @@ Tests for Issue #129: Active watchdog remediation of stuck executions.
 Integration tests against the running backend — verify cleanup report
 includes watchdog fields.
 
-Issue #921: two-cycle confirmation regression — guards against the false-
-positive recovery race between agent unregister and backend success-write.
+Issue #921 (revised): the race between agent unregister and backend
+success-write is closed agent-side via `process_registry`'s recently-
+completed window. The watchdog therefore recovers a true orphan on a
+single cycle and never sees the race-window false-positive in the first
+place. These tests cover the surviving end-to-end behaviours.
 
 Feature Flow: docs/memory/feature-flows/cleanup-service.md
 """
@@ -79,47 +82,12 @@ c.close()
     return _json.loads(out)
 
 
-def _sentinel_exists(execution_id: str) -> bool:
-    out = _exec_backend(f"""
-import redis, os
-from config import REDIS_URL
-client = redis.from_url(REDIS_URL, decode_responses=True, socket_connect_timeout=2)
-print('1' if client.exists('watchdog:suspected_orphan:{execution_id}') > 0 else '0')
-""")
-    return out == "1"
-
-
-def _force_success(execution_id: str) -> None:
-    """Simulate task_execution_service writing the success status that the
-    watchdog races against — see services/task_execution_service.py:728."""
-    _exec_backend(f"""
-import sqlite3
-c = sqlite3.connect('/data/trinity.db')
-c.execute(
-    'UPDATE schedule_executions SET status=?, completed_at=?, response=? WHERE id=?',
-    ('success', '2099-01-01T00:00:00Z', 'task completed normally', '{execution_id}'),
-)
-c.commit(); c.close()
-print('OK')
-""")
-
-
 def _delete_row(execution_id: str) -> None:
     _exec_backend(f"""
 import sqlite3
 c = sqlite3.connect('/data/trinity.db')
 c.execute('DELETE FROM schedule_executions WHERE id=?', ('{execution_id}',))
 c.commit(); c.close()
-print('OK')
-""")
-
-
-def _clear_sentinel(execution_id: str) -> None:
-    _exec_backend(f"""
-import redis
-from config import REDIS_URL
-client = redis.from_url(REDIS_URL, decode_responses=True, socket_connect_timeout=2)
-client.delete('watchdog:suspected_orphan:{execution_id}')
 print('OK')
 """)
 
@@ -180,128 +148,54 @@ class TestWatchdogCleanupReportFields:
 
 
 # ============================================================================
-# Two-Cycle Orphan Confirmation (Issue #921)
+# Single-Cycle Orphan Recovery (Issue #921 — agent-side completion buffer)
 # ============================================================================
 
 
-class TestTwoCycleOrphanConfirmation:
+class TestSingleCycleOrphanRecovery:
     """Live-stack regression for #921.
 
-    The agent's `claude_code.py` unregisters its process registry in a
-    `finally` block BEFORE `task_execution_service` writes `success` to
-    the DB. A single watchdog snapshot can't distinguish that race window
-    from a true orphan, so recovery now requires two consecutive sightings
-    of (DB-running + agent-missing).
+    The natural-completion race (agent's `finally: unregister()` running
+    before the backend writes `success`) is closed agent-side: the
+    `process_registry` keeps recently-completed IDs for ~5 min and
+    surfaces them via `/api/executions/running`. The watchdog unions
+    those IDs into its agent-known set, so a "missing from agent" sighting
+    is a true orphan and we recover on a single cycle — no two-cycle
+    deferral, no Redis sentinel, no `orphans_suspected` accounting.
 
-    These tests drive `POST /api/monitoring/cleanup-trigger` directly to
-    invoke the watchdog synchronously, then inspect the DB row and the
-    Redis sentinel to verify the two-cycle protocol behaves correctly.
+    This test exercises the surviving behaviour: trigger cleanup against
+    a fabricated running row whose execution_id the agent has never
+    heard of (not running, not recently completed) — expect a clean
+    single-cycle recovery.
     """
 
     @pytest.fixture
     def execution_id(self):
-        """Generate a unique execution_id and guarantee cleanup of both the
-        DB row and the Redis sentinel — even if the test fails mid-way."""
+        """Unique execution_id; teardown deletes the row even on failure."""
         eid = f"test-921-int-{uuid.uuid4().hex[:12]}"
         yield eid
-        # Teardown: always tidy up, ignore individual failures
         try:
             _delete_row(eid)
         except Exception:
             pass
-        try:
-            _clear_sentinel(eid)
-        except Exception:
-            pass
 
-    def test_first_cycle_defers_without_recovery(
+    def test_true_orphan_recovered_on_single_cycle(
         self, api_client: TrinityApiClient, execution_id: str
     ):
-        """The race window itself: agent says missing, DB still running.
+        """DB has 'running' row, agent doesn't have it in either running
+        OR recently_completed_ids => one cycle marks it failed.
 
-        Expected: watchdog records the sentinel and reports
-        `orphans_suspected=1`, but does NOT mark the row failed. This is
-        the heart of the #921 fix — under the old code the same scenario
-        produced `orphaned_executions=1` and a watchdog-failed row.
-        """
+        Under the original #921 fix this required two cycles. Closing the
+        race agent-side restored single-cycle recovery — what the watchdog
+        was always meant to do."""
         _insert_running_row(execution_id)
-
-        before = _row_state(execution_id)
-        assert before["status"] == "running"
-        assert not _sentinel_exists(execution_id)
+        assert _row_state(execution_id)["status"] == "running"
 
         response = api_client.post("/api/monitoring/cleanup-trigger")
         assert_status(response, 200)
         report = response.json()["report"]
-
-        assert "orphans_suspected" in report, "Missing orphans_suspected field"
-        assert report["orphans_suspected"] >= 1
-        # Row must still be running — recovery was deferred.
-        after = _row_state(execution_id)
-        assert after["status"] == "running"
-        assert after["error"] is None
-        # Sentinel must be in Redis to gate the next cycle.
-        assert _sentinel_exists(execution_id)
-
-    def test_second_cycle_confirms_and_recovers(
-        self, api_client: TrinityApiClient, execution_id: str
-    ):
-        """True orphan: two consecutive cycles see (DB-running + agent-missing).
-
-        Expected: first cycle defers, second cycle recovers and clears the
-        sentinel. Confirms the fix doesn't break legitimate orphan recovery —
-        it only delays it by one cycle.
-        """
-        _insert_running_row(execution_id)
-
-        # Cycle 1 — defer
-        report_1 = api_client.post("/api/monitoring/cleanup-trigger").json()["report"]
-        assert report_1["orphans_suspected"] >= 1
-        assert _row_state(execution_id)["status"] == "running"
-
-        # Cycle 2 — recover
-        report_2 = api_client.post("/api/monitoring/cleanup-trigger").json()["report"]
-        assert report_2["orphaned_executions"] >= 1
+        assert report["orphaned_executions"] >= 1
 
         after = _row_state(execution_id)
         assert after["status"] == "failed"
         assert "recovered by watchdog" in (after["error"] or "")
-        # Sentinel cleared so a future row with the same id doesn't skip
-        # straight to recovery.
-        assert not _sentinel_exists(execution_id)
-
-    def test_natural_completion_race_no_false_positive(
-        self, api_client: TrinityApiClient, execution_id: str
-    ):
-        """The #921 smoking-gun scenario reproduced end-to-end.
-
-        Cycle 1: row is `running`, agent has unregistered (race window).
-        Between cycles: backend lands the `success` write (we simulate
-          task_execution_service's update directly).
-        Cycle 2: the row is no longer in the running query, so the watchdog
-          never even looks at it. The row's natural `success` state survives
-          intact — no false orphan recovery overwrites it.
-
-        Under the old code, cycle 1 alone would mark the row failed with a
-        watchdog error message, destroying the real completion data.
-        """
-        _insert_running_row(execution_id)
-
-        # Cycle 1: race window — watchdog defers.
-        report_1 = api_client.post("/api/monitoring/cleanup-trigger").json()["report"]
-        assert report_1["orphans_suspected"] >= 1
-        assert _row_state(execution_id)["status"] == "running"
-
-        # Between cycles: the backend's task_execution_service lands its
-        # success-write that was in flight all along.
-        _force_success(execution_id)
-
-        # Cycle 2: the row is in a terminal status and is no longer returned
-        # by get_running_executions_with_agent_info — watchdog ignores it.
-        api_client.post("/api/monitoring/cleanup-trigger")
-
-        final = _row_state(execution_id)
-        # The crucial assertion: the natural success was NOT overwritten.
-        assert final["status"] == "success"
-        assert final["error"] is None
-        assert final["response"] == "task completed normally"
