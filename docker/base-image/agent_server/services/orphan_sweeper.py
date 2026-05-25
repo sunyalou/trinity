@@ -100,36 +100,22 @@ def _active_execution_pids() -> Iterable[int]:
     than risking a false kill of the agent-server itself on a registry
     glitch.
     """
+    # #912: delegated to `ProcessRegistry.active_execution_pids()` so the
+    # periodic sweep and the drain-time sweep in `subprocess_pgroup` share
+    # one canonical source. The registry method returns a list (with
+    # duplicate-tolerant pid/pgid entries — the allowlist resolver dedupes
+    # via descendant walk); convert to a set here for the sweeper's
+    # interface contract.
     try:
         from .process_registry import get_process_registry  # lazy
     except Exception:  # noqa: BLE001
         return ()
 
     try:
-        registry = get_process_registry()
-        running = registry.list_running()
+        return set(get_process_registry().active_execution_pids())
     except Exception:  # noqa: BLE001
         logger.exception("[OrphanSweeper] failed to enumerate active executions")
         return ()
-
-    pids: set[int] = set()
-    for entry in running:
-        if not isinstance(entry, dict):
-            continue
-        # ``pid`` exposed in list_running's shape (#817 follow-up); the
-        # allowlist resolver walks descendants via ppid so claude's
-        # tool subprocesses are covered automatically.
-        pid = entry.get("pid")
-        if isinstance(pid, int) and pid > 0:
-            pids.add(pid)
-        # ``pgid`` captured at register time — covers grandchildren that
-        # were spawned with ``setsid`` (escaping the ppid chain) but
-        # remain in the original pgid.
-        meta = entry.get("metadata") or {}
-        pgid = meta.get("pgid")
-        if isinstance(pgid, int) and pgid > 0:
-            pids.add(pgid)
-    return pids
 
 
 async def run_orphan_sweep_loop(
