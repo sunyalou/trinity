@@ -310,6 +310,30 @@ class ScheduleOperations:
             """, (agent_name,))
             return [self._row_to_schedule(row) for row in cursor.fetchall()]
 
+    def find_active_schedules_exceeding_timeout(
+        self, agent_name: str, ceiling_seconds: int
+    ) -> List[Dict]:
+        """Active schedules whose ``timeout_seconds > ceiling_seconds`` (#929).
+
+        Returns a thin list of ``{id, name, timeout_seconds}`` dicts for
+        the agent-cap-lowering error payload — the caller surfaces them
+        so the operator knows which schedules need editing first.
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, name, timeout_seconds
+                FROM agent_schedules
+                WHERE agent_name = ?
+                  AND deleted_at IS NULL
+                  AND timeout_seconds > ?
+                ORDER BY timeout_seconds DESC
+            """, (agent_name, ceiling_seconds))
+            return [
+                {"id": row["id"], "name": row["name"], "timeout_seconds": row["timeout_seconds"]}
+                for row in cursor.fetchall()
+            ]
+
     def list_all_enabled_schedules(self) -> List[Schedule]:
         """List all enabled schedules (for scheduler initialization).
 

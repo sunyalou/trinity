@@ -225,12 +225,17 @@ def _classify_signal_exit(
     sig_name = _SIGNAL_EXIT_NAMES.get(signum, f"signal {signum}")
     tool_count = metadata.tool_count if metadata else 0
     num_turns = metadata.num_turns if (metadata and metadata.num_turns) else 0
+    # #929: agent cap is now the schedule ceiling (write-time validation on
+    # the backend), so the SIGKILL cause set is bounded: schedule timeout,
+    # OOM, or operator cancel. Drop the misleading "schedule/agent" disjunction
+    # — the agent cap never silently truncates a schedule under Approach A.
     detail = (
         f"Execution terminated by {sig_name} after {tool_count} tool calls "
         f"/ {num_turns} turns (exit code {return_code}). "
-        f"Likely cause: schedule/agent timeout exceeded, OOM kill, or operator cancel. "
-        f"Increase the schedule's timeout_seconds, raise agent memory, "
-        f"or split the skill into smaller steps."
+        f"Likely cause: schedule timeout exceeded, OOM kill, or operator cancel. "
+        f"To allow longer runs raise the schedule's timeout_seconds "
+        f"(bounded by the agent's execution_timeout_seconds cap); "
+        f"for OOM raise the agent memory limit; otherwise split the skill into smaller steps."
     )
     return (504, detail)
 

@@ -215,6 +215,31 @@ class ExecutionResponse(BaseModel):
 
 # Schedule CRUD Endpoints
 
+
+def _enforce_timeout_below_agent_cap(agent_name: str, requested_seconds: int) -> None:
+    """#929 Approach A: refuse a schedule timeout above the agent cap.
+
+    `agent_ownership.execution_timeout_seconds` is the hard ceiling.
+    Raises HTTPException(400) with a structured `detail` dict so clients
+    can branch on `detail["error"] == "schedule_timeout_exceeds_agent_cap"`.
+    """
+    cap = db.get_execution_timeout(agent_name)
+    if requested_seconds > cap:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "schedule_timeout_exceeds_agent_cap",
+                "message": (
+                    f"Schedule timeout {requested_seconds}s exceeds agent "
+                    f"execution_timeout_seconds {cap}s. Raise the agent cap "
+                    f"first via PUT /api/agents/{agent_name}/timeout."
+                ),
+                "agent_cap_seconds": cap,
+                "requested_seconds": requested_seconds,
+            },
+        )
+
+
 @router.get("/{name}/schedules", response_model=List[ScheduleResponse])
 async def list_agent_schedules(name: AuthorizedAgent):
     """List all schedules for an agent."""
@@ -238,6 +263,10 @@ async def create_schedule(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid cron expression: {str(e)}"
         )
+
+    # #929: schedule timeout cannot exceed the agent cap. Validated here so
+    # the operator gets the 400 at config time instead of a SIGKILL at run time.
+    _enforce_timeout_below_agent_cap(name, schedule_data.timeout_seconds)
 
     schedule = db.create_schedule(name, current_user.username, schedule_data)
     if not schedule:
@@ -293,6 +322,13 @@ async def update_schedule(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid cron expression: {str(e)}"
             )
+
+    # #929: validate timeout against agent cap only when this PUT actually
+    # touches `timeout_seconds`. exclude_unset semantics: a write that
+    # doesn't include the field doesn't get re-checked (existing rows that
+    # predate the validation stay editable).
+    if updates.timeout_seconds is not None:
+        _enforce_timeout_below_agent_cap(name, updates.timeout_seconds)
 
     # Build updates dict — use exclude_unset to distinguish "not provided" from "explicitly set to null"
     update_dict = updates.model_dump(exclude_unset=True)

@@ -2361,6 +2361,71 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
 
 ---
 
+## 35. Schedule Timeout Validation (#929)
+
+### 35.1 Agent Cap as Schedule Ceiling (#929)
+- **Status**: 🚧 In Progress
+- **Implements**: Issue #929
+- **Description**: `agent_ownership.execution_timeout_seconds` becomes
+  a hard ceiling for `agent_schedules.timeout_seconds`. The two
+  settings previously coexisted as independent knobs with no
+  enforcement between them — schedules silently won, and the agent
+  cap applied only to the chat/ad-hoc fallback path. That divergence
+  trapped operators who assumed `min(agent, schedule)` semantics from
+  the side-by-side UI. Approach A from #929: validate at write time
+  so the operator's mental model snaps into place — the agent cap is
+  a real ceiling, exceeded values fail fast at config time instead
+  of silently surviving until SIGKILL.
+- **Validation rules**:
+  - `POST /api/agents/{name}/schedules` — 400 if
+    `body.timeout_seconds > agent.execution_timeout_seconds`.
+  - `PUT /api/agents/{name}/schedules/{id}` — 400 if the new
+    `timeout_seconds` would exceed the agent cap.
+  - `PUT /api/agents/{name}/timeout` — 400 if the new agent cap
+    would drop below any non-deleted schedule's `timeout_seconds`
+    (caller must raise the cap before lowering individual schedules,
+    or vice versa).
+- **Error contract**: 400 responses use FastAPI `HTTPException` with
+  a structured detail dict so clients can branch on the cause:
+  ```json
+  {
+    "error": "schedule_timeout_exceeds_agent_cap",
+    "message": "Schedule timeout 7200s exceeds agent execution_timeout_seconds 3600s. Raise the agent cap via PUT /api/agents/{name}/timeout first.",
+    "agent_cap_seconds": 3600,
+    "requested_seconds": 7200
+  }
+  ```
+  and respectively `agent_timeout_below_active_schedules` for the
+  agent-cap-lowering path (carries
+  `max_schedule_timeout_seconds` + the offending schedule list).
+- **DB accessor**:
+  `db.find_active_schedules_exceeding_timeout(agent_name, ceiling)` —
+  returns `[{id, name, timeout_seconds}, …]` for every non-soft-deleted
+  schedule whose `timeout_seconds > ceiling`, ordered DESC. Powers the
+  agent-timeout endpoint's 400 detail payload (operator sees which
+  schedules block the cap-lowering). Schedule endpoints compare
+  directly against `db.get_execution_timeout(agent_name)`.
+- **No retro-validation**: pre-existing rows that violate the
+  invariant (`schedule.timeout_seconds > agent.execution_timeout_seconds`)
+  are left alone — the migration story is "next edit fixes it." The
+  agent-cap-lowering check still sees those rows so the operator can't
+  make the gap *worse*.
+- **Orthogonal SIGKILL error-message fix** (same PR): the agent-side
+  signal-exit classifier in
+  `docker/base-image/agent_server/services/error_classifier.py`
+  emitted `"Likely cause: schedule/agent timeout exceeded, OOM kill,
+  or operator cancel."`. With the cap enforced at write time, the
+  "/agent" disjunction is dead — schedules can never run past the
+  cap. Message simplified to surface the schedule timeout
+  unambiguously.
+- **Out of scope**: exposing `timeout_seconds_effective` /
+  `capped_by` on the schedule response (Approach B from #929 —
+  would be trivially identical to `timeout_seconds` under A and
+  pure clutter); retrofitting the SIGKILL message to know whether
+  OOM vs timeout fired (agent has no signal for that distinction).
+
+---
+
 ## Out of Scope
 
 - Multi-tenant deployment (single org only)

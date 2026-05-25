@@ -513,7 +513,7 @@ picks up on its next poll. (#389 S1a)
 | GET | `/api/agents/{name}/read-only` | Get read-only mode status and config (NEW: 2026-02-17) |
 | PUT | `/api/agents/{name}/read-only` | Enable/disable read-only mode (blocks source file writes) |
 | GET | `/api/agents/{name}/timeout` | Get execution timeout setting (NEW: 2026-03-12) |
-| PUT | `/api/agents/{name}/timeout` | Set execution timeout (60-7200s, default 3600s = 60min, #665) |
+| PUT | `/api/agents/{name}/timeout` | Set execution timeout (60-7200s, default 3600s = 60min, #665). 400 with `error=agent_timeout_below_active_schedules` if the new cap would drop below any non-deleted schedule's `timeout_seconds` (#929). |
 | GET | `/api/agents/{name}/guardrails` | Get per-agent guardrails config (NEW: 2026-04-15) |
 | PUT | `/api/agents/{name}/guardrails` | Set per-agent guardrails overrides (GUARD-001) |
 | GET | `/api/agents/{name}/file-sharing` | Get outbound file-sharing status + quota (NEW: 2026-04-24, FILES-001) |
@@ -600,9 +600,9 @@ picks up on its next poll. (#389 S1a)
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/agents/{name}/schedules` | List schedules |
-| POST | `/api/agents/{name}/schedules` | Create schedule |
+| POST | `/api/agents/{name}/schedules` | Create schedule. 400 with `error=schedule_timeout_exceeds_agent_cap` if `body.timeout_seconds > agent.execution_timeout_seconds` (#929). |
 | GET | `/api/agents/{name}/schedules/{id}` | Get schedule |
-| PUT | `/api/agents/{name}/schedules/{id}` | Update schedule |
+| PUT | `/api/agents/{name}/schedules/{id}` | Update schedule. Same 400 when the update touches `timeout_seconds` and the new value exceeds the agent cap (#929). |
 | DELETE | `/api/agents/{name}/schedules/{id}` | Delete schedule |
 | POST | `/api/agents/{name}/schedules/{id}/enable` | Enable schedule |
 | POST | `/api/agents/{name}/schedules/{id}/disable` | Disable schedule |
