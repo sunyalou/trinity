@@ -254,6 +254,7 @@ _SYS_MODULES_INVARIANT_KEYS = (
     # settings_service), test_voice_tools.py (agent_client), etc.
     "services",
     "services.agent_client",
+    "services.docker_service",
     "services.platform_audit_service",
     "services.settings_service",
     "services.task_execution_service",

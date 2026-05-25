@@ -251,6 +251,9 @@ _POP_PREFIXES: tuple[str, ...] = (
     "services.template_service",
     "services.gemini_voice",
     "services.platform_audit_service",
+    "services.task_execution_service",
+    "services.cleanup_service",
+    "dependencies",
     "passlib",
 )
 
