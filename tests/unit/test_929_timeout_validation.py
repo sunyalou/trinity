@@ -161,40 +161,6 @@ def _seed_schedule(
 # ---------------------------------------------------------------------------
 
 
-def test_get_max_active_schedule_timeout_no_schedules(tmp_agent_db):
-    """No schedules → None (the agent-cap-lowering check then short-circuits)."""
-    from db.schedules import ScheduleOperations
-
-    _seed_agent(tmp_agent_db, "alice")
-    ops = ScheduleOperations(user_ops=None, agent_ops=None)
-    assert ops.get_max_active_schedule_timeout("alice") is None
-
-
-def test_get_max_active_schedule_timeout_picks_max(tmp_agent_db):
-    """MAX(timeout_seconds) across active rows."""
-    from db.schedules import ScheduleOperations
-
-    _seed_agent(tmp_agent_db, "alice")
-    _seed_schedule(tmp_agent_db, "alice", "s1", 1800)
-    _seed_schedule(tmp_agent_db, "alice", "s2", 3600)
-    _seed_schedule(tmp_agent_db, "alice", "s3", 600)
-
-    ops = ScheduleOperations(user_ops=None, agent_ops=None)
-    assert ops.get_max_active_schedule_timeout("alice") == 3600
-
-
-def test_get_max_active_schedule_timeout_excludes_soft_deleted(tmp_agent_db):
-    """Soft-deleted rows can't pin the cap — they don't fire anymore (#834)."""
-    from db.schedules import ScheduleOperations
-
-    _seed_agent(tmp_agent_db, "alice")
-    _seed_schedule(tmp_agent_db, "alice", "s_live", 1800)
-    _seed_schedule(tmp_agent_db, "alice", "s_dead", 7200, deleted=True)
-
-    ops = ScheduleOperations(user_ops=None, agent_ops=None)
-    assert ops.get_max_active_schedule_timeout("alice") == 1800
-
-
 def test_find_active_schedules_exceeding_timeout_returns_offenders(tmp_agent_db):
     """Returns id/name/timeout dicts only for schedules above the ceiling."""
     from db.schedules import ScheduleOperations
@@ -294,3 +260,58 @@ def test_enforce_helper_rejects_above_cap_with_structured_detail(monkeypatch):
     assert detail["agent_cap_seconds"] == 3600
     assert detail["requested_seconds"] == 7200
     assert "Raise the agent cap" in detail["message"]
+
+
+# ---------------------------------------------------------------------------
+# Orthogonal SIGKILL error_classifier message (agent-server)
+# ---------------------------------------------------------------------------
+#
+# Under approach A the agent cap can never silently truncate a schedule, so
+# the legacy "schedule/agent timeout exceeded" disjunction is dead. Pin the
+# new wording so a future edit can't silently regress it.
+
+
+def _load_error_classifier():
+    import importlib
+
+    base_image = Path(__file__).resolve().parents[2] / "docker" / "base-image"
+    if not (base_image / "agent_server" / "services" / "error_classifier.py").exists():
+        pytest.skip("agent_server tree not present")
+    if str(base_image) not in sys.path:
+        sys.path.insert(0, str(base_image))
+    try:
+        return importlib.import_module("agent_server.services.error_classifier")
+    except ImportError as exc:
+        pytest.skip(f"error_classifier import failed: {exc}")
+
+
+def test_sigkill_message_drops_schedule_agent_disjunction():
+    """SIGKILL detail must surface the schedule timeout unambiguously (#929).
+
+    The old wording — `"schedule/agent timeout exceeded"` — was misleading
+    because under approach A the agent cap can never silently truncate a
+    schedule (write-time validation refuses it). Guard against a regression
+    that re-introduces the disjunction.
+    """
+    classifier = _load_error_classifier()
+    _, detail = classifier._classify_signal_exit(-9, metadata=None)
+
+    assert "schedule timeout exceeded" in detail
+    assert "schedule/agent" not in detail, (
+        f"SIGKILL message regressed to ambiguous disjunction: {detail!r}"
+    )
+    # Remediation hint mentions both knobs so the operator knows where to look.
+    assert "timeout_seconds" in detail
+    assert "execution_timeout_seconds" in detail
+
+
+def test_sigkill_message_handles_sigterm_and_shell_encoded_signals():
+    """Shell-encoded (128+N) and negative signal exits both flow through
+    the same classification path; both should produce the cleaned wording."""
+    classifier = _load_error_classifier()
+
+    for return_code in (-15, 143, 137):
+        status_code, detail = classifier._classify_signal_exit(return_code, metadata=None)
+        assert status_code == 504
+        assert "schedule/agent" not in detail
+        assert "OOM kill" in detail

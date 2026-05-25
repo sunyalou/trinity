@@ -2398,11 +2398,13 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
   and respectively `agent_timeout_below_active_schedules` for the
   agent-cap-lowering path (carries
   `max_schedule_timeout_seconds` + the offending schedule list).
-- **DB accessor**: `db.get_max_active_schedule_timeout(agent_name)` —
-  `SELECT MAX(timeout_seconds) FROM agent_schedules WHERE
-  agent_name=? AND deleted_at IS NULL`. Returns `None` if no active
-  schedules. Used by the agent-timeout endpoint only; schedule
-  endpoints just compare against `db.get_execution_timeout(agent_name)`.
+- **DB accessor**:
+  `db.find_active_schedules_exceeding_timeout(agent_name, ceiling)` —
+  returns `[{id, name, timeout_seconds}, …]` for every non-soft-deleted
+  schedule whose `timeout_seconds > ceiling`, ordered DESC. Powers the
+  agent-timeout endpoint's 400 detail payload (operator sees which
+  schedules block the cap-lowering). Schedule endpoints compare
+  directly against `db.get_execution_timeout(agent_name)`.
 - **No retro-validation**: pre-existing rows that violate the
   invariant (`schedule.timeout_seconds > agent.execution_timeout_seconds`)
   are left alone — the migration story is "next edit fixes it." The
