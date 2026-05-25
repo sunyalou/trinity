@@ -617,6 +617,52 @@ class TestReconcileOrphanedExecutions:
 # ---------------------------------------------------------------------------
 
 
+class TestExtractAgentKnownIds:
+    """Direct tests for `_extract_agent_known_ids` — the shared seam between
+    the periodic watchdog and the startup-recovery pass. Locks in the
+    parsing contract so the two callers can't drift out of sync."""
+
+    pytestmark = pytest.mark.unit
+
+    @staticmethod
+    def _fn():
+        from services.cleanup_service import _extract_agent_known_ids
+        return _extract_agent_known_ids
+
+    def test_unions_running_and_recently_completed(self):
+        ids = self._fn()({
+            "executions": [{"execution_id": "live-1"}, {"execution_id": "live-2"}],
+            "recently_completed_ids": ["done-1", "done-2"],
+        })
+        assert ids == {"live-1", "live-2", "done-1", "done-2"}
+
+    def test_missing_recently_completed_degrades_to_pre_921(self):
+        ids = self._fn()({"executions": [{"execution_id": "live-1"}]})
+        assert ids == {"live-1"}
+
+    def test_empty_response_returns_empty_set(self):
+        assert self._fn()({}) == set()
+
+    def test_null_fields_treated_as_empty(self):
+        """Defensive against agents that explicitly send null for either
+        field — `None` instead of `[]`."""
+        ids = self._fn()({"executions": None, "recently_completed_ids": None})
+        assert ids == set()
+
+    def test_skips_entries_missing_execution_id(self):
+        """Malformed execution entries (no `execution_id` key) are dropped
+        rather than raising. Defensive — protects against partial server
+        responses or schema drift."""
+        ids = self._fn()({
+            "executions": [
+                {"execution_id": "live-1"},
+                {"started_at": "2026-05-25T00:00:00Z"},  # no execution_id
+            ],
+            "recently_completed_ids": ["done-1"],
+        })
+        assert ids == {"live-1", "done-1"}
+
+
 class TestGetAgentRunningIdsUnionsRecentlyCompleted:
     """`_get_agent_running_ids` is the seam #921 hangs on: it unions the
     `executions` field with `recently_completed_ids` from the agent's

@@ -73,6 +73,25 @@ def set_cleanup_ws_manager(manager):
     _ws_manager = manager
 
 
+def _extract_agent_known_ids(payload: Dict) -> set:
+    """Set of execution IDs the agent considers 'known': currently-running
+    plus the recently-completed window (#921).
+
+    Single source of truth for parsing the `/api/executions/running`
+    response so the periodic watchdog (`_reconcile_orphaned_executions`)
+    and the startup recovery (`recover_orphaned_executions`) can't drift
+    out of sync. Defensive against malformed entries and missing fields:
+    older agent images that haven't shipped the buffer return only the
+    `executions` field — the union degrades silently to pre-#921 behaviour.
+    """
+    ids = {
+        eid for ex in (payload.get("executions") or [])
+        if (eid := ex.get("execution_id"))
+    }
+    ids.update(payload.get("recently_completed_ids") or [])
+    return ids
+
+
 def _read_retention_settings() -> tuple[int, int, int]:
     """Read retention windows from ops settings (#772).
 
@@ -819,15 +838,9 @@ class CleanupService:
                 f"http://agent-{agent_name}:8000/api/executions/running"
             )
             if response.status_code == 200:
-                data = response.json()
-                executions = data.get("executions", [])
-                ids = {eid for ex in executions if (eid := ex.get("execution_id"))}
-                # #921: union with the recently-completed window so the race
-                # between the agent's `finally: unregister()` and the backend's
-                # success-write doesn't produce a false orphan. Missing field
-                # (older agent images) degrades silently to pre-#921 behaviour.
-                ids.update(data.get("recently_completed_ids") or [])
-                return ids
+                # #921: union of currently-running + recently-completed via
+                # the shared helper — same parsing as `recover_orphaned_executions`.
+                return _extract_agent_known_ids(response.json())
             else:
                 logger.warning(
                     f"[Watchdog] Agent '{agent_name}' returned {response.status_code} "
@@ -1144,14 +1157,15 @@ async def recover_orphaned_executions() -> Dict:
             continue
 
         # Container is up — check agent's process registry
-        registry_ids: set[str] = set()
+        registry_ids: set = set()
         try:
             client = get_agent_client(agent_name)
             resp = await client.get("/api/executions/running", timeout=5.0)
             if resp.status_code == 200:
-                registry_ids = {
-                    e["execution_id"] for e in resp.json().get("executions", [])
-                }
+                # #921: same union as the periodic watchdog — includes
+                # recently-completed IDs so a backend restart that races
+                # an in-flight completion doesn't false-orphan it.
+                registry_ids = _extract_agent_known_ids(resp.json())
         except AgentClientError as e:
             logger.warning(f"[Recovery] Could not reach agent {agent_name} registry: {e}")
 
