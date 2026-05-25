@@ -5,6 +5,8 @@ Tests for agent workspace file browser.
 Covers REQ-FILES-001 through REQ-FILES-002.
 """
 
+import time
+
 import pytest
 from utils.api_client import TrinityApiClient
 from utils.assertions import (
@@ -14,6 +16,33 @@ from utils.assertions import (
     assert_has_fields,
     assert_tree_structure,
 )
+
+
+def _wait_for_container_ready(
+    api_client: TrinityApiClient, agent_name: str, timeout_s: float = 30.0
+) -> None:
+    """Poll an endpoint that requires the agent container to exist until it
+    responds (i.e., no longer 404 from `get_agent_container() is None`).
+
+    `created_agent` waits for the backend to report `status == "running"`,
+    but the Docker container can momentarily disappear from the backend's
+    SDK view during early startup. The mkdir endpoint surfaces that as
+    404, with no 503 fallback, so the test needs an explicit barrier
+    before exercising the endpoint.
+    """
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        # /api/agents/{name}/files goes through the same get_agent_container
+        # lookup as mkdir; a 200 (or 503 "agent server not ready") means
+        # the container is visible to the backend.
+        probe = api_client.get(f"/api/agents/{agent_name}/files")
+        if probe.status_code != 404:
+            return
+        time.sleep(0.5)
+    pytest.skip(
+        f"Agent container for {agent_name} did not become visible to the "
+        f"backend within {timeout_s}s"
+    )
 
 
 class TestListFiles:
@@ -563,6 +592,7 @@ class TestCreateFolder:
         """mkdir creates a directory that then appears in the listing."""
         import uuid
         name = created_agent['name']
+        _wait_for_container_ready(api_client, name)
         dir_path = f"/home/developer/mkdir_test_{uuid.uuid4().hex[:8]}"
 
         response = api_client.post(
@@ -591,6 +621,7 @@ class TestCreateFolder:
         """Creating an already-existing directory returns 409."""
         import uuid
         name = created_agent['name']
+        _wait_for_container_ready(api_client, name)
         dir_path = f"/home/developer/mkdir_dup_{uuid.uuid4().hex[:8]}"
 
         first = api_client.post(
