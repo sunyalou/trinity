@@ -278,12 +278,25 @@ async def terminate_execution(execution_id: str):
 @router.get("/api/executions/running")
 async def list_running_executions():
     """
-    List all currently running executions.
+    List all currently running executions, plus IDs that finished within
+    the recently-completed window (#921).
 
-    Returns execution_id, start time, and metadata for each running process.
+    The backend watchdog (cleanup_service) reads this endpoint to decide
+    "is this execution still being tracked by the agent?" It treats either
+    a currently-running entry OR a recently-completed ID as proof-of-life,
+    so the race between the agent's `finally: unregister()` and the
+    backend's `update_execution_status(SUCCESS)` write never produces a
+    false orphan recovery.
     """
     registry = get_process_registry()
-    return {"executions": registry.list_running()}
+    return {
+        "executions": registry.list_running(),
+        # #921: backend unions this with the `executions` list when computing
+        # the set of agent-known execution_ids. Older backend versions that
+        # don't read this field still work — they just lose the race window
+        # protection (pre-#921 behaviour).
+        "recently_completed_ids": registry.list_recently_completed_ids(),
+    }
 
 
 @router.get("/api/executions/{execution_id}/status")

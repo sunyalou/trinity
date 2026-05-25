@@ -11,6 +11,7 @@ import signal
 import subprocess
 import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import Dict, Optional, List, AsyncIterator
 from threading import Lock
@@ -21,6 +22,14 @@ from ..utils.subprocess_pgroup import (
 from ..utils.orphan_sweep import kill_cgroup_orphans
 
 logger = logging.getLogger(__name__)
+
+# Issue #921: window during which a just-finished execution is still surfaced
+# by `/api/executions/running` to the backend watchdog. Covers the race
+# between this process's `finally: unregister()` and the backend's
+# `task_execution_service.update_execution_status(SUCCESS)` write. Sized
+# above the worst observed in-flight delay in the original incident (~55s)
+# with comfortable headroom for backend slowness.
+RECENTLY_COMPLETED_TTL_SECONDS = 300  # 5 minutes
 
 
 class ProcessRegistry:
@@ -45,6 +54,11 @@ class ProcessRegistry:
         self._log_buffers: Dict[str, List[dict]] = {}
         # Maximum buffer size per execution (prevents memory bloat)
         self._max_buffer_size = 1000
+        # Issue #921: execution_id -> unix timestamp when unregister() ran.
+        # Entries past RECENTLY_COMPLETED_TTL_SECONDS are evicted lazily on
+        # read. Capped indirectly by traffic — at agent's ~10 concurrent
+        # max with 5 min retention this is a few dozen entries at peak.
+        self._recently_completed: Dict[str, float] = {}
 
     def register(self, execution_id: str, process: subprocess.Popen, metadata: dict = None):
         """
@@ -85,6 +99,12 @@ class ProcessRegistry:
             # Clean up buffer (keep for a bit for late requests, but this is fine)
             if execution_id in self._log_buffers:
                 del self._log_buffers[execution_id]
+
+            # Issue #921: mark for the recently-completed window so the
+            # backend watchdog doesn't see this as missing during the race
+            # between this `finally: unregister()` and the backend writing
+            # `success` to the schedule_executions row.
+            self._recently_completed[execution_id] = time.time()
 
     def terminate(self, execution_id: str, graceful_timeout: int = 5) -> dict:
         """
@@ -262,6 +282,23 @@ class ProcessRegistry:
                 if isinstance(pgid, int) and pgid > 0:
                     result.append(pgid)
         return result
+
+    def list_recently_completed_ids(self) -> List[str]:
+        """Issue #921: IDs of executions that finished within the last
+        RECENTLY_COMPLETED_TTL_SECONDS.
+
+        Surfaced via /api/executions/running so the backend watchdog can
+        treat "agent finished it moments ago" the same as "agent still
+        has it" — no orphan recovery, no false-positive. Expired entries
+        are dropped lazily here; no separate sweeper needed.
+        """
+        cutoff = time.time() - RECENTLY_COMPLETED_TTL_SECONDS
+        with self._lock:
+            # Drop expired entries while we're holding the lock.
+            expired = [eid for eid, ts in self._recently_completed.items() if ts < cutoff]
+            for eid in expired:
+                del self._recently_completed[eid]
+            return list(self._recently_completed.keys())
 
     def cleanup_finished(self) -> int:
         """
