@@ -149,29 +149,23 @@ class ProcessRegistry:
             # Issue #817 follow-up: cgroup-walk sweep for descendants
             # that escaped the pgid kill via setsid, FD detachment, or
             # env stripping. Best-effort — never fail termination on
-            # this. Preserve every OTHER active execution by passing
-            # their PIDs/pgids as extra_pids so we don't kill them
-            # while terminating this one.
+            # this. Issue #912: delegated to active_execution_pids()
+            # which is the single canonical source for this allowlist,
+            # also used by the periodic orphan sweeper and the drain-
+            # time sweep in subprocess_pgroup. Excluding ``execution_id``
+            # so the sweep doesn't try to preserve the process we just
+            # killed.
             try:
-                preserve: list[int] = []
-                with self._lock:
-                    for other_id, other_entry in self._processes.items():
-                        if other_id == execution_id:
-                            continue
-                        other_proc = other_entry["process"]
-                        if other_proc.poll() is not None:
-                            continue
-                        preserve.append(other_proc.pid)
-                        other_pgid = (other_entry.get("metadata") or {}).get("pgid")
-                        if isinstance(other_pgid, int) and other_pgid > 0:
-                            preserve.append(other_pgid)
+                preserve = self.active_execution_pids(
+                    exclude_execution_id=execution_id
+                )
                 killed = kill_cgroup_orphans(extra_pids=preserve)
                 if killed:
                     logger.info(
                         f"[ProcessRegistry] Cgroup sweep killed {killed} "
                         f"orphan(s) after terminating {execution_id} "
-                        f"(preserved {len(preserve)} pid(s) for "
-                        f"{len(self._processes) - 1} other execution(s))"
+                        f"(preserved {len(preserve)} pid(s) for other "
+                        f"in-flight execution(s))"
                     )
             except Exception:
                 logger.exception(
@@ -232,6 +226,42 @@ class ProcessRegistry:
                         "metadata": entry["metadata"]
                     })
             return result
+
+    def active_execution_pids(self, exclude_execution_id: Optional[str] = None) -> List[int]:
+        """Snapshot of pids + captured pgids for currently-running executions.
+
+        Returned for the orphan-sweep allowlist. Issue #912: any caller of
+        :func:`kill_cgroup_orphans` that runs while *other* executions are
+        still in flight must pass these so the sweep doesn't SIGKILL their
+        claude subprocesses. The list intentionally includes both the
+        ``pid`` (resolves descendants via ppid walk in
+        :mod:`orphan_allowlist`) and the captured ``pgid`` from metadata
+        (covers grandchildren spawned with ``setsid`` that escape the ppid
+        chain). Duplicates are fine — the allowlist resolver de-dupes.
+
+        Args:
+            exclude_execution_id: When set, the entry with that id is
+                omitted from the snapshot. Used by ``terminate()`` so the
+                cgroup sweep doesn't try to preserve a process we just
+                killed.
+
+        Returns:
+            A new list (snapshot under the registry lock) of ints. Empty
+            list when no other executions are running.
+        """
+        result: List[int] = []
+        with self._lock:
+            for exec_id, entry in self._processes.items():
+                if exclude_execution_id is not None and exec_id == exclude_execution_id:
+                    continue
+                process = entry["process"]
+                if process.poll() is not None:
+                    continue
+                result.append(process.pid)
+                pgid = (entry.get("metadata") or {}).get("pgid")
+                if isinstance(pgid, int) and pgid > 0:
+                    result.append(pgid)
+        return result
 
     def cleanup_finished(self) -> int:
         """

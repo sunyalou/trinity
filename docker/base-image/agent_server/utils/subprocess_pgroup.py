@@ -347,18 +347,50 @@ async def drain_reader_threads(
     finally:
         # Issue #817 follow-up: cgroup-walk runs on every exit path.
         # Best-effort — never fail the drain on sweep exceptions.
+        # Issue #912: forward all *other* in-flight executions' pids/pgids
+        # as the allowlist so the sweep doesn't SIGKILL a legitimate
+        # concurrent claude subprocess running another task in the same
+        # cgroup. The pre-#912 bare call was the bug — it left only the
+        # sweep's own pid + parents on the allowlist, so any concurrent
+        # task's claude got killed whenever a sibling task drained.
+        # The draining process itself has already exited at this point
+        # so it doesn't need to be in the allowlist.
         try:
-            killed = kill_cgroup_orphans()
+            extra_pids = _active_execution_pids_for_drain()
+            killed = kill_cgroup_orphans(extra_pids=extra_pids)
             if killed:
                 logger.info(
-                    "[Subprocess] Cgroup sweep killed %d orphan(s) after drain",
-                    killed,
+                    "[Subprocess] Cgroup sweep killed %d orphan(s) after drain "
+                    "(preserved %d pid(s) for other in-flight execution(s))",
+                    killed, len(extra_pids),
                 )
         except Exception:  # noqa: BLE001
             logger.exception(
                 "[Subprocess] cgroup sweep raised in drain_reader_threads — "
                 "continuing"
             )
+
+
+def _active_execution_pids_for_drain() -> list[int]:
+    """Lazy registry read for the #912 drain-time allowlist.
+
+    Lives in ``utils`` and lazy-imports ``services.process_registry`` to
+    avoid pulling FastAPI into the import graph of this low-level helper.
+    Returns an empty list on any failure path — the allowlist is best-
+    effort; a registry hiccup at drain time must never crash the drain.
+    """
+    try:
+        from ..services.process_registry import get_process_registry  # lazy
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        return get_process_registry().active_execution_pids()
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[Subprocess] active_execution_pids() raised during drain sweep — "
+            "continuing with empty allowlist"
+        )
+        return []
 
 
 def signal_process_tree(
