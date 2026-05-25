@@ -639,6 +639,7 @@ picks up on its next poll. (#389 S1a)
 | GET | `/oauth/{provider}/authorize` | Start OAuth |
 | GET | `/oauth/{provider}/callback` | OAuth callback |
 | GET | `/health` | Health check (unauthenticated, top-level — no `/api/` prefix) |
+| GET | `/api/version` | Platform version + build-time git provenance: `git_commit`, `git_commit_short`, `git_commit_subject`, `git_commit_timestamp`, `git_branch`, `build_date`. Sourced from Dockerfile `ARG`/`ENV` wired through `docker-compose.yml` `backend.build.args` + `scripts/deploy/start.sh`. All git fields default to `"unknown"` when build args are absent (#926). |
 
 ### Soft-Delete Admin Recovery (#834 Phase 1c)
 

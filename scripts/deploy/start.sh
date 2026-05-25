@@ -167,6 +167,19 @@ if ! docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "trinity-agent-
     echo ""
 fi
 
+# Build-time provenance (#926). Export git commit/branch/build-date so
+# docker-compose's `backend.build.args` block forwards them as Dockerfile
+# ARGs → ENV vars → `GET /api/version` payload. Best-effort: if the host
+# isn't a git checkout (CI tarball install) fall back to "unknown" so the
+# downstream Dockerfile defaults still produce a well-typed response.
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    export GIT_COMMIT=$(git rev-parse HEAD)
+    export GIT_COMMIT_SUBJECT=$(git log -1 --pretty=%s)
+    export GIT_COMMIT_TIMESTAMP=$(git log -1 --pretty=%cI)
+    export GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+fi
+export BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
 echo "Starting services..."
 docker compose up -d
 
