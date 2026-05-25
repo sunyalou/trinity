@@ -2364,7 +2364,7 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
 ## 35. Schedule Timeout Validation (#929)
 
 ### 35.1 Agent Cap as Schedule Ceiling (#929)
-- **Status**: 🚧 In Progress
+- **Status**: ✅ Implemented (#930)
 - **Implements**: Issue #929
 - **Description**: `agent_ownership.execution_timeout_seconds` becomes
   a hard ceiling for `agent_schedules.timeout_seconds`. The two
@@ -2481,6 +2481,59 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
   backend), MCP server version surface (the MCP TypeScript
   package has its own `package.json` version), agent base-image
   commit metadata. Follow-ups if useful.
+
+---
+
+## 37. MCP Chat Timeout Recovery (#914)
+
+### 37.1 `chat_with_agent` Gateway-Timeout Receipt (#914)
+- **Status**: ✅ Implemented (#933)
+- **Implements**: Issue #914
+- **Description**: `mcp__trinity__chat_with_agent` in default sync
+  mode (`parallel=false`) holds the MCP-gateway → backend → agent HTTP
+  chain open for the entire agent execution. When the agent takes
+  longer than the MCP client's request timeout (~30-60s observed),
+  the tool call returns the generic `fetch failed` — but the request
+  was successfully queued on Trinity and the agent IS running it.
+  Naive retry then queues duplicates that Trinity's
+  concurrent-duplicate guard kills mid-execution, burning compute and
+  agent time. This change is the MCP-client-surface fix for #408 /
+  #428's long-running dispatch family.
+- **Approach**: an MCP-server-side timeout (~25s, under the typical
+  gateway ceiling) aborts the backend `fetch` early. The MCP server
+  then queries `GET /api/agents/{name}/executions` for a recent
+  matching execution row (`triggered_by in {mcp, agent}`,
+  `source_mcp_key_id == this key`, non-terminal status, started
+  within the last ~30s) and returns a **structured receipt** to the
+  caller instead of letting `fetch failed` propagate:
+  ```json
+  {
+    "status": "queued_timeout",
+    "agent": "bdr-agent",
+    "execution_id": "fZv-iXtUXSolY1wzPO7T6w",
+    "message": "MCP gateway timeout — task still running on the agent. Poll get_execution_result(execution_id) instead of retrying."
+  }
+  ```
+- **No-match fallback**: when the lookup turns up nothing (no rows
+  on the agent, or the executions endpoint itself is unreachable),
+  the abort error is rethrown with a clearer hint so the caller
+  knows to check the dashboard before retrying. The receipt is a
+  best-effort heuristic, not an atomic protocol guarantee.
+- **MCP `chat_with_agent` tool description** is updated to
+  document the new `queued_timeout` return shape so the caller's
+  agent / LLM can branch on it correctly.
+- **Configurability**: `MCP_CHAT_TIMEOUT_MS` env var on the MCP
+  server (default 25000) lets operators dial the abort window for
+  unusually slow networks. The 25s default sits comfortably below
+  the 30-60s gateway ceiling observed in the issue.
+- **Out of scope**:
+  - Real push-completion redesign (#408 / #428) — this is the
+    cheap interim until that lands.
+  - Idempotency keys (#914 comment) — needs new backend column
+    + write-path coordination; bigger surface.
+  - Backend-side change to return `execution_id` as a streaming
+    response header on long calls — would obsolete the heuristic
+    lookup but requires a `chat_with_agent` API contract change.
 
 ---
 

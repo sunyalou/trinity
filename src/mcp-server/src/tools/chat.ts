@@ -142,7 +142,15 @@ export function createChatTools(client: TrinityClient, requireApiKey: boolean) {
         "- `parallel=true`: Parallel task mode. Stateless, no queue, can run N tasks concurrently. " +
         "Best for independent tasks, batch processing, orchestrator delegation.\n" +
         "- `async=true` (with parallel=true): Fire-and-forget mode. Returns immediately with execution_id. " +
-        "Poll GET /api/agents/{name}/executions/{execution_id} for results.",
+        "Poll GET /api/agents/{name}/executions/{execution_id} for results." +
+        "\n\n**#914 Gateway-Timeout Receipt (sync chat mode only):** " +
+        "If the MCP-server's synchronous fetch to the backend takes longer than `MCP_CHAT_TIMEOUT_MS` " +
+        "(default 25s, set under the typical 30-60s MCP gateway ceiling), the call returns " +
+        "`{status: \"queued_timeout\", agent, execution_id, message}` instead of a generic `fetch failed`. " +
+        "The task IS still running on the agent — call `get_execution_result(execution_id)` to poll for the " +
+        "result instead of retrying. Retrying will duplicate-queue and Trinity's concurrent-duplicate guard " +
+        "will kill mid-execution, burning budget. For tasks you know will exceed the gateway timeout, prefer " +
+        "`parallel=true, async=true` from the start.",
       parameters: z.object({
         agent_name: z.string().describe("The name of the agent to chat with"),
         message: z
@@ -301,6 +309,13 @@ export function createChatTools(client: TrinityClient, requireApiKey: boolean) {
 
         // Sequential chat mode - uses queue, maintains context
         const response = await apiClient.chat(agent_name, message, sourceAgent, mcpKeyInfo);
+
+        // #914: MCP-server gateway timeout — task still running on agent.
+        // Surface the structured receipt so the caller polls rather than retries.
+        if ('status' in response && response.status === 'queued_timeout') {
+          console.log(`[Chat Timeout Recovery] Agent '${agent_name}' execution_id=${response.execution_id} — caller should poll get_execution_result (#914)`);
+          return JSON.stringify(response, null, 2);
+        }
 
         // Check if response is a queue status (agent busy)
         if ('queue_status' in response) {

@@ -35,6 +35,46 @@ function debugLog(...args: any[]) {
   }
 }
 
+/**
+ * #914 pure matcher for the chat-timeout recovery lookup. Extracted from
+ * `TrinityClient.findRecentMcpExecution` so a unit test can drive it
+ * without spinning up a real backend.
+ *
+ * Selects the newest execution row that:
+ *   - is in a non-terminal status (`pending`, `queued`, `running`)
+ *   - was triggered via MCP (`triggered_by === "mcp"` or `"agent"`)
+ *   - carries the calling key's `source_mcp_key_id` when one was supplied
+ *     (rows with no key id pass — older backends or pre-AUDIT-001 rows)
+ *   - started within the last `windowMs` (default 30s, covers the typical
+ *     MCP gateway abort + a small clock-skew buffer)
+ *
+ * Returns `undefined` when nothing matches; caller falls back to a
+ * clearer error message instead of returning a wrong execution_id.
+ */
+export function pickRecentMcpExecution(
+  executions: ScheduleExecution[],
+  opts: { mcpKeyId?: string; now?: number; windowMs?: number } = {},
+): ScheduleExecution | undefined {
+  const now = opts.now ?? Date.now();
+  const windowMs = opts.windowMs ?? 30_000;
+  const cutoffMs = now - windowMs;
+  const nonTerminal = new Set(["pending", "queued", "running"]);
+  const matches = executions.filter((e) => {
+    if (!nonTerminal.has(e.status)) return false;
+    if (e.triggered_by !== "mcp" && e.triggered_by !== "agent") return false;
+    if (opts.mcpKeyId && e.source_mcp_key_id && e.source_mcp_key_id !== opts.mcpKeyId) {
+      return false;
+    }
+    const started = Date.parse(e.started_at);
+    if (Number.isNaN(started) || started < cutoffMs) return false;
+    return true;
+  });
+  // Newest first — backend returns DESC by started_at, but sort defensively
+  // in case the contract drifts.
+  matches.sort((a, b) => Date.parse(b.started_at) - Date.parse(a.started_at));
+  return matches[0];
+}
+
 export class TrinityClient {
   private baseUrl: string;
   private token?: string;
@@ -442,7 +482,11 @@ export class TrinityClient {
     message: string,
     sourceAgent?: string,
     mcpKeyInfo?: { keyId?: string; keyName?: string }
-  ): Promise<ChatResponse | { error: string; queue_status: "busy" | "queue_full"; retry_after: number; agent: string; details?: Record<string, unknown> }> {
+  ): Promise<
+    | ChatResponse
+    | { error: string; queue_status: "busy" | "queue_full"; retry_after: number; agent: string; details?: Record<string, unknown> }
+    | { status: "queued_timeout"; agent: string; execution_id: string; message: string }
+  > {
     // Prepare headers
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -463,11 +507,56 @@ export class TrinityClient {
       headers["X-MCP-Key-Name"] = mcpKeyInfo.keyName;
     }
 
-    const response = await fetch(`${this.baseUrl}/api/agents/${encodeURIComponent(name)}/chat`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ message }),
-    });
+    // #914: bound the synchronous backend fetch with an MCP-server-side
+    // timeout. The MCP client (e.g. Claude Code) imposes its own 30-60s
+    // gateway timeout on this JSON-RPC call, and `fetch failed` propagation
+    // is what drives naive callers into duplicate-queue retries. Aborting
+    // before the gateway gives us a chance to look up the queued
+    // execution_id and return a structured receipt instead.
+    const timeoutMs = Number(process.env.MCP_CHAT_TIMEOUT_MS ?? 25000);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const startTime = Date.now();
+
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/api/agents/${encodeURIComponent(name)}/chat`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ message }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      // Abort or transport-level network failure. Distinguish abort vs.
+      // other errors so the recovery path only fires when WE gave up,
+      // not when the backend rejected the connection upfront.
+      const isAbort = (err as Error)?.name === "AbortError";
+      const isNetwork = (err as Error)?.name === "TypeError";
+      if (isAbort || isNetwork) {
+        const reason = isAbort ? "client abort" : "network error";
+        debugLog(`[chat] ${reason} after ${Date.now() - startTime}ms on '${name}'; attempting execution-id lookup (#914)`);
+        const receipt = await this.findRecentMcpExecution(name, mcpKeyInfo?.keyId);
+        if (receipt) {
+          return {
+            status: "queued_timeout",
+            agent: name,
+            execution_id: receipt.id,
+            message:
+              `MCP-server timeout (${timeoutMs}ms) on chat_with_agent — task is still running on '${name}'. ` +
+              `Poll get_execution_result(execution_id="${receipt.id}") instead of retrying; retry will duplicate-queue and Trinity's concurrent-duplicate guard will kill mid-execution (#914).`,
+          };
+        }
+        // No match found — rethrow with a hint so the caller knows to
+        // check the dashboard before retrying.
+        throw new Error(
+          `MCP-server timeout on chat_with_agent (${timeoutMs}ms) and no recent execution found on '${name}'. ` +
+          `Check list_recent_executions(agent_name="${name}") on the dashboard before retrying to avoid duplicate-queue (#914).`
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     // Handle 429 Too Many Requests (agent queue full)
     if (response.status === 429) {
@@ -492,6 +581,31 @@ export class TrinityClient {
     }
 
     return (await response.json()) as ChatResponse;
+  }
+
+  /**
+   * #914 recovery lookup. After the chat() fetch aborts, query the
+   * agent's recent executions and pick the newest non-terminal row that
+   * (a) was triggered through MCP, (b) carries the calling key's id if
+   * one was supplied, and (c) started within the last ~30s. The caller
+   * uses this to return a structured `queued_timeout` receipt instead of
+   * propagating `fetch failed`.
+   *
+   * Best-effort: any failure (executions endpoint unreachable, no rows,
+   * no match) returns `undefined` and the caller falls back to a clearer
+   * error message.
+   */
+  private async findRecentMcpExecution(
+    agentName: string,
+    mcpKeyId?: string,
+  ): Promise<ScheduleExecution | undefined> {
+    try {
+      const recent = await this.getAgentExecutions(agentName, 10);
+      return pickRecentMcpExecution(recent, { mcpKeyId, now: Date.now() });
+    } catch (err) {
+      debugLog(`[chat] findRecentMcpExecution failed for '${agentName}': ${(err as Error)?.message}`);
+      return undefined;
+    }
   }
 
   /**
