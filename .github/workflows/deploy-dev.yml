@@ -43,7 +43,12 @@ jobs:
             # Long-term fix is to move the build to CI + push images to a
             # registry so the dev VM is stateless (see #942). Until then, this
             # keeps deploys unblocked while preserving the audit trail.
-            STASH_MSG="auto-stash-deploy-${GITHUB_RUN_ID:-manual}"
+            # Workflow-syntax interpolation: GitHub expands `${{ github.run_id }}`
+            # at YAML render time so the literal run id is baked into the script
+            # before it ships over SSH. Using `$GITHUB_RUN_ID` here would fail
+            # silently — that env var lives on the GH Actions runner, not on
+            # the dev VM where this script actually executes.
+            STASH_MSG="auto-stash-deploy-${{ github.run_id }}"
             git stash push -u -m "${STASH_MSG}" || echo "No local changes to stash"
             git pull --ff-only origin dev
             echo "Version: $(git log -1 --oneline)"
