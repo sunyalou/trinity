@@ -3,6 +3,16 @@ services:
     build:
       context: .
       dockerfile: docker/backend/Dockerfile
+      # Build-time provenance (#926). scripts/deploy/start.sh exports these
+      # from the local repo (`git rev-parse HEAD` etc.) before compose builds.
+      # Unset = Dockerfile defaults to "unknown" so an out-of-band build still
+      # produces a well-typed /api/version response.
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        GIT_COMMIT_SUBJECT: ${GIT_COMMIT_SUBJECT:-unknown}
+        GIT_COMMIT_TIMESTAMP: ${GIT_COMMIT_TIMESTAMP:-unknown}
+        GIT_BRANCH: ${GIT_BRANCH:-unknown}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: trinity-backend
     ports:
       - "8000:8000"

@@ -1034,6 +1034,54 @@ Example:
             </div>
           </div>
 
+          <!-- Build Info Section (#926) -->
+          <div v-if="activeTab === 'general'" class="bg-white dark:bg-gray-800 shadow dark:shadow-gray-900 rounded-lg">
+            <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+              <h2 class="text-lg font-medium text-gray-900 dark:text-white">Build Info</h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Provenance of the currently-running backend image. Populated at <code>docker compose build</code> time
+                via <code>scripts/deploy/start.sh</code> (#926).
+              </p>
+            </div>
+            <div class="px-6 py-4">
+              <div v-if="buildInfo.loading.value" class="text-sm text-gray-500 dark:text-gray-400">
+                Loading…
+              </div>
+              <div v-else-if="buildInfo.error.value" class="text-sm text-status-danger-600 dark:text-status-danger-400">
+                Failed to load build info.
+              </div>
+              <dl v-else-if="buildInfo.info.value" class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+                <div>
+                  <dt class="text-gray-500 dark:text-gray-400">Version</dt>
+                  <dd class="font-mono text-gray-900 dark:text-white">{{ buildInfo.info.value.version }}</dd>
+                </div>
+                <div>
+                  <dt class="text-gray-500 dark:text-gray-400">Branch</dt>
+                  <dd class="font-mono text-gray-900 dark:text-white">{{ buildInfo.info.value.git_branch }}</dd>
+                </div>
+                <div class="sm:col-span-2">
+                  <dt class="text-gray-500 dark:text-gray-400">Commit</dt>
+                  <dd class="font-mono text-gray-900 dark:text-white">
+                    <span>{{ buildInfo.info.value.git_commit_short }}</span>
+                    <span class="ml-2 text-xs opacity-60 break-all">{{ buildInfo.info.value.git_commit }}</span>
+                  </dd>
+                </div>
+                <div class="sm:col-span-2">
+                  <dt class="text-gray-500 dark:text-gray-400">Commit subject</dt>
+                  <dd class="text-gray-900 dark:text-white break-words">{{ buildInfo.info.value.git_commit_subject }}</dd>
+                </div>
+                <div>
+                  <dt class="text-gray-500 dark:text-gray-400">Commit timestamp</dt>
+                  <dd class="font-mono text-gray-900 dark:text-white text-xs">{{ buildInfo.info.value.git_commit_timestamp }}</dd>
+                </div>
+                <div>
+                  <dt class="text-gray-500 dark:text-gray-400">Build date</dt>
+                  <dd class="font-mono text-gray-900 dark:text-white text-xs">{{ buildInfo.info.value.build_date }}</dd>
+                </div>
+              </dl>
+            </div>
+          </div>
+
           <!-- Email Whitelist Section (Phase 12.4) -->
           <div v-if="activeTab === 'access'" class="bg-white dark:bg-gray-800 shadow dark:shadow-gray-900 rounded-lg">
             <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
@@ -1724,6 +1772,7 @@ Example:
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useRole } from '../composables/useRole'
+import { useBuildInfo } from '../composables/useBuildInfo'
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 import { useSettingsStore } from '../stores/settings'
@@ -1735,6 +1784,9 @@ const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 const settingsStore = useSettingsStore()
+
+// #926: cached fetch of /api/version (singleton shared with NavBar).
+const buildInfo = useBuildInfo()
 
 const loading = ref(true)
 const saving = ref(false)
@@ -3047,6 +3099,10 @@ watch(isAdmin, (admin) => {
 onMounted(() => {
   // The non-admin-safe init runs unconditionally.
   loading.value = false  // McpKeysTab handles its own loading state
+
+  // #926: build info — non-fatal load; the General-tab panel handles
+  // loading/error states. Singleton, so a no-op when NavBar already loaded.
+  buildInfo.load().catch(() => {})
 
   // Handle Slack OAuth callback
   if (route.query.slack === 'installed') {

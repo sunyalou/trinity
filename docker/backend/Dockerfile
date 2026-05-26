@@ -5,6 +5,23 @@ WORKDIR /app
 # Install curl for healthcheck, git for GitHub cloning, libmagic for file type detection
 RUN apt-get update && apt-get install -y --no-install-recommends curl git libmagic1 && rm -rf /var/lib/apt/lists/*
 
+# Build-time provenance (#926). Each arg is forwarded by docker-compose
+# `backend.build.args` from shell vars set by `scripts/deploy/start.sh`.
+# Re-exported as ENV so the running container reads them via os.getenv()
+# and `GET /api/version` can return commit/branch/build-date for the
+# image actually in flight. Defaults to "unknown" so local builds and
+# operators who skip start.sh still get a well-typed response.
+ARG GIT_COMMIT=unknown
+ARG GIT_COMMIT_SUBJECT=unknown
+ARG GIT_COMMIT_TIMESTAMP=unknown
+ARG GIT_BRANCH=unknown
+ARG BUILD_DATE=unknown
+ENV GIT_COMMIT=${GIT_COMMIT} \
+    GIT_COMMIT_SUBJECT=${GIT_COMMIT_SUBJECT} \
+    GIT_COMMIT_TIMESTAMP=${GIT_COMMIT_TIMESTAMP} \
+    GIT_BRANCH=${GIT_BRANCH} \
+    BUILD_DATE=${BUILD_DATE}
+
 RUN pip install --no-cache-dir \
     fastapi==0.115.6 \
     uvicorn[standard]==0.37.0 \

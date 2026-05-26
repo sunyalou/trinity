@@ -1022,10 +1022,13 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now()}
 
 
-# Version endpoint
-@app.get("/api/version")
-async def get_version(current_user: User = Depends(get_current_user)):
-    """Get Trinity platform version information. Requires authentication (SEC-180)."""
+def _build_version_payload(voice_enabled: bool) -> dict:
+    """Pure dict-builder for the `/api/version` payload (#926-testable).
+
+    Extracted from the FastAPI handler so the env-var → response mapping
+    can be tested without pulling main.py's full router graph through
+    importlib (opentelemetry, slack_sdk, twilio, …).
+    """
     import os
     from pathlib import Path
 
@@ -1040,6 +1043,9 @@ async def get_version(current_user: User = Depends(get_current_user)):
             version = version_file.read_text().strip()
             break
 
+    git_commit = os.getenv("GIT_COMMIT", "unknown")
+    git_commit_short = git_commit[:8] if git_commit != "unknown" else "unknown"
+
     return {
         "version": version,
         "platform": "trinity",
@@ -1050,8 +1056,27 @@ async def get_version(current_user: User = Depends(get_current_user)):
         },
         "runtimes": ["claude-code", "gemini-cli"],
         "build_date": os.getenv("BUILD_DATE", "unknown"),
-        "voice_enabled": VOICE_ENABLED and bool(GEMINI_API_KEY),
+        "git_commit": git_commit,
+        "git_commit_short": git_commit_short,
+        "git_commit_subject": os.getenv("GIT_COMMIT_SUBJECT", "unknown"),
+        "git_commit_timestamp": os.getenv("GIT_COMMIT_TIMESTAMP", "unknown"),
+        "git_branch": os.getenv("GIT_BRANCH", "unknown"),
+        "voice_enabled": voice_enabled,
     }
+
+
+# Version endpoint
+@app.get("/api/version")
+async def get_version(current_user: User = Depends(get_current_user)):
+    """Get Trinity platform version information. Requires authentication (SEC-180).
+
+    Build-time provenance fields (#926) — `git_commit`, `git_commit_short`,
+    `git_commit_subject`, `git_commit_timestamp`, `git_branch`, `build_date` —
+    come from Dockerfile ARG/ENV wired through docker-compose
+    `backend.build.args` and `scripts/deploy/start.sh`. Default to "unknown"
+    when the build args are absent (local dev / volume-mount workflows).
+    """
+    return _build_version_payload(VOICE_ENABLED and bool(GEMINI_API_KEY))
 
 
 # User info endpoint

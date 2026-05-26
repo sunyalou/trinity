@@ -2426,6 +2426,64 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
 
 ---
 
+## 36. Build Info Surface (#926)
+
+### 36.1 Version Chip + Git Commit Detail (#926)
+- **Status**: 🚧 In Progress
+- **Implements**: Issue #926
+- **Description**: Operators need an in-app way to confirm which commit
+  is actually deployed. Pre-#926, only the `VERSION` file (semver
+  string) plus an optional `BUILD_DATE` env var were exposed via
+  `GET /api/version`. Operators had to SSH or `docker inspect` to
+  resolve "is my fix deployed?" — a recurring friction point during
+  hotfixes and incident response. This surfaces git commit + branch
+  metadata baked in at backend image build time.
+- **Backend (`GET /api/version`)** — extended payload:
+  ```json
+  {
+    "version": "0.9.0",
+    "platform": "trinity",
+    "components": { … },
+    "runtimes": ["claude-code", "gemini-cli"],
+    "build_date": "2026-05-25T14:00:00Z",
+    "git_commit": "f1ba610fab…full sha…",
+    "git_commit_short": "f1ba610f",
+    "git_commit_subject": "review(#929): drop dead accessor…",
+    "git_commit_timestamp": "2026-05-25T11:45:00+00:00",
+    "git_branch": "dev",
+    "voice_enabled": false
+  }
+  ```
+  All new fields default to `"unknown"` when the build args are
+  absent (local dev / volume-mount workflows). Endpoint stays
+  JWT-authenticated (SEC-180).
+- **Build wiring**:
+  - `docker/backend/Dockerfile` accepts `GIT_COMMIT`,
+    `GIT_COMMIT_SUBJECT`, `GIT_COMMIT_TIMESTAMP`, `GIT_BRANCH`,
+    `BUILD_DATE` as `ARG`s and re-exports each as `ENV` so the
+    runtime reads them via `os.getenv()`.
+  - `docker-compose.yml` `backend.build.args` block forwards the
+    `${GIT_COMMIT}` etc. shell vars from the environment so
+    `docker compose build` picks them up automatically.
+  - `scripts/deploy/start.sh` exports the args from the local repo
+    before the build: `git rev-parse HEAD`, `git rev-parse --abbrev-ref HEAD`,
+    `git log -1 --pretty=%s`, `git log -1 --pretty=%cI`, and
+    `date -u +%Y-%m-%dT%H:%M:%SZ`.
+- **Frontend**:
+  - `NavBar.vue` renders a small muted version chip (e.g. `v0.9.0`).
+    Click opens a modal with the full build-info block.
+  - `Settings.vue` adds a "Build Info" subsection showing version,
+    commit short SHA + full SHA, commit subject + ISO timestamp,
+    branch, build date.
+  - One-shot fetch on app mount via a `useBuildInfo()` composable
+    that caches the response — build metadata never changes at runtime.
+- **Out of scope**: per-component version drift (frontend vs
+  backend), MCP server version surface (the MCP TypeScript
+  package has its own `package.json` version), agent base-image
+  commit metadata. Follow-ups if useful.
+
+---
+
 ## Out of Scope
 
 - Multi-tenant deployment (single org only)

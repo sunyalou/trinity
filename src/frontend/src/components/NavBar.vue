@@ -75,6 +75,19 @@
             {{ isConnected ? 'Connected' : 'Disconnected' }}
           </span>
 
+          <!-- Build Info Chip (#926) — small muted version label; click opens detail modal -->
+          <button
+            v-if="buildInfo.info.value"
+            @click="showBuildInfoModal = true"
+            class="text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 font-mono"
+            :title="`Click for build info — commit ${buildInfo.info.value.git_commit_short}`"
+          >
+            v{{ buildInfo.info.value.version }}<span
+              v-if="buildInfo.info.value.git_commit_short && buildInfo.info.value.git_commit_short !== 'unknown'"
+              class="ml-1 opacity-70"
+            >· {{ buildInfo.info.value.git_commit_short }}</span>
+          </button>
+
           <!-- Theme Toggle Button -->
           <button
             @click="cycleTheme"
@@ -180,6 +193,57 @@
         </div>
       </div>
     </div>
+
+    <!-- Build Info Modal (#926) — click-out to dismiss -->
+    <div
+      v-if="showBuildInfoModal && buildInfo.info.value"
+      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+      @click.self="showBuildInfoModal = false"
+    >
+      <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-lg w-full mx-4 p-6">
+        <div class="flex justify-between items-start mb-4">
+          <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Build Info</h2>
+          <button
+            @click="showBuildInfoModal = false"
+            class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+            aria-label="Close"
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <dl class="space-y-2 text-sm">
+          <div class="flex justify-between">
+            <dt class="text-gray-500 dark:text-gray-400">Version</dt>
+            <dd class="font-mono text-gray-900 dark:text-white">{{ buildInfo.info.value.version }}</dd>
+          </div>
+          <div class="flex justify-between">
+            <dt class="text-gray-500 dark:text-gray-400">Branch</dt>
+            <dd class="font-mono text-gray-900 dark:text-white">{{ buildInfo.info.value.git_branch }}</dd>
+          </div>
+          <div class="flex justify-between">
+            <dt class="text-gray-500 dark:text-gray-400">Commit</dt>
+            <dd class="font-mono text-gray-900 dark:text-white text-right break-all">
+              <span>{{ buildInfo.info.value.git_commit_short }}</span>
+              <div class="text-xs opacity-60">{{ buildInfo.info.value.git_commit }}</div>
+            </dd>
+          </div>
+          <div class="border-t border-gray-200 dark:border-gray-700 pt-2">
+            <dt class="text-gray-500 dark:text-gray-400 mb-1">Commit subject</dt>
+            <dd class="text-gray-900 dark:text-white break-words">{{ buildInfo.info.value.git_commit_subject }}</dd>
+          </div>
+          <div class="flex justify-between">
+            <dt class="text-gray-500 dark:text-gray-400">Commit timestamp</dt>
+            <dd class="font-mono text-gray-900 dark:text-white text-xs">{{ buildInfo.info.value.git_commit_timestamp }}</dd>
+          </div>
+          <div class="flex justify-between">
+            <dt class="text-gray-500 dark:text-gray-400">Build date</dt>
+            <dd class="font-mono text-gray-900 dark:text-white text-xs">{{ buildInfo.info.value.build_date }}</dd>
+          </div>
+        </dl>
+      </div>
+    </div>
   </nav>
 </template>
 
@@ -191,6 +255,7 @@ import { useThemeStore } from '../stores/theme'
 import { useNotificationsStore } from '../stores/notifications'
 import { useOperatorQueueStore } from '../stores/operatorQueue'
 import { useWebSocket } from '../utils/websocket'
+import { useBuildInfo } from '../composables/useBuildInfo'
 import axios from 'axios'
 
 const router = useRouter()
@@ -199,6 +264,10 @@ const themeStore = useThemeStore()
 const notificationsStore = useNotificationsStore()
 const operatorQueueStore = useOperatorQueueStore()
 const { isConnected } = useWebSocket()
+
+// #926: cached fetch of /api/version (singleton across NavBar + Settings)
+const buildInfo = useBuildInfo()
+const showBuildInfoModal = ref(false)
 
 // Check if user is admin (fetch from backend)
 const userRole = ref(null)
@@ -249,6 +318,10 @@ onMounted(async () => {
 
   // Start polling for notifications
   notificationsStore.startPolling(60000)
+
+  // #926: kick off the cached build-info fetch — failures are non-fatal
+  // (chip is hidden if fetch fails; e.g., unauthenticated brief window).
+  buildInfo.load().catch(() => {})
 
   // Fetch user role from backend
   try {
