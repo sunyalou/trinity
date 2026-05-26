@@ -15,7 +15,8 @@ after merge.
 | **Phase 2a** | Agent lifecycle integration (create / start / stop / delete) as working smoke test | ✅ Merged |
 | **Phase 2b** | Auth, sharing, credentials, settings, rename integrations + request_id middleware | ✅ This PR |
 | **Phase 3** | MCP server integration — TypeScript audit logging for all tool calls | ✅ This PR |
-| **Phase 4** | Hash chain verification, CSV/JSON export, enable/disable toggle | ✅ This PR |
+| **Phase 4** | Hash chain verification, CSV/JSON export, enable/disable toggle | ✅ Merged |
+| **Phase 5** | Admin dashboard UI (`/enterprise/audit`) + distinct-value endpoints for filter dropdowns | ✅ #941 |
 
 ## User Story
 As a platform admin, I want a tamper-evident record of every administrative
@@ -29,9 +30,40 @@ and trace who modified what across the platform.
 
 ## Frontend Layer
 
-None in Phase 1. Operators query via the OpenAPI docs at `/docs` or curl until
-a Phase 4+ UI ships. The existing `/api/audit` router (which exposes Process
-Engine audit) is unchanged.
+Phase 5 (#941) adds an admin-facing dashboard at `/enterprise/audit`. The view
+ships in the OSS bundle; the route is gated by `requiresEntitlement: 'audit'`
+in `src/frontend/src/router/index.js`, so OSS-only deploys (no enterprise
+submodule mounted) bounce to the dashboard catalogue or home. Backend
+endpoints stay OSS — only the dashboard UI is enterprise-flagged.
+
+| File | Role |
+|---|---|
+| `src/frontend/src/views/enterprise/Audit.vue` | Dashboard view — filter form + paginated table + side detail panel |
+| `src/frontend/src/stores/auditLog.js` | Pinia store — entries, filters (default last 24h), pagination, distinct lists, selected entry |
+| `src/frontend/src/views/enterprise/Index.vue` | Enterprise landing — audit card flipped from `soon: true` to Available |
+| `src/frontend/src/router/index.js` | Route gate (`requiresEntitlement: 'audit'`) |
+| `src/backend/enterprise/backend/__init__.py` | Submodule entitlement registration (`register_module("audit")`) — flips the UI route from hidden to visible |
+
+### Distinct-value endpoints (#941)
+
+Two cheap aggregate endpoints feed the dashboard's filter dropdowns so the
+frontend doesn't hardcode the `event_type` / `actor_type` enums:
+
+- `GET /api/audit-log/distinct/event-types` → sorted `list[str]`
+- `GET /api/audit-log/distinct/actor-types` → sorted `list[str]`
+
+Both admin-only (`Depends(require_admin)`). Indexed source columns, low
+cardinality — sub-ms even on a million-row audit_log.
+
+### Out of scope for Phase 5
+
+These were deferred to follow-up issues — backend support already exists:
+CSV/JSON export download button, hash-chain verify button, stats tiles
+on the dashboard header, SIEM webhook push (#847 enterprise pillar).
+
+Note: the legacy `/api/audit` router (Process Engine audit) was removed in
+#430 (2026-04-24). The platform audit log at `/api/audit-log` is the only
+audit surface now.
 
 ## Backend Layer
 

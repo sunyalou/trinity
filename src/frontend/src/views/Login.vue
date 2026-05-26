@@ -111,34 +111,6 @@
             </form>
           </div>
 
-          <!-- #847 PoC — Enterprise SSO providers. Visible iff at
-               least one provider is reachable (covers SSO entitled +
-               configured). All buttons are stub-disabled; clicking
-               shows the PoC tooltip. -->
-          <div v-if="!codeSent && ssoProviders.length > 0" class="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
-            <div class="flex items-center gap-2 mb-3">
-              <div class="flex-1 h-px bg-gray-200 dark:bg-gray-700"></div>
-              <span class="text-xs uppercase tracking-wider text-gray-400 dark:text-gray-500">or sign in with</span>
-              <div class="flex-1 h-px bg-gray-200 dark:bg-gray-700"></div>
-            </div>
-            <div class="space-y-2">
-              <button
-                v-for="p in ssoProviders"
-                :key="p.provider_id"
-                type="button"
-                :title="ssoTooltip"
-                disabled
-                class="w-full flex items-center justify-center gap-3 py-3 px-4 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-700/30 hover:bg-gray-50 dark:hover:bg-gray-700 opacity-70 cursor-not-allowed transition-colors"
-              >
-                <span class="text-lg">{{ ssoIcon(p) }}</span>
-                <span>Continue with {{ p.display_name }}</span>
-              </button>
-            </div>
-            <p class="text-[10px] text-center text-gray-400 dark:text-gray-500 mt-2">
-              SSO flow is a PoC stub (issue #847). Use email or Admin login.
-            </p>
-          </div>
-
           <!-- Admin Login Option -->
           <div v-if="!codeSent" class="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
             <button
@@ -205,40 +177,10 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
 const authStore = useAuthStore()
-
-// #847 PoC — SSO provider buttons. Fetched unauthenticated from
-// `/api/enterprise/sso/providers` so the buttons render on the
-// pre-login screen. The endpoint requires entitlement; in OSS-only
-// builds it returns 404 (router not mounted) and the buttons stay
-// hidden. The PoC backend seeds two providers (Okta + Azure AD); a
-// real implementation would gate on license + persist via
-// system_settings. All buttons are stub-disabled with a tooltip.
-const ssoProviders = ref([])
-const ssoTooltip = 'SSO flow is a PoC stub (issue #847) — no real OIDC/SAML implementation yet'
-const ssoIcon = (p) => {
-  const id = p.provider_id || ''
-  if (id.startsWith('okta')) return '🅾'
-  if (id.startsWith('azure')) return 'Ⓜ'
-  if (id.startsWith('google')) return 'Ⓖ'
-  return '🔐'
-}
-async function loadSSOProviders() {
-  try {
-    // No auth header — the Login page is pre-auth. The endpoint
-    // returns 401/403/404 when not entitled or not mounted; we
-    // silently swallow and keep the providers list empty so the
-    // SSO buttons section just doesn't render.
-    const { data } = await axios.get('/api/enterprise/sso/providers')
-    ssoProviders.value = Array.isArray(data) ? data : []
-  } catch {
-    ssoProviders.value = []
-  }
-}
 
 // Local state for admin login form
 const password = ref('')
@@ -346,10 +288,6 @@ onMounted(async () => {
     router.push('/')
     return
   }
-
-  // #847 — fire-and-forget load of SSO providers. Renders below
-  // the email form when the response is non-empty.
-  loadSSOProviders()
 })
 
 // Handle admin login (username fixed as 'admin')

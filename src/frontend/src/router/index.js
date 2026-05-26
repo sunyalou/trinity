@@ -128,10 +128,10 @@ const routes = [
     meta: { requiresAuth: true, requiresAnyEntitlement: true }
   },
   {
-    path: '/enterprise/sso',
-    name: 'EnterpriseSSO',
-    component: () => import('../views/enterprise/SSO.vue'),
-    meta: { requiresAuth: true, requiresEntitlement: 'sso' }
+    path: '/enterprise/audit',
+    name: 'EnterpriseAudit',
+    component: () => import('../views/enterprise/Audit.vue'),
+    meta: { requiresAuth: true, requiresEntitlement: 'audit' }
   },
   // Mobile Admin PWA (MOB-001) — standalone, no NavBar
   {

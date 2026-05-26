@@ -8,6 +8,25 @@ Companion to:
 - [`docs/planning/OSS_ENTERPRISE_SPLIT_RESEARCH.md`](../../planning/OSS_ENTERPRISE_SPLIT_RESEARCH.md) — long-form research
 - [`docs/dev/ENTERPRISE_LOCAL_DEV.md`](../../dev/ENTERPRISE_LOCAL_DEV.md) — 15-min clone-to-running guide
 
+## Current state (#910 + #941)
+
+**What ships today:** the entitlement seam + the audit log dashboard.
+The original #847 Phase 0 PoC mounted a `/api/enterprise/sso/*` router
+with mock OIDC/SAML providers; that scaffold was removed in #910 scope
+expansion (which now closes both #847 and #941). SSO returns later with
+a real implementation, not a stub.
+
+Currently registered enterprise feature: **`audit`**. The audit log
+dashboard at `/enterprise/audit` is the first concrete enterprise UI;
+its backend endpoints stay OSS in `routers/audit_log.py` (the
+entitlement only flips the OSS-side dashboard ROUTE from hidden to
+visible). See [`audit-trail.md`](audit-trail.md) for the dashboard
+feature flow.
+
+Historical SSO snippets below are kept for reference on the seam
+pattern itself — the mechanism (try/except + `register_module()` +
+`enterprise_features` flag) is unchanged.
+
 ## Topology
 
 ```
@@ -92,10 +111,10 @@ def register_enterprise(app) -> None:
 
     from services.entitlement_service import entitlement_service
 
-    # SSO (#847 PoC) — stub endpoints only
-    from .sso.router import router as sso_router
-    app.include_router(sso_router, prefix="/api/enterprise/sso", tags=["enterprise-sso"])
-    entitlement_service.register_module("sso")
+    # Audit log dashboard (#941) — entitlement flips the OSS-side
+    # dashboard route from hidden to visible. Endpoints live in the
+    # public repo (`routers/audit_log.py`); no router mount needed here.
+    entitlement_service.register_module("audit")
 
     app.state.enterprise_registered = True
 ```

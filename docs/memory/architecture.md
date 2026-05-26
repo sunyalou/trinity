@@ -691,6 +691,8 @@ agent — detects the §P5 silent-clobber setup at fleet level.
 | GET | `/api/audit-log` | Admin | List entries (filters: event_type, actor_type, actor_id, target_type, target_id, source, start_time, end_time, limit, offset) |
 | GET | `/api/audit-log/stats` | Admin | Aggregate counts by event_type and actor_type |
 | GET | `/api/audit-log/{event_id}` | Admin | Single entry by UUID |
+| GET | `/api/audit-log/distinct/event-types` | Admin | Sorted unique `event_type` values — populates dashboard filter dropdown (#941) |
+| GET | `/api/audit-log/distinct/actor-types` | Admin | Sorted unique `actor_type` values — dashboard filter dropdown (#941) |
 | GET | `/api/audit-log/export` | Admin | Export time-range entries as `json` or `csv` (Phase 4) |
 | POST | `/api/audit-log/verify` | Admin | Verify SHA-256 hash chain over `start_id..end_id` (Phase 4) |
 | POST | `/api/audit-log/hash-chain/enable` | Admin | Toggle hash chain computation for new entries (Phase 4) |

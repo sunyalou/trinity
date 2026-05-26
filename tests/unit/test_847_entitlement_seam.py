@@ -53,18 +53,18 @@ def test_empty_registry_denies_every_feature(monkeypatch):
 
 
 def test_register_module_then_entitled(monkeypatch):
-    """After `register_module("sso")`, "sso" is entitled and listed."""
+    """After `register_module("audit")`, "audit" is entitled and listed."""
     monkeypatch.delenv("TRINITY_OSS_ONLY", raising=False)
     from services.entitlement_service import EntitlementService
 
     svc = EntitlementService()
-    svc.register_module("sso")
+    svc.register_module("audit")
     svc.register_module("scim")
 
-    assert svc.is_entitled("sso") is True
+    assert svc.is_entitled("audit") is True
     assert svc.is_entitled("scim") is True
     assert svc.is_entitled("siem") is False  # not registered
-    assert svc.list_entitled_features() == ["scim", "sso"]  # sorted
+    assert svc.list_entitled_features() == ["audit", "scim"]  # sorted
 
 
 def test_register_module_is_idempotent(monkeypatch):
@@ -74,9 +74,9 @@ def test_register_module_is_idempotent(monkeypatch):
     from services.entitlement_service import EntitlementService
 
     svc = EntitlementService()
-    svc.register_module("sso")
-    svc.register_module("sso")  # second call should be a no-op
-    assert svc.list_entitled_features() == ["sso"]
+    svc.register_module("audit")
+    svc.register_module("audit")  # second call should be a no-op
+    assert svc.list_entitled_features() == ["audit"]
 
 
 # -----------------------------------------------------------------------------
@@ -87,14 +87,14 @@ def test_register_module_is_idempotent(monkeypatch):
 @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes"])
 def test_oss_only_denies_every_feature_even_when_registered(monkeypatch, value):
     """TRINITY_OSS_ONLY hard-overrides the registry. Even after
-    `register_module("sso")`, the deny path fires."""
+    `register_module("audit")`, the deny path fires."""
     monkeypatch.setenv("TRINITY_OSS_ONLY", value)
     monkeypatch.delitem(sys.modules, "services.entitlement_service", raising=False)
     from services.entitlement_service import EntitlementService
 
     svc = EntitlementService()
-    svc.register_module("sso")  # the override wins regardless
-    assert svc.is_entitled("sso") is False
+    svc.register_module("audit")  # the override wins regardless
+    assert svc.is_entitled("audit") is False
     assert svc.list_entitled_features() == []
 
 
@@ -106,9 +106,9 @@ def test_oss_only_falsy_keeps_registry_behaviour(monkeypatch, value):
     from services.entitlement_service import EntitlementService
 
     svc = EntitlementService()
-    assert svc.is_entitled("sso") is False  # nothing registered yet
-    svc.register_module("sso")
-    assert svc.is_entitled("sso") is True
+    assert svc.is_entitled("audit") is False  # nothing registered yet
+    svc.register_module("audit")
+    assert svc.is_entitled("audit") is True
 
 
 # -----------------------------------------------------------------------------
@@ -141,11 +141,11 @@ def test_requires_entitlement_allows_when_entitled(monkeypatch):
     monkeypatch.delitem(sys.modules, "services.entitlement_service", raising=False)
     requires_entitlement = _import_requires_entitlement_or_skip(monkeypatch)
 
-    # Register "sso" so the dependency allows the call.
+    # Register "audit" so the dependency allows the call.
     from services.entitlement_service import entitlement_service
-    entitlement_service.register_module("sso")
+    entitlement_service.register_module("audit")
 
-    inner = requires_entitlement("sso")
+    inner = requires_entitlement("audit")
     assert inner() is None
 
 
@@ -157,11 +157,11 @@ def test_requires_entitlement_raises_403_when_denied(monkeypatch):
     monkeypatch.delitem(sys.modules, "services.entitlement_service", raising=False)
     requires_entitlement = _import_requires_entitlement_or_skip(monkeypatch)
 
-    inner = requires_entitlement("sso")
+    inner = requires_entitlement("audit")
     with pytest.raises(HTTPException) as exc:
         inner()
     assert exc.value.status_code == 403
-    assert "sso" in exc.value.detail
+    assert "audit" in exc.value.detail
 
 
 # -----------------------------------------------------------------------------
@@ -185,15 +185,15 @@ def test_set_for_testing_swaps_singleton(monkeypatch):
 
     ent_mod._set_for_testing(_StubFalse())
     try:
-        assert ent_mod.entitlement_service.is_entitled("sso") is False
+        assert ent_mod.entitlement_service.is_entitled("audit") is False
         assert ent_mod.entitlement_service.list_entitled_features() == []
     finally:
         ent_mod._set_for_testing(None)  # restore default
     # Restored — fresh default singleton has empty registry, so
     # still False until something calls register_module().
-    assert ent_mod.entitlement_service.is_entitled("sso") is False
-    ent_mod.entitlement_service.register_module("sso")
-    assert ent_mod.entitlement_service.is_entitled("sso") is True
+    assert ent_mod.entitlement_service.is_entitled("audit") is False
+    ent_mod.entitlement_service.register_module("audit")
+    assert ent_mod.entitlement_service.is_entitled("audit") is True
 
 
 # -----------------------------------------------------------------------------
@@ -228,4 +228,37 @@ def test_main_py_uses_conditional_enterprise_import():
     tail = src[idx : idx + 1500]
     assert "except ImportError" in tail, (
         "enterprise import must be guarded by `except ImportError`"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Static check: enterprise submodule registers `audit`, not the old SSO stub
+# -----------------------------------------------------------------------------
+
+
+def test_submodule_registers_audit_not_sso():
+    """#941: the enterprise submodule swaps the SSO PoC for `audit`
+    registration. SSO returns later with a real implementation.
+
+    Static check on `src/backend/enterprise/backend/__init__.py`. The
+    submodule may not be checked out in every CI job (OSS-only build),
+    so this test skips cleanly when the file is absent rather than
+    failing in those jobs.
+    """
+    init_path = _BACKEND / "enterprise" / "backend" / "__init__.py"
+    if not init_path.exists():
+        pytest.skip("enterprise submodule not checked out (OSS-only build)")
+
+    src = init_path.read_text(encoding="utf-8")
+
+    assert 'register_module("audit")' in src, (
+        "enterprise submodule must call register_module(\"audit\") so the "
+        "/enterprise/audit dashboard route is entitled in licensed deploys"
+    )
+    assert 'register_module("sso")' not in src, (
+        "SSO PoC stub registration was removed in #910/#941 scope expansion; "
+        "the call must not return without a real implementation"
+    )
+    assert "from .sso" not in src, (
+        "SSO submodule import was removed; the .sso package is deleted"
     )

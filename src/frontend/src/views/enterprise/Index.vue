@@ -34,7 +34,7 @@ const features = [
     description: 'SAML 2.0 + OIDC. Okta, Azure AD, Google Workspace.',
     route: '/enterprise/sso',
     entitlement: 'sso',
-    soon: false,
+    soon: true,
   },
   {
     id: 'scim',
@@ -70,7 +70,7 @@ const features = [
     description: 'Searchable platform audit trail with hash-chain verify.',
     route: '/enterprise/audit',
     entitlement: 'audit',
-    soon: true,
+    soon: false,
   },
 ]
 
@@ -97,10 +97,9 @@ const totalEntitled = computed(
         </span>
       </div>
       <p class="text-sm text-gray-500 dark:text-gray-400">
-        Compliance-gating features for Trinity Enterprise.
-        Issue
+        Compliance-gating features for Trinity Enterprise. See
         <a href="https://github.com/abilityai/trinity/issues/847" class="underline" target="_blank">#847</a>
-        — Phase 0 PoC: SSO scaffold live, other features pending.
+        for the architecture spike.
       </p>
       <p class="text-xs text-gray-400 mt-2">
         {{ totalEntitled }} of {{ cards.length }} features entitled for this instance.

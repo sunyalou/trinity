@@ -227,6 +227,29 @@ async def list_audit_log(
     )
 
 
+# ---------------------------------------------------------------------------
+# Distinct-value endpoints (#941) — populate dashboard filter dropdowns
+# without hardcoding the enum on the frontend. MUST stay above the
+# `/{event_id}` catch-all (invariant #4: static routes before parametrised).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/distinct/event-types", response_model=List[str])
+async def list_distinct_event_types(
+    _admin: User = Depends(require_admin),
+):
+    """Return sorted unique event_type values present in the audit log."""
+    return db.get_distinct_event_types()
+
+
+@router.get("/distinct/actor-types", response_model=List[str])
+async def list_distinct_actor_types(
+    _admin: User = Depends(require_admin),
+):
+    """Return sorted unique actor_type values present in the audit log."""
+    return db.get_distinct_actor_types()
+
+
 @router.get("/{event_id}", response_model=AuditLogEntry)
 async def get_audit_log_entry(
     event_id: str,

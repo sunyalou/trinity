@@ -202,6 +202,34 @@ class PlatformAuditOperations:
             )
             return [self._row_to_dict(row) for row in cursor.fetchall()]
 
+    def get_distinct_event_types(self) -> List[str]:
+        """Return sorted unique event_type values across the audit log.
+
+        Used by the dashboard (#941) to populate filter dropdowns without
+        hardcoding the enum. Indexed column + low cardinality → cheap.
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT DISTINCT event_type FROM audit_log "
+                "WHERE event_type IS NOT NULL ORDER BY event_type"
+            )
+            return [row[0] for row in cursor.fetchall()]
+
+    def get_distinct_actor_types(self) -> List[str]:
+        """Return sorted unique actor_type values across the audit log.
+
+        Companion to get_distinct_event_types — drives the actor_type
+        dropdown on the audit dashboard.
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT DISTINCT actor_type FROM audit_log "
+                "WHERE actor_type IS NOT NULL ORDER BY actor_type"
+            )
+            return [row[0] for row in cursor.fetchall()]
+
     def get_audit_stats(
         self,
         start_time: Optional[str] = None,
