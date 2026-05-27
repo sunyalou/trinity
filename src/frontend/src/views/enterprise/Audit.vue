@@ -14,7 +14,7 @@
  * Out of scope: SIEM webhook push (separate enterprise pillar),
  * sparkline chart (bundle weight), WebSocket live updates.
  */
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useAuditLogStore } from '../../stores/auditLog'
 
 const store = useAuditLogStore()
@@ -30,9 +30,21 @@ const TIME_PRESETS = [
   { key: 'all', label: 'All time' },
 ]
 
+// #941 v3.2 — single foldable card hosting both heatmap views.
+// `v-show` (not `v-if`) keeps both heatmaps mounted, so tab swaps don't
+// remount the table or re-fetch — the user can pivot between weekly
+// pattern and calendar view instantly.
+const heatmapsOpen = ref(true)
+const heatmapTab = ref('weekly')   // 'weekly' | 'calendar'
+
 onMounted(async () => {
   await store.loadDistinct()
-  await Promise.all([store.loadList(), store.loadStats()])
+  await Promise.all([
+    store.loadList(),
+    store.loadStats(),
+    store.loadHeatmap(),
+    store.loadCalendar(),
+  ])
 })
 
 // Re-load list when offset changes (pagination clicks).
@@ -72,13 +84,23 @@ function isPresetSelected(_key) {
 function applyFilters() {
   store.offset = 0
   store.activePreset = 'custom'
-  Promise.all([store.loadList(), store.loadStats()])
+  Promise.all([
+    store.loadList(),
+    store.loadStats(),
+    store.loadHeatmap(),
+    store.loadCalendar(),
+  ])
 }
 
 function resetFilters() {
   store.resetFilters()
   store.loadDistinct(true)
-  Promise.all([store.loadList(), store.loadStats()])
+  Promise.all([
+    store.loadList(),
+    store.loadStats(),
+    store.loadHeatmap(),
+    store.loadCalendar(),
+  ])
 }
 
 async function applyPreset(key) {
@@ -119,6 +141,173 @@ async function openDetail(entry) {
 
 function closeDetail() {
   store.clearSelection()
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// #941 v3 — Heatmap rendering helpers
+//
+// SQLite ``strftime('%w', ...)`` returns 0=Sunday..6=Saturday. We display
+// rows in ISO weekday order (Mon..Sun) because that matches what most
+// admins expect when scanning a "weekly pattern" chart. The reordering
+// happens here, not in the API payload — the API stays calendrically
+// canonical (Sun=0) so external tooling sees what they'd see from raw
+// SQLite.
+// ─────────────────────────────────────────────────────────────────────
+const HOURS = Array.from({ length: 24 }, (_, h) => h)
+// SQLite dow indices in ISO display order: Mon=1, Tue=2, …, Sat=6, Sun=0.
+const DOW_ROWS = [
+  { sqliteIndex: 1, label: 'Mon' },
+  { sqliteIndex: 2, label: 'Tue' },
+  { sqliteIndex: 3, label: 'Wed' },
+  { sqliteIndex: 4, label: 'Thu' },
+  { sqliteIndex: 5, label: 'Fri' },
+  { sqliteIndex: 6, label: 'Sat' },
+  { sqliteIndex: 0, label: 'Sun' },
+]
+
+const heatmapGrid = computed(() => {
+  // Build a dense 7×24 lookup from the sparse cell payload. Empty cells
+  // are rendered as zero — never as "no data" — because the dashboard
+  // already labels the time window separately.
+  const cells = store.heatmap?.cells || []
+  const byKey = new Map()
+  for (const c of cells) {
+    byKey.set(`${c.dow}-${c.hour}`, c.count)
+  }
+  return DOW_ROWS.map((row) => ({
+    label: row.label,
+    sqliteIndex: row.sqliteIndex,
+    hours: HOURS.map((h) => ({
+      hour: h,
+      count: byKey.get(`${row.sqliteIndex}-${h}`) || 0,
+    })),
+  }))
+})
+
+function heatmapCellStyle(count) {
+  // Linear opacity from the max cell count. Empty cells render as a
+  // near-transparent neutral so the grid stays legible — pure white
+  // would look like a missing tile in dark mode.
+  const max = store.heatmap?.max_count || 0
+  if (count === 0 || max === 0) {
+    return { backgroundColor: 'rgba(148, 163, 184, 0.12)' }
+  }
+  // Floor opacity at 0.18 so a "1 event" cell is still visible against
+  // the empty tint. Tailwind blue-600 (#2563eb) tracks the rest of the
+  // dashboard accents.
+  const opacity = 0.18 + 0.82 * (count / max)
+  return { backgroundColor: `rgba(37, 99, 235, ${opacity.toFixed(3)})` }
+}
+
+function heatmapCellTitle(label, hour, count) {
+  const hourLabel = String(hour).padStart(2, '0') + ':00'
+  if (count === 0) return `${label} ${hourLabel} UTC · no events`
+  return `${label} ${hourLabel} UTC · ${count} event${count === 1 ? '' : 's'}`
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// #941 v3.1 — GitHub-style calendar heatmap
+//
+// Per-day rather than dow×hour: columns are ISO calendar weeks, rows
+// are Mon..Sun. Same color ramp as the dow×hour heatmap but with its
+// own max so a quiet weekly pattern doesn't wash out a busy day.
+//
+// Click handler narrows the filter to a single UTC day, which the
+// dow×hour heatmap can't offer (its cells are recurring buckets).
+// ─────────────────────────────────────────────────────────────────────
+const MONTH_LABELS = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+]
+
+function parseIsoDate(s) {
+  // Parse 'YYYY-MM-DD' as UTC midnight. Using Date.UTC keeps the
+  // browser's local TZ from shifting the date and producing off-by-one
+  // grid cells (e.g. UTC May 25 rendering as the May 24 cell west of GMT).
+  const [y, m, d] = s.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d))
+}
+
+function isoDate(d) {
+  return d.toISOString().slice(0, 10)
+}
+
+function snapToMonday(d) {
+  // ISO week starts Monday. JS getUTCDay() is 0=Sun..6=Sat — shift so
+  // that Mon=0, Sun=6, then subtract to land on Monday.
+  const out = new Date(d)
+  const dow = (out.getUTCDay() + 6) % 7
+  out.setUTCDate(out.getUTCDate() - dow)
+  return out
+}
+
+const calendarGrid = computed(() => {
+  const days = store.calendar?.days || []
+  if (!days.length) return { weeks: [], months: [] }
+
+  const byDate = new Map(days.map((d) => [d.date, d.count]))
+  const first = parseIsoDate(days[0].date)
+  const last = parseIsoDate(days[days.length - 1].date)
+  const start = snapToMonday(first)
+  const end = new Date(last)
+  // Snap end forward to Sunday so each column is a full week.
+  const endDow = (end.getUTCDay() + 6) % 7
+  end.setUTCDate(end.getUTCDate() + (6 - endDow))
+
+  const weeks = []
+  const months = []
+  const cursor = new Date(start)
+  let lastMonth = null
+  let weekIdx = 0
+  while (cursor <= end) {
+    const col = []
+    for (let i = 0; i < 7; i++) {
+      const iso = isoDate(cursor)
+      const inRange = cursor >= first && cursor <= last
+      col.push({
+        date: iso,
+        count: byDate.get(iso) || 0,
+        inRange,
+      })
+      if (i === 0) {
+        const m = cursor.getUTCMonth()
+        if (lastMonth !== m) {
+          months.push({ weekIdx, label: MONTH_LABELS[m] })
+          lastMonth = m
+        }
+      }
+      cursor.setUTCDate(cursor.getUTCDate() + 1)
+    }
+    weeks.push(col)
+    weekIdx++
+  }
+  return { weeks, months }
+})
+
+function calendarCellStyle(count, inRange) {
+  if (!inRange) {
+    // Out-of-range pad cells stay transparent so the grid edges read
+    // as "not in window" rather than "zero events" — important when
+    // the user picks a 7d preset and most of the grid is padding.
+    return { backgroundColor: 'transparent' }
+  }
+  const max = store.calendar?.max_count || 0
+  if (count === 0 || max === 0) {
+    return { backgroundColor: 'rgba(148, 163, 184, 0.12)' }
+  }
+  const opacity = 0.18 + 0.82 * (count / max)
+  return { backgroundColor: `rgba(37, 99, 235, ${opacity.toFixed(3)})` }
+}
+
+function calendarCellTitle(cell) {
+  if (!cell.inRange) return `${cell.date} · outside window`
+  if (cell.count === 0) return `${cell.date} · no events`
+  return `${cell.date} · ${cell.count} event${cell.count === 1 ? '' : 's'} (click to filter)`
+}
+
+async function drilldownDay(cell) {
+  if (!cell.inRange || cell.count === 0) return
+  await store.drilldownToDay(cell.date)
 }
 
 function formatTimestamp(ts) {
@@ -294,6 +483,225 @@ const detailsJson = computed(() => {
         Custom
       </span>
     </div>
+
+    <!-- Unified Activity card: foldable, weekly-pattern + calendar tabs (#941 v3.2) -->
+    <section
+      class="mb-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800"
+    >
+      <!-- Sticky header: fold chevron + title + tab pills + active-tab legend. -->
+      <header class="flex items-center gap-3 flex-wrap p-4 pb-3">
+        <button
+          class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 font-mono text-xs"
+          :aria-expanded="heatmapsOpen"
+          :title="heatmapsOpen ? 'Collapse heatmaps' : 'Expand heatmaps'"
+          @click="heatmapsOpen = !heatmapsOpen"
+        >
+          {{ heatmapsOpen ? '▾' : '▸' }}
+        </button>
+        <div class="flex-shrink-0">
+          <h2 class="text-sm font-medium text-gray-700 dark:text-gray-200">Activity</h2>
+          <p class="text-[11px] text-gray-500 dark:text-gray-400">
+            <template v-if="heatmapTab === 'weekly'">
+              Weekday × hour of day · UTC · honors current filters
+            </template>
+            <template v-else>
+              One cell per UTC day · click a day to filter the dashboard to it
+            </template>
+          </p>
+        </div>
+
+        <!-- Tab pills. Disabled affordance when folded so the user understands
+             clicking a tab unfolds first. -->
+        <div
+          class="inline-flex rounded-md border border-gray-200 dark:border-gray-700 overflow-hidden text-xs"
+          role="tablist"
+        >
+          <button
+            role="tab"
+            :aria-selected="heatmapTab === 'weekly'"
+            class="px-2.5 py-1 transition"
+            :class="
+              heatmapTab === 'weekly'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'
+            "
+            @click="heatmapTab = 'weekly'; heatmapsOpen = true"
+          >
+            Weekly
+          </button>
+          <button
+            role="tab"
+            :aria-selected="heatmapTab === 'calendar'"
+            class="px-2.5 py-1 border-l border-gray-200 dark:border-gray-700 transition"
+            :class="
+              heatmapTab === 'calendar'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'
+            "
+            @click="heatmapTab = 'calendar'; heatmapsOpen = true"
+          >
+            Calendar
+          </button>
+        </div>
+
+        <div class="flex-1"></div>
+
+        <!-- Legend tracks the active tab's max_count so the swatch ramp matches
+             the cells the user is actually looking at. Hidden when folded. -->
+        <div
+          v-if="heatmapsOpen"
+          class="flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400"
+        >
+          <span>Less</span>
+          <template v-if="heatmapTab === 'weekly'">
+            <span class="inline-block w-3 h-3 rounded-sm" :style="heatmapCellStyle(0)" />
+            <span
+              class="inline-block w-3 h-3 rounded-sm"
+              :style="heatmapCellStyle(Math.max(1, Math.round((store.heatmap?.max_count || 0) * 0.25)))"
+            />
+            <span
+              class="inline-block w-3 h-3 rounded-sm"
+              :style="heatmapCellStyle(Math.max(1, Math.round((store.heatmap?.max_count || 0) * 0.5)))"
+            />
+            <span
+              class="inline-block w-3 h-3 rounded-sm"
+              :style="heatmapCellStyle(Math.max(1, Math.round((store.heatmap?.max_count || 0) * 0.75)))"
+            />
+            <span
+              class="inline-block w-3 h-3 rounded-sm"
+              :style="heatmapCellStyle(store.heatmap?.max_count || 1)"
+            />
+          </template>
+          <template v-else>
+            <span class="inline-block w-3 h-3 rounded-sm" :style="calendarCellStyle(0, true)" />
+            <span
+              class="inline-block w-3 h-3 rounded-sm"
+              :style="calendarCellStyle(Math.max(1, Math.round((store.calendar?.max_count || 0) * 0.25)), true)"
+            />
+            <span
+              class="inline-block w-3 h-3 rounded-sm"
+              :style="calendarCellStyle(Math.max(1, Math.round((store.calendar?.max_count || 0) * 0.5)), true)"
+            />
+            <span
+              class="inline-block w-3 h-3 rounded-sm"
+              :style="calendarCellStyle(Math.max(1, Math.round((store.calendar?.max_count || 0) * 0.75)), true)"
+            />
+            <span
+              class="inline-block w-3 h-3 rounded-sm"
+              :style="calendarCellStyle(store.calendar?.max_count || 1, true)"
+            />
+          </template>
+          <span>More</span>
+        </div>
+      </header>
+
+      <!-- Body: tabs share a panel; v-show keeps both DOM trees mounted so
+           switching tabs is instant and table state is preserved. -->
+      <div v-show="heatmapsOpen" class="px-4 pb-4">
+        <!-- Weekly (dow × hour) -->
+        <div v-show="heatmapTab === 'weekly'" role="tabpanel" aria-label="Weekly pattern">
+          <div v-if="store.heatmapLoading" class="text-xs text-gray-500 py-4 text-center">
+            Loading heatmap…
+          </div>
+          <div
+            v-else-if="(store.heatmap?.total || 0) === 0"
+            class="text-xs text-gray-500 py-4 text-center"
+          >
+            No events in this window.
+          </div>
+          <div v-else class="overflow-x-auto">
+            <table class="text-[10px] text-gray-500 dark:text-gray-400 border-separate" style="border-spacing: 2px">
+              <thead>
+                <tr>
+                  <th class="w-8"></th>
+                  <th
+                    v-for="h in HOURS"
+                    :key="`h-${h}`"
+                    class="font-normal text-center"
+                    style="min-width: 16px"
+                  >
+                    <span v-if="h % 3 === 0">{{ String(h).padStart(2, '0') }}</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in heatmapGrid" :key="row.label">
+                  <td class="pr-1 text-right whitespace-nowrap">{{ row.label }}</td>
+                  <td
+                    v-for="cell in row.hours"
+                    :key="`${row.label}-${cell.hour}`"
+                    class="rounded-sm"
+                    style="width: 16px; height: 16px"
+                    :style="heatmapCellStyle(cell.count)"
+                    :title="heatmapCellTitle(row.label, cell.hour, cell.count)"
+                    :aria-label="heatmapCellTitle(row.label, cell.hour, cell.count)"
+                  ></td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
+              {{ store.heatmap?.total || 0 }} events ·
+              peak {{ store.heatmap?.max_count || 0 }}/hour
+            </p>
+          </div>
+        </div>
+
+        <!-- Calendar (per-day, GitHub-style) -->
+        <div v-show="heatmapTab === 'calendar'" role="tabpanel" aria-label="Calendar">
+          <div v-if="store.calendarLoading" class="text-xs text-gray-500 py-4 text-center">
+            Loading calendar…
+          </div>
+          <div
+            v-else-if="(store.calendar?.total || 0) === 0"
+            class="text-xs text-gray-500 py-4 text-center"
+          >
+            No events in this window.
+          </div>
+          <div v-else class="overflow-x-auto">
+            <table class="text-[10px] text-gray-500 dark:text-gray-400 border-separate" style="border-spacing: 2px">
+              <thead>
+                <tr>
+                  <th class="w-8"></th>
+                  <th
+                    v-for="(_w, idx) in calendarGrid.weeks"
+                    :key="`mh-${idx}`"
+                    class="font-normal text-left"
+                    style="min-width: 14px"
+                  >
+                    <span v-for="m in calendarGrid.months.filter(mm => mm.weekIdx === idx)" :key="m.label">
+                      {{ m.label }}
+                    </span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(dow, dowIdx) in ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']" :key="dow">
+                  <td class="pr-1 text-right whitespace-nowrap">
+                    <span v-if="dowIdx % 2 === 0">{{ dow }}</span>
+                  </td>
+                  <td
+                    v-for="(week, weekIdx) in calendarGrid.weeks"
+                    :key="`c-${weekIdx}-${dowIdx}`"
+                    class="rounded-sm"
+                    :class="week[dowIdx].inRange && week[dowIdx].count > 0 ? 'cursor-pointer' : ''"
+                    style="width: 14px; height: 14px"
+                    :style="calendarCellStyle(week[dowIdx].count, week[dowIdx].inRange)"
+                    :title="calendarCellTitle(week[dowIdx])"
+                    :aria-label="calendarCellTitle(week[dowIdx])"
+                    @click="drilldownDay(week[dowIdx])"
+                  ></td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
+              {{ store.calendar?.total || 0 }} events across
+              {{ store.calendar?.days?.length || 0 }} active day{{ (store.calendar?.days?.length || 0) === 1 ? '' : 's' }} ·
+              peak {{ store.calendar?.max_count || 0 }}/day
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <!-- Filter form -->
     <section

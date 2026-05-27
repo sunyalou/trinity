@@ -17,6 +17,9 @@ after merge.
 | **Phase 3** | MCP server integration — TypeScript audit logging for all tool calls | ✅ This PR |
 | **Phase 4** | Hash chain verification, CSV/JSON export, enable/disable toggle | ✅ Merged |
 | **Phase 5** | Admin dashboard UI (`/enterprise/audit`) + distinct-value endpoints for filter dropdowns | ✅ #941 |
+| **Phase 5 v2** | Stats tiles, time-preset chips, drill-down filters, hash-chain verify badge, CSV/JSON export | ✅ #941 v2 |
+| **Phase 5 v3** | Day-of-week × hour-of-day activity heatmap | ✅ #941 v3 |
+| **Phase 5 v3.1** | GitHub-style per-day calendar heatmap with click-to-drill-down | ✅ #941 v3.1 |
 
 ## User Story
 As a platform admin, I want a tamper-evident record of every administrative
@@ -54,6 +57,55 @@ frontend doesn't hardcode the `event_type` / `actor_type` enums:
 
 Both admin-only (`Depends(require_admin)`). Indexed source columns, low
 cardinality — sub-ms even on a million-row audit_log.
+
+### Heatmap endpoint (#941 v3)
+
+`GET /api/audit-log/heatmap?start_time=…&end_time=…&event_type=…&actor_type=…`
+returns a sparse day-of-week × hour-of-day aggregation:
+
+```json
+{
+  "cells": [{"dow": 1, "hour": 9, "count": 42}, …],
+  "total": 1234,
+  "max_count": 42
+}
+```
+
+`dow` is the SQLite `strftime('%w', …)` index (Sunday=0…Saturday=6) so the
+payload stays calendrically canonical; the frontend reorders rows to ISO
+Mon…Sun for display. Honors the dashboard's current `start_time`/
+`end_time`/`event_type`/`actor_type` filters so the heatmap and the table
+view stay coherent.
+
+### Calendar endpoint (#941 v3.1)
+
+`GET /api/audit-log/calendar?start_time=…&end_time=…&event_type=…&actor_type=…`
+returns a sparse per-day aggregation (GitHub-style calendar view):
+
+```json
+{
+  "days": [{"date": "2026-05-25", "count": 234}, …],
+  "total": 6753,
+  "max_count": 740
+}
+```
+
+Complements the `/heatmap` endpoint:
+
+| Endpoint | Question it answers |
+|---|---|
+| `/heatmap` (7×24 dow×hour) | When in a *typical week* is activity heavy? |
+| `/calendar` (per-day) | Which *calendar days* were heavy? |
+
+`date` is the SQLite-formatted UTC date (`strftime('%Y-%m-%d', timestamp)`).
+Quiet days are omitted — the frontend lays the sparse pairs onto a dense
+week × day-of-week grid (Mon-top, GitHub style) and pads out-of-range
+cells as transparent so the grid edges read as "outside window".
+
+Clicking a cell calls `store.drilldownToDay(date)`, which narrows the
+filter to `[dateT00:00:00Z, dateT23:59:59Z]`, demotes the preset chip to
+`custom`, and reloads list + stats + heatmap + calendar together — the
+dashboard pivots as one unit.
 
 ### Out of scope for Phase 5
 
@@ -459,6 +511,14 @@ endpoints + the router-ordering invariant:
 | `test_distinct_actor_types_empty_table_returns_empty_list` | same, actor_types column |
 | `test_distinct_actor_types_returns_sorted_unique_list` | same, actor_types column |
 | `test_distinct_endpoints_admin_gated_and_before_catch_all` | `Depends(require_admin)` present; declared BEFORE `/{event_id}` (invariant #4) |
+| `test_heatmap_endpoint_registered_before_catch_all` | `/heatmap` admin-gated and declared BEFORE `/{event_id}` (invariant #4) |
+| `test_heatmap_buckets_by_dow_and_hour` | strftime buckets seeded rows into the correct (dow, hour) cells |
+| `test_heatmap_honors_time_and_event_type_filter` | filters narrow aggregation; time-window scoping works |
+| `test_heatmap_empty_window_returns_zero_total` | empty window → `total=0`, `max_count=0`, `cells=[]` (no exception) |
+| `test_calendar_endpoint_registered_before_catch_all` | `/calendar` admin-gated and declared BEFORE `/{event_id}` (invariant #4) |
+| `test_calendar_buckets_per_day` | same-date timestamps collapse into one cell; sorted ascending |
+| `test_calendar_honors_time_and_event_type_filters` | filters narrow per-day aggregation in lockstep with `/heatmap` |
+| `test_calendar_empty_window_returns_zero_total` | empty window → `total=0`, `max_count=0`, `days=[]` |
 | `test_distinct_endpoints_do_not_apply_entitlement_gate` | static pin: backend stays OSS (no `requires_entitlement` on audit_log endpoints) |
 
 `src/frontend/e2e/audit-dashboard.spec.js` — Playwright `@smoke`

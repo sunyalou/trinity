@@ -65,6 +65,12 @@ export const useAuditLogStore = defineStore('auditLog', {
     verifyResult: null,       // { checked, first_invalid_id?, range?: [start, end] }
     activePreset: '24h',      // '1h' | '24h' | '7d' | '30d' | 'all' | 'custom'
     exporting: false,
+    // #941 v3 — heatmap (day-of-week × hour-of-day)
+    heatmap: null,            // { cells: [{dow, hour, count}], total, max_count }
+    heatmapLoading: false,
+    // #941 v3.1 — GitHub-style per-day calendar
+    calendar: null,           // { days: [{date, count}], total, max_count }
+    calendarLoading: false,
   }),
 
   getters: {
@@ -249,6 +255,74 @@ export const useAuditLogStore = defineStore('auditLog', {
     // #941 v2 — dashboard expansion
     // ─────────────────────────────────────────────────────────────────────
 
+    /** Reload the day-of-week × hour-of-day heatmap over the current window. */
+    async loadHeatmap() {
+      const authStore = useAuthStore()
+      if (!authStore.isAuthenticated) return
+      this.heatmapLoading = true
+      try {
+        const params = {}
+        if (this.filters.start_time) params.start_time = this.filters.start_time
+        if (this.filters.end_time) params.end_time = this.filters.end_time
+        // Honor active filter narrowing so the heatmap matches the table.
+        if (this.filters.event_type) params.event_type = this.filters.event_type
+        if (this.filters.actor_type) params.actor_type = this.filters.actor_type
+        const r = await axios.get('/api/audit-log/heatmap', {
+          headers: authStore.authHeader,
+          params,
+        })
+        this.heatmap = r.data || null
+      } catch (e) {
+        this.heatmap = null
+      } finally {
+        this.heatmapLoading = false
+      }
+    },
+
+    /** Reload the GitHub-style per-day calendar over the current window. */
+    async loadCalendar() {
+      const authStore = useAuthStore()
+      if (!authStore.isAuthenticated) return
+      this.calendarLoading = true
+      try {
+        const params = {}
+        if (this.filters.start_time) params.start_time = this.filters.start_time
+        if (this.filters.end_time) params.end_time = this.filters.end_time
+        if (this.filters.event_type) params.event_type = this.filters.event_type
+        if (this.filters.actor_type) params.actor_type = this.filters.actor_type
+        const r = await axios.get('/api/audit-log/calendar', {
+          headers: authStore.authHeader,
+          params,
+        })
+        this.calendar = r.data || null
+      } catch (e) {
+        this.calendar = null
+      } finally {
+        this.calendarLoading = false
+      }
+    },
+
+    /**
+     * Narrow the filter to a single UTC day. Used by the calendar
+     * heatmap click handler — clicking 2026-05-18 sets the window to
+     * 2026-05-18T00:00:00Z..2026-05-18T23:59:59Z, demotes the preset
+     * chip to 'custom', and reloads list + stats + heatmap + calendar
+     * so the whole dashboard pivots together.
+     */
+    async drilldownToDay(dateIso) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateIso || '')) return
+      this.filters.start_time = `${dateIso}T00:00:00Z`
+      this.filters.end_time = `${dateIso}T23:59:59Z`
+      this.activePreset = 'custom'
+      this.offset = 0
+      await Promise.all([
+        this.loadList(),
+        this.loadStats(),
+        this.loadHeatmap(),
+        this.loadCalendar(),
+      ])
+    },
+
     /** Reload the stats aggregate over the current time window. */
     async loadStats() {
       const authStore = useAuthStore()
@@ -289,7 +363,12 @@ export const useAuditLogStore = defineStore('auditLog', {
       }
       this.activePreset = key
       this.offset = 0
-      await Promise.all([this.loadList(), this.loadStats()])
+      await Promise.all([
+        this.loadList(),
+        this.loadStats(),
+        this.loadHeatmap(),
+        this.loadCalendar(),
+      ])
     },
 
     /**
@@ -302,7 +381,12 @@ export const useAuditLogStore = defineStore('auditLog', {
       this.filters[key] = value || ''
       this.offset = 0
       this.activePreset = 'custom'
-      await Promise.all([this.loadList(), this.loadStats()])
+      await Promise.all([
+        this.loadList(),
+        this.loadStats(),
+        this.loadHeatmap(),
+        this.loadCalendar(),
+      ])
     },
 
     /**

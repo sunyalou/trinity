@@ -690,6 +690,8 @@ agent — detects the §P5 silent-clobber setup at fleet level.
 |--------|------|------|-------------|
 | GET | `/api/audit-log` | Admin | List entries (filters: event_type, actor_type, actor_id, target_type, target_id, source, start_time, end_time, limit, offset) |
 | GET | `/api/audit-log/stats` | Admin | Aggregate counts by event_type and actor_type |
+| GET | `/api/audit-log/heatmap` | Admin | Day-of-week × hour-of-day activity heatmap (sparse 7×24 grid). Honors `start_time`/`end_time` and optional `event_type`/`actor_type` filters (#941 v3) |
+| GET | `/api/audit-log/calendar` | Admin | GitHub-style per-day calendar heatmap (sparse `[{date, count}]`). Same filters as `/heatmap`; complement view — *when* in calendar time vs. the *weekly pattern* from `/heatmap` (#941 v3.1) |
 | GET | `/api/audit-log/{event_id}` | Admin | Single entry by UUID |
 | GET | `/api/audit-log/distinct/event-types` | Admin | Sorted unique `event_type` values — populates dashboard filter dropdown (#941) |
 | GET | `/api/audit-log/distinct/actor-types` | Admin | Sorted unique `actor_type` values — dashboard filter dropdown (#941) |

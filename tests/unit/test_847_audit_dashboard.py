@@ -241,6 +241,238 @@ def test_distinct_endpoints_admin_gated_and_before_catch_all():
     )
 
 
+def test_heatmap_endpoint_registered_before_catch_all():
+    """The #941 v3 heatmap endpoint follows the same ordering rule as
+    /distinct/* — must be declared above /{event_id} catch-all so FastAPI
+    doesn't route ``/heatmap`` into ``get_audit_log_entry`` (silent 404).
+    Admin-gated like every other audit-log endpoint.
+    """
+    src = (_BACKEND / "routers" / "audit_log.py").read_text(encoding="utf-8")
+
+    idx_heatmap = src.find('@router.get("/heatmap"')
+    idx_catch_all = src.find('@router.get("/{event_id}"')
+
+    assert idx_heatmap != -1, "heatmap endpoint missing"
+    assert idx_catch_all != -1, "/{event_id} endpoint missing"
+    assert idx_heatmap < idx_catch_all, (
+        "/heatmap must be declared BEFORE /{event_id} (invariant #4)"
+    )
+
+    next_after_heatmap = min(
+        i
+        for i in [
+            src.find("\n@", idx_heatmap + 1),
+            len(src),
+        ]
+        if i != -1 and i > idx_heatmap
+    )
+    handler_src = src[idx_heatmap:next_after_heatmap]
+    assert "Depends(require_admin)" in handler_src, (
+        "/heatmap must be admin-gated (Depends(require_admin))"
+    )
+
+
+def _insert_at(
+    db_path: Path,
+    *,
+    event_id: str,
+    timestamp: str,
+    event_type: str = "test",
+    actor_type: str = "system",
+) -> None:
+    """Insert an audit row with an explicit timestamp (heatmap fixtures)."""
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        INSERT INTO audit_log
+            (event_id, event_type, event_action, actor_type, timestamp, source)
+        VALUES (?, ?, ?, ?, ?, 'api')
+        """,
+        (event_id, event_type, "noop", actor_type, timestamp),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_heatmap_buckets_by_dow_and_hour(audit_ops, tmp_path):
+    """SQLite strftime buckets the audit_log timestamps into a 7×24 grid.
+
+    Seeded rows pick known ISO timestamps so the test is independent of
+    "now". 2026-05-25 was a Monday (dow=1); 2026-05-24 was a Sunday
+    (dow=0). Each row's hour-of-day is the second strftime axis.
+    """
+    db_path = tmp_path / "trinity.db"
+
+    # Monday 09:00 UTC × 2, Monday 14:00 UTC × 1, Sunday 23:00 UTC × 1.
+    _insert_at(db_path, event_id="m1", timestamp="2026-05-25T09:15:00Z")
+    _insert_at(db_path, event_id="m2", timestamp="2026-05-25T09:45:00Z")
+    _insert_at(db_path, event_id="m3", timestamp="2026-05-25T14:02:00Z")
+    _insert_at(db_path, event_id="s1", timestamp="2026-05-24T23:59:00Z")
+
+    result = audit_ops.get_audit_heatmap()
+
+    assert result["total"] == 4
+    assert result["max_count"] == 2
+    cells = {(c["dow"], c["hour"]): c["count"] for c in result["cells"]}
+    assert cells[(1, 9)] == 2   # Monday 09:00
+    assert cells[(1, 14)] == 1  # Monday 14:00
+    assert cells[(0, 23)] == 1  # Sunday 23:00
+
+
+def test_heatmap_honors_time_and_event_type_filter(audit_ops, tmp_path):
+    """Time-window and event_type filters narrow the heatmap aggregation —
+    must match the table view's filter semantics so the dashboard stays
+    coherent when a user drills down by clicking a stats tile.
+    """
+    db_path = tmp_path / "trinity.db"
+
+    _insert_at(
+        db_path,
+        event_id="a1",
+        timestamp="2026-05-25T09:00:00Z",
+        event_type="agent_lifecycle",
+    )
+    _insert_at(
+        db_path,
+        event_id="a2",
+        timestamp="2026-05-25T10:00:00Z",
+        event_type="authentication",
+    )
+    _insert_at(
+        db_path,
+        event_id="a3",
+        timestamp="2026-05-26T11:00:00Z",
+        event_type="agent_lifecycle",
+    )
+
+    filtered = audit_ops.get_audit_heatmap(event_type="agent_lifecycle")
+    assert filtered["total"] == 2
+    by_hour = {c["hour"]: c["count"] for c in filtered["cells"]}
+    assert by_hour == {9: 1, 11: 1}
+
+    windowed = audit_ops.get_audit_heatmap(
+        start_time="2026-05-26T00:00:00Z",
+        end_time="2026-05-26T23:59:59Z",
+    )
+    assert windowed["total"] == 1
+    assert windowed["cells"] == [{"dow": 2, "hour": 11, "count": 1}]
+
+
+def test_heatmap_empty_window_returns_zero_total(audit_ops):
+    """An empty audit_log (or empty window) returns total=0 / max_count=0
+    rather than raising — the frontend renders an "no events" placeholder
+    in that case, not an error toast.
+    """
+    result = audit_ops.get_audit_heatmap()
+    assert result == {"cells": [], "total": 0, "max_count": 0}
+
+
+# ---------------------------------------------------------------------------
+# Calendar (#941 v3.1) — GitHub-style per-day heatmap
+# ---------------------------------------------------------------------------
+
+
+def test_calendar_endpoint_registered_before_catch_all():
+    """`/calendar` must obey invariant #4 — declared before `/{event_id}`
+    so FastAPI doesn't route ``/calendar`` to `get_audit_log_entry` and
+    silently 404 the dashboard.
+    """
+    src = (_BACKEND / "routers" / "audit_log.py").read_text(encoding="utf-8")
+
+    idx_calendar = src.find('@router.get("/calendar"')
+    idx_catch_all = src.find('@router.get("/{event_id}"')
+
+    assert idx_calendar != -1, "calendar endpoint missing"
+    assert idx_catch_all != -1, "/{event_id} endpoint missing"
+    assert idx_calendar < idx_catch_all, (
+        "/calendar must be declared BEFORE /{event_id} (invariant #4)"
+    )
+
+    next_after_calendar = min(
+        i
+        for i in [
+            src.find("\n@", idx_calendar + 1),
+            len(src),
+        ]
+        if i != -1 and i > idx_calendar
+    )
+    handler_src = src[idx_calendar:next_after_calendar]
+    assert "Depends(require_admin)" in handler_src, (
+        "/calendar must be admin-gated (Depends(require_admin))"
+    )
+
+
+def test_calendar_buckets_per_day(audit_ops, tmp_path):
+    """Per-day GROUP BY collapses same-date timestamps into one cell.
+
+    Three rows on 2026-05-25 + one row on 2026-05-26 → two days with
+    counts 3 and 1, ordered ascending by date.
+    """
+    db_path = tmp_path / "trinity.db"
+
+    _insert_at(db_path, event_id="d1", timestamp="2026-05-25T01:00:00Z")
+    _insert_at(db_path, event_id="d2", timestamp="2026-05-25T09:00:00Z")
+    _insert_at(db_path, event_id="d3", timestamp="2026-05-25T23:00:00Z")
+    _insert_at(db_path, event_id="d4", timestamp="2026-05-26T11:00:00Z")
+
+    result = audit_ops.get_audit_calendar()
+
+    assert result["total"] == 4
+    assert result["max_count"] == 3
+    assert result["days"] == [
+        {"date": "2026-05-25", "count": 3},
+        {"date": "2026-05-26", "count": 1},
+    ]
+
+
+def test_calendar_honors_time_and_event_type_filters(audit_ops, tmp_path):
+    """Filters narrow the per-day aggregation the same way the dow×hour
+    heatmap does — keeps the two visualizations coherent under drill-down.
+    """
+    db_path = tmp_path / "trinity.db"
+
+    _insert_at(
+        db_path,
+        event_id="f1",
+        timestamp="2026-05-25T09:00:00Z",
+        event_type="agent_lifecycle",
+    )
+    _insert_at(
+        db_path,
+        event_id="f2",
+        timestamp="2026-05-26T09:00:00Z",
+        event_type="authentication",
+    )
+    _insert_at(
+        db_path,
+        event_id="f3",
+        timestamp="2026-05-27T09:00:00Z",
+        event_type="agent_lifecycle",
+    )
+
+    filtered = audit_ops.get_audit_calendar(event_type="agent_lifecycle")
+    assert filtered["total"] == 2
+    assert filtered["days"] == [
+        {"date": "2026-05-25", "count": 1},
+        {"date": "2026-05-27", "count": 1},
+    ]
+
+    windowed = audit_ops.get_audit_calendar(
+        start_time="2026-05-26T00:00:00Z",
+        end_time="2026-05-26T23:59:59Z",
+    )
+    assert windowed["days"] == [{"date": "2026-05-26", "count": 1}]
+    assert windowed["max_count"] == 1
+
+
+def test_calendar_empty_window_returns_zero_total(audit_ops):
+    """Empty audit_log (or window with no rows) yields the zeroed shape
+    the frontend's "no events" placeholder branch expects.
+    """
+    result = audit_ops.get_audit_calendar()
+    assert result == {"days": [], "total": 0, "max_count": 0}
+
+
 def test_distinct_endpoints_do_not_apply_entitlement_gate():
     """#941 premise 3 (revised): the audit-log endpoints — including the
     new distinct ones — stay OSS. Only the OSS-side dashboard ROUTE is

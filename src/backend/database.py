@@ -1963,6 +1963,36 @@ class DatabaseManager:
         """Aggregate counts by event_type and actor_type for the dashboard."""
         return self._audit_ops.get_audit_stats(start_time=start_time, end_time=end_time)
 
+    def get_audit_heatmap(
+        self,
+        start_time: str = None,
+        end_time: str = None,
+        event_type: str = None,
+        actor_type: str = None,
+    ):
+        """Bucket audit rows into a 7×24 dow×hour heatmap grid (#941 v3)."""
+        return self._audit_ops.get_audit_heatmap(
+            start_time=start_time,
+            end_time=end_time,
+            event_type=event_type,
+            actor_type=actor_type,
+        )
+
+    def get_audit_calendar(
+        self,
+        start_time: str = None,
+        end_time: str = None,
+        event_type: str = None,
+        actor_type: str = None,
+    ):
+        """Per-day audit counts for the GitHub-style calendar (#941 v3.1)."""
+        return self._audit_ops.get_audit_calendar(
+            start_time=start_time,
+            end_time=end_time,
+            event_type=event_type,
+            actor_type=actor_type,
+        )
+
     def get_distinct_event_types(self):
         """Distinct event_type values across audit_log (sorted)."""
         return self._audit_ops.get_distinct_event_types()
