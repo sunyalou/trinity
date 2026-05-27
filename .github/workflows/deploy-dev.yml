@@ -36,11 +36,36 @@ jobs:
             git pull origin dev
             echo "Version: $(git log -1 --oneline)"
 
+            echo "=== Submodule (enterprise) ==="
+            # #847 — try to init the private trinity-enterprise submodule
+            # so the dev deploy lights up enterprise features (audit
+            # dashboard, etc.). If the VM lacks read access to the private
+            # repo, this is a non-fatal warning — the conditional import
+            # in main.py falls back to OSS-only mode and the deploy
+            # continues. Enterprise UI surfaces simply stay hidden.
+            if git submodule update --init --recursive src/backend/enterprise; then
+              ENT_SHA=$(git -C src/backend/enterprise rev-parse --short HEAD 2>/dev/null || echo "unknown")
+              echo "ENTERPRISE: initialized at ${ENT_SHA}"
+            else
+              echo "::warning::Enterprise submodule init failed — deploying in OSS-only mode"
+              echo "ENTERPRISE: confirm the dev VM has read access to Abilityai/trinity-enterprise"
+              echo "ENTERPRISE: (deploy key, PAT in a credential helper, or org membership all work)"
+            fi
+
+            # Compose file list: base prod + enterprise overlay. The
+            # overlay bind-mounts ./src/backend/enterprise into
+            # /app/enterprise inside the backend container. If the
+            # submodule init above failed, the host directory will be
+            # empty (or contain just .git), and the conditional import
+            # in main.py will fall through to OSS-only mode — same
+            # outcome as if the overlay weren't applied.
+            COMPOSE_FILES="-f docker-compose.prod.yml -f docker-compose.prod.enterprise.yml"
+
             echo "=== Build ==="
-            sudo docker compose -f docker-compose.prod.yml build --no-cache backend frontend mcp-server scheduler
+            sudo docker compose ${COMPOSE_FILES} build --no-cache backend frontend mcp-server scheduler
 
             echo "=== Restart ==="
-            sudo docker compose -f docker-compose.prod.yml up -d backend frontend mcp-server scheduler
+            sudo docker compose ${COMPOSE_FILES} up -d backend frontend mcp-server scheduler
 
             echo "=== Health ==="
             sleep 10

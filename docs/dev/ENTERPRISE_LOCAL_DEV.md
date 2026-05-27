@@ -154,6 +154,54 @@ docker logs trinity-backend 2>&1 | grep -i enterprise
 # → INFO  Trinity Enterprise submodule not present — OSS-only build
 ```
 
+## Dev VM deploy (production-style, with enterprise)
+
+The `Deploy to Dev` workflow (`.github/workflows/deploy-dev.yml`) runs
+on every push to `dev` and SSHes into the shared dev VM to rebuild.
+On each deploy it attempts to init the `src/backend/enterprise/`
+submodule and layers the enterprise compose overlay on top of
+`docker-compose.prod.yml`:
+
+```bash
+git submodule update --init --recursive src/backend/enterprise   # soft-fail
+docker compose -f docker-compose.prod.yml \
+               -f docker-compose.prod.enterprise.yml \
+               build ...
+```
+
+If the submodule init succeeds, the dev VM boots with
+`enterprise_features: ["audit", ...]` and `/enterprise/audit` is live.
+If it fails (no GitHub access to the private repo, network hiccup, …)
+the workflow logs a `::warning::` annotation, **does not fail the
+deploy**, and the backend's conditional `from enterprise.backend
+import register_enterprise` falls back to OSS-only — enterprise UI
+surfaces stay hidden until the next deploy succeeds.
+
+The overlay (`docker-compose.prod.enterprise.yml`) is a single read-only
+bind-mount of `./src/backend/enterprise` into `/app/enterprise`. The
+base prod image stays bit-identical to OSS — no Dockerfile change.
+
+### Enabling enterprise on the dev VM
+
+The dev VM needs **read access to `Abilityai/trinity-enterprise`** for
+the submodule init to succeed. Any of these works — pick whatever fits
+how the VM already authenticates to GitHub:
+
+- **Org membership**: if the VM clones via an identity that's a member
+  of the Abilityai org, grant that identity read on `trinity-enterprise`.
+- **Deploy key**: add a read-only deploy key on `trinity-enterprise`
+  whose private half lives on the VM.
+- **PAT in a credential helper**: a fine-grained PAT with read on
+  `trinity-enterprise`, registered via `git config --global
+  credential.helper`.
+
+After the access is in place, push to `dev` (or trigger the workflow
+manually). The workflow log should show
+`ENTERPRISE: initialized at <sha>` instead of the warning.
+
+If the dev VM never gains private-repo access, the workflow keeps
+deploying OSS-only indefinitely — no action required.
+
 ## CI: testing without the submodule
 
 `.github/workflows/build-without-submodule.yml` boots the backend with
