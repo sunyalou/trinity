@@ -31,10 +31,12 @@ pytestmark = pytest.mark.unit
 _BACKEND = Path(__file__).resolve().parent.parent.parent / "src" / "backend"
 
 
-def _load(name: str, path: Path):
+def _load(monkeypatch, name: str, path: Path):
+    """Load a module from `path` and route its sys.modules insert through
+    monkeypatch so the sys-modules-pollution lint doesn't flag this file."""
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
+    monkeypatch.setitem(sys.modules, name, module)
     spec.loader.exec_module(module)
     return module
 
@@ -79,8 +81,8 @@ def audit_ops(tmp_path, monkeypatch):
     conn.close()
 
     # Force-reload db/connection.py so it picks up the new TRINITY_DB_PATH.
-    sys.modules.pop("_audashb_db_connection", None)
-    _load("_audashb_db_connection", _BACKEND / "db" / "connection.py")
+    monkeypatch.delitem(sys.modules, "_audashb_db_connection", raising=False)
+    _load(monkeypatch, "_audashb_db_connection", _BACKEND / "db" / "connection.py")
 
     db_pkg = type(sys)("db")
     db_pkg.__path__ = [str(_BACKEND / "db")]
@@ -89,12 +91,7 @@ def audit_ops(tmp_path, monkeypatch):
         sys.modules, "db.connection", sys.modules["_audashb_db_connection"]
     )
 
-    spec = importlib.util.spec_from_file_location(
-        "db.audit", str(_BACKEND / "db" / "audit.py")
-    )
-    audit_mod = importlib.util.module_from_spec(spec)
-    sys.modules["db.audit"] = audit_mod
-    spec.loader.exec_module(audit_mod)
+    audit_mod = _load(monkeypatch, "db.audit", _BACKEND / "db" / "audit.py")
     return audit_mod.PlatformAuditOperations()
 
 
