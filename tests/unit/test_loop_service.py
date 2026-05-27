@@ -26,14 +26,47 @@ import pytest
 _THIS = Path(__file__).resolve()
 _BACKEND = _THIS.parent.parent.parent / "src" / "backend"
 _BACKEND_STR = str(_BACKEND)
-for _shadow in ("utils", "utils.api_client", "utils.assertions", "utils.cleanup"):
-    sys.modules.pop(_shadow, None)
+
+# Modules this test shadows by clearing them from sys.modules before
+# re-importing the src/backend-rooted versions. Declared as a top-level
+# list so the autouse fixture below can save+restore them, preventing
+# pollution into sibling test files (matches the precedent in
+# tests/unit/test_telegram_webhook_backfill.py — required by the
+# sys-modules lint baseline).
+_STUBBED_MODULE_NAMES = (
+    "utils",
+    "utils.api_client",
+    "utils.assertions",
+    "utils.cleanup",
+)
+for _shadow in _STUBBED_MODULE_NAMES:
+    sys.modules.pop(_shadow, None)  # noqa: lint-allowed via _restore_sys_modules
 while _BACKEND_STR in sys.path:
     sys.path.remove(_BACKEND_STR)
 sys.path.insert(0, _BACKEND_STR)
 
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_modules():
+    """Snapshot the shadowed `utils*` modules and restore after each test.
+
+    The bootstrap above swaps the test-runner's top-level `utils` package
+    for `src/backend/utils` so LoopService's imports resolve. Without
+    this fixture, the swap would leak into sibling test files that
+    depend on the original `tests/unit/utils/*` helpers.
+    """
+    saved = {name: sys.modules.get(name) for name in _STUBBED_MODULE_NAMES}
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = value
 
 
 # ---------------------------------------------------------------------------
