@@ -87,6 +87,35 @@ jobs:
             # outcome as if the overlay weren't applied.
             COMPOSE_FILES="-f docker-compose.prod.yml -f docker-compose.prod.enterprise.yml"
 
+            echo "=== Volume ownership (#874 / #958) ==="
+            # Backend + scheduler run as UID 1000 (issue #874). Existing
+            # deployments rolled before #874 still have data paths owned by
+            # root from the prior root-container era. The first migration to
+            # actually UPDATE existing rows (#922's null_legacy_schedule_
+            # timeouts) hits "attempt to write a readonly database" on
+            # startup, /health returns 503 forever, deploy times out.
+            # Canonical recipe: docs/migrations/NON_ROOT_CONTAINERS_2026-05.md.
+            # Both checks are idempotent — silent no-ops on healthy VMs.
+            TRINITY_DATA_PATH="${TRINITY_DATA_PATH:-./trinity-data}"
+            if [ -d "$TRINITY_DATA_PATH" ]; then
+              DATA_UID=$(stat -c %u "$TRINITY_DATA_PATH")
+              if [ "$DATA_UID" != "1000" ]; then
+                echo "Re-owning $TRINITY_DATA_PATH from UID=$DATA_UID to UID=1000"
+                sudo chown -R 1000:1000 "$TRINITY_DATA_PATH"
+              fi
+            fi
+            # agent-configs is a named volume; check + chown via ephemeral
+            # alpine container running as root.
+            PROJECT=$(basename "$PWD")
+            VOL_NAME="${PROJECT}_agent-configs"
+            if sudo docker volume inspect "$VOL_NAME" >/dev/null 2>&1; then
+              VOL_UID=$(sudo docker run --rm -v "$VOL_NAME:/v" alpine stat -c %u /v 2>/dev/null || echo "0")
+              if [ "$VOL_UID" != "1000" ]; then
+                echo "Re-owning volume $VOL_NAME from UID=$VOL_UID to UID=1000"
+                sudo docker run --rm -v "$VOL_NAME:/v" --user 0 alpine chown -R 1000:1000 /v
+              fi
+            fi
+
             echo "=== Build ==="
             # Build-time provenance (#926 / #958). docker-compose.prod.yml
             # backend.build.args reads these env vars; absent them, the
