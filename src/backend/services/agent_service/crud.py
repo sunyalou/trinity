@@ -4,6 +4,7 @@ Agent Service CRUD - Agent creation and deletion operations.
 Contains the core logic for creating and deleting agents.
 """
 import os
+import re
 import json
 import docker
 import logging
@@ -36,6 +37,39 @@ from .helpers import validate_base_image
 from .lifecycle import RESTRICTED_CAPABILITIES, FULL_CAPABILITIES
 
 logger = logging.getLogger(__name__)
+
+# Allowed chars in a `local:`-prefixed template name. Strict enough to
+# block path traversal (`..`, `/`, `\`, leading dots) so the templates
+# directory join in `create_agent_internal` can't escape into arbitrary
+# filesystem reads (CodeQL py/path-injection on #950 PR).
+_LOCAL_TEMPLATE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+
+
+def _validate_local_template_name(template_name: str) -> str:
+    """Reject template names that could traverse out of the templates dir.
+
+    `config.template` is user-supplied; the `local:` prefix is stripped
+    and the remainder is joined onto `/agent-configs/templates` or
+    `/data/deployed-templates` before `.exists()` / `open()` calls. A
+    name like `../../etc` would resolve outside the templates dir.
+    Raises HTTPException(400) on rejection.
+    """
+    if (
+        not template_name
+        or ".." in template_name
+        or not _LOCAL_TEMPLATE_NAME_RE.match(template_name)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": (
+                    f"Invalid local template name {template_name!r}: must match "
+                    f"[a-zA-Z0-9][a-zA-Z0-9_.-]* with no '..' segments."
+                ),
+                "code": "INVALID_LOCAL_TEMPLATE_NAME",
+            },
+        )
+    return template_name
 
 
 def _get_default_resource(key: str) -> str:
@@ -276,8 +310,9 @@ async def create_agent_internal(
         elif config.template.startswith("local:"):
             # Local template - strip "local:" prefix. Look in curated catalog
             # first (/agent-configs/templates), then in deploy-local writable
-            # store (/data/deployed-templates) per #950.
-            template_name = config.template[6:]
+            # store (/data/deployed-templates) per #950. Name is validated
+            # before any filesystem join to block traversal.
+            template_name = _validate_local_template_name(config.template[6:])
             template_path = Path("/agent-configs/templates") / template_name
             if not (template_path / "template.yaml").exists():
                 template_path = Path("/data/deployed-templates") / template_name
@@ -374,7 +409,7 @@ async def create_agent_internal(
             # backend's /data and the agent's host bind resolving to the
             # same host path, which was true in prod compose (host bind)
             # but not in dev compose (named volume).
-            template_name = config.template[6:]
+            template_name = _validate_local_template_name(config.template[6:])
             curated_path = Path("/agent-configs/templates") / template_name
             if curated_path.exists():
                 host_templates_base = os.getenv("HOST_TEMPLATES_PATH", "./config/agent-templates")
