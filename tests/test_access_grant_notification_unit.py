@@ -28,6 +28,30 @@ if _backend_path not in sys.path:
     sys.path.insert(0, _backend_path)
 
 
+# Modules stubbed by the fixture below — snapshot/restored around each test so
+# the stubs don't leak into sibling test files. Pattern matches
+# tests/unit/test_telegram_webhook_backfill.py (see tests/lint_sys_modules.py).
+_STUBBED_MODULE_NAMES = [
+    "database",
+    "services.platform_audit_service",
+    "services.proactive_message_service",
+    "proactive_message_service",
+]
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_modules():
+    saved = {name: sys.modules.get(name) for name in _STUBBED_MODULE_NAMES}
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = value
+
+
 @pytest.fixture
 def proactive_service(monkeypatch):
     """Load ProactiveMessageService with stubbed database + audit modules."""
@@ -48,12 +72,11 @@ def proactive_service(monkeypatch):
         sys.modules, "services.platform_audit_service", fake_audit_mod
     )
 
-    for mod in (
-        "services.proactive_message_service",
-        "proactive_message_service",
-    ):
-        if mod in sys.modules:
-            del sys.modules[mod]
+    # Force a fresh import so the stubs above take effect. The
+    # autouse `_restore_sys_modules` fixture above puts the prior
+    # cached modules back, so this is safe.
+    monkeypatch.delitem(sys.modules, "services.proactive_message_service", raising=False)
+    monkeypatch.delitem(sys.modules, "proactive_message_service", raising=False)
 
     from services.proactive_message_service import ProactiveMessageService
 
