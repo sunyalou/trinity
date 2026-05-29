@@ -1050,6 +1050,13 @@ Example:
               <div v-else-if="buildInfo.error.value" class="text-sm text-status-danger-600 dark:text-status-danger-400">
                 Failed to load build info.
               </div>
+              <div
+                v-else-if="buildInfo.isMissing.value"
+                class="text-sm text-gray-600 dark:text-gray-400"
+              >
+                Build metadata not available — rebuild with
+                <code class="font-mono">scripts/deploy/start.sh</code> to populate.
+              </div>
               <dl v-else-if="buildInfo.info.value" class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
                 <div>
                   <dt class="text-gray-500 dark:text-gray-400">Version</dt>

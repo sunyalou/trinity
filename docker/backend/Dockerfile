@@ -77,6 +77,11 @@ COPY ../../src/backend/canary /app/canary/
 COPY ../../config/process-docs /app/config/process-docs/
 COPY ../../config/process-templates /app/config/process-templates/
 
+# Platform version file — read by /api/version (#958). The dev compose also
+# bind-mounts ./VERSION:/app/VERSION:ro for hot edits, but prod compose
+# doesn't, so without this COPY the version field falls back to "unknown".
+COPY ../../VERSION /app/VERSION
+
 # Ensure all files are readable
 RUN chmod -R 644 /app/*.py && \
     chmod -R 755 /app/routers /app/services /app/adapters /app/utils /app/db /app/canary && \
