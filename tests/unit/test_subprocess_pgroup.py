@@ -635,6 +635,57 @@ sys.exit(0)
                 pass
 
 
+    def test_drain_increments_leaked_counter_from_real_leaked_count(
+        self, monkeypatch
+    ):
+        """#970 (D21): the process-level leaked gauge is sourced from the REAL
+        per-drain ``leaked_count`` (the readers that survived force-close), not
+        from budget-exceed events. A reader parked in a long sleep can't be
+        unblocked by safe_close_pipes, so it leaks → the gauge bumps by exactly
+        the number of leaked threads.
+        """
+        import subprocess_pgroup as spg
+
+        # No-op the cgroup sweep (macOS has no /sys/fs/cgroup); accept the
+        # #912 kwarg so the call doesn't TypeError inside the finally block.
+        monkeypatch.setattr(spg, "kill_cgroup_orphans", lambda **kw: 0)
+
+        before = spg.get_leaked_reader_thread_total()
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        pgid = capture_pgid(proc)
+        assert pgid is not None
+
+        # Reader parked in a long sleep — neither natural drain nor
+        # safe_close_pipes can unblock it, so it leaks after force-close.
+        def slow_processor():
+            time.sleep(120)
+
+        t = threading.Thread(target=slow_processor, daemon=True)
+        t.start()
+
+        try:
+            asyncio.run(drain_reader_threads(
+                proc, t, grace=0, post_kill_grace=2, pgid=pgid,
+            ))
+            after = spg.get_leaked_reader_thread_total()
+            assert after == before + 1, (
+                f"leaked gauge must increment by the real leaked_count "
+                f"(1 here): before={before} after={after}"
+            )
+        finally:
+            try:
+                terminate_process_group(proc, graceful_timeout=1, pgid=pgid)
+            except Exception:
+                pass
+
+
 @pytest.mark.unit
 class TestSafeClosePipes:
     """safe_close_pipes() never raises."""

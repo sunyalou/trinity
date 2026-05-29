@@ -115,6 +115,83 @@ def test_drain_bounded_budget_constant_is_90():
     )
 
 
+# ---------------------------------------------------------------------------
+# Issue #970: _drain_bounded returns a 3-value outcome instead of None so the
+# headless orchestrator can detect the leaked-reader cases.
+# ---------------------------------------------------------------------------
+
+def test_drain_bounded_returns_completed_on_clean_exit(monkeypatch):
+    """A drain that finishes within budget returns "completed"."""
+
+    async def _fast_drain(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "agent_server.services.subprocess_lifecycle._drain_reader_threads",
+        _fast_drain,
+    )
+
+    outcome = _drain_bounded(
+        _make_fake_process(), MagicMock(spec=threading.Thread), grace=5, pgid=None
+    )
+    assert outcome == "completed"
+
+
+def test_drain_bounded_returns_budget_exceeded_when_reader_wedged(monkeypatch):
+    """A drain that does not finish within budget returns "budget_exceeded"
+    (the #728 safe_close_pipes deadlock leaves the reader thread leaked)."""
+
+    async def _hanging_drain(*args, **kwargs):
+        await asyncio.sleep(600)
+
+    monkeypatch.setattr(
+        "agent_server.services.subprocess_lifecycle._drain_reader_threads",
+        _hanging_drain,
+    )
+    monkeypatch.setattr(
+        "agent_server.services.subprocess_lifecycle._DRAIN_BUDGET_SECONDS", 2
+    )
+
+    outcome = _drain_bounded(
+        _make_fake_process(), MagicMock(spec=threading.Thread), grace=1, pgid=None
+    )
+    assert outcome == "budget_exceeded"
+
+
+def test_drain_bounded_returns_errored_when_drain_raises(monkeypatch, caplog):
+    """D20: a drain that raises must return "errored" AND log the exception —
+    the previous ``except Exception: pass`` masked it as a clean completion."""
+    import logging
+
+    async def _raising_drain(*args, **kwargs):
+        raise RuntimeError("drain boom")
+
+    monkeypatch.setattr(
+        "agent_server.services.subprocess_lifecycle._drain_reader_threads",
+        _raising_drain,
+    )
+
+    with caplog.at_level(
+        logging.ERROR, logger="agent_server.services.subprocess_lifecycle"
+    ):
+        outcome = _drain_bounded(
+            _make_fake_process(), MagicMock(spec=threading.Thread),
+            grace=5, pgid=None,
+        )
+
+    assert outcome == "errored"
+    drain_logs = [
+        r for r in caplog.records
+        if "Drain raised inside the daemon thread" in r.getMessage()
+    ]
+    assert len(drain_logs) == 1, (
+        "errored drain must be logged, not swallowed (the project-wide "
+        "no-silent-exceptions rule)"
+    )
+    # logger.exception() attaches the traceback — prove it wasn't a bare log.
+    assert drain_logs[0].exc_info is not None
+
+
 def test_drain_bounded_forwards_grace_and_pgid(monkeypatch):
     """_drain_bounded must pass grace and pgid through to drain_reader_threads."""
 

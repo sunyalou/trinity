@@ -500,6 +500,22 @@ Three emission sites in `subprocess_pgroup.py` map to three `outcome=` values:
 
 Fields surfaced for operator queries: `pid`, `pgid`, `outcome`, `drain_elapsed_ms`, `stuck_initial`, `orphan_kill_count` (vestigial since the #817 follow-up cgroup-sweep refactor — always `0`; the actual orphan-kill count is logged separately as `Cgroup sweep killed N orphan(s) after drain` and can be correlated by `pid`), and optional `leaked_count` (present only on `outcome=leaked`).
 
+#### `_drain_bounded` return contract (#970)
+
+`drain_reader_threads` is wrapped by `_drain_bounded` (`subprocess_lifecycle.py`), the daemon-thread budget (#728) that caps executor-thread block time at `_DRAIN_BUDGET_SECONDS` (90s). As of #970 it returns the drain outcome instead of `None` so the **headless** path can detect a leaked reader and finalize defensively (snapshot the run context + JSONL-recover). These are return values, not `[METRIC] drain_outcome` log values:
+
+| return value | Meaning |
+|---|---|
+| `completed` | Drain finished cleanly within budget. |
+| `budget_exceeded` | The daemon thread did not finish within 90s (the `safe_close_pipes` ↔ `readline` TextIOWrapper-lock deadlock, #728); the reader thread is leaked. |
+| `errored` | The drain raised. **Previously swallowed** by `except Exception: pass`, masking the failure as a clean `completed`; now captured, logged with traceback (`[Subprocess] Drain raised inside the daemon thread …`), and surfaced. |
+
+On `budget_exceeded`/`errored` the headless executor sets `HeadlessRunContext.drain_budget_exceeded=True` and `_finalize_headless_result` snapshots every field it reads (`raw_messages`, `response_parts`, `execution_log`, `verbose_output_lines` via `list(...)`; `metadata` via `model_copy(deep=True)`) so a still-leaked reader can't tear a read. The snapshot itself can lose the race — `model_copy(deep=True)` iterates the pydantic model and a reader setting a field mid-copy raises `RuntimeError: ... changed size during iteration`. `_snapshot_for_finalize` therefore retries the copy up to `_SNAPSHOT_RETRY_ATTEMPTS` (3) times and, if every attempt loses, logs a warning and falls back to the live context (no worse than the pre-#970 behaviour) rather than leaking the `RuntimeError` out of finalize. In-memory `response_parts` precedence over JSONL is preserved (the #678 contract). The **chat** path calls `_drain_bounded` fire-and-forget (ignores the outcome); chat budget-exceeded recovery is a deferred follow-up.
+
+Per-process leaked gauge: `subprocess_pgroup.get_leaked_reader_thread_total()` sums the **real** `leaked_count` (readers surviving force-close), lock-guarded; it resets on process restart, so the Vector log-sum of `outcome=leaked` lines remains the fleet source of truth.
+
+> **Phase 1 forensic logs (temporary, #970/D14):** `drain_reader_threads` also emits INFO `[Drain] start | initial-grace-join done | post-kill-natural-join done | force-close-join done` lines with per-phase `elapsed` + a `process_thread_count` proxy, to characterize the 349.3s natural-drain overrun and confirm the 90s budget is firing. These are scheduled for downgrade-to-DEBUG/removal when Phase 2 ships. **Phase 2 will add an `outcome=hard_timeout` METRIC value** when the `safe_close_pipes` call (moved to `asyncio.to_thread`) is abandoned on its own timeout — not yet emitted.
+
 **Fleet audit**: `scripts/586-fleet-check.sh` scans Vector-aggregated agent logs (`/data/logs/agents-*.json`) across the configurable lookback window (default 7d), prints a per-container summary of `[METRIC] drain_outcome` and related slow-path events, and exits non-zero if any residual `still stuck after Ns` or `no result message after` events are found — gating the Issue #586 close-out.
 
 **Authoring escape hatch**: Stop hooks that release the inherited stdout FD before any blocking I/O never enter the slow path at all. See the `TRINITY_COMPATIBLE_AGENT_GUIDE.md` cross-reference below for bash/python/node patterns.

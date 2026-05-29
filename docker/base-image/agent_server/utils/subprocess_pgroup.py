@@ -59,6 +59,36 @@ logger = logging.getLogger(__name__)
 EXECUTION_TAG_NAME = "TRINITY_EXECUTION_ID"
 
 
+# Issue #970: process-level gauge of leaked reader threads. Sourced from the
+# REAL per-drain ``leaked_count`` computed below (NOT budget-exceed events —
+# the budget exceeding does not by itself prove a thread leaked, only that the
+# drain didn't finish in time; D21). The gauge resets per backend/agent-server
+# process restart, so the Vector log-sum of the ``[METRIC] drain_outcome ...
+# outcome=leaked leaked_count=N`` lines remains the fleet-wide source of truth.
+# The in-process counter is a cheap liveness signal (e.g. for a future canary
+# invariant). Guarded by a lock because drains run concurrently on multiple
+# executor threads.
+_leaked_reader_thread_lock = threading.Lock()
+_leaked_reader_thread_total = 0
+
+
+def _record_leaked_reader_threads(count: int) -> None:
+    """Add ``count`` to the per-process leaked-reader-thread gauge (#970)."""
+    global _leaked_reader_thread_total
+    with _leaked_reader_thread_lock:
+        _leaked_reader_thread_total += count
+
+
+def get_leaked_reader_thread_total() -> int:
+    """Return the per-process count of leaked reader threads since start (#970).
+
+    Resets on process restart; the Vector log-sum of ``outcome=leaked``
+    metric lines is the durable fleet source of truth.
+    """
+    with _leaked_reader_thread_lock:
+        return _leaked_reader_thread_total
+
+
 def capture_pgid(process: subprocess.Popen) -> Optional[int]:
     """Return the process group id for ``process``.
 
@@ -230,8 +260,26 @@ async def drain_reader_threads(
     try:
         alive_threads = [t for t in threads if t is not None]
 
+        # Issue #970 / D8 — Phase 1 forensic logging (INFO, ``[Drain]``
+        # prefix). Characterizes the 349.3s natural-drain overrun and proves
+        # the 90s ``_drain_bounded`` budget is actually firing. ``process-
+        # thread-count`` is a proxy for executor-pool / leaked-thread
+        # pressure: the real asyncio default executor is not reachable from
+        # here (this coroutine runs on ``_drain_bounded``'s own throw-away
+        # asyncio loop, disconnected from the backend's main loop), so the
+        # process-wide live thread count is the honest, accessible signal.
+        # ACCEPTANCE: downgrade to DEBUG or remove when Phase 2 ships.
+        logger.info(
+            "[Drain] start pid=%s passed_threads=%s alive_readers=%s "
+            "process_thread_count=%s leaked_total=%s grace=%s post_kill_grace=%s",
+            process.pid, len(threads), len(alive_threads),
+            threading.active_count(), get_leaked_reader_thread_total(),
+            grace, post_kill_grace,
+        )
+
         # Initial grace-period joins — each runs in a worker thread so
         # the event loop enforces the deadline even under CPU pressure.
+        _initial_join_start = time.monotonic()
         for t in alive_threads:
             try:
                 await asyncio.wait_for(asyncio.to_thread(t.join, grace), timeout=grace + 1)
@@ -239,6 +287,10 @@ async def drain_reader_threads(
                 pass
 
         stuck = [t for t in alive_threads if t.is_alive()]
+        logger.info(
+            "[Drain] initial-grace-join done pid=%s elapsed=%.1fs still_alive=%s",
+            process.pid, time.monotonic() - _initial_join_start, len(stuck),
+        )
         if not stuck:
             return
 
@@ -271,6 +323,7 @@ async def drain_reader_threads(
         # is enforced even if a CPU-heavy orphan starves the reader.
         elapsed = time.monotonic() - drain_start
         join_timeout = max(1.0, post_kill_grace - elapsed)
+        _natural_join_start = time.monotonic()
         for t in stuck:
             try:
                 await asyncio.wait_for(
@@ -281,6 +334,13 @@ async def drain_reader_threads(
                 pass
 
         still_stuck = [t for t in stuck if t.is_alive()]
+        # #970 / D8 — Phase 1 forensic: the join we suspect overran to 349.3s.
+        logger.info(
+            "[Drain] post-kill-natural-join done pid=%s elapsed=%.1fs "
+            "join_timeout=%.1fs still_stuck=%s",
+            process.pid, time.monotonic() - _natural_join_start,
+            join_timeout, len(still_stuck),
+        )
         if not still_stuck:
             logger.info(
                 "[Subprocess] Reader thread(s) drained naturally after "
@@ -309,6 +369,7 @@ async def drain_reader_threads(
         )
         safe_close_pipes(process)
 
+        _force_close_join_start = time.monotonic()
         for t in still_stuck:
             try:
                 await asyncio.wait_for(asyncio.to_thread(t.join, 2), timeout=3)
@@ -316,7 +377,15 @@ async def drain_reader_threads(
                 pass
 
         leaked = [t for t in still_stuck if t.is_alive()]
+        # #970 / D8 — Phase 1 forensic: time spent waiting after force-close.
+        logger.info(
+            "[Drain] force-close-join done pid=%s elapsed=%.1fs leaked=%s",
+            process.pid, time.monotonic() - _force_close_join_start, len(leaked),
+        )
         if leaked:
+            # #970 (D21): the process-level gauge is sourced from this REAL
+            # leaked count, not from _drain_bounded budget-exceed events.
+            _record_leaked_reader_threads(len(leaked))
             logger.error(
                 "[Subprocess] %s reader thread(s) leaked for pid=%s after "
                 "force-close; continuing anyway",

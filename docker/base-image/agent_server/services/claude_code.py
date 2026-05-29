@@ -378,11 +378,20 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
                     f"— killing process group"
                 )
                 _terminate_process_group(process, graceful_timeout=5, pgid=process_pgid, execution_tag=execution_id)
+                # #970 (D18): chat is fire-and-forget about the drain outcome.
+                # _drain_bounded now returns "completed"/"budget_exceeded"/
+                # "errored", but the interactive chat path intentionally
+                # IGNORES it — a leaked reader here is human-noticed and the
+                # chat finalize has no JSONL recovery surface. Budget-exceeded
+                # recovery for chat is deferred to a follow-up (see #970).
                 _drain_bounded(process, stdout_thread, stderr_thread,
                                grace=3, pgid=process_pgid,
                                execution_tag=execution_id)
                 raise
 
+            # #970 (D18): outcome intentionally ignored — see the contract note
+            # on the TimeoutExpired callsite above. Chat does not get
+            # budget-exceeded recovery in this PR.
             _drain_bounded(process, stdout_thread, stderr_thread,
                            grace=5, pgid=process_pgid,
                            execution_tag=execution_id)
