@@ -4,6 +4,7 @@ Agent Service Deploy - Local agent deployment logic.
 Contains the business logic for deploying local agents via MCP.
 """
 import base64
+import os
 import tarfile
 import tempfile
 import shutil
@@ -467,6 +468,31 @@ async def deploy_local_agent_logic(
             )
 
         dest_path = templates_dir / version_name
+
+        # Path-containment guard (#950). version_name is already a single
+        # sanitized slug (sanitize_agent_name strips path separators), but
+        # normalize + verify containment so the value reaching every downstream
+        # file access provably stays under templates_dir. This is
+        # defense-in-depth AND the CodeQL-recognized path-injection barrier:
+        # normalize, inline startswith prefix-check, and use the normalized
+        # value downstream.
+        _templates_base = os.path.normpath(str(templates_dir))
+        _normalized_dest = os.path.normpath(str(dest_path))
+        if _normalized_dest != _templates_base and not _normalized_dest.startswith(
+            _templates_base + os.sep
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": (
+                        f"Resolved template path escapes deployed-templates "
+                        f"directory: {version_name}"
+                    ),
+                    "code": "TEMPLATE_PATH_ESCAPE",
+                },
+            )
+        dest_path = Path(_normalized_dest)
+
         if dest_path.exists():
             shutil.rmtree(dest_path)
 

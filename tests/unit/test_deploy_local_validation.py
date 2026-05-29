@@ -295,3 +295,83 @@ def test_overlong_server_name_truncated(tmp_path, monkeypatch):
     assert len(warnings) == 1
     assert long_name not in warnings[0], "full 500-char name echoed unbounded"
     assert "${UNSET_KEY}" in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# sanitize_agent_name traversal invariant (#950 / PR #982 CodeQL py/path-injection)
+#
+# The deploy-local path that feeds collect_mcp_credential_warnings builds
+# `dest_path = templates_dir / version_name`, where `version_name` derives from
+# the operator-supplied agent name via `sanitize_agent_name`. CodeQL flags the
+# downstream `.exists()` as path-injection because it cannot model the regex
+# sanitizer as a barrier (deploy.py adds an explicit normalize+containment guard
+# for that). These tests assert the *upstream* guarantee that makes the alert a
+# false positive: sanitize_agent_name can never yield a value that traverses out
+# of a single path component. If this property ever regresses, the deploy guard
+# is the only thing standing between operator input and the filesystem.
+#
+# get_next_version_name only ever appends a `-{int}` suffix (digits + hyphen, no
+# separators), so testing sanitize_agent_name alone covers the traversal surface.
+# ---------------------------------------------------------------------------
+
+
+def _load_helpers(monkeypatch):
+    """Load utils/helpers.py standalone (stdlib-only imports, no backend deps)."""
+    spec = importlib.util.spec_from_file_location(
+        "helpers_deploy_validation", _BACKEND / "utils" / "helpers.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_TRAVERSAL_INPUTS = [
+    "../../etc/passwd",
+    "a/../../b",
+    "..",
+    "../",
+    "foo/bar",
+    "foo\\bar",
+    "....//....//etc",
+    "/abs/path",
+    "..%2f..%2fetc",
+    "  ../sneaky  ",
+    "名前/../etc",  # unicode + traversal
+    "‮../rtl",  # right-to-left override + traversal
+]
+
+
+def test_sanitize_agent_name_never_yields_traversal(monkeypatch):
+    """sanitize_agent_name output is always a single safe path component.
+
+    For every hostile input, the sanitized name must contain no path separator,
+    no `..` component, and equal its own basename — so `templates_dir / name`
+    cannot escape templates_dir.
+    """
+    import os
+
+    helpers = _load_helpers(monkeypatch)
+    for raw in _TRAVERSAL_INPUTS:
+        name = helpers.sanitize_agent_name(raw)
+        # No separators of any flavor survive.
+        assert "/" not in name, f"{raw!r} -> {name!r} kept a forward slash"
+        assert "\\" not in name, f"{raw!r} -> {name!r} kept a backslash"
+        assert os.sep not in name, f"{raw!r} -> {name!r} kept os.sep"
+        # No path component is a parent-dir reference.
+        assert ".." not in name.split("/"), f"{raw!r} -> {name!r} kept a '..' component"
+        # Single component: joining onto a base cannot climb out.
+        assert name == os.path.basename(name), f"{raw!r} -> {name!r} is not a basename"
+        # Containment holds when joined onto a base directory.
+        base = "/data/deployed-templates"
+        joined = os.path.normpath(os.path.join(base, name))
+        assert joined == base or joined.startswith(base + os.sep), (
+            f"{raw!r} -> {name!r} escaped base when joined: {joined!r}"
+        )
+
+
+def test_sanitize_agent_name_preserves_legitimate_names(monkeypatch):
+    """A normal agent name passes through to a clean lowercase slug (no false
+    rejection of the happy path)."""
+    helpers = _load_helpers(monkeypatch)
+    assert helpers.sanitize_agent_name("My Cool Agent") == "my-cool-agent"
+    assert helpers.sanitize_agent_name("data.pipeline_v2") == "data.pipeline_v2"
