@@ -270,6 +270,37 @@ async def test_not_running_400_not_cached(monkeypatch):
     assert "agent-a" not in stats_mod._agent_stats_cache
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compute_failure_500_not_cached(monkeypatch):
+    """A generic Docker failure surfaces as 500 and is NEVER cached. The cache
+    write sits after the raising _compute_agent_stats call, so a transiently
+    failing agent must not get pinned for the TTL — the next call recomputes."""
+    calls = {"n": 0}
+    fake = _FakeContainer("running")
+    monkeypatch.setattr(stats_mod, "get_agent_container", lambda name: fake)
+
+    async def _reload(_c):
+        return None
+
+    async def _boom_stats(_c, stream=False):
+        calls["n"] += 1
+        raise RuntimeError("docker boom")
+
+    monkeypatch.setattr(stats_mod, "container_reload", _reload)
+    monkeypatch.setattr(stats_mod, "container_stats", _boom_stats)
+
+    with pytest.raises(HTTPException) as exc:
+        await stats_mod.get_agent_stats_logic("agent-a", None)
+    assert exc.value.status_code == 500
+    assert "agent-a" not in stats_mod._agent_stats_cache
+
+    # Not pinned: the failing agent recomputes on the next call (no stale cache).
+    with pytest.raises(HTTPException):
+        await stats_mod.get_agent_stats_logic("agent-a", None)
+    assert calls["n"] == 2
+
+
 # --- defensive TTL parse (F9) -----------------------------------------------
 
 
@@ -331,3 +362,114 @@ async def test_payload_shape_parity(monkeypatch):
     assert isinstance(result["network_tx_bytes"], int)
     assert isinstance(result["uptime_seconds"], int)
     assert result["status"] == "running"
+
+
+# --- primitive-boundary invalidation (#73, Codex P2) ------------------------
+#
+# Invalidation lives in the docker_utils lifecycle primitives (the enforced
+# chokepoint), not in individual router handlers — so EVERY path that changes a
+# container's state (UI, ops restart, deploy, subscription re-assign, system
+# restart) drops the stale stats entry, not just the three API routers.
+
+
+class _FakeLifecycleContainer:
+    """A container stand-in whose lifecycle methods are no-ops, exposing the
+    `trinity.agent-name` label (or just the `agent-{name}` name) used to key the
+    stats cache."""
+
+    def __init__(self, agent_name: str, *, by_label: bool = True):
+        self.name = f"agent-{agent_name}"
+        self.labels = {"trinity.agent-name": agent_name} if by_label else {}
+
+    def stop(self, timeout: int = 10):
+        return None
+
+    def start(self):
+        return None
+
+    def remove(self, force: bool = False):
+        return None
+
+    def rename(self, new_name: str):
+        self.name = new_name
+
+
+def _seed_cache(agent_name: str):
+    stats_mod._agent_stats_cache[agent_name] = {"data": {}, "timestamp": 0.0}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_container_stop_invalidates_stats_cache():
+    from services import docker_utils
+
+    _seed_cache("agent-x")
+    await docker_utils.container_stop(_FakeLifecycleContainer("agent-x"))
+    assert "agent-x" not in stats_mod._agent_stats_cache
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_container_start_invalidates_stats_cache():
+    from services import docker_utils
+
+    _seed_cache("agent-x")
+    await docker_utils.container_start(_FakeLifecycleContainer("agent-x"))
+    assert "agent-x" not in stats_mod._agent_stats_cache
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_container_remove_invalidates_stats_cache():
+    from services import docker_utils
+
+    _seed_cache("agent-x")
+    await docker_utils.container_remove(_FakeLifecycleContainer("agent-x"))
+    assert "agent-x" not in stats_mod._agent_stats_cache
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_container_rename_invalidates_old_name():
+    """Rename must evict the OLD name (the freed name) so a reused name can't
+    serve the renamed-away agent's stale stats."""
+    from services import docker_utils
+
+    _seed_cache("old-agent")
+    await docker_utils.container_rename(
+        _FakeLifecycleContainer("old-agent"), "agent-new-agent"
+    )
+    assert "old-agent" not in stats_mod._agent_stats_cache
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_invalidation_falls_back_to_container_name():
+    """When the trinity.agent-name label is absent, the agent name is derived
+    from the agent-{name} container-name convention."""
+    from services import docker_utils
+
+    _seed_cache("labelless")
+    await docker_utils.container_stop(
+        _FakeLifecycleContainer("labelless", by_label=False)
+    )
+    assert "labelless" not in stats_mod._agent_stats_cache
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_non_agent_container_invalidation_is_noop():
+    """A non-Trinity container (no label, non-agent name) must not raise and
+    must not touch the cache."""
+    from services import docker_utils
+
+    class _Plain:
+        name = "some-random-container"
+        labels: dict = {}
+
+        def stop(self, timeout: int = 10):
+            return None
+
+    _seed_cache("agent-x")
+    await docker_utils.container_stop(_Plain())  # must not raise
+    assert "agent-x" in stats_mod._agent_stats_cache  # untouched

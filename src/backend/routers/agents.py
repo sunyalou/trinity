@@ -63,7 +63,6 @@ from services.agent_service import (
     get_agents_context_stats_logic,
     get_agent_stats_logic,
     invalidate_context_stats_cache,
-    invalidate_agent_stats_cache,
     # Autonomy (global view)
     get_all_autonomy_status_logic,
 )
@@ -481,7 +480,6 @@ async def delete_agent_endpoint(agent_name: str, request: Request, current_user:
     # sweep; the unique constraint on agent_name naturally blocks reuse
     # during the retention window.
     db.delete_agent_ownership(agent_name)
-    invalidate_agent_stats_cache(agent_name)  # #73
 
     # SEC-001: audit delete after all cleanup and ownership removal committed.
     await platform_audit_service.log(
@@ -514,7 +512,6 @@ async def start_agent_endpoint(agent_name: AuthorizedAgentByName, request: Reque
     try:
         result = await start_agent_internal(agent_name)
         invalidate_context_stats_cache()  # PERF-269
-        invalidate_agent_stats_cache(agent_name)  # #73
         credentials_status = result.get("credentials_injection", "unknown")
         credentials_result = result.get("credentials_result", {})
 
@@ -564,7 +561,6 @@ async def stop_agent_endpoint(agent_name: AuthorizedAgentByName, request: Reques
     try:
         await container_stop(container)
         invalidate_context_stats_cache()  # PERF-269
-        invalidate_agent_stats_cache(agent_name)  # #73
 
         # SEC-001: audit after container_stop returns cleanly.
         await platform_audit_service.log(
