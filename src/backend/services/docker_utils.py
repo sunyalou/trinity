@@ -25,12 +25,16 @@ _docker_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="docker-
 def _invalidate_agent_stats_for(container) -> None:
     """#73: drop the per-agent live-stats cache for this container's agent.
 
-    docker_utils is the enforced chokepoint for every container lifecycle op
+    docker_utils is the chokepoint for nearly every container lifecycle op
     (stop/start/remove/rename), so invalidating here — rather than in
-    individual router handlers — guarantees that ALL paths that change a
-    container's state (UI, ops restart, deploy, subscription re-assign,
-    system restart) drop the stale stats entry immediately instead of waiting
-    out the cache TTL.
+    individual router handlers — drops the stale stats entry immediately for
+    the paths that go through these primitives (UI, ops restart, deploy,
+    subscription re-assign, system restart) instead of waiting out the cache
+    TTL. The one deliberate exception is the Operating Room emergency-stop fast
+    path (routers/ops.py:_stop_agent_container), which calls container.stop()
+    directly in a thread pool for parallel shutdown and so relies on the cache
+    TTL (<=12s) rather than explicit invalidation — an accepted bound on an
+    already-coarse gauge.
 
     Best-effort by design:
     - a lazy import breaks the docker_utils -> agent_service import cycle
@@ -54,7 +58,10 @@ def _invalidate_agent_stats_for(container) -> None:
         from services.agent_service.stats import invalidate_agent_stats_cache
         invalidate_agent_stats_cache(agent_name)
     except Exception as exc:  # never let cache invalidation break a lifecycle op
-        logger.debug("stats-cache invalidation skipped: %s", exc)
+        # warning (not debug): a per-call miss is harmless, but a SYSTEMATIC
+        # failure here (e.g. the lazy import regressing) would silently no-op
+        # every invalidation fleet-wide, visible only as <=TTL stale stats.
+        logger.warning("stats-cache invalidation skipped: %s", exc)
 
 
 # =============================================================================
