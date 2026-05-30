@@ -122,8 +122,16 @@ export const useAgentsStore = defineStore('agents', {
         const response = await axios.get(`/api/agents/${name}`, {
           headers: authStore.authHeader
         })
-        this.selectedAgent = response.data
-        return response.data
+        // #526: the circuit-breaker block is embedded in the agent response
+        // (no second round-trip). Derive the header-badge fields from it; the
+        // block is null when dispatch breaking is off fleet-wide.
+        const cb = response.data.circuit_breaker
+        this.selectedAgent = {
+          ...response.data,
+          circuit_breaker_state: cb?.dispatch?.state || 'closed',
+          circuit_open: !!cb?.open
+        }
+        return this.selectedAgent
       } catch (error) {
         this.error = error.message
         console.error('Failed to fetch agent:', error)
