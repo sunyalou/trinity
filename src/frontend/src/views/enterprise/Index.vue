@@ -28,6 +28,15 @@ onMounted(() => {
 // display "Coming soon" with the planned scope.
 const features = [
   {
+    id: 'user_management',
+    title: 'User & Org Management',
+    icon: '🏢',
+    description: 'Multi-tenant organizations + membership. Teams & advanced RBAC coming next.',
+    route: '/enterprise/user-management',
+    entitlement: 'user_management',
+    soon: false,
+  },
+  {
     id: 'sso',
     title: 'Single Sign-On',
     icon: '🔐',
