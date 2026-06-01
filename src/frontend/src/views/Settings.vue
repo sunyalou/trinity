@@ -1218,16 +1218,21 @@ Example:
                       <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Email</th>
                       <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Role</th>
                       <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Last Login</th>
+                      <!-- #995 — enterprise per-user activity audit; column only when entitled -->
+                      <th v-if="umEntitled" scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                        Activity
+                        <span class="ml-1 px-1.5 py-0.5 text-[9px] font-bold rounded bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-200 align-middle">PRO</span>
+                      </th>
                     </tr>
                   </thead>
                   <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                     <tr v-if="loadingUsers">
-                      <td colspan="4" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">
+                      <td :colspan="umEntitled ? 5 : 4" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">
                         <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-action-primary-600 mx-auto"></div>
                       </td>
                     </tr>
                     <tr v-else-if="usersList.length === 0">
-                      <td colspan="4" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">No users found.</td>
+                      <td :colspan="umEntitled ? 5 : 4" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">No users found.</td>
                     </tr>
                     <tr v-else v-for="u in usersList" :key="u.username" class="hover:bg-gray-50 dark:hover:bg-gray-700">
                       <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-100">
@@ -1255,9 +1260,61 @@ Example:
                       <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                         {{ u.last_login ? formatDate(u.last_login) : 'Never' }}
                       </td>
+                      <td v-if="umEntitled" class="px-6 py-4 whitespace-nowrap text-sm">
+                        <button
+                          @click="openActivity(u)"
+                          class="text-action-primary-600 dark:text-action-primary-400 hover:underline"
+                        >
+                          View activity
+                        </button>
+                      </td>
                     </tr>
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- #995 — Per-user activity audit drawer (enterprise, gated by user_management) -->
+          <div v-if="activityUser" class="fixed inset-0 z-50 flex justify-end" @click.self="closeActivity">
+            <div class="absolute inset-0 bg-black/40" @click="closeActivity"></div>
+            <div class="relative w-full max-w-md h-full bg-white dark:bg-gray-800 shadow-xl overflow-y-auto">
+              <div class="px-5 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between sticky top-0 bg-white dark:bg-gray-800">
+                <div>
+                  <h3 class="text-base font-medium text-gray-900 dark:text-white">Activity</h3>
+                  <p class="text-xs text-gray-500 dark:text-gray-400">{{ activityUser.name || activityUser.username }}</p>
+                </div>
+                <button @click="closeActivity" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-xl leading-none">&times;</button>
+              </div>
+
+              <div class="p-5">
+                <div v-if="activityLoading" class="text-center py-8">
+                  <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-action-primary-600 mx-auto"></div>
+                </div>
+                <div v-else-if="activityError" class="text-sm text-status-danger-600 dark:text-status-danger-400">{{ activityError }}</div>
+                <template v-else-if="activityData">
+                  <div class="mb-4 rounded-lg bg-gray-50 dark:bg-gray-700/40 p-3 text-sm">
+                    <div class="flex justify-between"><span class="text-gray-500 dark:text-gray-400">Total events</span><span class="font-medium text-gray-900 dark:text-gray-100">{{ activityData.summary.total }}</span></div>
+                    <div v-if="activityData.summary.last_seen" class="flex justify-between mt-1"><span class="text-gray-500 dark:text-gray-400">Last seen</span><span class="text-gray-900 dark:text-gray-100">{{ formatDate(activityData.summary.last_seen) }}</span></div>
+                    <div v-if="activityData.summary.first_seen" class="flex justify-between mt-1"><span class="text-gray-500 dark:text-gray-400">First seen</span><span class="text-gray-900 dark:text-gray-100">{{ formatDate(activityData.summary.first_seen) }}</span></div>
+                    <div v-for="(n, et) in activityData.summary.by_event_type" :key="et" class="flex justify-between mt-1">
+                      <span class="text-gray-500 dark:text-gray-400">{{ et }}</span><span class="text-gray-900 dark:text-gray-100">{{ n }}</span>
+                    </div>
+                  </div>
+
+                  <p v-if="!activityData.entries.length" class="text-sm text-gray-500 dark:text-gray-400">No recorded activity.</p>
+                  <ul v-else class="space-y-2">
+                    <li v-for="e in activityData.entries" :key="e.event_id" class="text-sm border-l-2 border-gray-200 dark:border-gray-600 pl-3 py-1">
+                      <div class="flex items-center gap-2">
+                        <span class="font-medium text-gray-900 dark:text-gray-100">{{ e.event_type }}</span>
+                        <span class="text-xs text-gray-500 dark:text-gray-400">{{ e.event_action }}</span>
+                      </div>
+                      <div class="text-xs text-gray-400">
+                        {{ formatDate(e.timestamp) }}<template v-if="e.target_id"> · {{ e.target_type }}:{{ e.target_id }}</template>
+                      </div>
+                    </li>
+                  </ul>
+                </template>
               </div>
             </div>
           </div>
@@ -1783,6 +1840,7 @@ import { useBuildInfo } from '../composables/useBuildInfo'
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 import { useSettingsStore } from '../stores/settings'
+import { useEnterpriseStore } from '../stores/enterprise'
 import NavBar from '../components/NavBar.vue'
 import McpKeysTab from '../components/settings/McpKeysTab.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
@@ -1851,6 +1909,38 @@ const loadingWhitelist = ref(false)
 // User management state (ROLE-001)
 const usersList = ref([])
 const loadingUsers = ref(false)
+
+// #995 — enterprise per-user activity audit (gated by user_management).
+const enterpriseStore = useEnterpriseStore()
+const umEntitled = computed(() => enterpriseStore.isEntitled('user_management'))
+const activityUser = ref(null)
+const activityData = ref(null)
+const activityLoading = ref(false)
+const activityError = ref('')
+
+async function openActivity(u) {
+  activityUser.value = u
+  activityData.value = null
+  activityError.value = ''
+  activityLoading.value = true
+  try {
+    const r = await axios.get(
+      `/api/enterprise/user-management/users/${u.id}/activity?limit=50`,
+      { headers: authStore.authHeader }
+    )
+    activityData.value = r.data
+  } catch (e) {
+    activityError.value = e.response?.data?.detail || e.message
+  } finally {
+    activityLoading.value = false
+  }
+}
+
+function closeActivity() {
+  activityUser.value = null
+  activityData.value = null
+}
+
 const currentUsername = computed(() => {
   const u = authStore.user
   // admin login sets name=username, email=username@localhost
@@ -3110,6 +3200,10 @@ onMounted(() => {
   // #926: build info — non-fatal load; the General-tab panel handles
   // loading/error states. Singleton, so a no-op when NavBar already loaded.
   buildInfo.load().catch(() => {})
+
+  // #995: enterprise entitlements — cached/no-op if NavBar already loaded.
+  // Gates the per-user activity column in User Management.
+  enterpriseStore.loadFeatureFlags().catch(() => {})
 
   // Handle Slack OAuth callback
   if (route.query.slack === 'installed') {
