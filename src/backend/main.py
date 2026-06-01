@@ -885,6 +885,18 @@ except ImportError:
         "(this is normal; enterprise modules are an optional private submodule)",
         flush=True,
     )
+except Exception as e:
+    # A BUG in enterprise registration (schema init, migration, router
+    # mount, pusher start) must NOT take down the core platform. Degrade
+    # to OSS-only and surface loudly instead of crashing boot. Any modules
+    # that registered before the failure stay active; the rest are absent
+    # (their entitlement simply won't appear in feature-flags). (#995/#997)
+    import traceback
+    print(
+        f"Trinity Enterprise registration FAILED — continuing OSS-only: {e!r}",
+        flush=True,
+    )
+    traceback.print_exc()
 
 
 # WebSocket endpoint
