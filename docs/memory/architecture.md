@@ -844,7 +844,7 @@ Storage: `/data/agent-files/{file_id}` under the existing `trinity-data` volume 
 | GET | `/api/settings/mcp-url` | Get configured MCP server URL (any auth user) |
 | PUT | `/api/settings/mcp-url` | Set MCP server URL (admin-only) |
 | DELETE | `/api/settings/mcp-url` | Reset to auto-detect (admin-only) |
-| GET | `/api/settings/feature-flags` | Public-safe feature flags for UI gating (any auth user). Exposes `session_tab_enabled` (SESSION_TAB Phase 3), `voice_available` (`VOICE_ENABLED && bool(GEMINI_API_KEY)`, #699), and `workspace_available` (`voice_available AND WORKSPACE_ENABLED`, #860 — opt-in, default False). |
+| GET | `/api/settings/feature-flags` | Public-safe feature flags for UI gating (any auth user). Exposes `session_tab_enabled` (SESSION_TAB Phase 3), `voice_available` (`VOICE_ENABLED && bool(GEMINI_API_KEY)`, #699), `workspace_available` (`voice_available AND WORKSPACE_ENABLED`, #860 — opt-in, default False), and `enterprise_features` — the list of registered enterprise modules (`EntitlementService.list_entitled_features()`; empty in OSS-only builds or under `TRINITY_OSS_ONLY=1`), which gates every enterprise UI surface in the OSS bundle (#847). |
 | GET | `/api/settings/agent-defaults/resources` | Get fleet-wide default CPU/memory for new containers (admin-only, RES-001) |
 | PUT | `/api/settings/agent-defaults/resources` | Set fleet-wide default CPU/memory; valid CPU: 1/2/4/8/16; valid memory: 1g–32g (admin-only, RES-001) |
 
@@ -863,6 +863,28 @@ Storage: `/data/agent-files/{file_id}` under the existing `trinity-data` volume 
 
 All endpoints return 404 when `is_session_tab_enabled()` is false. The flag at `system_settings.session_tab_enabled` (or `SESSION_TAB_ENABLED` env) is **default ON since GA 2026-05-04**; settable to false to disable platform-wide. All endpoints enforce per-user ownership and return 404 (not 403) on mismatch to avoid leaking session-id existence.
 
+### Enterprise Modules (#847 seam)
+
+Open-core: enterprise backend code lives in the private `trinity-enterprise`
+submodule mounted at `src/backend/enterprise/`. `main.py` conditionally
+`register_enterprise(app)` (no-op `ImportError` in OSS-only builds). Each
+module calls `entitlement_service.register_module("<id>")`; the registry
+drives `GET /api/settings/feature-flags` → `enterprise_features`, which the
+OSS Vue bundle reads to show/hide every enterprise surface. `requires_entitlement("<id>")`
+(in `dependencies.py`) gates each enterprise endpoint (403 when unentitled;
+404 when the submodule is absent and the router was never mounted).
+`TRINITY_OSS_ONLY=1` hard-empties the registry.
+
+| Feature id | Module | Surface |
+|------------|--------|---------|
+| `audit` | (#941) | Entitlement only — flips the OSS audit-log dashboard route visible; `/api/audit-log/*` stay OSS. |
+| `user_management` | `enterprise/backend/user_management/` (#995) | Org lifecycle: **invite** (whitelists the email + sends an `EmailService` invite), **deactivate/reactivate** (over the OSS `users.suspended_at` primitive), per-user **activity** view (reads OSS `audit_log`). Endpoints under `/api/enterprise/user-management/*`; UI integrated into Settings → User Management (gated). |
+| `siem` | `enterprise/backend/siem/` (#997) | **SIEM log export** — ships OSS `audit_log` to a customer SIEM over an HTTP/JSON webhook. Private `enterprise_siem_config` (destination + AES-encrypted token + export cursor); background daemon pusher (Redis-lock-serialised across workers); at-least-once (cursor advances only on a successful POST). Endpoints under `/api/enterprise/siem/*`. No OSS/UI surface. |
+
+Enterprise tables migrate via the two-track runner (Invariant #3): one file
+per migration in each module's `migrations/` package, tracked in
+`enterprise_schema_migrations`.
+
 ---
 
 ## Architectural Invariants
@@ -873,7 +895,7 @@ These are structural patterns that must be preserved. Breaking them causes casca
 
 2. **DB Layer: Class-per-domain with Mixin Composition** — Each `db/` file defines an `XOperations` class. Agent-specific settings use mixins (`db/agent_settings/`) composed into `AgentOperations`. New agent settings → new mixin, not a bigger class.
 
-3. **Schema in `db/schema.py`, Migrations in `db/migrations.py`** — All table DDL lives in `schema.py`. Schema changes require a versioned migration in `migrations.py`. Never create tables ad-hoc in service code.
+3. **Schema in `db/schema.py`, Migrations in `db/migrations.py`** — All OSS table DDL lives in `schema.py`. Schema changes require a versioned migration in `migrations.py` (tracked in the `schema_migrations` table). Never create tables ad-hoc in service code. **Two-track migrations (open-core):** enterprise modules own only `enterprise_*` tables and migrate them through a **separate** runner (`enterprise/backend/_migrations.py`) tracked in `enterprise_schema_migrations` — never the OSS `schema_migrations`, so the two version-lines can't collide. Enterprise authors one file per migration in the module's `migrations/` package (`NNNN_slug.py` with `NAME` + `upgrade(cursor, conn)`, auto-discovered in filename order). Enterprise migrations may FK-into OSS tables but must **never ALTER** an OSS table — anything OSS must enforce goes through an OSS migration as an edition-agnostic primitive (e.g. `users.suspended_at`, #995). The enterprise runner is invoked from `register_enterprise` *after* OSS `init_database`, so OSS tables already exist.
 
 4. **Router Registration Order Matters** — In `main.py`, static routes like `/api/agents/context-stats` must come before `/{name}` catch-all. New collection-level agent endpoints must be registered before parameterized routes.
 
@@ -922,9 +944,19 @@ CREATE TABLE users (
     email TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    last_login TEXT
+    last_login TEXT,
+    suspended_at TEXT                   -- #995: NULL = active; set = deactivated
 );
 ```
+
+**User deactivation primitive (#995):** `suspended_at` is an
+edition-agnostic primitive. OSS owns the column **and** its enforcement —
+`dependencies.get_current_user` rejects any user with `suspended_at` set
+on both the JWT and MCP-key paths, so setting it blocks new logins **and**
+invalidates live tokens on the next request. `/api/users` exposes it
+(read-only). Only the **enterprise** `user_management` module exposes a
+way to set/clear it (core-primitive + enterprise-knob, same shape as
+#834). OSS-only builds ship the column + enforcement but no setter.
 
 **agent_ownership:**
 ```sql
