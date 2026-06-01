@@ -21,6 +21,12 @@ from utils.helpers import iso_cutoff, utc_now_iso, to_utc_iso, parse_iso_timesta
 
 logger = logging.getLogger(__name__)
 
+# #73: chunk size for scoped `IN (...)` lookups. SQLite caps host parameters at
+# SQLITE_MAX_VARIABLE_NUMBER (999 before SQLite 3.32). Keep a safe margin below
+# that so a large accessible-agent set can't blow the limit. Read as a module
+# global so tests can monkeypatch it to exercise the multi-chunk path.
+_SQLITE_MAX_IN_VARS = 900
+
 # #378: Error-message marker written by cleanup_service._process_stale_slot_reclaims
 # when Phase 3 fails an execution. Used to scope the residual-race WARNING log
 # below so it doesn't misfire on other legitimate FAILED→SUCCESS transitions
@@ -1663,6 +1669,42 @@ class ScheduleOperations:
                 (agent_name,),
             ).fetchone()
             return bool(row[0]) if row else False
+
+    def get_all_git_auto_sync_enabled(
+        self, agent_names: Optional[set] = None
+    ) -> Dict[str, bool]:
+        """#73: bulk read of the auto-sync flag in one query, optionally scoped
+        to `agent_names` (mirrors get_all_permission_edges). Removes the N+1 in
+        the /sync-health dashboard endpoint. Agents without a config row are
+        absent from the result (caller defaults to False).
+
+        `None` = whole fleet; an empty set = empty result (an empty scope must
+        NOT fall through to the whole-fleet query, and `IN ()` is invalid SQL).
+
+        Scoped lookups chunk the `IN (...)` list at `_SQLITE_MAX_IN_VARS` so a
+        large accessible-agent set can't exceed SQLite's host-parameter cap.
+        """
+        if agent_names is not None and not agent_names:
+            return {}
+        with get_db_connection() as conn:
+            if agent_names is None:
+                rows = conn.execute(
+                    "SELECT agent_name, auto_sync_enabled FROM agent_git_config"
+                ).fetchall()
+                return {row[0]: bool(row[1]) for row in rows}
+
+            result: Dict[str, bool] = {}
+            names = list(agent_names)
+            for start in range(0, len(names), _SQLITE_MAX_IN_VARS):
+                chunk = names[start:start + _SQLITE_MAX_IN_VARS]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"SELECT agent_name, auto_sync_enabled FROM agent_git_config "
+                    f"WHERE agent_name IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                result.update({row[0]: bool(row[1]) for row in rows})
+            return result
 
     def get_freeze_schedules_if_sync_failing(self, agent_name: str) -> bool:
         """#389: read the freeze-schedules flag. False if config missing."""

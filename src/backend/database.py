@@ -885,6 +885,9 @@ class DatabaseManager:
     def get_git_auto_sync_enabled(self, agent_name: str):
         return self._schedule_ops.get_git_auto_sync_enabled(agent_name)
 
+    def get_all_git_auto_sync_enabled(self, agent_names=None):
+        return self._schedule_ops.get_all_git_auto_sync_enabled(agent_names)
+
     def get_freeze_schedules_if_sync_failing(self, agent_name: str):
         return self._schedule_ops.get_freeze_schedules_if_sync_failing(agent_name)
 
