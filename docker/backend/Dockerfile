@@ -11,12 +11,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl git libmag
 # and `GET /api/version` can return commit/branch/build-date for the
 # image actually in flight. Defaults to "unknown" so local builds and
 # operators who skip start.sh still get a well-typed response.
+ARG VERSION=unknown
 ARG GIT_COMMIT=unknown
 ARG GIT_COMMIT_SUBJECT=unknown
 ARG GIT_COMMIT_TIMESTAMP=unknown
 ARG GIT_BRANCH=unknown
 ARG BUILD_DATE=unknown
-ENV GIT_COMMIT=${GIT_COMMIT} \
+ENV VERSION=${VERSION} \
+    GIT_COMMIT=${GIT_COMMIT} \
     GIT_COMMIT_SUBJECT=${GIT_COMMIT_SUBJECT} \
     GIT_COMMIT_TIMESTAMP=${GIT_COMMIT_TIMESTAMP} \
     GIT_BRANCH=${GIT_BRANCH} \

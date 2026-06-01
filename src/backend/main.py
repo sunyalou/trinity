@@ -1066,16 +1066,24 @@ def _build_version_payload(voice_enabled: bool) -> dict:
     import os
     from pathlib import Path
 
-    # Read version from VERSION file (check multiple locations)
-    version = "unknown"
-    version_paths = [
-        Path("/app/VERSION"),  # In container (mounted)
-        Path(__file__).parent.parent.parent / "VERSION",  # Development
-    ]
-    for version_file in version_paths:
-        if version_file.exists():
-            version = version_file.read_text().strip()
-            break
+    # Version resolution order (#993):
+    #   1. VERSION env var — build-stamped from git (e.g. "0.9.0+g4c640b6e"),
+    #      wired through docker-compose backend.build.args + start.sh.
+    #   2. VERSION file — curated semver, mounted in dev / copied in image.
+    #   3. "unknown" — neither present.
+    # Env-first means dev (bind-mount) and prod (build-arg) agree for the
+    # same commit instead of diverging on the file-mount being absent.
+    version = os.getenv("VERSION") or None
+    if not version:
+        version_paths = [
+            Path("/app/VERSION"),  # In container (mounted)
+            Path(__file__).parent.parent.parent / "VERSION",  # Development
+        ]
+        for version_file in version_paths:
+            if version_file.exists():
+                version = version_file.read_text().strip()
+                break
+    version = version or "unknown"
 
     git_commit = os.getenv("GIT_COMMIT", "unknown")
     git_commit_short = git_commit[:8] if git_commit != "unknown" else "unknown"
