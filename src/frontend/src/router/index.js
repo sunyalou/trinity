@@ -133,13 +133,6 @@ const routes = [
     component: () => import('../views/enterprise/Audit.vue'),
     meta: { requiresAuth: true, requiresEntitlement: 'audit' }
   },
-  {
-    // #995 — Enterprise User & Organization Management (Phase 1a).
-    path: '/enterprise/user-management',
-    name: 'EnterpriseUserManagement',
-    component: () => import('../views/enterprise/UserManagement.vue'),
-    meta: { requiresAuth: true, requiresEntitlement: 'user_management' }
-  },
   // Mobile Admin PWA (MOB-001) — standalone, no NavBar
   {
     path: '/m',

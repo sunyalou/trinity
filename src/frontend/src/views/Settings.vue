@@ -1209,6 +1209,34 @@ Example:
                 <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200">user — public links only</span>
               </div>
 
+              <!-- #995 — enterprise: invite users (gated by user_management) -->
+              <div v-if="umEntitled" class="mb-4">
+                <button
+                  v-if="!showInvite"
+                  @click="showInvite = true"
+                  class="px-3 py-2 text-sm font-medium rounded-lg bg-action-primary-600 hover:bg-action-primary-700 text-white"
+                >
+                  + Invite user
+                  <span class="ml-1 px-1.5 py-0.5 text-[9px] font-bold rounded bg-purple-200/70 text-purple-800 align-middle">PRO</span>
+                </button>
+                <form v-else @submit.prevent="createInvite" class="flex flex-wrap items-center gap-2 p-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/40">
+                  <input v-model="inviteEmail" type="email" required placeholder="email@company.com" :disabled="umBusy"
+                    class="flex-1 min-w-[200px] px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" />
+                  <select v-model="inviteRole" :disabled="umBusy"
+                    class="px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
+                    <option value="user">user</option>
+                    <option value="operator">operator</option>
+                    <option value="creator">creator</option>
+                    <option value="admin">admin</option>
+                  </select>
+                  <button type="submit" :disabled="umBusy || !inviteEmail"
+                    class="px-3 py-2 text-sm font-medium rounded-lg bg-action-primary-600 hover:bg-action-primary-700 text-white disabled:opacity-50">Send invite</button>
+                  <button type="button" @click="showInvite = false; inviteEmail = ''" :disabled="umBusy"
+                    class="px-3 py-2 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:underline">Cancel</button>
+                  <span v-if="inviteMsg" class="text-xs" :class="inviteErr ? 'text-status-danger-600 dark:text-status-danger-400' : 'text-status-success-600 dark:text-status-success-400'">{{ inviteMsg }}</span>
+                </form>
+              </div>
+
               <!-- Users Table -->
               <div class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
                 <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
@@ -1218,9 +1246,9 @@ Example:
                       <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Email</th>
                       <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Role</th>
                       <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Last Login</th>
-                      <!-- #995 — enterprise per-user activity audit; column only when entitled -->
+                      <!-- #995 — enterprise user management actions; column only when entitled -->
                       <th v-if="umEntitled" scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                        Activity
+                        Management
                         <span class="ml-1 px-1.5 py-0.5 text-[9px] font-bold rounded bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-200 align-middle">PRO</span>
                       </th>
                     </tr>
@@ -1261,12 +1289,16 @@ Example:
                         {{ u.last_login ? formatDate(u.last_login) : 'Never' }}
                       </td>
                       <td v-if="umEntitled" class="px-6 py-4 whitespace-nowrap text-sm">
-                        <button
-                          @click="openActivity(u)"
-                          class="text-action-primary-600 dark:text-action-primary-400 hover:underline"
-                        >
-                          View activity
-                        </button>
+                        <div class="flex items-center gap-3">
+                          <span v-if="u.suspended_at" class="px-2 py-0.5 text-xs font-medium rounded-full bg-status-danger-100 text-status-danger-700 dark:bg-status-danger-900/50 dark:text-status-danger-300">
+                            Deactivated
+                          </span>
+                          <button @click="openActivity(u)" class="text-action-primary-600 dark:text-action-primary-400 hover:underline">Activity</button>
+                          <template v-if="u.username !== currentUsername && u.username !== 'admin'">
+                            <button v-if="u.suspended_at" @click="reactivateUser(u)" :disabled="umBusy" class="text-status-success-600 dark:text-status-success-400 hover:underline disabled:opacity-50">Reactivate</button>
+                            <button v-else @click="suspendUser(u)" :disabled="umBusy" class="text-status-danger-600 dark:text-status-danger-400 hover:underline disabled:opacity-50">Deactivate</button>
+                          </template>
+                        </div>
                       </td>
                     </tr>
                   </tbody>
@@ -1939,6 +1971,60 @@ async function openActivity(u) {
 function closeActivity() {
   activityUser.value = null
   activityData.value = null
+}
+
+// #995 — enterprise user lifecycle: deactivate / reactivate / invite.
+const UM_BASE = '/api/enterprise/user-management'
+const umBusy = ref(false)
+const showInvite = ref(false)
+const inviteEmail = ref('')
+const inviteRole = ref('user')
+const inviteMsg = ref('')
+const inviteErr = ref(false)
+
+async function suspendUser(u) {
+  if (umBusy.value) return
+  if (!confirm(`Deactivate ${u.email || u.username}? They will be signed out and unable to log in until reactivated.`)) return
+  umBusy.value = true
+  try {
+    await axios.post(`${UM_BASE}/users/${u.id}/suspend`, {}, { headers: authStore.authHeader })
+    await loadUsers()
+  } catch (e) {
+    alert(e.response?.data?.detail || e.message)
+  } finally {
+    umBusy.value = false
+  }
+}
+
+async function reactivateUser(u) {
+  if (umBusy.value) return
+  umBusy.value = true
+  try {
+    await axios.post(`${UM_BASE}/users/${u.id}/reactivate`, {}, { headers: authStore.authHeader })
+    await loadUsers()
+  } catch (e) {
+    alert(e.response?.data?.detail || e.message)
+  } finally {
+    umBusy.value = false
+  }
+}
+
+async function createInvite() {
+  if (umBusy.value || !inviteEmail.value) return
+  umBusy.value = true
+  inviteMsg.value = ''
+  inviteErr.value = false
+  try {
+    await axios.post(`${UM_BASE}/invites`, { email: inviteEmail.value, role: inviteRole.value }, { headers: authStore.authHeader })
+    inviteMsg.value = `Invited ${inviteEmail.value} (${inviteRole.value}) — they can now sign in by email.`
+    inviteEmail.value = ''
+    inviteRole.value = 'user'
+  } catch (e) {
+    inviteErr.value = true
+    inviteMsg.value = e.response?.data?.detail || e.message
+  } finally {
+    umBusy.value = false
+  }
 }
 
 const currentUsername = computed(() => {

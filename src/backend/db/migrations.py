@@ -2183,6 +2183,25 @@ def _migrate_agent_ownership_soft_delete(cursor, conn):
     conn.commit()
 
 
+def _migrate_users_suspended_at(cursor, conn):
+    """#995 — user deactivation primitive.
+
+    Adds `suspended_at TEXT` (NULL = active) to `users`. The OSS auth path
+    (`get_current_user`) rejects any user whose `suspended_at` is set, so
+    setting it blocks new logins AND invalidates live tokens on the next
+    request. Edition-agnostic primitive: only the enterprise
+    user-management module exposes a way to set/clear it (core-primitive +
+    enterprise-knob, same pattern as #834).
+    """
+    _safe_add_column(
+        cursor,
+        "users",
+        "suspended_at",
+        "ALTER TABLE users ADD COLUMN suspended_at TEXT",
+    )
+    conn.commit()
+
+
 MIGRATIONS = [
     ("agent_sharing", _migrate_agent_sharing_table),
     ("schedule_executions_observability", _migrate_schedule_executions_observability),
@@ -2250,4 +2269,5 @@ MIGRATIONS = [
     # #913 — must come AFTER default_execution_timeout_to_3600 so we null out
     # both 900 (legacy) and 3600 (post-#665 rewrite) in one pass.
     ("null_legacy_schedule_timeouts", _migrate_null_legacy_schedule_timeouts),
+    ("users_suspended_at", _migrate_users_suspended_at),
 ]

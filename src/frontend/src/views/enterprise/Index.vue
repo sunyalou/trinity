@@ -29,10 +29,10 @@ onMounted(() => {
 const features = [
   {
     id: 'user_management',
-    title: 'User & Org Management',
-    icon: '🏢',
-    description: 'Multi-tenant organizations + membership. Teams & advanced RBAC coming next.',
-    route: '/enterprise/user-management',
+    title: 'User Management',
+    icon: '👤',
+    description: 'Invite users, deactivate accounts, and review per-user activity — in Settings → User Management.',
+    route: '/settings',
     entitlement: 'user_management',
     soon: false,
   },
