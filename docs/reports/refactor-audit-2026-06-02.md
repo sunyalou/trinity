@@ -168,7 +168,7 @@ Functions 30–50 lines, complexity 10–15, signatures with 5–7 params. Not w
 | `backend/routers/slack.py` | 27 | unused import `SlackOAuthInitResponse` |
 | `backend/services/event_bus.py` | 44 | unused import `RedisResponseError` |
 | `backend/services/subscription_auto_switch.py` | 174 | unused variable `old_subscription_id` |
-| `backend/staging-acceptance.py` | 16 | unused import `AsyncMock` |
+| `tests/integration/staging_acceptance.py` | 16 | unused import `AsyncMock` (relocated from `backend/` by #1033) |
 
 > Verify each before deletion — `event_bus.py`'s `RedisResponseError` and
 > `subscription_auto_switch.py`'s `old_subscription_id` may be intentional
@@ -198,7 +198,7 @@ Severity-weighted (critical=4, high=3, medium=2, low=1). Prioritize these — fi
 ## Recommendations
 
 ### Quick Wins (low risk, high signal)
-1. **Delete the 4 safe dead-code items** (`agents.py`, `slack.py`, `staging-acceptance.py`, `ops.py:739`) — one small PR.
+1. **Delete the 4 safe dead-code items** (`agents.py`, `slack.py`, `tests/integration/staging_acceptance.py` — relocated from `backend/` by #1033, `ops.py:739`) — one small PR.
 2. **Add `venv/` / `node_modules/` / `site-packages/` to the analyzer ignore list** so future audits show only the 1,361 that matter (not 2,635).
 3. **Split `views/Settings.vue` (3,061 lines)** tab-by-tab — it's already conceptually tabbed, so extraction is mechanical and each tab becomes independently testable.
 
