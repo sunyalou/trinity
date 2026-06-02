@@ -893,6 +893,18 @@ except ImportError:
         "(this is normal; enterprise modules are an optional private submodule)",
         flush=True,
     )
+except Exception as e:
+    # A BUG in enterprise registration (schema init, migration, router
+    # mount, pusher start) must NOT take down the core platform. Degrade
+    # to OSS-only and surface loudly instead of crashing boot. Any modules
+    # that registered before the failure stay active; the rest are absent
+    # (their entitlement simply won't appear in feature-flags). (#995/#997)
+    import traceback
+    print(
+        f"Trinity Enterprise registration FAILED — continuing OSS-only: {e!r}",
+        flush=True,
+    )
+    traceback.print_exc()
 
 
 # WebSocket endpoint
@@ -1074,16 +1086,24 @@ def _build_version_payload(voice_enabled: bool) -> dict:
     import os
     from pathlib import Path
 
-    # Read version from VERSION file (check multiple locations)
-    version = "unknown"
-    version_paths = [
-        Path("/app/VERSION"),  # In container (mounted)
-        Path(__file__).parent.parent.parent / "VERSION",  # Development
-    ]
-    for version_file in version_paths:
-        if version_file.exists():
-            version = version_file.read_text().strip()
-            break
+    # Version resolution order (#993):
+    #   1. VERSION env var — build-stamped from git (e.g. "0.9.0+g4c640b6e"),
+    #      wired through docker-compose backend.build.args + start.sh.
+    #   2. VERSION file — curated semver, mounted in dev / copied in image.
+    #   3. "unknown" — neither present.
+    # Env-first means dev (bind-mount) and prod (build-arg) agree for the
+    # same commit instead of diverging on the file-mount being absent.
+    version = os.getenv("VERSION") or None
+    if not version:
+        version_paths = [
+            Path("/app/VERSION"),  # In container (mounted)
+            Path(__file__).parent.parent.parent / "VERSION",  # Development
+        ]
+        for version_file in version_paths:
+            if version_file.exists():
+                version = version_file.read_text().strip()
+                break
+    version = version or "unknown"
 
     git_commit = os.getenv("GIT_COMMIT", "unknown")
     git_commit_short = git_commit[:8] if git_commit != "unknown" else "unknown"

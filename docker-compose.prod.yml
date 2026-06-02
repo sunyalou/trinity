@@ -15,6 +15,17 @@ services:
     build:
       context: .
       dockerfile: docker/backend/Dockerfile
+      # Build-time provenance (#926 / #958). Forwarded to Dockerfile ARGs
+      # → ENV vars → `GET /api/version` payload. The deploy-dev workflow
+      # exports these from the checked-out repo before `docker compose
+      # build`; absent that, the Dockerfile defaults to "unknown".
+      args:
+        VERSION: ${VERSION:-unknown}
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        GIT_COMMIT_SUBJECT: ${GIT_COMMIT_SUBJECT:-unknown}
+        GIT_COMMIT_TIMESTAMP: ${GIT_COMMIT_TIMESTAMP:-unknown}
+        GIT_BRANCH: ${GIT_BRANCH:-unknown}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: trinity-backend
     restart: unless-stopped
     ports:

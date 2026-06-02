@@ -764,6 +764,23 @@ export const useAgentsStore = defineStore('agents', {
         headers: authStore.authHeader
       })
       return response.data
+    },
+
+    // Guardrails (GUARD-001 — per-agent max_turns overrides)
+    async getGuardrails(name) {
+      const authStore = useAuthStore()
+      const response = await axios.get(`/api/agents/${name}/guardrails`, {
+        headers: authStore.authHeader
+      })
+      return response.data
+    },
+
+    async setGuardrails(name, guardrails) {
+      const authStore = useAuthStore()
+      const response = await axios.put(`/api/agents/${name}/guardrails`, guardrails, {
+        headers: authStore.authHeader
+      })
+      return response.data
     }
   }
 })

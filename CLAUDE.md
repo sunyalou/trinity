@@ -6,6 +6,14 @@ This file provides guidance to Claude Code when working with this repository.
 
 ---
 
+## Current Product Focus
+
+**Primary theme**: Reliability · **Secondary theme**: UI/UX
+
+When picking tickets, prefer items whose Theme matches the current focus. Within the same Tier and Rank, Reliability beats UI/UX beats everything else. Items in other themes are not deprioritized — they're picked only after focus items at that tier are exhausted.
+
+---
+
 ## ⚠️ PUBLIC OPEN SOURCE REPOSITORY
 
 **This is a PUBLIC open-source repository visible to the entire world.**

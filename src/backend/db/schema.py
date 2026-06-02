@@ -44,7 +44,8 @@ TABLES = {
             email TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            last_login TEXT
+            last_login TEXT,
+            suspended_at TEXT
         )
     """,
 

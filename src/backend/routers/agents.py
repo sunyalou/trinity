@@ -256,14 +256,15 @@ async def get_all_sync_health(
     accessible = {a["name"] for a in get_accessible_agents(current_user)}
     rows = db.list_sync_states()
     by_name = {r["agent_name"]: r for r in rows if r["agent_name"] in accessible}
+    # #73: one scoped query instead of an N+1 per-agent lookup.
+    auto_sync_map = db.get_all_git_auto_sync_enabled(accessible)
 
     entries = []
     for name in sorted(accessible):
         row = by_name.get(name)
-        auto_sync = db.get_git_auto_sync_enabled(name)
         entries.append({
             "agent_name": name,
-            "auto_sync_enabled": bool(auto_sync),
+            "auto_sync_enabled": auto_sync_map.get(name, False),
             "last_sync_at": (row or {}).get("last_sync_at"),
             "last_sync_status": (row or {}).get("last_sync_status") or "never",
             "consecutive_failures": (row or {}).get("consecutive_failures") or 0,

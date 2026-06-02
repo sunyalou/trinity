@@ -207,12 +207,41 @@ resources:
             assert "agent" in data
             assert data["agent"]["name"] == agent_name
 
-            # Wait for agent to start
-            time.sleep(5)
-
             # Verify agent exists
             check = api_client.get(f"/api/agents/{agent_name}")
             assert_status(check, 200)
+
+            # Regression for #950: deploy must actually populate the new
+            # agent's workspace with the template files. Before the fix
+            # the backend wrote the extracted archive to a container-only
+            # path and the new agent came up empty. The fix pre-populates
+            # the workspace volume directly via put_archive, so files are
+            # present before the agent's first boot.
+            start_resp = api_client.post(f"/api/agents/{agent_name}/start")
+            assert_status_in(start_resp, [200, 202])
+
+            # Poll /files because the agent's HTTP server takes a few
+            # seconds to come up; the files themselves are already on disk.
+            deadline = time.time() + 60
+            seen_template = seen_claude = False
+            last_payload = None
+            while time.time() < deadline:
+                files_resp = api_client.get(f"/api/agents/{agent_name}/files")
+                if files_resp.status_code == 200:
+                    last_payload = files_resp.text
+                    seen_template = "template.yaml" in last_payload
+                    seen_claude = "CLAUDE.md" in last_payload
+                    if seen_template and seen_claude:
+                        break
+                time.sleep(2)
+            assert seen_template, (
+                f"#950 regression: template.yaml not found in deployed agent "
+                f"workspace within 60s. Last payload: {last_payload!r}"
+            )
+            assert seen_claude, (
+                f"#950 regression: CLAUDE.md not found in deployed agent "
+                f"workspace within 60s. Last payload: {last_payload!r}"
+            )
 
         finally:
             cleanup_test_agent(api_client, agent_name)
