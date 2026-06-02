@@ -2183,6 +2183,37 @@ def _migrate_agent_ownership_soft_delete(cursor, conn):
     conn.commit()
 
 
+def _migrate_idempotency_keys_table(cursor, conn):
+    """Create idempotency_keys table + index (RELIABILITY-006 / Issue #525).
+
+    Backs the Idempotency-Key contract at every execution trigger boundary.
+    Schema is also defined in db/schema.py for fresh installs; this migration
+    handles existing installs.
+    """
+    cursor.execute("PRAGMA table_info(idempotency_keys)")
+    if cursor.fetchall():
+        return  # already created (fresh-install path via init_schema)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS idempotency_keys (
+            scope TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            execution_id TEXT,
+            status TEXT NOT NULL,
+            response_snapshot TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (scope, idempotency_key)
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_idempotency_created "
+        "ON idempotency_keys(created_at)"
+    )
+    conn.commit()
+    print("Created idempotency_keys table with index (RELIABILITY-006, #525)")
+
+
 MIGRATIONS = [
     ("agent_sharing", _migrate_agent_sharing_table),
     ("schedule_executions_observability", _migrate_schedule_executions_observability),
@@ -2250,4 +2281,5 @@ MIGRATIONS = [
     # #913 — must come AFTER default_execution_timeout_to_3600 so we null out
     # both 900 (legacy) and 3600 (post-#665 rewrite) in one pass.
     ("null_legacy_schedule_timeouts", _migrate_null_legacy_schedule_timeouts),
+    ("idempotency_keys_table", _migrate_idempotency_keys_table),
 ]
