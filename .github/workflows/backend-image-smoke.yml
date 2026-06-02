@@ -19,11 +19,23 @@ name: backend-image-smoke
 #
 # This job exercises the BAKED PROD IMAGE (no dev bind-mount), so it sees
 # packaging AND lifespan/migration/startup defects. The Dockerfile COPY was
-# changed to a glob in the same PR; this job is the enforced recurrence guard.
+# changed to a glob in the same PR; this job is the recurrence guard for it.
 #
 # Pattern (path filter, least-priv perms, logs-on-failure) mirrors
 # container-security.yml. It is deliberately NOT folded into that workflow:
 # that one boots the dev stack and cannot see image-packaging bugs.
+#
+# Enforcement: `prod-image-smoke` runs and is visible on every PR that
+# touches the paths below, but it only *blocks* a merge once a repo admin
+# marks it a required status check on `dev` and `main` (Settings → Branches,
+# or a ruleset) — until then a red run is advisory and does not stop a merge.
+# Caveat when making it required: the triggers below are `paths`-filtered, so
+# a PR touching none of those paths never starts this workflow and the check
+# never reports; GitHub then leaves a *required* check pending and blocks the
+# PR indefinitely. Pair the required rule with a path-scoped ruleset (or add
+# a sentinel job that reports success on no-op PRs) so unrelated PRs aren't
+# stuck. The same caveat applies to container-security.yml, which uses this
+# identical path-filter pattern.
 
 on:
   push:
@@ -122,6 +134,29 @@ jobs:
             || { echo "FAIL: built backend image '$IMG' not found"; exit 1; }
           echo "backend image: $IMG"
           docker run --rm "$IMG" ls -l /app/redis_breaker_util.py
+
+      - name: Assert no test/scratch modules leaked into prod image
+        # Inverse guard to the step above. The Dockerfile COPY is now a glob
+        # (`COPY src/backend/*.py`), which fixes #1033's *missing*-module
+        # class but introduces the opposite risk: any stray top-level
+        # `src/backend/*.py` — a test, a conftest, an acceptance script
+        # (exactly what `staging-acceptance.py` was before this PR relocated
+        # it to tests/integration/) — is now silently baked into the prod
+        # image. It won't crash boot, but it ships dead/throwaway code into
+        # production. Fail the build if a known non-prod pattern is present at
+        # /app top level, so such a file is caught here instead of shipped.
+        run: |
+          set -euo pipefail
+          IMG="${COMPOSE_PROJECT_NAME}-backend"
+          STRAY="$(docker run --rm "$IMG" sh -c \
+            'ls /app/test_*.py /app/*_test.py /app/conftest.py /app/*acceptance*.py /app/*-acceptance.py 2>/dev/null || true')"
+          if [ -n "$STRAY" ]; then
+            echo "FAIL: non-prod module(s) baked into the image by the COPY *.py glob:"
+            echo "$STRAY"
+            echo "Move test/scratch files out of src/backend/ top level (e.g. into tests/)."
+            exit 1
+          fi
+          echo "OK: no test/scratch modules at /app top level"
 
       - name: Import-chain fast check (exact #1033 failed chain)
         # Crisp one-line signal. Imports the exact chain that crash-looped:
