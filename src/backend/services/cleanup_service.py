@@ -1023,6 +1023,18 @@ class CleanupService:
 
     async def _cleanup_loop(self):
         """Main cleanup loop."""
+        # One-shot startup hook for #740: any non-terminal agent_loops left
+        # over from a prior process get marked `interrupted`. Loops do not
+        # auto-resume. Runs once on boot, not every cycle.
+        try:
+            interrupted = db.mark_orphan_loops_interrupted()
+            if interrupted > 0:
+                logger.info(
+                    f"[Cleanup] Startup: marked {interrupted} orphan agent_loops as interrupted (#740)"
+                )
+        except Exception as e:
+            logger.error(f"[Cleanup] Loop orphan sweep error: {e}")
+
         # Run initial cleanup on startup
         try:
             startup_report = await self.run_cleanup()

@@ -1668,4 +1668,48 @@ export class TrinityClient {
       { message }
     );
   }
+
+  // ============================================================================
+  // Sequential Agent Loops (#740)
+  // ============================================================================
+
+  async startAgentLoop(
+    agentName: string,
+    data: {
+      message: string;
+      max_runs: number;
+      stop_signal?: string;
+      delay_seconds?: number;
+      timeout_per_run?: number;
+      model?: string;
+      allowed_tools?: string[];
+    }
+  ): Promise<{
+    loop_id: string;
+    status: string;
+    agent_name: string;
+    max_runs: number;
+  }> {
+    return this.request(
+      "POST",
+      `/api/agents/${encodeURIComponent(agentName)}/loops`,
+      data
+    );
+  }
+
+  async getLoopStatus(loopId: string): Promise<unknown> {
+    return this.request(
+      "GET",
+      `/api/loops/${encodeURIComponent(loopId)}`
+    );
+  }
+
+  async stopAgentLoop(
+    loopId: string
+  ): Promise<{ loop_id: string; status: string }> {
+    return this.request(
+      "POST",
+      `/api/loops/${encodeURIComponent(loopId)}/stop`
+    );
+  }
 }

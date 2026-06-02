@@ -2638,6 +2638,86 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
   - Backend-side change to return `execution_id` as a streaming
     response header on long calls — would obsolete the heuristic
     lookup but requires a `chat_with_agent` API contract change.
+## 38. Sequential Agent Loops (#740)
+
+### 38.1 `run_agent_loop` MCP Tool + Backend Loop Service (#740 — Phase 1)
+- **Status**: 🚧 In Progress
+- **Implements**: Issue #740
+- **Description**: Server-side primitive for sequential bounded
+  repetition of agent tasks. Complements `chat_with_agent` (single
+  turn) and `fan_out` (parallel batch) with a third execution
+  pattern: run a task N times in order, each iteration optionally
+  using the previous response. Caller fires once, gets a `loop_id`,
+  and disconnects — loop state lives in the backend.
+- **Modes**:
+  - **Fixed** (`stop_signal` unset): runs exactly `max_runs` times.
+  - **Until** (`stop_signal` set, recommended sentinel `[[DONE]]`):
+    stops early when any iteration's response contains the signal.
+- **Endpoints**:
+  - `POST /api/agents/{name}/loops` — start a loop. Returns
+    `{loop_id, status: "queued", agent_name, max_runs}` immediately
+    (fire-and-disconnect). Body: `message` (template, supports
+    `{{run}}` 1-indexed and `{{previous_response}}` truncated to the
+    last 2000 chars), `max_runs` (1–100, required), `stop_signal`,
+    `delay_seconds` (between runs, default 0), `timeout_per_run`
+    (defaults to agent's configured `execution_timeout_seconds`),
+    `model`, `allowed_tools`.
+  - `GET /api/loops/{loop_id}` — status + per-run summaries + last
+    full response.
+  - `POST /api/loops/{loop_id}/stop` — graceful stop. Sets
+    `should_stop`; the current iteration finishes, the loop exits.
+    Returns `{status: "stopping" | "already_done"}`.
+- **MCP tools**: `run_agent_loop`, `get_loop_status`, `stop_loop`.
+  Permission rules match `chat_with_agent` (owner/admin/shared or
+  explicit `agent_permissions` for agent-scoped keys).
+- **Execution model**: each iteration goes through the standard
+  `task_execution_service.execute_task()` path → `capacity_manager`
+  admit/slot → execute → release. Each iteration is recorded in
+  `schedule_executions` with `triggered_by="loop"` and `loop_id` set
+  so the dashboard/timeline shows iterations as normal execution
+  rows tagged with their loop. Sequential: iteration N+1 does not
+  start until iteration N's row reaches a terminal status.
+- **Template substitution**: applied before each iteration.
+  `{{run}}` → `"1"`, `"2"`, … `{{previous_response}}` → empty on
+  iteration 1, otherwise the previous iteration's response trimmed
+  to the trailing 2000 chars.
+- **Stop signal check**: substring match (`stop_signal in response`)
+  applied to the full response after each iteration. Recommended
+  sentinel `[[DONE]]` is documentation only — the loop honors any
+  user-supplied string.
+- **Terminal states + stop reasons**:
+  - `completed` / `max_runs_reached` — fixed mode hit `max_runs`,
+    or until mode hit `max_runs` without seeing the signal.
+  - `completed` / `stop_signal_matched` — until mode saw the signal.
+  - `stopped` / `user_stopped` — `POST /loops/{id}/stop` triggered.
+  - `failed` / `error` — an iteration's task execution returned a
+    non-success terminal status; loop aborts at the failed iteration.
+  - `interrupted` / `interrupted` — backend restart while running.
+- **Restart recovery**: the cleanup-service startup hook re-marks
+  any `agent_loops` row in `running` status as `interrupted` with
+  `stop_reason="interrupted"`. Loops do not auto-resume —
+  callers re-issue if needed.
+- **WebSocket events**: `loop_run_completed` per iteration (carries
+  `run_number`, `execution_id`, `cost`, `duration_ms`),
+  `loop_completed` once when the loop exits any terminal state.
+- **Storage**: two new tables in main SQLite DB.
+  - `agent_loops` (id, agent_name, message_template, max_runs,
+    stop_signal, delay_seconds, timeout_per_run, model,
+    allowed_tools JSON, status, runs_completed, stop_reason,
+    last_response, started_by_user_id, started_by_user_email,
+    source_agent_name, source_mcp_key_id, source_mcp_key_name,
+    created_at, started_at, completed_at).
+  - `agent_loop_runs` (id, loop_id, run_number, execution_id,
+    status, response, cost, duration_ms, started_at, completed_at)
+    — one row per iteration; `execution_id` joins back to
+    `schedule_executions`.
+  - `schedule_executions.loop_id TEXT` column added for the
+    timeline-tag join.
+- **Out of scope (Phase 1)**: dedicated dashboard surface for loops
+  (current timeline is sufficient — iterations appear as normal
+  rows; a follow-up PR may add a collapse-group affordance);
+  auto-resume after restart; cross-agent loops (`agent` parameter
+  is `"self"` only for v1, matching `fan_out`).
 
 ---
 

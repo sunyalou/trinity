@@ -349,6 +349,7 @@ class TaskExecutionService:
         system_prompt: Optional[str] = None,
         execution_id: Optional[str] = None,
         fan_out_id: Optional[str] = None,
+        loop_id: Optional[str] = None,
         subscription_id: Optional[str] = None,
         parent_activity_id: Optional[str] = None,
         extra_activity_details: Optional[dict] = None,
@@ -411,6 +412,7 @@ class TaskExecutionService:
                 source_mcp_key_name=source_mcp_key_name,
                 model_used=model,
                 fan_out_id=fan_out_id,
+                loop_id=loop_id,
                 subscription_id=_exec_sub_id,
             )
             execution_id = execution.id if execution else None
