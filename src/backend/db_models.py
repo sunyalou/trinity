@@ -195,6 +195,8 @@ class ScheduleExecution(BaseModel):
     model_used: Optional[str] = None           # Model used for this execution
     # Fan-out linkage (FANOUT-001)
     fan_out_id: Optional[str] = None           # Parent fan-out operation ID
+    # Loop linkage (#740)
+    loop_id: Optional[str] = None              # Parent agent_loops.id for sequential-loop iterations
     # Subscription usage tracking (SUB-004)
     subscription_id: Optional[str] = None      # Subscription active at record time
     # Persistent backlog (BACKLOG-001)
@@ -846,6 +848,11 @@ class BusinessHealthCheck(BaseModel):
     stuck_execution_count: int = 0
     recent_error_rate: float = 0.0  # 0.0 - 1.0
     credential_status: Optional[str] = None  # null, "ok", "missing" (SUB-001/MON-001)
+    # #1020: richer /health signal. None when the agent image predates #1020
+    # (older agents omit these keys). `consecutive_failures` is the signal the
+    # dispatch circuit breaker (#526) consumes; `last_task_at` powers liveness.
+    consecutive_failures: Optional[int] = None
+    last_task_at: Optional[str] = None
     checked_at: str
 
 
