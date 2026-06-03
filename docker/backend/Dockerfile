@@ -58,14 +58,12 @@ RUN pip install --no-cache-dir \
     python-magic==0.4.27 \
     twilio==9.10.5
 
-# Copy all backend source files
-COPY ../../src/backend/main.py /app/
-COPY ../../src/backend/config.py /app/
-COPY ../../src/backend/models.py /app/
-COPY ../../src/backend/db_models.py /app/
-COPY ../../src/backend/dependencies.py /app/
-COPY ../../src/backend/database.py /app/
-COPY ../../src/backend/logging_config.py /app/
+# Copy all top-level backend modules. Globbed (not enumerated) so a new
+# top-level module can never be silently dropped from the prod image again
+# (#1033: redis_breaker_util.py was added but never added to the explicit
+# COPY list, crash-looping the backend on boot). Subdirectories are copied
+# wholesale below.
+COPY ../../src/backend/*.py /app/
 
 # Copy module directories
 COPY ../../src/backend/routers /app/routers/
