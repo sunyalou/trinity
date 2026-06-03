@@ -622,7 +622,7 @@ picks up on its next poll. (#389 S1a)
 ### Webhook Triggers (WEBHOOK-001)
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/webhooks/{webhook_token}` | Token (URL-embedded) | Trigger schedule execution — no JWT required; rate-limited 10 calls/60s per token; returns 202 Accepted |
+| POST | `/api/webhooks/{webhook_token}` | Token (URL-embedded) | Trigger schedule execution — no JWT required; rate-limited 10 calls/60s per token via the shared sliding-window limiter `services/rate_limiter.py` (#1023); returns 202 Accepted |
 
 **Token lifecycle:** `POST .../webhook` generates a `secrets.token_urlsafe(32)` token stored in `agent_schedules.webhook_token` (partial unique index for O(1) lookup). Calling `POST .../webhook` again rotates the token, instantly invalidating the old URL. `DELETE .../webhook` nulls the token; subsequent trigger calls return 404.
 
@@ -2049,6 +2049,21 @@ The `/ws/events` endpoint still uses `?token=trinity_mcp_xxx` (MCP API key) for 
 ### Frontend XSS Protection (H-005)
 
 All markdown rendering in Vue components uses `DOMPurify` sanitization via `utils/markdown.js`. No direct `v-html` with unsanitized content.
+
+### Rate limiting (#1023)
+
+Request-rate limits use a single shared **sliding-window** limiter,
+`services/rate_limiter.py` — a Redis sorted-set rolling window (no fixed-window
+boundary burst), fail-open with a bounded per-worker in-process fallback,
+cached Redis client. `enforce(key, limit, window)` raises 429 + `Retry-After`.
+The webhook trigger (`/api/webhooks/{token}`) is the first adopter; new
+request-rate limits should reuse this primitive, not hand-roll Redis counters.
+
+**Not** unified under it: the auth login/OTP limiters (`routers/auth.py`) are
+**failure-counters** (increment on failure, reset on success) — a different
+pattern, intentionally separate. A global ASGI middleware applying limits to
+every route (with a route→policy table) is a tracked follow-up; today the
+limiter is applied per-endpoint via `enforce()`.
 
 ---
 
