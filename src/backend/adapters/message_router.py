@@ -336,103 +336,14 @@ class ChannelMessageRouter:
         if not verified:
             return
 
-        # 5b. Unified cross-channel access gate (Issue #311).
-        # Resolve a verified email via the adapter, then apply the agent's
-        # access policy. Group chats have separate auth logic via group_auth_mode.
-        policy = db.get_access_policy(agent_name)
-        verified_email: Optional[str] = None
-
-        if is_group:
-            # Group chat auth: apply group_auth_mode policy
-            group_auth_mode = policy.get("group_auth_mode", "none")
-
-            if group_auth_mode == "any_verified":
-                # Check if group is already verified by any member
-                group_verified = await adapter.is_group_verified(message, agent_name)
-
-                if not group_verified:
-                    # Group not verified — check if sender can verify it
-                    try:
-                        verified_email = await adapter.resolve_verified_email(message)
-                    except Exception as e:
-                        logger.warning(f"[ROUTER:{channel}] resolve_verified_email error: {e}")
-                        verified_email = None
-
-                    # #446 defensive normalization at router boundary.
-                    if verified_email:
-                        verified_email = verified_email.strip().lower() or None
-
-                    if verified_email:
-                        # Sender is verified — unlock the group
-                        await adapter.set_group_verified(message, agent_name, verified_email)
-                        logger.info(
-                            f"[ROUTER:{channel}] Group {message.channel_id} verified by {verified_email}"
-                        )
-                    else:
-                        # No one verified — prompt for auth
-                        logger.info(
-                            f"[ROUTER:{channel}] Group access denied: agent={agent_name} "
-                            f"requires verified member, group={message.channel_id} not verified"
-                        )
-                        await adapter.prompt_group_auth(message, agent_name, bot_token)
-                        return
-            # else: group_auth_mode == "none" — allow all group messages (legacy behavior)
-        else:
-            # DM auth: apply require_email / open_access policy
-            try:
-                verified_email = await adapter.resolve_verified_email(message)
-            except Exception as e:
-                logger.warning(f"[ROUTER:{channel}] resolve_verified_email error: {e}")
-                verified_email = None
-
-            # Defensive normalization (#446): downstream `email_has_agent_access`
-            # already lowercases, but normalizing at the router boundary keeps
-            # all gate checks and any logging consistent.
-            if verified_email:
-                verified_email = verified_email.strip().lower() or None
-
-            require_email = policy.get("require_email", False)
-            open_access = policy.get("open_access", False)
-
-            if require_email and not verified_email:
-                logger.info(
-                    f"[ROUTER:{channel}] Access denied: agent={agent_name} requires email "
-                    f"and sender={message.sender_id} not verified"
-                )
-                await adapter.prompt_auth(message, agent_name, bot_token)
-                return
-
-            if verified_email and db.email_has_agent_access(agent_name, verified_email):
-                logger.debug(f"[ROUTER:{channel}] Access granted via owner/admin/sharing: {verified_email}")
-            elif open_access:
-                logger.debug(
-                    f"[ROUTER:{channel}] Access granted via open_access "
-                    f"(email={verified_email or 'none'})"
-                )
-            elif verified_email:
-                # Verified email + restrictive policy → record access request
-                try:
-                    db.upsert_access_request(agent_name, verified_email, channel)
-                except Exception as e:
-                    logger.error(f"[ROUTER:{channel}] Failed to upsert access_request: {e}")
-                logger.info(
-                    f"[ROUTER:{channel}] Pending access request: "
-                    f"agent={agent_name}, email={verified_email}"
-                )
-                await adapter.send_response(
-                    message.channel_id,
-                    ChannelResponse(
-                        text=(
-                            "🔒 Your access request is pending approval. "
-                            "I'll let you know once the agent owner responds."
-                        ),
-                        metadata={"bot_token": bot_token, "agent_name": agent_name},
-                    ),
-                    thread_id=message.thread_id,
-                )
-                return
-            # else: no verified email and policy not set → legacy permissive
-            # (preserves backward compat for agents that haven't opted in).
+        # 5b. Unified cross-channel access gate (Issue #311). Returns the
+        # verified email (used downstream for MEM-001 + session source) or
+        # short-circuits the handler when access is denied / pending.
+        allowed, verified_email = await self._enforce_access_policy(
+            adapter, message, agent_name, bot_token, is_group, channel
+        )
+        if not allowed:
+            return
 
         # 6. Get/create session
         logger.debug(f"[ROUTER:{channel}] Step 6 - creating session")
@@ -648,6 +559,124 @@ class ChannelMessageRouter:
     # =========================================================================
     # Private helpers
     # =========================================================================
+
+    async def _enforce_access_policy(
+        self,
+        adapter: ChannelAdapter,
+        message: NormalizedMessage,
+        agent_name: str,
+        bot_token: str,
+        is_group: bool,
+        channel: str,
+    ) -> Tuple[bool, Optional[str]]:
+        """Cross-channel access gate (Issue #311). Step 5b of the pipeline.
+
+        Resolves a verified email via the adapter and applies the agent's
+        access policy. Group chats use separate auth logic via
+        ``group_auth_mode``. On denial the relevant prompt / pending-request
+        response is already sent here.
+
+        Returns ``(allowed, verified_email)``. ``allowed=False`` means the
+        caller must short-circuit (handler returns). On the allow paths
+        ``verified_email`` may still be ``None`` (open_access / legacy
+        permissive), which downstream steps tolerate.
+        """
+        policy = db.get_access_policy(agent_name)
+        verified_email: Optional[str] = None
+
+        if is_group:
+            # Group chat auth: apply group_auth_mode policy
+            group_auth_mode = policy.get("group_auth_mode", "none")
+
+            if group_auth_mode == "any_verified":
+                # Check if group is already verified by any member
+                group_verified = await adapter.is_group_verified(message, agent_name)
+
+                if not group_verified:
+                    # Group not verified — check if sender can verify it
+                    try:
+                        verified_email = await adapter.resolve_verified_email(message)
+                    except Exception as e:
+                        logger.warning(f"[ROUTER:{channel}] resolve_verified_email error: {e}")
+                        verified_email = None
+
+                    # #446 defensive normalization at router boundary.
+                    if verified_email:
+                        verified_email = verified_email.strip().lower() or None
+
+                    if verified_email:
+                        # Sender is verified — unlock the group
+                        await adapter.set_group_verified(message, agent_name, verified_email)
+                        logger.info(
+                            f"[ROUTER:{channel}] Group {message.channel_id} verified by {verified_email}"
+                        )
+                    else:
+                        # No one verified — prompt for auth
+                        logger.info(
+                            f"[ROUTER:{channel}] Group access denied: agent={agent_name} "
+                            f"requires verified member, group={message.channel_id} not verified"
+                        )
+                        await adapter.prompt_group_auth(message, agent_name, bot_token)
+                        return False, None
+            # else: group_auth_mode == "none" — allow all group messages (legacy behavior)
+        else:
+            # DM auth: apply require_email / open_access policy
+            try:
+                verified_email = await adapter.resolve_verified_email(message)
+            except Exception as e:
+                logger.warning(f"[ROUTER:{channel}] resolve_verified_email error: {e}")
+                verified_email = None
+
+            # Defensive normalization (#446): downstream `email_has_agent_access`
+            # already lowercases, but normalizing at the router boundary keeps
+            # all gate checks and any logging consistent.
+            if verified_email:
+                verified_email = verified_email.strip().lower() or None
+
+            require_email = policy.get("require_email", False)
+            open_access = policy.get("open_access", False)
+
+            if require_email and not verified_email:
+                logger.info(
+                    f"[ROUTER:{channel}] Access denied: agent={agent_name} requires email "
+                    f"and sender={message.sender_id} not verified"
+                )
+                await adapter.prompt_auth(message, agent_name, bot_token)
+                return False, None
+
+            if verified_email and db.email_has_agent_access(agent_name, verified_email):
+                logger.debug(f"[ROUTER:{channel}] Access granted via owner/admin/sharing: {verified_email}")
+            elif open_access:
+                logger.debug(
+                    f"[ROUTER:{channel}] Access granted via open_access "
+                    f"(email={verified_email or 'none'})"
+                )
+            elif verified_email:
+                # Verified email + restrictive policy → record access request
+                try:
+                    db.upsert_access_request(agent_name, verified_email, channel)
+                except Exception as e:
+                    logger.error(f"[ROUTER:{channel}] Failed to upsert access_request: {e}")
+                logger.info(
+                    f"[ROUTER:{channel}] Pending access request: "
+                    f"agent={agent_name}, email={verified_email}"
+                )
+                await adapter.send_response(
+                    message.channel_id,
+                    ChannelResponse(
+                        text=(
+                            "🔒 Your access request is pending approval. "
+                            "I'll let you know once the agent owner responds."
+                        ),
+                        metadata={"bot_token": bot_token, "agent_name": agent_name},
+                    ),
+                    thread_id=message.thread_id,
+                )
+                return False, None
+            # else: no verified email and policy not set → legacy permissive
+            # (preserves backward compat for agents that haven't opted in).
+
+        return True, verified_email
 
     @staticmethod
     def _extract_outbound_files(response_text: str) -> Tuple[str, List[OutboundFile]]:
