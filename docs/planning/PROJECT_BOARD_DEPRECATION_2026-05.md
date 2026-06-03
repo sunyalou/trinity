@@ -70,6 +70,15 @@ Replaces WORKFLOW.md §Prioritization (lines 53–66, 88):
 
 No Tier ladder. No numeric Rank. The ordering you can defend is the ordering you write down.
 
+> **Execution addendum (2026-06-03, #1042).** During the migration the
+> operator finalized two choices that override the plan defaults above:
+> (1) **Ordering is newest-first** — within a priority/type, **highest issue
+> number first**, not the lowest-number-first FIFO drafted here. (2)
+> **Complexity is kept**, as `complexity-low` / `complexity-medium` /
+> `complexity-high` labels (open question #2 resolved "keep", not "drop") —
+> the board's numeric Complexity field was bucketed `low={1,2,3}`,
+> `medium={5,8}`, `high={13}`. All other plan decisions shipped as written.
+
 ---
 
 ## Skill rewrites
