@@ -22,7 +22,7 @@ what we discussed (updates memory, creates tasks, sends follow-ups)."
 
 ## Entry Points
 
-- **REST**: `POST /api/agents/{name}/voip/call` (JWT/MCP; `AuthorizedAgent`)
+- **REST**: `POST /api/agents/{name}/voip/call` (JWT/MCP; `AuthorizedAgentByName`)
 - **MCP**: `call_user` tool (`src/mcp-server/src/tools/voip.ts`)
 - **Binding config (owner-only)**: `GET/PUT/DELETE /api/agents/{name}/voip`
 - **Media Streams WS (Twilio, ticket-authed)**: `WS /api/voip/voice/{call_id}`
@@ -128,7 +128,7 @@ DDL in `db/schema.py`; migration `_migrate_voip_tables` in `db/migrations.py`
 |---------|---------|
 | Feature exposure | `voip_available` flag OFF by default (`VOIP_ENABLED`) + per-agent `voip_bindings` row required |
 | Binding CRUD | Owner-only (`OwnedAgentByName`); AuthToken AES-256-GCM at rest |
-| Outbound trigger | `AuthorizedAgent` (JWT/MCP); rate-limited per `(owner, destination)`; durable per-agent daily call cap; optional `Idempotency-Key` (Invariant #18) |
+| Outbound trigger | `AuthorizedAgentByName` (JWT/MCP); rate-limited per `(owner, destination)`; durable per-agent daily call cap; optional `Idempotency-Key` (Invariant #18) |
 | PSTN spend | On the **agent owner's** Twilio account (each owner brings their own creds) |
 | Media Streams WS | Twilio can't send a JWT → single-use, **call-bound** ticket (`scope="voip:{call_id}"`, 180s TTL); staged intent consumed once via Redis `GETDEL` |
 | TwiML | URL attribute `quoteattr`-escaped (no injection) |
