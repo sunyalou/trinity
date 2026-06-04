@@ -78,6 +78,42 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 
+# Modules this test stubs into sys.modules during the import-time router load
+# below — restored synchronously inside `_load_voip_router()` and, as a
+# belt-and-suspenders guard, snapshot/restored around every test by the autouse
+# fixture. This named-helper pair is the sanctioned exemption from the
+# tests/lint_sys_modules.py ban on bare sys.modules mutation (Issue #762),
+# matching the precedent in tests/unit/test_telegram_webhook_backfill.py.
+_STUBBED_MODULE_NAMES = [
+    "services",
+    "services.voip_service",
+    "services.idempotency_service",
+    "services.settings_service",
+    "services.platform_audit_service",
+    "routers.voip",
+]
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_modules():
+    """Snapshot sys.modules before each test and restore after.
+
+    The leaf-service stubs are installed and removed inside
+    `_load_voip_router()` at import time (leaving real `dependencies`/`jose`
+    untouched); this fixture guards against any per-test re-stub leaking into
+    sibling test files in the same session.
+    """
+    saved = {name: sys.modules.get(name) for name in _STUBBED_MODULE_NAMES}
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = value
+
+
 # ── Load routers/voip.py with leaf services stubbed but dependencies REAL ─────
 
 def _load_voip_router() -> types.ModuleType:
