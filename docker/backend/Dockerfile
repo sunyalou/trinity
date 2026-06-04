@@ -56,7 +56,8 @@ RUN pip install --no-cache-dir \
     opentelemetry-instrumentation-httpx==0.50b0 \
     opentelemetry-instrumentation-redis==0.50b0 \
     python-magic==0.4.27 \
-    twilio==9.10.5
+    twilio==9.10.5 \
+    "audioop-lts; python_version >= '3.13'"
 
 # Copy all top-level backend modules. Globbed (not enumerated) so a new
 # top-level module can never be silently dropped from the prod image again

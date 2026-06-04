@@ -1209,6 +1209,34 @@ export class TrinityClient {
   }
 
   // ============================================================================
+  // VoIP Telephony (VOIP-001, #1056)
+  // ============================================================================
+
+  /**
+   * Place an outbound phone call from the agent to a user. Server-side gated
+   * (VoIP enabled + voice binding) and rate-limited.
+   */
+  async placeVoipCall(
+    agentName: string,
+    data: {
+      to_number: string;
+      context?: string;
+      process_transcript?: boolean;
+    }
+  ): Promise<{
+    call_id: string;
+    status: string;
+    to_number: string;
+    twilio_call_sid?: string;
+  }> {
+    return this.request(
+      "POST",
+      `/api/agents/${encodeURIComponent(agentName)}/voip/call`,
+      data
+    );
+  }
+
+  // ============================================================================
   // Per-User Memory Write (MEM-001, #888)
   // ============================================================================
 

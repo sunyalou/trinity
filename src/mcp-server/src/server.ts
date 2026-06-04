@@ -22,6 +22,7 @@ import { createExecutionTools } from "./tools/executions.js";
 import { createEventTools } from "./tools/events.js";
 import { createChannelTools } from "./tools/channels.js";
 import { createMessageTools } from "./tools/messages.js";
+import { createVoipTools } from "./tools/voip.js";
 import { createFileTools } from "./tools/files.js";
 import { createMemoryTools } from "./tools/memory.js";
 import { createLoopTools } from "./tools/loops.js";
@@ -217,6 +218,7 @@ export async function createServer(config: ServerConfig = {}) {
     createMessageTools(client, requireApiKey),
     createMemoryTools(client, requireApiKey),     // MEM-001 write path (#888)
     createLoopTools(client, requireApiKey),       // Sequential agent loops (#740)
+    createVoipTools(client, requireApiKey),       // VoIP telephony — call_user (VOIP-001, #1056)
   ];
   for (const group of toolGroups) {
     addAllTools(group);

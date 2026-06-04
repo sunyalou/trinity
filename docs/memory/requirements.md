@@ -2765,6 +2765,103 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
 
 ---
 
+## 39. VoIP Telephony (VOIP-001)
+
+### 39.1 Outbound Phone Calls over Gemini Live (#1056 — Phase 1)
+- **Status**: 🚧 In Progress
+- **Implements**: Issue #1056 (Phase 1 — outbound)
+- **Description**: An agent places an outbound phone call to a user and
+  holds a real-time, interruptible voice conversation powered by the
+  existing Gemini Live voice bridge. A phone call is just a **different
+  transport feeding the same Gemini queues** — `services/gemini_voice.py`
+  is **not modified**. Ships as a regular OSS feature (no entitlement
+  gating), gated behind a feature flag that is **OFF by default**.
+- **Feature flag (default OFF)**: `voip_available` is exposed by
+  `GET /api/settings/feature-flags` as
+  `VOIP_ENABLED and bool(GEMINI_API_KEY)`. `VOIP_ENABLED` defaults to
+  `false` (mirrors `workspace_available` opt-in, #860). All VoIP
+  endpoints 404 when the flag is off. The feature is additionally
+  per-agent-gated: it only functions once a `voip_bindings` row exists.
+- **Transport**: Twilio Programmable Voice + bidirectional Media Streams
+  (`<Connect><Stream>`), delivering raw G.711 μ-law 8kHz audio over a
+  WebSocket directly into the existing Gemini queues. Explicitly **not**
+  Twilio ConversationRelay (does its own STT/TTS for text LLMs) and
+  **not** Pipecat/LiveKit (would re-implement the owned bridge).
+- **Per-agent Twilio-voice credentials**: dedicated `voip_bindings`
+  table (`account_sid`, AES-256-GCM-encrypted `auth_token`, `from_number`,
+  `webhook_secret`, `enabled`, `daily_call_cap`), **separate from
+  `whatsapp_bindings`** (voice and messaging are different Twilio
+  products). Each agent owner brings their own Twilio account — outbound
+  PSTN spend is on the owner's account, not the platform operator's.
+- **Audio conversion** (stdlib `audioop`, all codec work in the adapter):
+  inbound μ-law 8kHz → PCM16 16kHz (`ulaw2lin` → `ratecv(8k→16k)`);
+  outbound PCM16 24kHz → μ-law 8kHz (`ratecv(24k→8k)` direct decimation
+  → `lin2ulaw`), re-chunked to 160-byte/20ms frames, base64 for Twilio
+  JSON. `audioop.ratecv` **state is carried per-direction per-connection**
+  (no per-chunk reset → no boundary clicks). `audioop-lts` is pinned for
+  Python ≥ 3.13 (stdlib `audioop` removed in 3.13).
+- **Interruption**: relies on Gemini Live's native barge-in. The adapter
+  flushes Twilio's buffer via a **`clear`** event + drops its local
+  accumulator when the user speaks while the agent is mid-utterance, so
+  buffered audio does not play over the caller.
+- **Outbound trigger**:
+  - `POST /api/agents/{name}/voip/call` (JWT/MCP, `AuthorizedAgent`) and
+    the MCP tool `call_user`. Body: `{to_number, context?,
+    process_transcript?}`.
+  - The trigger creates a `chat_session` (owner identity), mints a
+    single-use WSS ticket, stages session intent (agent, user, system
+    prompt, chat_session_id, `process_transcript`) in Redis keyed by a
+    high-entropy `call_id`, then calls Twilio
+    `calls.create(to, from_, twiml="<Connect><Stream url='wss://…/api/voip/voice/{call_id}?ticket=…'/></Connect>")`.
+  - **Abuse controls** (Phase 1): rate-limited per `(owner, destination)`
+    via `services/rate_limiter.py`; a durable per-agent **daily call cap**
+    (`voip_call_logs` count); optional `Idempotency-Key` (Invariant #18).
+    A formal opt-in destination allowlist is deferred to Phase 2.
+- **Cross-worker safety**: the trigger does **not** call
+  `connect_and_stream`; it only stages intent in Redis. The WS handler —
+  running on whichever worker Twilio's Media Streams socket actually hits —
+  reads the staged intent, calls `voice_service.create_session(...)` then
+  `connect_and_stream(...)`, so the live Gemini connection lives on the
+  correct worker.
+- **Two-id namespace**: `call_id` (chosen at trigger time; in the WSS URL
+  + Redis intent key + ticket binding) is distinct from the Gemini
+  `VoiceSession.session_id` (`vs_…`, minted at WS-connect inside the
+  unmodified `create_session`). They are never conflated.
+- **WSS auth**: the Media Streams socket (Twilio cannot send a JWT) is
+  gated by a single-use, call-bound ticket via
+  `services/ws_ticket_service.py`. `mint_ticket` gains an optional
+  `ttl_seconds` param (VoIP mints at 180s to cover PSTN dial+ring, vs the
+  30s browser default) and binds the ticket with `scope="voip:{call_id}"`,
+  verified in the handler. Staged intent is consumed exactly once via
+  Redis `GETDEL`.
+- **Transcript persistence**: the call transcript is persisted to
+  `chat_messages` with `source="voice"` via the existing `_save_transcript`
+  path, guarded by a Redis SETNX sentinel so a double-teardown saves
+  exactly once.
+- **Post-call processing (default ON)**: after teardown, the full
+  transcript is dispatched as a single turn to the **main agent** through
+  `task_execution_service.execute_task(triggered_by="voip")` so the agent
+  (with its real skills/memory/MCP) digests the call and takes follow-up
+  actions. Per-call opt-out via `process_transcript=false`; skipped when
+  the transcript is empty (no-answer / instant hangup); once-guarded.
+- **Config**: `VOIP_ENABLED` (default `false`),
+  `VOIP_MAX_CALL_DURATION` (default 600s — VoIP-specific, not the
+  inherited 300s `VOICE_MAX_DURATION`), `VOIP_DEFAULT_DAILY_CALL_CAP`
+  (default 50), `VOIP_TICKET_TTL_SECONDS` (default 180),
+  `VOIP_CALL_RATE_LIMIT` / `VOIP_CALL_RATE_WINDOW`.
+- **Three surfaces in sync (Invariant #13)**: backend router
+  (`routers/voip.py`) + MCP tool (`src/mcp-server/src/tools/voip.ts`).
+  No agent-server mirror (the bridge is backend-only).
+- **Out of scope (Phase 1)**: inbound calls ("you call the agent" —
+  Phase 2: Twilio voice webhook + `X-Twilio-Signature` + inbound
+  number→agent resolution on the same table; an `inbound_number` column
+  is shipped up-front so Phase 2 is additive); opt-in destination
+  allowlist (Phase 2); UI config surface, schedule-action trigger, and
+  call cost/duration observability (Phase 3). Real PSTN path is
+  manual-verify (needs a live Twilio voice number).
+
+---
+
 ## Out of Scope
 
 - Multi-tenant deployment (single org only)

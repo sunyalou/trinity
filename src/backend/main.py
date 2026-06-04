@@ -88,6 +88,7 @@ from routers.image_generation import router as image_generation_router
 from routers.avatar import router as avatar_router
 from routers.operator_queue import router as operator_queue_router, set_websocket_manager as set_operator_queue_ws_manager
 from routers.voice import router as voice_router
+from routers.voip import public_router as voip_public_router, auth_router as voip_auth_router
 from routers.event_subscriptions import router as event_subscriptions_router, set_websocket_manager as set_event_subs_ws_manager, set_filtered_websocket_manager as set_event_subs_filtered_ws_manager
 from routers.users import router as users_router
 from routers.debug import router as debug_router  # #306 soak instrumentation
@@ -850,6 +851,8 @@ app.include_router(image_generation_router)  # Image Generation (IMG-001)
 app.include_router(avatar_router)  # Agent Avatars (AVATAR-001)
 app.include_router(operator_queue_router)  # Operator Queue (OPS-001)
 app.include_router(voice_router)  # Voice Chat (VOICE-001)
+app.include_router(voip_public_router)  # VoIP Telephony Media Streams WS (VOIP-001)
+app.include_router(voip_auth_router)  # VoIP Telephony binding + trigger (VOIP-001)
 app.include_router(event_subscriptions_router)  # Agent Event Subscriptions (EVT-001)
 app.include_router(users_router)  # User Management (ROLE-001)
 app.include_router(debug_router)  # #306 soak dashboard

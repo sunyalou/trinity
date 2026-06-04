@@ -1652,6 +1652,71 @@ def _migrate_whatsapp_bindings(cursor, conn):
     conn.commit()
 
 
+def _migrate_voip_tables(cursor, conn):
+    """Create VoIP telephony tables (VOIP-001, #1056 — Phase 1).
+
+    - voip_bindings: one Twilio voice sender per agent (AccountSid + encrypted
+      AuthToken + from_number + per-binding daily_call_cap). Separate from
+      whatsapp_bindings — voice and messaging are different Twilio products.
+      `inbound_number` is shipped up-front (nullable) so Phase 2 is additive.
+    - voip_call_logs: one row per outbound call; (agent_name, started_at) index
+      backs the durable daily-cap count and seeds Phase 3 observability.
+    """
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS voip_bindings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_name TEXT NOT NULL UNIQUE,
+            account_sid TEXT NOT NULL,
+            auth_token_encrypted TEXT NOT NULL,
+            from_number TEXT NOT NULL,
+            inbound_number TEXT,
+            webhook_secret TEXT NOT NULL UNIQUE,
+            webhook_url TEXT,
+            daily_call_cap INTEGER DEFAULT 50,
+            display_name TEXT,
+            enabled INTEGER DEFAULT 1,
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_voip_bindings_agent ON voip_bindings(agent_name)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_voip_bindings_webhook ON voip_bindings(webhook_secret)"
+    )
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS voip_call_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            call_id TEXT NOT NULL UNIQUE,
+            agent_name TEXT NOT NULL,
+            chat_session_id TEXT,
+            to_number TEXT NOT NULL,
+            direction TEXT NOT NULL DEFAULT 'outbound',
+            status TEXT NOT NULL DEFAULT 'initiated',
+            twilio_call_sid TEXT,
+            initiated_by_user_id INTEGER,
+            initiated_by_email TEXT,
+            error TEXT,
+            started_at TEXT NOT NULL,
+            connected_at TEXT,
+            ended_at TEXT,
+            duration_ms INTEGER
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_voip_call_logs_agent_started "
+        "ON voip_call_logs(agent_name, started_at)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_voip_call_logs_call_id ON voip_call_logs(call_id)"
+    )
+
+    conn.commit()
+
+
 def _migrate_agent_git_config_branch_ownership(cursor, conn):
     """Add partial UNIQUE index to agent_git_config enforcing branch ownership (S7 Layer 2 / #382).
 
@@ -2389,4 +2454,5 @@ MIGRATIONS = [
     ("agent_loops_tables", _migrate_agent_loops_tables),
     ("users_suspended_at", _migrate_users_suspended_at),
     ("agent_ownership_circuit_breaker", _migrate_agent_ownership_circuit_breaker),
+    ("voip_tables", _migrate_voip_tables),
 ]

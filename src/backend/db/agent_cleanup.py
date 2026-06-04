@@ -146,6 +146,11 @@ AGENT_REFS: List[AgentRef] = [
     AgentRef("slack_active_threads",         "agent_name",        Policy.CASCADE),
     AgentRef("telegram_bindings",            "agent_name",        Policy.CASCADE),
     AgentRef("whatsapp_bindings",            "agent_name",        Policy.CASCADE),
+    # VoIP (VOIP-001, #1056) — bindings carry encrypted Twilio creds; both
+    # must rename WITH the agent (else calls break after rename) and be wiped
+    # on purge.
+    AgentRef("voip_bindings",                "agent_name",        Policy.CASCADE),
+    AgentRef("voip_call_logs",               "agent_name",        Policy.CASCADE),
 
     # --- Monetization -------------------------------------------------------
     AgentRef("nevermined_agent_config",      "agent_name",        Policy.CASCADE),

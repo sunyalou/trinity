@@ -131,6 +131,7 @@ from db.operator_queue import OperatorQueueOperations
 from db.event_subscriptions import EventSubscriptionOperations
 from db.telegram_channels import TelegramChannelOperations
 from db.whatsapp_channels import WhatsAppChannelOperations
+from db.voip import VoipOperations
 from db.access_requests import AccessRequestOperations
 from db.audit import PlatformAuditOperations
 from db.canary import CanaryOperations
@@ -290,6 +291,7 @@ class DatabaseManager:
         self._event_subscription_ops = EventSubscriptionOperations()
         self._telegram_channel_ops = TelegramChannelOperations()
         self._whatsapp_channel_ops = WhatsAppChannelOperations()
+        self._voip_ops = VoipOperations()
         self._access_request_ops = AccessRequestOperations()
         self._audit_ops = PlatformAuditOperations()
         self._canary_ops = CanaryOperations()
@@ -1835,6 +1837,56 @@ class DatabaseManager:
 
     def increment_whatsapp_message_count(self, chat_link_id):
         return self._whatsapp_channel_ops.increment_message_count(chat_link_id)
+
+    # =========================================================================
+    # VoIP Telephony (delegated to db/voip.py) - VOIP-001 (#1056)
+    # =========================================================================
+
+    def create_voip_binding(self, agent_name, account_sid, auth_token, from_number,
+                            daily_call_cap=None, display_name=None,
+                            inbound_number=None, created_by=None):
+        return self._voip_ops.create_binding(
+            agent_name, account_sid, auth_token, from_number,
+            daily_call_cap=daily_call_cap, display_name=display_name,
+            inbound_number=inbound_number, created_by=created_by,
+        )
+
+    def get_voip_binding(self, agent_name):
+        return self._voip_ops.get_binding_by_agent(agent_name)
+
+    def get_voip_binding_by_webhook_secret(self, webhook_secret):
+        return self._voip_ops.get_binding_by_webhook_secret(webhook_secret)
+
+    def get_voip_auth_token(self, agent_name):
+        return self._voip_ops.get_decrypted_auth_token(agent_name)
+
+    def get_all_voip_bindings(self):
+        return self._voip_ops.get_all_bindings()
+
+    def update_voip_webhook_url(self, agent_name, webhook_url):
+        return self._voip_ops.update_webhook_url(agent_name, webhook_url)
+
+    def delete_voip_binding(self, agent_name):
+        return self._voip_ops.delete_binding(agent_name)
+
+    def create_voip_call_log(self, call_id, agent_name, to_number, chat_session_id=None,
+                            initiated_by_user_id=None, initiated_by_email=None,
+                            direction="outbound"):
+        return self._voip_ops.create_call_log(
+            call_id, agent_name, to_number, chat_session_id=chat_session_id,
+            initiated_by_user_id=initiated_by_user_id,
+            initiated_by_email=initiated_by_email, direction=direction,
+        )
+
+    def update_voip_call_status(self, call_id, status, twilio_call_sid=None,
+                               error=None, duration_ms=None):
+        return self._voip_ops.update_call_status(
+            call_id, status, twilio_call_sid=twilio_call_sid,
+            error=error, duration_ms=duration_ms,
+        )
+
+    def count_voip_calls_since(self, agent_name, hours=24):
+        return self._voip_ops.count_calls_since(agent_name, hours=hours)
 
     # =========================================================================
     # Nevermined Payment Integration (delegated to db/nevermined.py) - NVM-001

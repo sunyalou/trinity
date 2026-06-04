@@ -145,6 +145,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - `slack.py` - Slack integration (OAuth, events, multi-agent channel routing, per-agent channel binding) (SLACK-001/002)
 - `telegram.py` - Telegram bot integration (webhook receiver, bot binding, group config) (TELEGRAM-001/TGRAM-GROUP)
 - `whatsapp.py` - WhatsApp via Twilio (webhook receiver, binding CRUD + test) (WHATSAPP-001)
+- `voip.py` - VoIP telephony: per-agent Twilio-voice binding CRUD (owner-only), outbound call trigger (idempotent, rate-limited), and the Media Streams WebSocket entrypoint. Feature-flag gated (`voip_available`, default OFF) (VOIP-001, #1056)
 - `webhooks.py` - Public webhook trigger endpoint + JWT-auth webhook management (WEBHOOK-001, #291)
 - `messages.py` - Proactive agent-to-user messaging (#321)
 - `public_memory.py` - Per-user memory write endpoint for channel sessions (MEM-001, #888)
@@ -205,6 +206,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - `proactive_message_service.py` - Agent-to-user proactive messaging with rate limiting and audit (#321)
 - `agent_shared_files_service.py` - Outbound file sharing: path validation, MIME blocklist, quota, Docker `get_archive` extraction, URL building (FILES-001)
 - `loop_service.py` - Sequential agent loops: in-process `asyncio.Task` runner, cooperative stop, template substitution, WS events (`loop_run_completed`, `loop_completed`) (#740)
+- `voip_service.py` - VoIP outbound-call orchestration (VOIP-001, #1056): gate checks (flag/binding) + abuse controls (rate-limit per owner+destination, durable per-agent daily cap), stages a Gemini session intent in Redis keyed by a `call_id` (distinct from the `vs_` VoiceSession id), mints a call-bound WSS ticket, calls Twilio `calls.create(<Connect><Stream>)`, and dispatches the post-call transcript to the **main agent** via `task_execution_service.execute_task(triggered_by="voip")` (default ON). Never calls `connect_and_stream` (cross-worker safety — the WS handler does).
 
 **Channel Adapters (`adapters/`)** — Pluggable external messaging (SLACK-002):
 
@@ -225,10 +227,15 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - `whatsapp_adapter.py` - WhatsApp adapter: DMs via Twilio (WHATSAPP-001); media with SSRF-gated downloads; `/login`/`/logout`/`/whoami` command handlers + markdown→WhatsApp syntax conversion (#467)
 - `transports/twilio_webhook.py` - Twilio webhook transport: HMAC-SHA1 signature (via `twilio.request_validator`), MessageSid dedup, form-encoded body
 
+*VoIP Telephony (via Twilio Media Streams) — a voice transport, NOT a text `ChannelAdapter` (VOIP-001, #1056):*
+- `transports/twilio_media_stream.py` - Media Streams WS bridge (`handle_media_stream`): call-bound ticket + scope check, `GETDEL` staged intent (consume-once), creates the Gemini `VoiceSession` on the connecting worker, runs the unmodified `connect_and_stream`. Per-connection `_CallBridge`: inbound μ-law→PCM resample, outbound queue + paced 20ms 160-byte μ-law sender, `clear`-on-barge-in, `streamSid` capture, teardown ties Gemini-end→Twilio-close + SETNX-guarded single transcript save (`source="voice"`) + post-call processing dispatch.
+- `transports/voip_audio.py` - Pure stdlib-`audioop` codec helpers (`ulaw8k_to_pcm16k`, `pcm24k_to_ulaw8k` direct 3:1, `pop_frames`). Carries per-direction `ratecv` state across chunks (anti-click). `audioop-lts` pinned for Python ≥ 3.13.
+
 *Database:*
 - `db/slack_channels.py` - Workspace connections (encrypted bot tokens), channel-agent bindings, active threads
 - `db/telegram_channels.py` - Telegram bindings (encrypted bot tokens), group configs, chat links
 - `db/whatsapp_channels.py` - WhatsApp (Twilio) bindings (encrypted AuthToken), chat links, verified-email read/write/by-email lookup (#467 Phase 2)
+- `db/voip.py` - VoIP `voip_bindings` (encrypted Twilio-voice AuthToken, `from_number`, `inbound_number` [Phase 2], `daily_call_cap`) + `voip_call_logs` lifecycle + durable daily-cap window count (VOIP-001)
 
 *Content & Media:*
 - `image_generation_service.py` - Platform image generation via Gemini (prompt refinement + image gen) (IMG-001)
@@ -540,6 +547,19 @@ picks up on its next poll. (#389 S1a)
 | GET | `/api/agents/{name}/voice/prompt` | Get per-agent voice system prompt |
 | PUT | `/api/agents/{name}/voice/prompt` | Set per-agent voice system prompt |
 | GET | `/api/agents/{name}/voice/{session_id}/panel` | Canvas panel state for workspace mode (ownership-gated; returns empty state when session gone, #699) |
+
+### VoIP Telephony (VOIP-001, #1056 — Phase 1, feature-flag gated default OFF)
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/agents/{name}/voip` | Owner | Twilio-voice binding status. 404 when `voip_available` off. |
+| PUT | `/api/agents/{name}/voip` | Owner | Configure Twilio voice creds (validated via Twilio Account fetch; AuthToken AES-256-GCM encrypted). |
+| DELETE | `/api/agents/{name}/voip` | Owner | Remove the voice binding. |
+| POST | `/api/agents/{name}/voip/call` | JWT/MCP (`AuthorizedAgent`) | Place an outbound call. Rate-limited per `(owner, destination)` + durable per-agent daily cap; optional `Idempotency-Key` (Invariant #18). Returns `{call_id, status:"ringing", twilio_call_sid}`. |
+| WS | `/api/voip/voice/{call_id}` | Call-bound ticket (`?ticket=`) | Twilio Media Streams audio bridge (no JWT — Twilio can't send one). Ticket `scope="voip:{call_id}"`; staged intent consumed once via Redis `GETDEL`. |
+
+MCP tool: `call_user` (`src/mcp-server/src/tools/voip.ts`). The call transcript
+is persisted to `chat_messages` (`source="voice"`) and, by default, dispatched
+to the main agent for processing via `task_execution_service.execute_task(triggered_by="voip")`.
 
 ### Activities (1 endpoint)
 | Method | Path | Description |
@@ -862,7 +882,7 @@ MCP tools: `run_agent_loop`, `get_loop_status`, `stop_loop` (`src/mcp-server/src
 | GET | `/api/settings/mcp-url` | Get configured MCP server URL (any auth user) |
 | PUT | `/api/settings/mcp-url` | Set MCP server URL (admin-only) |
 | DELETE | `/api/settings/mcp-url` | Reset to auto-detect (admin-only) |
-| GET | `/api/settings/feature-flags` | Public-safe feature flags for UI gating (any auth user). Exposes `session_tab_enabled` (SESSION_TAB Phase 3), `voice_available` (`VOICE_ENABLED && bool(GEMINI_API_KEY)`, #699), `workspace_available` (`voice_available AND WORKSPACE_ENABLED`, #860 — opt-in, default False), and `enterprise_features` — the list of registered enterprise modules (`EntitlementService.list_entitled_features()`; empty in OSS-only builds or under `TRINITY_OSS_ONLY=1`), which gates every enterprise UI surface in the OSS bundle (#847). |
+| GET | `/api/settings/feature-flags` | Public-safe feature flags for UI gating (any auth user). Exposes `session_tab_enabled` (SESSION_TAB Phase 3), `voice_available` (`VOICE_ENABLED && bool(GEMINI_API_KEY)`, #699), `workspace_available` (`voice_available AND WORKSPACE_ENABLED`, #860 — opt-in, default False), `voip_available` (`VOIP_ENABLED && bool(GEMINI_API_KEY)`, #1056 — opt-in, default False; also requires a per-agent `voip_bindings` row to function), and `enterprise_features` — the list of registered enterprise modules (`EntitlementService.list_entitled_features()`; empty in OSS-only builds or under `TRINITY_OSS_ONLY=1`), which gates every enterprise UI surface in the OSS bundle (#847). |
 | GET | `/api/settings/agent-defaults/resources` | Get fleet-wide default CPU/memory for new containers (admin-only, RES-001) |
 | PUT | `/api/settings/agent-defaults/resources` | Set fleet-wide default CPU/memory; valid CPU: 1/2/4/8/16; valid memory: 1g–32g (admin-only, RES-001) |
 
@@ -2043,6 +2063,8 @@ The `/ws` endpoint uses **single-use opaque tickets** instead of a JWT in the UR
 This closes the JWT-leak surface flagged by the April 2026 remediation pentest (finding 3.2.1): nginx access logs, browser history, and upstream proxies no longer see the JWT. CSWSH is mitigated because the ticket endpoint requires the JWT in an `Authorization` header — a malicious page can't mint a ticket on the victim's behalf without an explicit cross-origin request, which CORS rejects. Implementation lives in `services/ws_ticket_service.py` + `routers/ws_tickets.py`.
 
 The `/ws/events` endpoint still uses `?token=trinity_mcp_xxx` (MCP API key) for compatibility with documented external scripts (`websocat`, `wscat`); MCP keys are scoped, named, and revocable so the leak surface is bounded relative to a JWT.
+
+`mint_ticket` takes an optional `ttl_seconds` (default 30s, ceiling 600s) used by the VoIP Media Streams socket (VOIP-001, #1056): Twilio cannot send a JWT and a PSTN call's dial+ring exceeds the 30s browser TTL, so the call trigger mints a **call-bound** ticket (`scope="voip:{call_id}"`, 180s) that the WS handler verifies against the URL's `call_id` — binding a single-use ticket to exactly one call.
 
 **Reconnect replay (RELIABILITY-003, #306):** Both `/ws` and `/ws/events` accept an optional `?last-event-id=<stream_id>` query param. The value is regex-gated (`^\d+-\d+$`) by `validate_last_event_id()` in `services/event_bus.py` before reaching `XRANGE`; malformed input is ignored (no catchup). Catchup is capped at `REPLAY_GAP_LIMIT=5000` entries — a larger gap returns `{"type": "resync_required", "reason": "gap_too_large"}` instead of an unbounded `XRANGE`. Authorization (`accessible_agents` for `/ws/events`) is re-applied on replay, not just on live fan-out.
 

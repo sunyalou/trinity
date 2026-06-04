@@ -920,6 +920,48 @@ TABLES = {
     """,
 
     # -------------------------------------------------------------------------
+    # VoIP Telephony Tables (VOIP-001 — Twilio Programmable Voice, #1056)
+    # -------------------------------------------------------------------------
+    "voip_bindings": """
+        CREATE TABLE IF NOT EXISTS voip_bindings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_name TEXT NOT NULL UNIQUE,
+            account_sid TEXT NOT NULL,
+            auth_token_encrypted TEXT NOT NULL,
+            from_number TEXT NOT NULL,
+            inbound_number TEXT,
+            webhook_secret TEXT NOT NULL UNIQUE,
+            webhook_url TEXT,
+            daily_call_cap INTEGER DEFAULT 50,
+            display_name TEXT,
+            enabled INTEGER DEFAULT 1,
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        )
+    """,
+
+    "voip_call_logs": """
+        CREATE TABLE IF NOT EXISTS voip_call_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            call_id TEXT NOT NULL UNIQUE,
+            agent_name TEXT NOT NULL,
+            chat_session_id TEXT,
+            to_number TEXT NOT NULL,
+            direction TEXT NOT NULL DEFAULT 'outbound',
+            status TEXT NOT NULL DEFAULT 'initiated',
+            twilio_call_sid TEXT,
+            initiated_by_user_id INTEGER,
+            initiated_by_email TEXT,
+            error TEXT,
+            started_at TEXT NOT NULL,
+            connected_at TEXT,
+            ended_at TEXT,
+            duration_ms INTEGER
+        )
+    """,
+
+    # -------------------------------------------------------------------------
     # Subscription Rate Limit Tracking (SUB-003)
     # -------------------------------------------------------------------------
     "subscription_rate_limit_events": """
@@ -1338,6 +1380,12 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_whatsapp_bindings_agent ON whatsapp_bindings(agent_name)",
     "CREATE INDEX IF NOT EXISTS idx_whatsapp_bindings_webhook ON whatsapp_bindings(webhook_secret)",
     "CREATE INDEX IF NOT EXISTS idx_whatsapp_chat_links_binding ON whatsapp_chat_links(binding_id)",
+
+    # VoIP telephony indexes (VOIP-001) — agent+started_at powers the daily-cap count
+    "CREATE INDEX IF NOT EXISTS idx_voip_bindings_agent ON voip_bindings(agent_name)",
+    "CREATE INDEX IF NOT EXISTS idx_voip_bindings_webhook ON voip_bindings(webhook_secret)",
+    "CREATE INDEX IF NOT EXISTS idx_voip_call_logs_agent_started ON voip_call_logs(agent_name, started_at)",
+    "CREATE INDEX IF NOT EXISTS idx_voip_call_logs_call_id ON voip_call_logs(call_id)",
 
     # Execution fan-out / backlog / retry partial indexes
     "CREATE INDEX IF NOT EXISTS idx_executions_fan_out ON schedule_executions(fan_out_id)",

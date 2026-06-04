@@ -117,6 +117,25 @@ VOICE_ENABLED = os.getenv("VOICE_ENABLED", "true").lower() == "true"
 VOICE_MODEL = os.getenv("VOICE_MODEL", "models/gemini-3.1-flash-live-preview")
 VOICE_MAX_DURATION = int(os.getenv("VOICE_MAX_DURATION", "300"))  # seconds
 
+# VoIP Telephony Configuration (VOIP-001, #1056 — Phase 1, outbound)
+# Default OFF — mirrors the workspace_available opt-in (#860). The feature
+# also requires a per-agent voip_bindings row to function. `voip_available`
+# in GET /api/settings/feature-flags is `VOIP_ENABLED and bool(GEMINI_API_KEY)`.
+VOIP_ENABLED = os.getenv("VOIP_ENABLED", "false").lower() == "true"
+# VoIP-specific max call duration (seconds) — deliberately distinct from the
+# inherited 300s VOICE_MAX_DURATION so phone calls aren't silently cut at 5min.
+VOIP_MAX_CALL_DURATION = int(os.getenv("VOIP_MAX_CALL_DURATION", "600"))
+# Durable per-agent daily call cap (overridable per binding). Bounds PSTN spend.
+VOIP_DEFAULT_DAILY_CALL_CAP = int(os.getenv("VOIP_DEFAULT_DAILY_CALL_CAP", "50"))
+# WSS ticket TTL for the Twilio Media Streams socket — wide enough to cover
+# PSTN dial + ring (the 30s browser default is too short, call setup > 30s).
+VOIP_TICKET_TTL_SECONDS = int(os.getenv("VOIP_TICKET_TTL_SECONDS", "180"))
+# Redis staged-intent TTL (seconds) — consumed at WS-connect, sized for ringing.
+VOIP_INTENT_TTL_SECONDS = int(os.getenv("VOIP_INTENT_TTL_SECONDS", "180"))
+# Outbound-call trigger rate limit (per owner+destination sliding window).
+VOIP_CALL_RATE_LIMIT = int(os.getenv("VOIP_CALL_RATE_LIMIT", "5"))
+VOIP_CALL_RATE_WINDOW = int(os.getenv("VOIP_CALL_RATE_WINDOW", "60"))  # seconds
+
 # Default GitHub Template Repositories
 # Just repo identifiers — metadata is fetched from each repo's template.yaml at runtime.
 # Admins can override this list via Settings → GitHub Templates (stored in system_settings).
