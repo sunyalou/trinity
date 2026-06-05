@@ -22,7 +22,7 @@ import subprocess
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -230,6 +230,11 @@ class HeadlessRunContext:
     #   "max_duration"    — the effective_timeout budget was genuinely exhausted
     termination_reason: Optional[str] = None
     stalled_tool: Optional[str] = None
+    # #1025 (salvaged from #980): True when the drain returned "budget_exceeded"
+    # or "errored" — a reader thread is leaked and may still be mutating the
+    # shared buffers below, so _finalize_headless_result snapshots its read
+    # fields before reading them.
+    drain_budget_exceeded: bool = False
 
     # Shared mutable buffers (populated by stream_parser via process_stream_line)
     response_parts: List[str] = field(default_factory=list)
@@ -674,21 +679,67 @@ def _run_headless_subprocess(ctx: HeadlessRunContext) -> None:
             f"[Headless Task] Task {ctx.task_session_id} {reason} — killing process group"
         )
         _terminate_process_group(process, graceful_timeout=5, pgid=ctx.process_pgid, execution_tag=ctx.task_session_id)
-        _drain_bounded(process, stdout_thread, stderr_thread,
-                       grace=3, pgid=ctx.process_pgid,
-                       execution_tag=ctx.task_session_id)
+        drain_outcome = _drain_bounded(process, stdout_thread, stderr_thread,
+                                       grace=3, pgid=ctx.process_pgid,
+                                       execution_tag=ctx.task_session_id)
+        ctx.drain_budget_exceeded = drain_outcome in ("budget_exceeded", "errored")
         raise
 
     # Subprocess exited. Drain readers — if a hook grandchild still
     # holds a pipe, the helper will close the pipe FDs so the
     # reader threads can exit.
-    _drain_bounded(process, stdout_thread, stderr_thread,
-                   grace=5, pgid=ctx.process_pgid,
-                   execution_tag=ctx.task_session_id)
+    drain_outcome = _drain_bounded(process, stdout_thread, stderr_thread,
+                                   grace=5, pgid=ctx.process_pgid,
+                                   execution_tag=ctx.task_session_id)
+    ctx.drain_budget_exceeded = drain_outcome in ("budget_exceeded", "errored")
 
     # Re-raise permission-mode failure captured by stdout thread
     if ctx.stdout_exc:
         raise ctx.stdout_exc[0]
+
+
+# #1025: number of times _snapshot_for_finalize retries the metadata deep-copy
+# when it loses the race with a still-mutating leaked reader. The mutation
+# window is a single attribute set, so the first retry almost always wins.
+_SNAPSHOT_RETRY_ATTEMPTS = 3
+
+
+def _snapshot_for_finalize(ctx: HeadlessRunContext) -> HeadlessRunContext:
+    """Copy the finalize-read fields of ``ctx`` onto a fresh context (#1025/D19).
+
+    Called only on the budget-exceeded / errored drain path, where a leaked
+    reader thread may still be mutating ``ctx`` concurrently. ``list(...)`` of a
+    list never raises on a concurrent append, but ``metadata.model_copy(deep=
+    True)`` iterates the pydantic model's ``__dict__`` / ``__pydantic_fields_set__``
+    and CAN raise ``RuntimeError("... changed size during iteration")`` if the
+    reader sets a not-yet-set field mid-copy (most relevant on the ``errored``
+    outcome, where the reader isn't necessarily wedged in ``readline``). The
+    window is a single attribute set, so a bounded retry almost always succeeds
+    on the next attempt; if every attempt loses the race we fall back to the
+    live ``ctx`` (the pre-#1025 behaviour — no worse than not snapshotting).
+    """
+    last_exc: Optional[RuntimeError] = None
+    for _ in range(_SNAPSHOT_RETRY_ATTEMPTS):
+        try:
+            return replace(
+                ctx,
+                raw_messages=list(ctx.raw_messages),
+                response_parts=list(ctx.response_parts),
+                execution_log=list(ctx.execution_log),
+                verbose_output_lines=list(ctx.verbose_output_lines),
+                metadata=ctx.metadata.model_copy(deep=True),
+            )
+        except RuntimeError as exc:
+            # "dictionary/set changed size during iteration" — the leaked
+            # reader mutated metadata mid-deep-copy. Retry.
+            last_exc = exc
+    logger.warning(
+        "[Headless Task] Run-context snapshot lost the race with a leaked "
+        "reader %s times for task %s (%s) — finalizing against the live "
+        "context as a last resort. Issue #1025.",
+        _SNAPSHOT_RETRY_ATTEMPTS, ctx.task_session_id, last_exc,
+    )
+    return ctx
 
 
 def _finalize_headless_result(
@@ -706,6 +757,27 @@ def _finalize_headless_result(
     orchestrator's outer ``except HTTPException: raise`` chain re-surfaces
     them).
     """
+    # #1025 (D19): when the drain exceeded its budget (or errored), a reader
+    # thread is leaked and may still be mutating the shared buffers below.
+    # Snapshot EVERY field finalize reads onto a fresh context so iteration
+    # can't tear and a late append by the leaked reader can't be half-read.
+    # ``parse_failure_count`` / ``parse_failure_sample`` are an int + str
+    # (atomic reads, no snapshot). The leaked reader keeps mutating the
+    # ORIGINAL ctx (which it captured by closure); rebinding the local ``ctx``
+    # to the snapshot means the rest of finalize — including
+    # _attempt_empty_result_recovery's in-place mutations — operates entirely
+    # on the isolated copy. Clean-drain runs skip this and keep the zero-copy
+    # fast path. The snapshot itself is retry-guarded against the same race
+    # (see _snapshot_for_finalize).
+    if ctx.drain_budget_exceeded:
+        logger.warning(
+            "[Headless Task] Drain budget exceeded for task %s — finalizing "
+            "against a snapshot of the run context (a leaked reader thread "
+            "may still be mutating the live buffers). Issue #1025.",
+            ctx.task_session_id,
+        )
+        ctx = _snapshot_for_finalize(ctx)
+
     # Build verbose transcript from stderr (the human-readable execution log)
     # SECURITY: Sanitize stderr output
     sanitized_lines = [sanitize_text(line) for line in ctx.verbose_output_lines]
