@@ -1,7 +1,7 @@
 # Trinity — Target Architecture
 
 **Created:** 2026-05-05
-**Updated:** 2026-06-05 — Coordination model revised from a **push actor model** (backend dispatches into a per-agent Redis-stream mailbox) to **pull / work-stealing** (backend owns one durable per-agent queue; agents pull when they have free capacity). The change was driven by an adversarial design review across four coordination architectures: pull scored highest on simplicity, operational complexity, and reachability while delivering the same goals (async-first, the two operator levers, single-source-of-truth, replica groups) with ~80% reuse of existing primitives. See "Coordination Model" below. Tracked in GitHub under Epic #1045: umbrella #1081 (pull migration), #1082 (status-as-projection), #1083 (fire-and-forget dispatch), #1084 (effect-scoped idempotency — the gate), #1085 (correlated-failure controls). The governing principles, data layer, observability, and security sections are otherwise unchanged.
+**Updated:** 2026-06-05 — Coordination model revised from a **push actor model** (backend dispatches into a per-agent Redis-stream mailbox) to **pull / work-stealing** (backend owns one durable per-agent queue; agents pull when they have free capacity). The change was driven by an adversarial design review across four coordination architectures: pull scored highest on simplicity, operational complexity, and reachability while delivering the same goals (async-first, the two operator levers, single-source-of-truth, replica groups) with ~80% reuse of existing primitives. See "Coordination Model" below. Tracked in GitHub under Epic #1045: umbrella #1081 (pull migration), #1082 (status-as-projection), #1083 (fire-and-forget dispatch), #1084 (effect-scoped idempotency — the gate), #1085 (correlated-failure controls). The governing principles, data layer, observability, and security sections are otherwise unchanged. **Stack trimmed the same day** to match the lean coordination model: Celery/Celery Beat rejected for APScheduler on a PostgreSQL job store (pull made a second competing-consumers system redundant — #949); PgBouncer and a read replica demoted to deferred scaling levers; Prometheus/Grafana framed as an opt-in observability profile. PostgreSQL is the one non-negotiable new service.
 **Status:** Living document — review quarterly, update on major architectural decisions
 **Purpose:** Describes the optimal steady-state design Trinity should converge toward. This is not a migration plan — it is the destination. Use it to evaluate tradeoffs, prioritize work, and reject changes that move away from it.
 
@@ -38,7 +38,7 @@ These rules take precedence over all other considerations. When in doubt, measur
 │                                                                                       │
 │   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌───────────────────┐   │
 │   │   Frontend   │   │   Backend    │   │  MCP Server  │   │    Scheduler      │   │
-│   │   (Vue.js)   │   │  (FastAPI)   │   │  (FastMCP)   │   │   (Celery Beat)   │   │
+│   │   (Vue.js)   │   │  (FastAPI)   │   │  (FastMCP)   │   │   (APScheduler)   │   │
 │   │   :80        │   │   :8000      │   │   :8080      │   │   (internal)      │   │
 │   └──────┬───────┘   └──────┬───────┘   └──────┬───────┘   └────────┬──────────┘   │
 │          │                  │                   │                    │               │
@@ -51,8 +51,8 @@ These rules take precedence over all other considerations. When in doubt, measur
 │       │  (primary) │  │(event bus/ │   │   Engine     │                             │
 │       │  :5432     │  │ ephemeral) │   │              │                             │
 │       │            │  │  :6379     │   └──────┬───────┘                             │
-│       │ PgBouncer  │  └────────────┘          │                                     │
-│       │  :6432     │                          │                                     │
+│       │            │  └────────────┘          │                                     │
+│       │            │                          │                                     │
 │       └────────────┘     ┌───────────────────┬┴──────────────────────┐              │
 │                          │                   │                       │              │
 │                    ┌─────┴───┐          ┌────┴────┐            ┌─────┴────┐         │
@@ -60,10 +60,10 @@ These rules take precedence over all other considerations. When in doubt, measur
 │                    │ :8000   │          │ :8000   │            │ :8000    │         │
 │                    └─────────┘          └─────────┘            └──────────┘         │
 │                                                                                       │
-│   Platform Network (172.29.0.0/16): postgres, pgbouncer, redis, scheduler, vector    │
+│   Platform Network (172.29.0.0/16): postgres, redis, scheduler, vector    │
 │   Agent Network (172.28.0.0/16):    agents, backend, mcp-server                     │
 │                                                                                       │
-│   Observability Plane (all services emit):                                            │
+│   Observability Plane (opt-in profile):                                            │
 │   OTEL Collector → Prometheus → Grafana                                               │
 │   Vector → structured log files                                                       │
 └─────────────────────────────────────────────────────────────────────────────────────┘
@@ -84,8 +84,8 @@ Replaces SQLite as the authoritative store for all durable relational state.
 - Schema migrations via Alembic (versioned, reversible, automated on startup)
 
 **Access pattern:**
-- All backend processes connect through **PgBouncer** in transaction pooling mode — this is the single connection management point
-- Read-heavy endpoints (activity timeline, execution history, audit log queries) use a read replica
+- Backend and scheduler connect through **asyncpg's built-in connection pool**. **PgBouncer (transaction pooling) is a deferred scaling lever** — added only when process count (multi-replica backend, prefork workers) outgrows PostgreSQL's connection ceiling, not before.
+- Read-heavy endpoints (activity timeline, execution history, audit log queries) run against the primary today; a **read replica is a deferred scaling lever** for when the platform becomes genuinely read-bound.
 - No direct PostgreSQL connections from agent containers — agents communicate only through the backend API
 
 **Why PostgreSQL over SQLite:**
@@ -277,11 +277,11 @@ When a single container's `max_parallel_tasks` ceiling — bounded by container 
 
 ## Scheduling
 
-**Celery Beat** replaces APScheduler as the distributed task scheduler. Celery workers consume from a Redis-backed task queue. This eliminates the single-process APScheduler limitation — multiple scheduler instances can run for redundancy, with Redis providing distributed leader election.
+**APScheduler, backed by a PostgreSQL job store**, remains the scheduler — it moves its job store from SQLite to PostgreSQL and otherwise stays the standalone `scheduler` process it is today. Redundancy, when wanted, comes from running a second instance behind a **Redis-lock leader election** (`SET NX EX`), not from adopting a distributed task framework.
 
-The scheduling data model (agent_schedules, schedule_executions) is unchanged. The interface — cron expressions, manual triggers, webhook triggers — is unchanged. Under the pull model the scheduler is just another producer: on each tick it **enqueues a `queued` task row** (with its `Idempotency-Key: sched:{execution_id}`) and is done — the agent's worker pool drains it when it has capacity. The scheduler never dispatches to or blocks on an agent. (Whether that producer is Celery or APScheduler-on-PostgreSQL remains an open question — see below — but it is orthogonal to the pull coordination model, which only requires that triggers result in a durable queued row.)
+The scheduling data model (agent_schedules, schedule_executions) is unchanged. The interface — cron expressions, manual triggers, webhook triggers — is unchanged. Under the pull model the scheduler is just another producer: on each tick it **enqueues a `queued` task row** (with its `Idempotency-Key: sched:{execution_id}`) and is done — the agent's worker pool drains it when it has capacity. The scheduler never dispatches to or blocks on an agent.
 
-**Why Celery over APScheduler at scale**: APScheduler is excellent for single-process scheduling; it cannot distribute work across processes or provide fault-tolerant redundancy. Celery with Redis backend is the standard distributed task queue for Python systems at this scale.
+**Why not Celery**: Celery is itself a competing-consumers system — adopting it under pull would mean running *two* such systems for no benefit. Pull already moved task *execution* onto the agent worker pools, so the scheduler's entire remaining job is "INSERT a queued row on a cron tick." A broker + worker processes + result backend + routing config is the wrong weight for that. APScheduler on a PostgreSQL job store gives durable, restart-surviving schedules; a Redis lock gives multi-instance redundancy — without Celery's operational surface. (Resolves #949.)
 
 ---
 
@@ -329,6 +329,8 @@ The scheduling data model (agent_schedules, schedule_executions) is unchanged. T
 ## Observability
 
 ### Metrics Stack: OTEL → Prometheus → Grafana
+
+> Prometheus + Grafana are an **opt-in observability profile**, not baseline services. The OTEL Collector (already present) and Vector cover the baseline; operators enable the metrics/dashboard stack when they want fleet-level views.
 
 **Emit level**: every service (backend, scheduler, MCP server, agent-server) emits OTEL metrics and traces. The OTEL Collector forwards metrics to Prometheus and traces to a configured backend (Jaeger or Tempo).
 
@@ -404,20 +406,21 @@ Docker Compose remains the primary deployment model — it matches Trinity's ICP
 | `backend` | unchanged |
 | `frontend` | unchanged |
 | `mcp-server` | unchanged |
-| `scheduler` | upgraded: Celery worker + Celery Beat (replaces APScheduler inside backend) |
-| `postgres` | **NEW** — replaces SQLite bind mount |
-| `pgbouncer` | **NEW** — connection pooler in front of postgres |
+| `scheduler` | unchanged shape — still a standalone APScheduler process; only its job store moves from SQLite to PostgreSQL. Optional second instance behind a Redis-lock leader election for redundancy. |
+| `postgres` | **NEW** — replaces SQLite bind mount. The one non-negotiable new service. |
 | `redis` | unchanged |
 | `vector` | unchanged |
 | `otel-collector` | already present |
-| `prometheus` | **NEW** — scrapes OTEL Collector metrics |
-| `grafana` | **NEW** — dashboards for fleet operators |
+
+**Deferred scaling levers (not baseline):** `pgbouncer` (transaction-pool in front of postgres — add when process count outgrows the connection ceiling) and a postgres **read replica** (add when read-bound). Both are introduced only when measured load justifies them, never speculatively.
+
+**Opt-in observability profile (not baseline):** `prometheus` (scrapes the already-present OTEL Collector) + `grafana` (fleet dashboards). Enabled by operators who want fleet-level dashboards; OTEL Collector and Vector cover the baseline.
 
 `~/trinity-data/` bind mount expands to cover the PostgreSQL data directory. SQLite is deprecated and removed once migration is complete.
 
 ### Redis ACL
 
-The existing two-user ACL model (`default` admin + `backend` restricted) extends to include a `scheduler` user and a `worker` user. Each process has the minimum permissions it needs. No process has `@dangerous` access except `default`.
+The existing ACL model (`default` admin + restricted `backend`/`scheduler` users, already in place today) is unchanged — no Celery `worker` user is introduced. Each process keeps the minimum permissions it needs; no process has `@dangerous` access except `default`.
 
 ### Kubernetes Compatibility
 
@@ -436,7 +439,7 @@ Two networks remain:
 
 | Network | Members |
 |---------|---------|
-| `trinity-platform-network` | postgres, pgbouncer, redis, scheduler, vector, prometheus, grafana |
+| `trinity-platform-network` | postgres, redis, scheduler, vector (+ pgbouncer, prometheus, grafana when those deferred/opt-in profiles are enabled) |
 | `trinity-agent-network` | agents, frontend |
 
 Bridges (both networks): backend, mcp-server, otel-collector, cloudflared
@@ -478,7 +481,7 @@ These are architectural decisions not yet resolved. They should be answered befo
 
 3. **GuardAgent evaluation** (issue #947): How does the GuardAgent evaluate output quality? Rule-based (regexes, schema validation) is implementable today. LLM-based evaluation (semantic quality scoring) is more powerful but adds latency and cost. The boundary between them needs a design decision.
 
-4. **Celery vs. APScheduler+PG** (issue #949): Celery adds operational surface (worker processes, task routing, retry configuration). Is the distributed redundancy benefit worth it for operators running single-node deployments? The alternative is APScheduler backed by a PostgreSQL job store, which gives persistence without the full Celery stack. Decision should be made before the scheduler migration is planned.
+4. **Scheduler implementation** (issue #949) — *Resolved 2026-06-05*: **APScheduler on a PostgreSQL job store**, not Celery. Pull moved task execution onto the agent worker pools, leaving the scheduler with only "enqueue a row on a cron tick"; a second competing-consumers system (Celery) would add a broker, worker processes, and routing config for no benefit. Redundancy, when needed, is a Redis-lock leader election over a second APScheduler instance — not a distributed task framework. See §Scheduling. (Remaining sub-question, if any: the exact PostgreSQL job-store driver and the leader-election lock semantics — minor, settled at implementation time.)
 
 5. **Replica-group coordination** (issue #927): pull **simplifies** this — the atomic row-claim is the competing-consumer primitive, so there is no Redis consumer-group machinery and no journal-projection serialization path to design (the journal is no longer authoritative). What remains: the single-writer election for git pushes (Redis lock `agent:{name}:git_writer`) and the `template.yaml` schema for declaring replica-safety, both needed before `replica_count > 1` is exposed. Container autoscaling (vs. operator-set replica counts) is explicitly out of scope until real load patterns justify it.
 
@@ -505,7 +508,7 @@ All pull-coordination work lives under **Epic #1045 (Agent Infrastructure)**.
 | Per-agent dispatch circuit breaker — repurposed gate→alert under pull (shipped) | #526 |
 | Agent heartbeat push — repurposed gate→alert under pull | #307 |
 | Replica groups — now row-claim competing-consumers, no Redis consumer groups | #927 |
-| Celery vs APScheduler+PG decision (orthogonal under pull) | #949 |
+| Scheduler: APScheduler+PG job store — Celery rejected (pull made it redundant) | #949 |
 | GuardAgent design + rule-based prototype | #947 |
 | Workflow-scoped capability tokens | #948 |
 
