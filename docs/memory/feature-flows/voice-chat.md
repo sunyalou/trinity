@@ -369,7 +369,7 @@ Returns current canvas panel state. Returns empty state (not 404) for non-existe
 | `GEMINI_API_KEY` | API key for Gemini Live API |
 | `VOICE_ENABLED` | Global voice toggle (default `true`; effective only when `GEMINI_API_KEY` is set). Wired into backend compose `environment:` (#979) |
 | `WORKSPACE_ENABLED` | Workspace canvas toggle — opt-in BETA, default `false` (#860). `workspace_available = voice_available && WORKSPACE_ENABLED`. Wired into backend compose `environment:` (#979 — previously never passed through, so the canvas couldn't be enabled via `.env`) |
-| `VOICE_MODEL` | Model ID (default: `gemini-2.5-flash-native-audio-preview-12-2025`) |
+| `VOICE_MODEL` | Model ID (default: `models/gemini-3.1-flash-live-preview`, set in `src/backend/config.py`). #1076: leave unset/commented — a set-but-empty value is coalesced to the default by `os.getenv("VOICE_MODEL") or …`. |
 | `VOICE_MAX_DURATION` | Max **browser** voice session duration in seconds (default: 300 / 5 min). Phone calls use `VOIP_MAX_CALL_DURATION` instead (default 600 / 10 min) — both flow through the same per-session `_timeout_watchdog`, which now sleeps on `session.max_duration` rather than a global. See [voip-telephony.md](voip-telephony.md). |
 
 ### Per-Agent
