@@ -34,7 +34,7 @@ from adapters.transports.voip_audio import (
     pop_frames,
     ulaw8k_to_pcm16k,
 )
-from config import REDIS_URL
+from config import REDIS_URL, VOIP_MAX_CALL_DURATION
 from database import db
 from services.gemini_voice import voice_service
 from services.voip_service import voip_service, intent_key
@@ -272,6 +272,8 @@ async def handle_media_stream(websocket: WebSocket, call_id: str, ticket: Option
             user_email=intent["user_email"],
             system_prompt=intent["system_prompt"],
             voice_name=intent.get("voice_name", "Kore"),
+            # Phone calls use the VoIP cap (default 10min), not the 5-min voice cap.
+            max_duration=VOIP_MAX_CALL_DURATION,
         )
         vs_id = session.session_id
         try:
