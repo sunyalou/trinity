@@ -79,6 +79,23 @@ def get_engine() -> Engine:
     return engine
 
 
+def make_insert(table):
+    """Dialect-appropriate ``insert()`` supporting ``.on_conflict_*`` (#300).
+
+    Both the sqlite and postgresql dialect Insert constructs expose the same
+    ``.on_conflict_do_update(index_elements=..., set_=...)`` /
+    ``.on_conflict_do_nothing(index_elements=...)`` API, so this is the single
+    portable replacement for ``INSERT OR REPLACE`` / ``INSERT OR IGNORE``.
+    The dialect is chosen from the active engine, so the returned statement is
+    always valid for the backend it will execute against.
+    """
+    if is_sqlite():
+        from sqlalchemy.dialects.sqlite import insert as _insert
+    else:
+        from sqlalchemy.dialects.postgresql import insert as _insert
+    return _insert(table)
+
+
 def dispose_engines() -> None:
     """Dispose and forget every cached engine (test teardown / reconfigure)."""
     with _lock:
