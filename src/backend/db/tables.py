@@ -10,7 +10,31 @@ types are coarse (Integer/Float/Text) — sufficient for query building and
 matching the sqlite storage classes. Regenerate when schema.py changes.
 """
 
-from sqlalchemy import Column, Float, Integer, MetaData, Table, Text
+from sqlalchemy import Column, Float, MetaData, Table, Text
+from sqlalchemy import Integer as _Integer
+from sqlalchemy.types import TypeDecorator
+
+
+class Integer(TypeDecorator):
+    """INTEGER column that coerces Python bool -> 0/1 on bind (#300).
+
+    Many INTEGER columns store booleans (enabled, is_*, *_mode, ...). SQLite
+    silently accepts Python True/False for an INTEGER column, but PostgreSQL
+    (psycopg2) renders them as SQL boolean and rejects assignment into an
+    integer column (DatatypeMismatch). Coercing bool->int in the bind
+    processor fixes the whole class of bug at the binding layer, on both
+    backends, so call sites can keep passing Python bools as the pre-#300
+    sqlite3 code did.
+    """
+
+    impl = _Integer
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if isinstance(value, bool):
+            return int(value)
+        return value
+
 
 metadata = MetaData()
 
