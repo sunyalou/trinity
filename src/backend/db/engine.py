@@ -1,0 +1,87 @@
+"""
+SQLAlchemy engine factory — the configurable database backend seam (#300).
+
+`DATABASE_URL` selects the backend at startup:
+
+    sqlite:////data/trinity.db                 (default; derived from TRINITY_DB_PATH)
+    postgresql://trinity:secret@postgres:5432/trinity
+
+SQLite stays the zero-config default — nothing changes without DATABASE_URL.
+
+Phase 1 (#300): only modules already migrated to SQLAlchemy Core route through
+this engine (the `db/users.py` pilot). Legacy modules still open raw sqlite3
+connections via `db/connection.py`. Each module is migrated independently in
+Phase 2, so the two access styles coexist by design during the transition.
+"""
+
+import os
+import threading
+from typing import Dict
+
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.pool import NullPool
+
+# Engines are cached per resolved URL (not a single global) so that test
+# suites pointing TRINITY_DB_PATH/DATABASE_URL at different throwaway files
+# each get their own engine instead of sharing the first one created.
+_engines: Dict[str, Engine] = {}
+_lock = threading.Lock()
+
+
+def resolve_database_url() -> str:
+    """Active DATABASE_URL, defaulting to SQLite derived from TRINITY_DB_PATH."""
+    url = os.getenv("DATABASE_URL", "").strip()
+    if url:
+        return url
+    db_path = os.getenv("TRINITY_DB_PATH", "/data/trinity.db")
+    # Three leading slashes + an absolute path == four total: sqlite:////abs
+    return f"sqlite:///{db_path}"
+
+
+def is_sqlite(url: str | None = None) -> bool:
+    return make_url(url or resolve_database_url()).get_backend_name() == "sqlite"
+
+
+def _build_engine(url: str) -> Engine:
+    if make_url(url).get_backend_name() == "sqlite":
+        # NullPool: one connection per checkout, opened and closed on demand —
+        # matches the legacy connection.py semantics exactly (no shared
+        # cross-thread sqlite handle). check_same_thread is disabled because
+        # the pool may check a connection in on a different thread than it was
+        # checked out on under a threaded uvicorn worker.
+        return create_engine(
+            url,
+            poolclass=NullPool,
+            connect_args={"timeout": 30.0, "check_same_thread": False},
+            future=True,
+        )
+    # Server-based backends (PostgreSQL): real connection pooling.
+    return create_engine(
+        url,
+        pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
+        max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "20")),
+        pool_pre_ping=True,
+        future=True,
+    )
+
+
+def get_engine() -> Engine:
+    """Process-wide engine for the active DATABASE_URL (cached per URL)."""
+    url = resolve_database_url()
+    engine = _engines.get(url)
+    if engine is None:
+        with _lock:
+            engine = _engines.get(url)
+            if engine is None:
+                engine = _build_engine(url)
+                _engines[url] = engine
+    return engine
+
+
+def dispose_engines() -> None:
+    """Dispose and forget every cached engine (test teardown / reconfigure)."""
+    with _lock:
+        for engine in _engines.values():
+            engine.dispose()
+        _engines.clear()

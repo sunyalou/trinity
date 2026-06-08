@@ -149,6 +149,17 @@ def init_database():
     3. Creates schema (tables and indexes)
     4. Ensures admin user exists
     """
+    # PostgreSQL path (#300, experimental): a fresh PG database is built
+    # directly from schema.py at head, so the sqlite-only PRAGMA migrations are
+    # skipped. SQLite remains the default and keeps the original path below.
+    from db.engine import is_sqlite
+    if not is_sqlite():
+        from db.engine import get_engine
+        from db.schema import init_schema_postgres
+        init_schema_postgres(get_engine())
+        _ensure_admin_user_engine()
+        return
+
     db_path = Path(DB_PATH)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -170,6 +181,45 @@ def init_database():
 
         # Create default admin user if not exists
         _ensure_admin_user(cursor, conn)
+
+
+def _ensure_admin_user_engine():
+    """Ensure the admin user exists — engine-based path for PostgreSQL (#300).
+
+    Reuses the dialect-agnostic ``UserOperations`` (already on SQLAlchemy Core)
+    instead of the raw-cursor sqlite path. Creates the admin on a fresh DB;
+    updates the password when the env password no longer verifies.
+    """
+    admin_password = os.getenv("ADMIN_PASSWORD", "")
+    admin_username = os.getenv("ADMIN_USERNAME", "admin")
+    if not admin_password:
+        print("WARNING: ADMIN_PASSWORD not set - skipping admin user creation")
+        return
+
+    from passlib.context import CryptContext
+    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+    user_ops = UserOperations()
+    existing = user_ops.get_user_by_username(admin_username)
+    if existing is None:
+        user_ops.update_user_password(admin_username, pwd_context.hash(admin_password))
+        print(f"Created admin user '{admin_username}' with hashed password")
+        return
+
+    existing_hash = existing.get("password")
+    needs_update = False
+    if existing_hash and not existing_hash.startswith("$2"):
+        needs_update = existing_hash == admin_password  # plaintext → bcrypt
+    elif existing_hash:
+        try:
+            needs_update = not pwd_context.verify(admin_password, existing_hash)
+        except Exception:
+            needs_update = True
+    else:
+        needs_update = True
+    if needs_update:
+        user_ops.update_user_password(admin_username, pwd_context.hash(admin_password))
+        print(f"Updated admin user '{admin_username}' password")
 
 
 def _ensure_admin_user(cursor, conn):

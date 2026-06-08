@@ -36,6 +36,8 @@ RUN pip install --no-cache-dir \
     redis==5.2.1 \
     httpx==0.28.1 \
     pyyaml==6.0.2 \
+    sqlalchemy==2.0.36 \
+    psycopg2-binary==2.9.10 \
     docker==7.1.0 \
     aiofiles==24.1.0 \
     apscheduler==3.11.0 \

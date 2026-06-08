@@ -2,12 +2,22 @@
 User management database operations.
 
 Handles user CRUD, authentication, and profile management.
+
+Pilot module for the configurable database backend (#300 Phase 2): converted
+from raw sqlite3 to SQLAlchemy Core so it runs unchanged on both SQLite and
+PostgreSQL. Queries are built from the ``users`` table in ``db/tables.py``
+(dialect-agnostic expressions, no ``?``/``%s`` placeholders), and the engine is
+resolved from ``DATABASE_URL`` via ``db/engine.py``. The public API of
+``UserOperations`` is unchanged — callers (and the ``DatabaseManager`` facade)
+are unaffected.
 """
 
-from datetime import datetime
 from typing import Optional, Dict, List, Any
 
-from .connection import get_db_connection
+from sqlalchemy import insert, select, update
+
+from .engine import get_engine
+from .tables import users
 from db_models import UserCreate
 from utils.helpers import utc_now_iso
 
@@ -15,13 +25,25 @@ from utils.helpers import utc_now_iso
 class UserOperations:
     """User database operations."""
 
-    # SQL query fragments for reuse
-    _USER_COLUMNS = """id, username, password_hash, role, auth0_sub, name, picture, email,
-                       created_at, updated_at, last_login, suspended_at"""
+    # Columns returned for a full user record (includes password_hash).
+    _USER_COLUMNS = (
+        users.c.id,
+        users.c.username,
+        users.c.password_hash,
+        users.c.role,
+        users.c.auth0_sub,
+        users.c.name,
+        users.c.picture,
+        users.c.email,
+        users.c.created_at,
+        users.c.updated_at,
+        users.c.last_login,
+        users.c.suspended_at,
+    )
 
     @staticmethod
     def _row_to_user_dict(row) -> Dict:
-        """Convert a user row to a dictionary."""
+        """Convert a user row (RowMapping) to a dictionary."""
         return {
             "id": row["id"],
             "username": row["username"],
@@ -38,15 +60,12 @@ class UserOperations:
         }
 
     def _get_user_by_field(self, field: str, value: Any) -> Optional[Dict]:
-        """Generic user lookup by any field."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"""
-                SELECT {self._USER_COLUMNS}
-                FROM users WHERE {field} = ?
-            """, (value,))
-            row = cursor.fetchone()
-            return self._row_to_user_dict(row) if row else None
+        """Generic user lookup by any column."""
+        column = users.c[field]
+        stmt = select(*self._USER_COLUMNS).where(column == value)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        return self._row_to_user_dict(row) if row else None
 
     def get_user_by_username(self, username: str) -> Optional[Dict]:
         """Get user by username."""
@@ -67,66 +86,53 @@ class UserOperations:
     def create_user(self, user_data: UserCreate) -> Dict:
         """Create a new user."""
         now = utc_now_iso()
+        email = user_data.email or user_data.username  # Use username as email if not provided
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO users (username, password_hash, role, auth0_sub, name, picture, email, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                user_data.username,
-                user_data.password,
-                user_data.role,
-                user_data.auth0_sub,
-                user_data.name,
-                user_data.picture,
-                user_data.email or user_data.username,  # Use username as email if not provided
-                now,
-                now
-            ))
-            conn.commit()
-            user_id = cursor.lastrowid
+        stmt = insert(users).values(
+            username=user_data.username,
+            password_hash=user_data.password,
+            role=user_data.role,
+            auth0_sub=user_data.auth0_sub,
+            name=user_data.name,
+            picture=user_data.picture,
+            email=email,
+            created_at=now,
+            updated_at=now,
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            user_id = result.inserted_primary_key[0]
 
-            return {
-                "id": user_id,
-                "username": user_data.username,
-                "password": user_data.password,
-                "role": user_data.role,
-                "auth0_sub": user_data.auth0_sub,
-                "name": user_data.name,
-                "picture": user_data.picture,
-                "email": user_data.email or user_data.username,
-                "created_at": now,
-                "updated_at": now,
-                "last_login": None
-            }
+        return {
+            "id": user_id,
+            "username": user_data.username,
+            "password": user_data.password,
+            "role": user_data.role,
+            "auth0_sub": user_data.auth0_sub,
+            "name": user_data.name,
+            "picture": user_data.picture,
+            "email": email,
+            "created_at": now,
+            "updated_at": now,
+            "last_login": None,
+        }
 
     def update_user(self, username: str, updates: Dict) -> Optional[Dict]:
         """Update user fields."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
-            # Build dynamic update query
-            set_clauses = []
-            params = []
-            for key, value in updates.items():
-                if key in ["name", "picture", "role", "email"]:
-                    set_clauses.append(f"{key} = ?")
-                    params.append(value)
-
-            if not set_clauses:
-                return self.get_user_by_username(username)
-
-            set_clauses.append("updated_at = ?")
-            params.append(utc_now_iso())
-            params.append(username)
-
-            cursor.execute(f"""
-                UPDATE users SET {", ".join(set_clauses)} WHERE username = ?
-            """, params)
-            conn.commit()
-
+        values = {
+            key: value
+            for key, value in updates.items()
+            if key in ("name", "picture", "role", "email")
+        }
+        if not values:
             return self.get_user_by_username(username)
+
+        values["updated_at"] = utc_now_iso()
+        stmt = update(users).where(users.c.username == username).values(**values)
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
+
+        return self.get_user_by_username(username)
 
     def update_user_password(self, username: str, hashed_password: str) -> bool:
         """Update user's password hash, creating the user if it doesn't exist.
@@ -141,36 +147,40 @@ class UserOperations:
         Returns:
             True if the user was updated or created successfully
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            now = utc_now_iso()
-
+        now = utc_now_iso()
+        with get_engine().begin() as conn:
             # Try to update existing user
-            cursor.execute("""
-                UPDATE users SET password_hash = ?, updated_at = ? WHERE username = ?
-            """, (hashed_password, now, username))
-            conn.commit()
-
-            if cursor.rowcount > 0:
+            result = conn.execute(
+                update(users)
+                .where(users.c.username == username)
+                .values(password_hash=hashed_password, updated_at=now)
+            )
+            if result.rowcount > 0:
                 return True
 
             # User doesn't exist - create it (for admin user during first-time setup)
-            cursor.execute("""
-                INSERT INTO users (username, password_hash, role, email, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (username, hashed_password, 'admin', username, now, now))
-            conn.commit()
-            return cursor.rowcount > 0
+            result = conn.execute(
+                insert(users).values(
+                    username=username,
+                    password_hash=hashed_password,
+                    role="admin",
+                    email=username,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            return result.rowcount > 0
 
     def update_last_login(self, username: str):
         """Update user's last login timestamp."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            now = utc_now_iso()
-            cursor.execute("""
-                UPDATE users SET last_login = ?, updated_at = ? WHERE username = ?
-            """, (now, now, username))
-            conn.commit()
+        now = utc_now_iso()
+        stmt = (
+            update(users)
+            .where(users.c.username == username)
+            .values(last_login=now, updated_at=now)
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
     def get_or_create_auth0_user(self, auth0_sub: str, email: str, name: str = None, picture: str = None) -> Dict:
         """Get or create a user from Auth0 authentication."""
@@ -192,13 +202,18 @@ class UserOperations:
         user = self.get_user_by_username(email)
         if user:
             # Link auth0_sub to existing user
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE users SET auth0_sub = ?, name = ?, picture = ?, updated_at = ?
-                    WHERE username = ?
-                """, (auth0_sub, name, picture, utc_now_iso(), email))
-                conn.commit()
+            stmt = (
+                update(users)
+                .where(users.c.username == email)
+                .values(
+                    auth0_sub=auth0_sub,
+                    name=name,
+                    picture=picture,
+                    updated_at=utc_now_iso(),
+                )
+            )
+            with get_engine().begin() as conn:
+                conn.execute(stmt)
             return self.get_user_by_username(email)
 
         # Create new user
@@ -215,26 +230,34 @@ class UserOperations:
 
     def list_users(self) -> List[Dict]:
         """List all users (admin only)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, username, role, auth0_sub, name, picture, email,
-                       created_at, updated_at, last_login, suspended_at
-                FROM users ORDER BY created_at DESC
-            """)
-            return [dict(row) for row in cursor.fetchall()]
+        stmt = select(
+            users.c.id,
+            users.c.username,
+            users.c.role,
+            users.c.auth0_sub,
+            users.c.name,
+            users.c.picture,
+            users.c.email,
+            users.c.created_at,
+            users.c.updated_at,
+            users.c.last_login,
+            users.c.suspended_at,
+        ).order_by(users.c.created_at.desc())
+        with get_engine().connect() as conn:
+            return [dict(row) for row in conn.execute(stmt).mappings()]
 
     def update_user_role(self, username: str, role: str) -> Optional[Dict]:
         """Update a user's role. Returns updated user or None if not found."""
         valid_roles = {"admin", "creator", "operator", "user"}
         if role not in valid_roles:
             raise ValueError(f"Invalid role '{role}'. Must be one of: {', '.join(sorted(valid_roles))}")
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE users SET role = ?, updated_at = ? WHERE username = ?
-            """, (role, utc_now_iso(), username))
-            conn.commit()
-            if cursor.rowcount == 0:
+        stmt = (
+            update(users)
+            .where(users.c.username == username)
+            .values(role=role, updated_at=utc_now_iso())
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            if result.rowcount == 0:
                 return None
         return self.get_user_by_username(username)
