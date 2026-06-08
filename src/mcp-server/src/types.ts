@@ -281,3 +281,31 @@ export interface AgentAuthStatus {
   subscription_id?: string;
   has_api_key: boolean;
 }
+
+// Operator Queue Types (OPS-001, #1101)
+
+export interface OperatorQueueItem {
+  id: string;
+  agent_name: string;
+  type: string;                       // alert | question | approval
+  status: string;                     // pending | responded | acknowledged | expired | cancelled
+  priority: string;                   // critical | high | medium | low
+  title: string;
+  question: string;
+  options?: string | null;            // JSON array string (approval choices)
+  context?: string | null;            // JSON metadata string
+  execution_id?: string | null;
+  created_at: string;
+  expires_at?: string | null;
+  response?: string | null;
+  response_text?: string | null;
+  responded_by_id?: string | null;
+  responded_by_email?: string | null;
+  responded_at?: string | null;
+  acknowledged_at?: string | null;
+}
+
+export interface OperatorQueueListResponse {
+  items: OperatorQueueItem[];
+  count: number;
+}

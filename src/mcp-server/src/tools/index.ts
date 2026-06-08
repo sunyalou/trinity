@@ -14,3 +14,4 @@ export { createNeverminedTools } from "./nevermined.js";
 export { createEventTools } from "./events.js";
 export { createMemoryTools } from "./memory.js";
 export { createLoopTools } from "./loops.js";
+export { createOperatorQueueTools } from "./operator_queue.js";

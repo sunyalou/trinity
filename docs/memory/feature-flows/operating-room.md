@@ -33,6 +33,7 @@ As an operator, I want a single inbox where I can see and respond to all agent r
 - **API**: `POST /api/operator-queue/{id}/respond` -- Submit response
 - **API**: `GET /api/operator-queue/stats` -- Queue statistics
 - **API**: `GET /api/notifications` -- List agent notifications (used by Notifications tab)
+- **MCP** (#1101): `list_operator_queue` (broad or scoped by `agent_name`) and `get_operator_queue_item` -- read-only triage surface over the queue for agents and external Claude Code clients (`src/mcp-server/src/tools/operator_queue.ts`). Agent-scoped keys are gated in the MCP layer to `{self} ∪ permitted` (the backend resolves an agent key to its owner, so agent-to-agent gating cannot live in the REST layer). Write/respond over MCP is deferred.
 - **NavBar**: Combined badge on "Ops" link showing `operatorQueueStore.pendingCount + notificationsStore.pendingCount` (`src/frontend/src/components/NavBar.vue:218-220`)
 - **Legacy redirects**: `/events` redirects to `/operating-room?tab=notifications`, `/alerts` still redirects to `/operating-room?tab=cost-alerts` (stale redirect -- tab no longer exists; lands on default tab)
 - **Agent**: Writes `~/.trinity/operator-queue.json` inside container

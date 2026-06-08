@@ -21,6 +21,8 @@ import type {
   ScheduleToggleResult,
   ScheduleTriggerResult,
   ActivityTimelineResponse,
+  OperatorQueueItem,
+  OperatorQueueListResponse,
 } from "./types.js";
 
 /**
@@ -1152,6 +1154,49 @@ export class TrinityClient {
       "POST",
       "/api/notifications",
       data
+    );
+  }
+
+  // ============================================================================
+  // Operator Queue (OPS-001, #1101) — read surface
+  // ============================================================================
+
+  /**
+   * List operator-queue (Operating Room) items with optional filters. The
+   * backend applies owner-level accessible-agent filtering; the MCP tool layer
+   * additionally gates agent-scoped keys down to agent_permissions.
+   */
+  async listOperatorQueue(params: {
+    status?: string;
+    type?: string;
+    priority?: string;
+    agent_name?: string;
+    since?: string;
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<OperatorQueueListResponse> {
+    const sp = new URLSearchParams();
+    if (params.status) sp.set("status", params.status);
+    if (params.type) sp.set("type", params.type);
+    if (params.priority) sp.set("priority", params.priority);
+    if (params.agent_name) sp.set("agent_name", params.agent_name);
+    if (params.since) sp.set("since", params.since);
+    if (params.limit !== undefined) sp.set("limit", String(params.limit));
+    if (params.offset !== undefined) sp.set("offset", String(params.offset));
+    const qs = sp.toString();
+    return this.request<OperatorQueueListResponse>(
+      "GET",
+      `/api/operator-queue${qs ? `?${qs}` : ""}`,
+    );
+  }
+
+  /**
+   * Get a single operator-queue item by id.
+   */
+  async getOperatorQueueItem(itemId: string): Promise<OperatorQueueItem> {
+    return this.request<OperatorQueueItem>(
+      "GET",
+      `/api/operator-queue/${encodeURIComponent(itemId)}`,
     );
   }
 

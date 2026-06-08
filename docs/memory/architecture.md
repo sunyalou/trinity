@@ -317,7 +317,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - Tools access auth context via `context.session` parameter
 - Agent-to-agent collaboration uses agent-scoped keys for access control
 
-**Tools** across 17 tool modules (`src/tools/`):
+**Tools** across 20 tool modules (`src/tools/`):
 
 | Module | Tools | Description |
 |--------|-------|-------------|
@@ -339,6 +339,8 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 | `files.ts` (1) | `share_file` | Outbound file sharing — publish file from `/home/developer/public/` and return download URL (FILES-001) |
 | `loops.ts` (3) | `run_agent_loop`, `get_loop_status`, `stop_loop` | Sequential bounded task execution (#740) |
 | `memory.ts` (1) | `write_user_memory` | Write per-user memory blob in isolated store; resolves user email server-side from execution_id (MEM-001, #888) |
+| `voip.ts` (1) | `call_user` | Place an outbound phone call to a user via Twilio Media Streams; server-gated + rate-limited (VOIP-001, #1056) |
+| `operator_queue.ts` (2) | `list_operator_queue`, `get_operator_queue_item` | Read the Operating Room queue — broad or scoped by `agent_name` filter; read-only (write/respond deferred). Agent-scoped keys gated to `{self} ∪ permitted` in the MCP layer (OPS-001, #1101) |
 
 ### Vector Log Aggregator (`config/vector.yaml`)
 
