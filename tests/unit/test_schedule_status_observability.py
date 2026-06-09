@@ -21,7 +21,6 @@ Covered scenarios:
 from __future__ import annotations
 
 import logging
-import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,92 +42,46 @@ while _BACKEND_STR in sys.path:
     sys.path.remove(_BACKEND_STR)
 sys.path.insert(0, _BACKEND_STR)
 
+from db_harness import db_backend, run as _hrun, scalar as _hscalar  # noqa: E402
+
 
 PHANTOM_ERROR_PATTERN = "Stale execution — slot TTL expired"
 RESIDUAL_LOG_MARKER = "residual race condition (#378)"
 
 
 @pytest.fixture
-def tmp_db(tmp_path, monkeypatch):
-    """Minimal schedule_executions schema for update_execution_status."""
-    db_path = tmp_path / "trinity.db"
-    monkeypatch.setenv("TRINITY_DB_PATH", str(db_path))
-
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE schedule_executions (
-            id TEXT PRIMARY KEY,
-            schedule_id TEXT NOT NULL,
-            agent_name TEXT NOT NULL,
-            status TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            completed_at TEXT,
-            duration_ms INTEGER,
-            message TEXT NOT NULL,
-            response TEXT,
-            error TEXT,
-            triggered_by TEXT NOT NULL,
-            context_used INTEGER,
-            context_max INTEGER,
-            cost REAL,
-            tool_calls TEXT,
-            execution_log TEXT,
-            claude_session_id TEXT,
-            compact_metadata TEXT
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
-
-    # Re-import modules that read DB_PATH at import time.
+def tmp_db(db_backend):
+    """Active backend with a fresh full schema (db_harness, #300). Pops any
+    sibling-stubbed modules so this file's imports re-resolve fresh. Returns
+    the backend marker (the leading positional arg the helpers accept)."""
     for mod in ("db.connection", "db.schedules"):
         sys.modules.pop(mod, None)
-
-    yield db_path
+    return db_backend
 
 
 @pytest.fixture
 def schedule_ops(tmp_db):
-    """Fresh ScheduleOperations bound to tmp_db."""
+    """Fresh ScheduleOperations bound to the active backend."""
     from db.schedules import ScheduleOperations
 
     return ScheduleOperations(user_ops=MagicMock(), agent_ops=MagicMock())
 
 
-def _insert(tmp_db: Path, *, execution_id: str, status: str, error: str | None):
+def _insert(_db, *, execution_id: str, status: str, error: str | None):
     """Seed a schedule_executions row with a given status + error."""
-    conn = sqlite3.connect(str(tmp_db))
-    conn.execute(
+    _hrun(
         "INSERT INTO schedule_executions "
         "(id, schedule_id, agent_name, status, started_at, message, error, triggered_by) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            execution_id,
-            "sched-1",
-            "agent-a",
-            status,
-            datetime.now(timezone.utc).isoformat(),
-            "test message",
-            error,
-            "scheduler",
-        ),
+        "VALUES (:id, 'sched-1', 'agent-a', :st, :sa, 'test message', :err, 'scheduler')",
+        id=execution_id, st=status,
+        sa=datetime.now(timezone.utc).isoformat(), err=error,
     )
-    conn.commit()
-    conn.close()
 
 
-def _get_status(tmp_db: Path, execution_id: str) -> str:
-    conn = sqlite3.connect(str(tmp_db))
-    row = conn.execute(
-        "SELECT status FROM schedule_executions WHERE id = ?",
-        (execution_id,),
-    ).fetchone()
-    conn.close()
-    return row[0] if row else ""
+def _get_status(_db, execution_id: str) -> str:
+    return _hscalar(
+        "SELECT status FROM schedule_executions WHERE id = :id", id=execution_id
+    ) or ""
 
 
 class TestResidualRaceObservabilityLog:
