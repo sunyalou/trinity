@@ -65,16 +65,33 @@ def _reset_postgres() -> None:
 
 
 def bootstrap_schema() -> None:
-    """Create every table on the active engine from the Core metadata.
+    """Build the full production schema on the active engine.
 
-    Dialect-agnostic and import-light (no ``database``/``services`` chain).
-    Triggers / PL-pgSQL objects are NOT created here — the handful of tests
-    that exercise them build them explicitly.
+    Uses the real schema builders — ``db.schema.init_schema`` (cursor-based
+    raw DDL) on SQLite and ``init_schema_postgres`` on PostgreSQL — so the
+    test schema is a faithful reproduction of production, INCLUDING UNIQUE
+    constraints and append-only triggers. (``metadata.create_all`` was an
+    earlier approach but dropped UNIQUE constraints that ``ON CONFLICT`` and
+    production upserts rely on.) Still import-light: ``db.schema`` pulls in
+    no ``services``/``config`` chain.
     """
-    from db.engine import get_engine
-    from db.tables import metadata
+    from db.engine import get_engine, is_sqlite
 
-    metadata.create_all(get_engine())
+    engine = get_engine()
+    if is_sqlite():
+        from db import schema as sch
+
+        raw = engine.raw_connection()
+        try:
+            cur = raw.cursor()
+            sch.init_schema(cur, raw)
+            raw.commit()
+        finally:
+            raw.close()
+    else:
+        from db.schema import init_schema_postgres
+
+        init_schema_postgres(engine)
 
 
 def _activate_backend(backend: str, tmp_path, monkeypatch) -> None:
@@ -137,6 +154,23 @@ def _engine():
     from db.engine import get_engine
 
     return get_engine()
+
+
+def run(sql: str, **binds):
+    """Execute a write statement on the active engine (named :binds)."""
+    with _engine().begin() as conn:
+        conn.execute(text(sql), binds)
+
+
+def scalar(sql: str, **binds):
+    """Return the first column of the first row (or None) — named :binds."""
+    with _engine().connect() as conn:
+        return conn.execute(text(sql), binds).scalar()
+
+
+def count(table: str, where: str = "1=1", **binds) -> int:
+    """COUNT(*) helper that works on both backends (named :binds in `where`)."""
+    return scalar(f"SELECT COUNT(*) FROM {table} WHERE {where}", **binds) or 0
 
 
 def seed_user(user_id: int = 1, username: str = "owner", role: str = "user") -> int:
