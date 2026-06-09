@@ -11,8 +11,16 @@ As an agent orchestrator, I want to run a task N times in order, optionally chai
 ## Entry Points
 - **API**: `POST /api/agents/{name}/loops`, `GET /api/agents/{name}/loops`, `GET /api/loops/{id}`, `POST /api/loops/{id}/stop`
 - **MCP tools**: `run_agent_loop`, `get_loop_status`, `stop_loop`
+- **Web UI (Phase 2, #1106)**: the **Loops** tab on the Agent Detail page (`AgentDetail.vue`, between Schedules and Playbooks).
 
-No frontend UI entry point in Phase 1. Iterations appear in the standard execution timeline tagged with `loop_id`.
+Phase 1 shipped headless (API/MCP only); iterations also appear in the standard execution timeline tagged with `loop_id`.
+
+## Frontend Layer (Phase 2, #1106)
+- **Tab**: `src/frontend/src/views/AgentDetail.vue` adds `{ id: 'loops', label: 'Loops' }` and mounts `<LoopsPanel :agent-name :agent-status />`.
+- **Component**: `src/frontend/src/components/LoopsPanel.vue` — collapsible Run-loop form (message template w/ `{{run}}`/`{{previous_response}}` helper text, `max_runs`, `stop_signal`, `delay_seconds`, `timeout_per_run`, `model` via `ModelSelector`, `allowed_tools` picker), loop list with status badge + `runs_completed/max_runs` + `stop_reason`, expandable per-run table (#/status/cost/duration/response), last full response via `renderMarkdown`, and a Stop control reflecting `stopping`→`stopped`. The Run-loop button is gated on `agentStatus === 'running'`.
+- **Store**: `src/frontend/src/stores/loops.js` — agent-scoped Pinia store on the shared `api.js` client (Invariant #7). `setAgent(name)`/`clear()` bind the store to the mounted agent; `handleWebSocketEvent` filters fleet-wide `loop_run_completed`/`loop_completed` events by that agent and targeted-refreshes only the affected loop; a 12s backstop poll runs while any loop is `queued`/`running` to recover a missed terminal event. `expandedLoopId` lives in the store so it survives the `v-if` tab remount.
+- **WS wiring**: `src/frontend/src/utils/websocket.js` routes the `data.type`-keyed loop events to `loopsStore.handleWebSocketEvent` in the `default:` branch.
+- **e2e**: `src/frontend/e2e/loops-panel.spec.js` (@interactive — needs a live stack + running agent).
 
 ## MCP Layer
 
@@ -114,7 +122,7 @@ No frontend UI entry point in Phase 1. Iterations appear in the standard executi
 
 **Unit tests**: `tests/unit/test_loop_service.py` covers fixed/until modes, template substitution, graceful stop, failure paths, restart recovery, and `get_status`.
 
-**Status**: 🚧 In progress (Phase 1).
+**Status**: ✅ Phase 1 (backend/MCP) + Phase 2 (web UI, #1106) shipped.
 
 ## Related Flows
 - **Upstream**: `task-execution-service.md` — each iteration dispatches through `TaskExecutionService`.

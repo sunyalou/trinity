@@ -281,6 +281,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - `stores/agents.js` - Agent CRUD, chat, activity
 - `stores/auth.js` - Email/admin authentication + JWT
 - `stores/collaborations.js` - Collaboration graph state, WebSocket integration
+- `stores/loops.js` - Sequential agent loops UI state, agent-scoped, WebSocket-driven live progress (#1106)
 
 **Real-time:**
 - WebSocket client at `utils/websocket.js`
@@ -903,6 +904,8 @@ Storage: `/data/agent-files/{file_id}` under the existing `trinity-data` volume 
 | POST | `/api/loops/{loop_id}/stop` | JWT/MCP | Graceful stop. Returns `{status: "stopping" \| "already_done"}`. |
 
 MCP tools: `run_agent_loop`, `get_loop_status`, `stop_loop` (`src/mcp-server/src/tools/loops.ts`). Loop runner lives in `services/loop_service.py`; each iteration dispatches through `task_execution_service.execute_task()` with `triggered_by="loop"` and the parent `loop_id` carried on the resulting `schedule_executions` row.
+
+**Web UI (#1106, Phase 2):** a **Loops** tab on the Agent Detail page (between Schedules and Playbooks) provides Start/List/Detail/Stop over the endpoints above. Domain store `stores/loops.js` (uses the shared `api.js` client per Invariant #7) + `components/LoopsPanel.vue`. The store is agent-scoped: `LoopsPanel` calls `setAgent(name)` on mount / `clear()` on unmount, and the global WS handler (`utils/websocket.js`) routes the fleet-wide `loop_run_completed`/`loop_completed` events (keyed by `data.type`) to `loopsStore.handleWebSocketEvent`, which filters by the mounted agent and targeted-refreshes only the affected loop. A 12s backstop poll runs while any loop is `queued`/`running` to recover a missed terminal event. Last full response rendered via `utils/markdown.js` (DOMPurify).
 
 ### Platform Settings (5 endpoints)
 

@@ -161,6 +161,11 @@
               <SchedulesPanel :agent-name="agent.name" :initial-message="schedulePrefillMessage" />
             </div>
 
+            <!-- Loops Tab Content (#1106 / #740 Phase 2) -->
+            <div v-if="activeTab === 'loops'">
+              <LoopsPanel :agent-name="agent.name" :agent-status="agent.status" />
+            </div>
+
             <!-- Playbooks Tab Content -->
             <div v-if="activeTab === 'playbooks'" class="p-6">
               <PlaybooksPanel
@@ -264,6 +269,7 @@ import GitConflictModal from '../components/GitConflictModal.vue'
 
 // Panel Components (existing)
 import SchedulesPanel from '../components/SchedulesPanel.vue'
+import LoopsPanel from '../components/LoopsPanel.vue'
 import TasksPanel from '../components/TasksPanel.vue'
 import GitPanel from '../components/GitPanel.vue'
 import InfoPanel from '../components/InfoPanel.vue'
@@ -610,6 +616,7 @@ const visibleTabs = computed(() => {
 
   tabs.push(
     { id: 'schedules', label: 'Schedules' },
+    { id: 'loops', label: 'Loops' },
     { id: 'playbooks', label: 'Playbooks' },
     { id: 'credentials', label: 'Credentials' },
     { id: 'nevermined', label: 'Payments' }
