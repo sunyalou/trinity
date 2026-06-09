@@ -118,6 +118,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 *Scheduling & Execution:*
 - `schedules.py` - Agent scheduling CRUD and control
 - `executions.py` - Execution list and details
+- `analytics.py` - Agent-scoped Overview analytics: `GET /{name}/analytics?window=` — day-bucketed execution trends grouped by `triggered_by` (#1107)
 
 *Organization & Tags:*
 - `tags.py` - Agent tagging
@@ -282,6 +283,7 @@ Each agent runs as an isolated Docker container with standardized interfaces for
 - `stores/auth.js` - Email/admin authentication + JWT
 - `stores/collaborations.js` - Collaboration graph state, WebSocket integration
 - `stores/loops.js` - Sequential agent loops UI state, agent-scoped, WebSocket-driven live progress (#1106)
+- `stores/executions.js` - Fleet execution list/stats **+ agent Overview analytics** (`fetchAgentAnalytics`, cached per `${name}:${window}`, never polled) (#1107)
 
 **Real-time:**
 - WebSocket client at `utils/websocket.js`
@@ -722,6 +724,21 @@ agent — detects the §P5 silent-clobber setup at fleet level.
 **Access control:** Admin users see all agents. Non-admins see only agents they own or have been shared. Both endpoints share the `accessible_agent_names()` helper from `services/agent_service/helpers.py`.
 
 **Implementation:** `routers/executions.py` → `db/schedules.py:ScheduleOperations.get_fleet_executions` / `get_fleet_execution_stats`. Stats use single-pass conditional aggregation (`CASE WHEN time_cond THEN ...`) so windowed and live counts come from one SQL query. Router registers `/stats` before `""` to prevent FastAPI routing the literal string `"stats"` as an execution ID.
+
+### Agent Overview Analytics (#1107, NEW: 2026-06-09)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/agents/{name}/analytics` | `AuthorizedAgent` | Deterministic multi-day execution analytics for the Agent Detail **Overview** tab. `?window=` ∈ {`7d`,`14d`,`30d`} (→168/336/720h, 422 otherwise). Returns `AgentAnalyticsResponse`: per-day execution counts stacked by user-facing **type bucket**, per-day + headline **terminal success rate**, duration **avg (full-set) + p95 (sampled)**, avg **context** use, per-bucket window totals, and a gap-filled UTC-day timeline. |
+
+**Generalises #868** (`get_schedule_analytics`) to agent scope. `routers/analytics.py` → `db/schedules.py:ScheduleOperations.get_agent_analytics` (delegated through `database.py`). Read-only, DB-sourced (renders even when the agent is stopped). Backs the Overview charts and a future audit/billing rollup (#18).
+
+**Data-source discipline (locked by /autoplan review):**
+- Counts, per-day type stacks, per-day success-rate, per-day duration AVG, per-day context AVG come from **full-set** aggregate queries. Headline `avg`/`context_avg` are also full-set — **never** the capped pool (an avg over a sampled subset would be silently wrong on high-traffic agents). Only headline duration `p95` uses the newest `_PERCENTILE_ROWSET_CAP` (5000) success rows (`sampled=True` when capped).
+- `triggered_by` is grouped in Python via `_TRIGGER_BUCKETS` (`Chat/Tasks`, `MCP`, `Channels`, `Public`, `Scheduled`, `Agent-to-agent`, `Voice`) with an explicit **`Other`** catch-all so a new trigger type never silently vanishes. `manual` (the dominant interactive value) maps to `Chat/Tasks`.
+- `success_rate` is terminal-based — success / (success + failed [incl. `error`]); days with zero terminal rows report `success_rate=null` so the chart renders a gap, not a false 0%. `context_avg` uses NULL-skipping `AVG` so unmeasured rows don't read as 0.
+
+**Web UI:** a new **Overview** tab (`components/OverviewPanel.vue`) is the **default landing tab** on Agent Detail (first in `visibleTabs`; `activeTab` defaults to `'overview'`). It owns "trend over the last few days" while the persistent `AgentHeader` owns "now + cost" — Overview deliberately does **not** re-render the header's live CPU/MEM gauges, cost cards, git controls, autonomy/read-only/auth chips, or circuit badge (it links up to them). Sections: About lead (+ deep-link to Tasks/Info), a compact "needs attention" **count + link** to the Operating Room (hidden at zero), the trend charts, a health panel (current status + heartbeat + restart/OOM, with uptime/latency trend lines clamped to ≤7d by `agent_health_checks` retention and labeled "last 7 days"), a recent-activity drill-in, and footprint chips. Charts: `StackedBarChart.vue` (CSS/flexbox stacked bars — deliberately not uPlot bars, for correct-by-construction per-segment tooltips + theme colors) for executions-by-type, and `TrendLineChart.vue` (uPlot with axes/cursor, dark-mode-aware) for success-rate / duration / context / uptime / latency. **Info tab redesign:** `InfoPanel.vue` leads with the About narrative + "What You Can Ask" and tucks the exhaustive `template.yaml` metadata behind a collapsible "Technical details" `<details>` disclosure. Frontend Invariants #6/#7. (#1107)
 
 ### Operator Queue (OPS-001)
 

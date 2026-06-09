@@ -90,6 +90,23 @@
         </div>
       </div>
 
+      <!-- Technical details (#1107): exhaustive template.yaml metadata tucked
+           behind a collapsible disclosure so the About narrative leads. -->
+      <details v-if="hasTechnicalDetails" class="group">
+        <summary class="flex items-center justify-between cursor-pointer select-none px-5 py-3 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+          <span class="text-sm font-semibold text-gray-900 dark:text-white uppercase tracking-wider flex items-center">
+            <svg class="w-4 h-4 mr-2 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            Technical details
+          </span>
+          <svg class="w-4 h-4 text-gray-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </summary>
+        <div class="space-y-6 mt-4">
+
       <!-- Resources Section -->
       <div v-if="templateInfo.resources && Object.keys(templateInfo.resources).length > 0" class="bg-white dark:bg-gray-800 rounded-lg p-5 border border-gray-200 dark:border-gray-700">
         <h3 class="text-sm font-semibold text-gray-900 dark:text-white uppercase tracking-wider mb-3 flex items-center">
@@ -268,12 +285,14 @@
           </span>
         </div>
       </div>
+        </div>
+      </details>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 
 const props = defineProps({
@@ -292,6 +311,23 @@ const emit = defineEmits(['item-click'])
 const agentsStore = useAgentsStore()
 const templateInfo = ref(null)
 const loading = ref(true)
+
+// #1107: whether any technical-metadata section has content (gates the
+// collapsible "Technical details" disclosure).
+const hasTechnicalDetails = computed(() => {
+  const t = templateInfo.value
+  if (!t) return false
+  return Boolean(
+    (t.resources && Object.keys(t.resources).length) ||
+    (t.sub_agents && t.sub_agents.length) ||
+    (t.commands && t.commands.length) ||
+    (t.mcp_servers && t.mcp_servers.length) ||
+    (t.skills && t.skills.length) ||
+    (t.capabilities && t.capabilities.length) ||
+    (t.platforms && t.platforms.length) ||
+    (t.tools && t.tools.length)
+  )
+})
 
 const loadTemplateInfo = async () => {
   loading.value = true
