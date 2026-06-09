@@ -173,6 +173,88 @@ def count(table: str, where: str = "1=1", **binds) -> int:
     return scalar(f"SELECT COUNT(*) FROM {table} WHERE {where}", **binds) or 0
 
 
+def _translate_qmarks(sql: str, params):
+    """Translate sqlite-style ?-placeholders + a param sequence to named binds.
+
+    Passes dict params (already named) and empty params through untouched.
+    """
+    if params is None:
+        params = ()
+    if isinstance(params, dict):
+        return sql, params
+    binds = {f"p{i}": v for i, v in enumerate(params)}
+    out = sql
+    for i in range(len(params)):
+        out = out.replace("?", f":p{i}", 1)
+    return out, binds
+
+
+class _Cursor:
+    """sqlite3.Cursor-like view over engine results (materialised per execute)."""
+
+    def __init__(self):
+        self._rows = []
+        self._i = 0
+
+    def execute(self, sql: str, params=()):
+        from sqlalchemy import text
+
+        sql2, binds = _translate_qmarks(sql, params)
+        with _engine().begin() as conn:  # autocommit on exit (writes persist)
+            res = conn.execute(text(sql2), binds)
+            self._rows = list(res.fetchall()) if res.returns_rows else []
+        self._i = 0
+        return self
+
+    def fetchone(self):
+        if self._i < len(self._rows):
+            row = self._rows[self._i]
+            self._i += 1
+            return row
+        return None
+
+    def fetchall(self):
+        rows = self._rows[self._i:]
+        self._i = len(self._rows)
+        return rows
+
+
+class EngineConn:
+    """sqlite3.Connection-like shim over the active engine (#300).
+
+    Lets the "returned-conn" test fixtures (which yield a raw sqlite3
+    connection for direct verification reads / legacy-row seeding) run on
+    either backend. Accepts ?-style SQL + a param sequence, autocommits each
+    statement, and returns SQLAlchemy ``Row`` objects (which support both
+    positional ``row[0]`` and key ``row["col"]`` access — matching how the
+    tests consume sqlite3 rows). ``.commit()``/``.close()`` are no-ops
+    (writes already autocommit); usable as a context manager.
+    """
+
+    def execute(self, sql: str, params=()):
+        return _Cursor().execute(sql, params)
+
+    def cursor(self):
+        return _Cursor()
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def engine_conn() -> EngineConn:
+    """Return a sqlite3.Connection-like shim bound to the active engine."""
+    return EngineConn()
+
+
 def seed_user(user_id: int = 1, username: str = "owner", role: str = "user") -> int:
     """Insert a users row (idempotent on username). Returns the id."""
     with _engine().begin() as conn:
