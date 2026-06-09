@@ -618,6 +618,18 @@
         "backend",
         "agent-server"
       ]
+    },
+    {
+      "file": "unit/test_agent_analytics.py",
+      "feature": "#1107",
+      "added": "2026-06-09",
+      "categories": [
+        "backend",
+        "unit",
+        "analytics",
+        "overview"
+      ],
+      "description": "Agent-scoped execution analytics (#1107): triggered_by bucketing into user-facing buckets + Other fallback, terminal-based success rate, full-set avg vs sampled p95 correctness, NULL-skipping context avg, gap-filled timeline."
     }
   ]
 }

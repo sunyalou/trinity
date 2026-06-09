@@ -97,6 +97,18 @@ The complete Info Panel component displaying template metadata.
 | Platforms | 233-250 | `platforms[]` | Gray pills | No |
 | Enabled Tools | 252-270 | `tools[]` | Orange pills | No |
 
+> **#1107 redesign (2026-06-09):** the **About** block (header gradient +
+> description) and the **"What You Can Ask"** use-cases grid stay above the
+> fold. Everything from **Resources** through **Enabled Tools** is now wrapped
+> in a single collapsible native `<details>` **"Technical details"**
+> disclosure (gated on a `hasTechnicalDetails` computed — true when any of
+> resources / sub-agents / commands / mcp_servers / skills / capabilities /
+> platforms / tools has content). The underlying data fields and click-through
+> behaviour are unchanged; only the visual hierarchy changed (About leads,
+> exhaustive `template.yaml` metadata tucked behind the disclosure). The Info
+> tab is reached from the new Overview tab's "Full details →" link — see
+> [agent-overview-dashboard.md](agent-overview-dashboard.md).
+
 **Click handlers (lines 332-354):**
 ```javascript
 const emit = defineEmits(['item-click'])
@@ -612,6 +624,7 @@ if (info.capabilities?.includes("code_review")) {
 
 | Date | Changes |
 |------|---------|
+| **2026-06-09** | **#1107 Info redesign** — About narrative + "What You Can Ask" lead; Resources→Tools metadata moved behind a collapsible `<details>` "Technical details" disclosure (`hasTechnicalDetails` gate). Reached from the new Overview tab's "Full details →" link. |
 | **2026-01-23** | Updated all line numbers and code references; verified against current codebase |
 | **2026-01-12** | **Interactive Items** - Use cases, commands, and sub-agents are now clickable; event changed from `@use-case-click` to `@item-click` with `{type, text}` payload; TasksPanel has new `initialMessage` prop; commands prefill as `/command-name`, sub-agents prefill as delegation prompts |
 | **2026-01-03** | Added MCP tool `get_agent_info` for programmatic access to template metadata |

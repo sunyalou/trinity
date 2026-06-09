@@ -29,6 +29,35 @@ logger = logging.getLogger(__name__)
 # via `monkeypatch.setattr(db.schedules, "_PERCENTILE_ROWSET_CAP", N)`.
 _PERCENTILE_ROWSET_CAP = 5000
 
+# #1107: user-facing grouping of raw `triggered_by` values for the agent
+# Overview "executions by type" chart. Unmapped values fall into "Other"
+# (see `_BUCKET_ORDER`) so a new trigger type stays visible instead of
+# silently vanishing. Locked by /autoplan taste decision (extend buckets to
+# fit real data — `manual` is the dominant real-world value).
+_TRIGGER_BUCKETS = {
+    "chat": "Chat/Tasks", "manual": "Chat/Tasks", "user": "Chat/Tasks",
+    "session": "Chat/Tasks", "self_chat": "Chat/Tasks",
+    "mcp": "MCP",
+    "telegram": "Channels", "slack": "Channels", "whatsapp": "Channels",
+    "public": "Public", "paid": "Public",
+    "schedule": "Scheduled", "webhook": "Scheduled", "loop": "Scheduled",
+    "agent": "Agent-to-agent", "fan_out": "Agent-to-agent",
+    "self_task": "Agent-to-agent",
+    "voip": "Voice", "voice": "Voice",
+}
+# Stack / legend order; "Other" last so unmapped triggers are visible.
+_BUCKET_ORDER = [
+    "Chat/Tasks", "MCP", "Channels", "Public",
+    "Scheduled", "Agent-to-agent", "Voice", "Other",
+]
+_OTHER_BUCKET = "Other"
+
+
+def _bucket_for_trigger(trigger: Optional[str]) -> str:
+    """Map a raw `triggered_by` value to its user-facing bucket (#1107)."""
+    return _TRIGGER_BUCKETS.get(trigger or "", _OTHER_BUCKET)
+
+
 # #73: chunk size for scoped `IN (...)` lookups. SQLite caps host parameters at
 # SQLITE_MAX_VARIABLE_NUMBER (999 before SQLite 3.32). Keep a safe margin below
 # that so a large accessible-agent set can't blow the limit. Read as a module
@@ -1745,6 +1774,228 @@ class ScheduleOperations:
             "duration_ms": {"p50": p50, "p95": p95, "p99": p99},
             "cost": {"total": cost_total},
             "tool_calls": {"top": tool_top5, "total_calls": tool_call_total},
+            "timeline": timeline,
+            "sampled": sampled,
+            "sample_size": sample_size,
+        }
+
+    def get_agent_analytics(self, agent_name: str, hours: int) -> Dict:
+        """Compute agent-scoped execution analytics over a rolling window (#1107).
+
+        Generalises `get_schedule_analytics` to agent scope with a
+        `triggered_by` breakdown grouped into user-facing buckets. Powers
+        the Agent Detail "Overview" trend charts.
+
+        Data-source discipline (locked by /autoplan engineering review):
+          - Counts, per-day type stacks, per-day success-rate, per-day
+            duration AVG, and per-day context AVG come from full-set
+            aggregate queries.
+          - Headline duration `avg` and `context_avg` also come from the
+            full set — NEVER from the capped pool, since an average over a
+            sampled subset would be silently wrong on high-traffic agents.
+          - Only the headline duration `p95` uses the newest
+            `_PERCENTILE_ROWSET_CAP` success rows (`sampled=True` when
+            capped).
+          - `success_rate` is terminal-based: success / (success + failed),
+            where failed = status in ('failed', 'error'). Days with zero
+            terminal rows report `success_rate=None` so the chart shows a
+            gap, not a false 0%.
+          - Bucketing is UTC-day; unmapped triggers → "Other".
+
+        Always returns an envelope (zeros / empty when the agent has no
+        executions). Access is gated by `AuthorizedAgent` at the router and
+        the window is validated there, so there is no None/404 path here.
+        """
+        cutoff = iso_cutoff(hours)
+        cap = _PERCENTILE_ROWSET_CAP
+        FAILED_STATES = (TaskExecutionStatus.FAILED, "error")
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+
+            # Q1: counts + per-day type stacks (full set).
+            cursor.execute(
+                """
+                SELECT substr(started_at, 1, 10) AS day,
+                       status,
+                       triggered_by,
+                       COUNT(*) AS n
+                FROM schedule_executions
+                WHERE agent_name = ? AND started_at > ?
+                GROUP BY day, status, triggered_by
+                """,
+                (agent_name, cutoff),
+            )
+            count_rows = cursor.fetchall()
+
+            # Q2: per-day duration AVG (success only) + context AVG
+            # (NULL-skipped, all statuses). CASE→NULL means AVG skips
+            # non-success durations; AVG(context_used) skips unmeasured rows.
+            cursor.execute(
+                """
+                SELECT substr(started_at, 1, 10) AS day,
+                       AVG(CASE WHEN status = 'success' THEN duration_ms END) AS dur_avg,
+                       AVG(context_used) AS ctx_avg
+                FROM schedule_executions
+                WHERE agent_name = ? AND started_at > ?
+                GROUP BY day
+                """,
+                (agent_name, cutoff),
+            )
+            daily_metric_rows = cursor.fetchall()
+
+            # Q3: overall duration AVG + context AVG (full set, single row).
+            cursor.execute(
+                """
+                SELECT AVG(CASE WHEN status = 'success' THEN duration_ms END) AS dur_avg,
+                       AVG(context_used) AS ctx_avg
+                FROM schedule_executions
+                WHERE agent_name = ? AND started_at > ?
+                """,
+                (agent_name, cutoff),
+            )
+            overall = cursor.fetchone()
+
+            # Q4: capped success-duration pool for the headline p95 only.
+            # `cap + 1` so we can detect sampling without a second COUNT.
+            cursor.execute(
+                """
+                SELECT duration_ms
+                FROM schedule_executions
+                WHERE agent_name = ?
+                  AND started_at > ?
+                  AND status = 'success'
+                  AND duration_ms IS NOT NULL
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                (agent_name, cutoff, cap + 1),
+            )
+            dur_rows = cursor.fetchall()
+
+        # --- counts, per-day stacks, per-bucket window totals ---
+        success_count = 0
+        failed_count = 0
+        total_executions = 0
+        bucket_totals: Dict[str, int] = defaultdict(int)
+        day_counts: Dict[str, Dict] = defaultdict(
+            lambda: {
+                "total": 0, "success": 0, "failed": 0,
+                "by_type": defaultdict(int),
+            }
+        )
+        for row in count_rows:
+            day = row["day"]
+            row_status = row["status"]
+            n = int(row["n"] or 0)
+            bucket = _bucket_for_trigger(row["triggered_by"])
+            total_executions += n
+            bucket_totals[bucket] += n
+            if day:
+                d = day_counts[day]
+                d["total"] += n
+                d["by_type"][bucket] += n
+                if row_status == TaskExecutionStatus.SUCCESS:
+                    d["success"] += n
+                elif row_status in FAILED_STATES:
+                    d["failed"] += n
+            if row_status == TaskExecutionStatus.SUCCESS:
+                success_count += n
+            elif row_status in FAILED_STATES:
+                failed_count += n
+
+        terminal_total = success_count + failed_count
+        success_rate = (
+            round(success_count / terminal_total, 4) if terminal_total else 0.0
+        )
+
+        # --- headline p95 (capped pool) ---
+        sampled = len(dur_rows) > cap
+        sample_size = cap if sampled else len(dur_rows)
+        durations = [int(r["duration_ms"]) for r in dur_rows[:cap]]
+        if len(durations) >= 2:
+            cuts = statistics.quantiles(durations, n=100, method="inclusive")
+            p95 = int(cuts[94])
+        elif len(durations) == 1:
+            p95 = int(durations[0])
+        else:
+            p95 = None
+
+        # --- headline avg duration + context (full set, never sampled) ---
+        dur_avg = (
+            int(overall["dur_avg"])
+            if overall and overall["dur_avg"] is not None else None
+        )
+        ctx_avg = (
+            int(overall["ctx_avg"])
+            if overall and overall["ctx_avg"] is not None else None
+        )
+
+        # --- per-day duration / context AVG lookup ---
+        daily_metrics: Dict[str, Dict] = {}
+        for row in daily_metric_rows:
+            daily_metrics[row["day"]] = {
+                "duration_avg_ms": (
+                    int(row["dur_avg"]) if row["dur_avg"] is not None else None
+                ),
+                "context_avg": (
+                    int(row["ctx_avg"]) if row["ctx_avg"] is not None else None
+                ),
+            }
+
+        # --- gap-filled timeline (continuous UTC-day x-axis) ---
+        now_utc = datetime.now(timezone.utc).date()
+        start_utc = (datetime.now(timezone.utc) - timedelta(hours=hours)).date()
+        timeline: List[Dict] = []
+        day = start_utc
+        while day <= now_utc:
+            iso = day.isoformat()
+            c = day_counts.get(iso)
+            m = daily_metrics.get(iso, {})
+            if c:
+                day_terminal = c["success"] + c["failed"]
+                day_sr = (
+                    round(c["success"] / day_terminal, 4)
+                    if day_terminal else None
+                )
+                by_type = {
+                    b: c["by_type"][b]
+                    for b in _BUCKET_ORDER if c["by_type"].get(b)
+                }
+                timeline.append({
+                    "date": iso,
+                    "total": c["total"],
+                    "success": c["success"],
+                    "failed": c["failed"],
+                    "success_rate": day_sr,
+                    "duration_avg_ms": m.get("duration_avg_ms"),
+                    "context_avg": m.get("context_avg"),
+                    "by_type": by_type,
+                })
+            else:
+                timeline.append({
+                    "date": iso, "total": 0, "success": 0, "failed": 0,
+                    "success_rate": None, "duration_avg_ms": None,
+                    "context_avg": None, "by_type": {},
+                })
+            day = day + timedelta(days=1)
+
+        by_type_totals = [
+            {"bucket": b, "total": bucket_totals[b]}
+            for b in _BUCKET_ORDER if bucket_totals.get(b)
+        ]
+        buckets_present = [b for b in _BUCKET_ORDER if bucket_totals.get(b)]
+
+        return {
+            "window_hours": hours,
+            "total_executions": total_executions,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "success_rate": success_rate,
+            "duration_ms": {"avg": dur_avg, "p95": p95},
+            "context_avg": ctx_avg,
+            "by_type": by_type_totals,
+            "buckets": buckets_present,
             "timeline": timeline,
             "sampled": sampled,
             "sample_size": sample_size,

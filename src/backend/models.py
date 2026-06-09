@@ -643,3 +643,68 @@ class ScheduleAnalyticsResponse(BaseModel):
     timeline: List[TimelineEntry]
     sampled: bool = False
     sample_size: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Agent-scoped Overview analytics (#1107) — generalises the #868 per-schedule
+# analytics to agent scope with a `triggered_by` type breakdown. Backs the
+# Agent Detail "Overview" trend charts.
+# ---------------------------------------------------------------------------
+
+
+class DurationStats(BaseModel):
+    """Overall duration stats for the window (milliseconds). `avg` is the
+    SQL mean over the *full* success rowset; `p95` is computed over the
+    newest capped pool. Both null when the agent has no successful runs
+    with a duration in the window."""
+    avg: Optional[int] = None
+    p95: Optional[int] = None
+
+
+class AgentTypeTotal(BaseModel):
+    """Per-bucket execution total for the window. `bucket` is a user-facing
+    grouping of the raw `triggered_by` values (Chat/Tasks, MCP, Channels,
+    Public, Scheduled, Agent-to-agent, Voice, Other)."""
+    bucket: str
+    total: int
+
+
+class AgentAnalyticsTimelinePoint(BaseModel):
+    """One UTC-day bucket for the Overview charts. `success_rate`,
+    `duration_avg_ms`, and `context_avg` are null on days with no
+    qualifying rows so the chart renders a gap rather than a false zero.
+    `by_type` maps present buckets → that day's count (drives the stacked
+    bars)."""
+    date: str
+    total: int
+    success: int
+    failed: int
+    success_rate: Optional[float] = None
+    duration_avg_ms: Optional[int] = None
+    context_avg: Optional[int] = None
+    by_type: Dict[str, int] = {}
+
+
+class AgentAnalyticsResponse(BaseModel):
+    """Response envelope for GET /api/agents/{name}/analytics (#1107).
+
+    Deterministic, DB-sourced agent activity over a rolling window.
+    `by_type` groups raw `triggered_by` into user-facing buckets (with an
+    "Other" catch-all so a new trigger type never silently vanishes);
+    `buckets` is the ordered legend / stack order for the chart.
+    `success_rate` is terminal-based (success / (success + failed)).
+    `sampled` reports whether the p95 pool was capped — `avg` is always
+    full-set, never sampled. UTC day boundaries.
+    """
+    window_hours: int
+    total_executions: int
+    success_count: int
+    failed_count: int
+    success_rate: float
+    duration_ms: DurationStats
+    context_avg: Optional[int] = None
+    by_type: List[AgentTypeTotal] = []
+    buckets: List[str] = []
+    timeline: List[AgentAnalyticsTimelinePoint] = []
+    sampled: bool = False
+    sample_size: int = 0

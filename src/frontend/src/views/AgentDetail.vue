@@ -92,6 +92,11 @@
               </nav>
             </div>
 
+            <!-- Overview Tab Content (#1107 — default landing tab) -->
+            <div v-if="activeTab === 'overview'" class="p-6">
+              <OverviewPanel :agent="agent" @navigate-tab="handleOverviewNavigate" @open-task="handleOpenTask" />
+            </div>
+
             <!-- Info Tab Content -->
             <div v-if="activeTab === 'info'" class="p-6">
               <InfoPanel :agent-name="agent.name" :agent-status="agent.status" @item-click="handleInfoItemClick" />
@@ -268,6 +273,7 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import GitConflictModal from '../components/GitConflictModal.vue'
 
 // Panel Components (existing)
+import OverviewPanel from '../components/OverviewPanel.vue'
 import SchedulesPanel from '../components/SchedulesPanel.vue'
 import LoopsPanel from '../components/LoopsPanel.vue'
 import TasksPanel from '../components/TasksPanel.vue'
@@ -313,7 +319,10 @@ const sessionsStore = useSessionsStore()  // SESSION_TAB_2026-04 Phase 3
 const agent = ref(null)
 const loading = ref(true)
 const error = ref('')
-const activeTab = ref('tasks')
+const activeTab = ref('overview')  // #1107: Overview is the default landing tab
+// Tabs reachable via ?tab= deep-link (Timeline / EXEC-023 navigation).
+// Single source — referenced in onMounted + onActivated (#1107: dedupe + overview).
+const DEEP_LINK_TABS = ['overview', 'tasks', 'chat', 'session', 'dashboard', 'logs', 'files', 'schedules', 'credentials', 'skills', 'sharing', 'permissions', 'git', 'folders', 'info']
 // Tabs that need a full-viewport flex layout (input pinned to bottom).
 // Chat + Session both render ChatMessages which depends on flex-1 grow.
 const isFullscreenTab = computed(() => activeTab.value === 'chat' || activeTab.value === 'session')
@@ -597,8 +606,9 @@ const {
 const visibleTabs = computed(() => {
   const isSystem = agent.value?.is_system
 
-  // Primary tabs - most frequently used
+  // Primary tabs - most frequently used. Overview leads (#1107).
   const tabs = [
+    { id: 'overview', label: 'Overview' },
     { id: 'tasks', label: 'Tasks' },
     { id: 'chat', label: 'Chat' }
   ]
@@ -934,7 +944,7 @@ watch(() => route.params.name, async (newName, oldName) => {
     nextTick(() => {
       const validTabIds = visibleTabs.value.map(t => t.id)
       if (!validTabIds.includes(activeTab.value)) {
-        activeTab.value = 'tasks'
+        activeTab.value = 'overview'
       }
     })
     startAllPolling()
@@ -1020,8 +1030,7 @@ onMounted(async () => {
   // Handle tab query param (from Timeline click navigation)
   if (route.query.tab) {
     const requestedTab = route.query.tab
-    const validTabs = ['tasks', 'chat', 'session', 'dashboard', 'logs', 'files', 'schedules', 'credentials', 'skills', 'sharing', 'permissions', 'git', 'folders', 'info']
-    if (validTabs.includes(requestedTab)) {
+    if (DEEP_LINK_TABS.includes(requestedTab)) {
       activeTab.value = requestedTab
     }
   }
@@ -1045,8 +1054,7 @@ onActivated(async () => {
   // Must also check here since onMounted doesn't fire for cached components
   if (route.query.tab) {
     const requestedTab = route.query.tab
-    const validTabs = ['tasks', 'chat', 'session', 'dashboard', 'logs', 'files', 'schedules', 'credentials', 'skills', 'sharing', 'permissions', 'git', 'folders', 'info']
-    if (validTabs.includes(requestedTab)) {
+    if (DEEP_LINK_TABS.includes(requestedTab)) {
       activeTab.value = requestedTab
     }
   }
@@ -1073,6 +1081,19 @@ onUnmounted(() => {
   stopAllPolling()
   stopEmotionCycling()
 })
+
+// Overview tab (#1107): navigate to another tab, or open a specific execution
+// in the Tasks tab (deep-link via ?execution= which TasksPanel consumes).
+const handleOverviewNavigate = (tabId) => {
+  if (visibleTabs.value.some(t => t.id === tabId)) {
+    activeTab.value = tabId
+  }
+}
+
+const handleOpenTask = (executionId) => {
+  activeTab.value = 'tasks'
+  router.replace({ query: { ...route.query, execution: executionId } })
+}
 
 // Handle item click from Info tab - switch to Tasks tab with prefilled message
 const handleInfoItemClick = ({ type, text }) => {

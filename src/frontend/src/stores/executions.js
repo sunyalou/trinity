@@ -25,6 +25,13 @@ export const useExecutionsStore = defineStore('executions', () => {
   let _pollTimer = null
   const LIMIT = 50
 
+  // --- agent Overview analytics (#1107) ---
+  // Historical, window-keyed: fetched once per (agent, window) and cached.
+  // NEVER refetched on the stats poll — only on explicit window change or
+  // a forced refresh. Keyed `${name}:${window}`.
+  const analyticsCache = ref({})
+  const analyticsLoading = ref(false)
+
   // --- getters ---
   const hasActiveFilters = computed(() =>
     filters.value.agent ||
@@ -102,6 +109,24 @@ export const useExecutionsStore = defineStore('executions', () => {
     await Promise.all([fetchExecutions(), fetchStats()])
   }
 
+  // Agent Overview analytics (#1107). Returns the cached payload unless
+  // `force` is set or the (agent, window) pair hasn't been fetched yet.
+  async function fetchAgentAnalytics(name, window = '7d', { force = false } = {}) {
+    const key = `${name}:${window}`
+    if (!force && analyticsCache.value[key]) return analyticsCache.value[key]
+    analyticsLoading.value = true
+    try {
+      const res = await axios.get(
+        `/api/agents/${encodeURIComponent(name)}/analytics`,
+        { params: { window }, headers: authStore.authHeader }
+      )
+      analyticsCache.value = { ...analyticsCache.value, [key]: res.data }
+      return res.data
+    } finally {
+      analyticsLoading.value = false
+    }
+  }
+
   function setFilter(key, value) {
     filters.value[key] = value
     refresh()
@@ -150,6 +175,9 @@ export const useExecutionsStore = defineStore('executions', () => {
     filters,
     hasActiveFilters,
     runningCount,
+    analyticsCache,
+    analyticsLoading,
+    fetchAgentAnalytics,
     fetchExecutions,
     fetchStats,
     loadMore,
