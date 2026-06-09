@@ -2,20 +2,27 @@
   <div class="min-h-screen bg-gray-50 dark:bg-gray-900">
     <NavBar />
 
-    <main class="max-w-3xl mx-auto py-6 px-4 sm:px-6">
+    <!--
+      Operations (#1109) — the single fleet-operations surface. Absorbs the
+      former standalone Health (/monitoring) and Executions (/executions)
+      pages as tabs alongside the existing Operating Room tabs. Container is
+      max-w-7xl so the wide Health grid / Executions table breathe; the
+      narrow operator card-feed tabs re-constrain themselves to max-w-3xl.
+    -->
+    <main class="max-w-7xl mx-auto py-6 px-4 sm:px-6">
       <!-- Page Header -->
       <div class="mb-6">
-        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Operating Room</h1>
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Operations</h1>
         <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
           {{ subtitle }}
         </p>
       </div>
 
-      <!-- Tabs: Needs Response / Notifications / Cost Alerts / Resolved + Refresh -->
-      <div class="flex items-center gap-1 mb-6 border-b border-gray-200 dark:border-gray-700">
+      <!-- Tabs: Needs Response / Notifications / Health (admin) / Executions / Resolved + Refresh -->
+      <div class="flex items-center gap-1 mb-6 border-b border-gray-200 dark:border-gray-700 overflow-x-auto">
         <button
           @click="switchTab('needs-response')"
-          class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px"
+          class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px whitespace-nowrap"
           :class="activeTab === 'needs-response'
             ? 'border-blue-500 text-blue-600 dark:text-blue-400'
             : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'"
@@ -33,7 +40,7 @@
         </button>
         <button
           @click="switchTab('notifications')"
-          class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px"
+          class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px whitespace-nowrap"
           :class="activeTab === 'notifications'
             ? 'border-blue-500 text-blue-600 dark:text-blue-400'
             : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'"
@@ -49,9 +56,31 @@
             {{ notificationsStore.pendingCount }}
           </span>
         </button>
+        <!-- Health tab is admin-only, gated at the tab level (#1109). The
+             panel render below is independently gated on isAdmin so a
+             non-admin deep-linking ?tab=health never mounts the panel. -->
+        <button
+          v-if="isAdmin"
+          @click="switchTab('health')"
+          class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px whitespace-nowrap"
+          :class="activeTab === 'health'
+            ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+            : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'"
+        >
+          Health
+        </button>
+        <button
+          @click="switchTab('executions')"
+          class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px whitespace-nowrap"
+          :class="activeTab === 'executions'
+            ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+            : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'"
+        >
+          Executions
+        </button>
         <button
           @click="switchTab('resolved')"
-          class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px"
+          class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px whitespace-nowrap"
           :class="activeTab === 'resolved'
             ? 'border-blue-500 text-blue-600 dark:text-blue-400'
             : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'"
@@ -59,9 +88,11 @@
           Resolved
         </button>
 
-        <!-- Spacer + Refresh button -->
+        <!-- Spacer + Refresh button (operator tabs only — Health/Executions
+             panels carry their own refresh controls) -->
         <div class="ml-auto flex items-center pb-1">
           <button
+            v-if="isOperatorTab"
             @click="refresh"
             :disabled="operatorQueueStore.loading"
             class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
@@ -79,8 +110,8 @@
         </div>
       </div>
 
-      <!-- Needs Response Tab -->
-      <div v-if="activeTab === 'needs-response'">
+      <!-- Needs Response Tab (narrow card feed) -->
+      <div v-if="activeTab === 'needs-response'" class="max-w-3xl mx-auto">
         <!-- Empty state -->
         <div v-if="operatorQueueStore.openItems.length === 0" class="text-center py-16">
           <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-status-success-100 dark:bg-status-success-900/20 mb-4">
@@ -102,13 +133,23 @@
         </div>
       </div>
 
-      <!-- Notifications Tab -->
-      <div v-if="activeTab === 'notifications'">
+      <!-- Notifications Tab (narrow card feed) -->
+      <div v-if="activeTab === 'notifications'" class="max-w-3xl mx-auto">
         <NotificationsPanel />
       </div>
 
-      <!-- Resolved Items Tab -->
-      <div v-if="activeTab === 'resolved'">
+      <!-- Health Tab (admin-only — fleet monitoring) -->
+      <div v-if="activeTab === 'health' && isAdmin">
+        <MonitoringPanel />
+      </div>
+
+      <!-- Executions Tab (fleet execution list) -->
+      <div v-if="activeTab === 'executions'">
+        <ExecutionsPanel />
+      </div>
+
+      <!-- Resolved Items Tab (narrow card feed) -->
+      <div v-if="activeTab === 'resolved'" class="max-w-3xl mx-auto">
         <div v-if="operatorQueueStore.resolvedItems.length === 0" class="text-center py-16">
           <p class="text-sm text-gray-500 dark:text-gray-400">No resolved items yet</p>
         </div>
@@ -132,30 +173,51 @@ import NavBar from '../components/NavBar.vue'
 import QueueCard from '../components/operator/QueueCard.vue'
 import ResolvedCard from '../components/operator/ResolvedCard.vue'
 import NotificationsPanel from '../components/operator/NotificationsPanel.vue'
+import MonitoringPanel from '../components/MonitoringPanel.vue'
+import ExecutionsPanel from '../components/ExecutionsPanel.vue'
 import { useOperatorQueueStore } from '../stores/operatorQueue'
 import { useNotificationsStore } from '../stores/notifications'
 import { useAgentsStore } from '../stores/agents'
+import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
 const operatorQueueStore = useOperatorQueueStore()
 const notificationsStore = useNotificationsStore()
 const agentsStore = useAgentsStore()
+const authStore = useAuthStore()
 
-const VALID_TABS = ['needs-response', 'notifications', 'resolved']
+const isAdmin = computed(() => authStore.role === 'admin')
 
-// Initialize tab from query param or default
-const activeTab = ref(
-  VALID_TABS.includes(route.query.tab) ? route.query.tab : 'needs-response'
-)
+// Health is admin-only; non-admins must not reach it even via deep link.
+const VALID_TABS = ['needs-response', 'notifications', 'health', 'executions', 'resolved']
+const OPERATOR_TABS = ['needs-response', 'notifications', 'resolved']
+
+function resolveTab(q) {
+  // A non-admin landing on ?tab=health (e.g. the /monitoring redirect) is
+  // bounced to the default tab rather than shown an empty Health surface.
+  if (q === 'health' && !isAdmin.value) return 'needs-response'
+  return VALID_TABS.includes(q) ? q : 'needs-response'
+}
+
+const activeTab = ref(resolveTab(route.query.tab))
+
+const isOperatorTab = computed(() => OPERATOR_TABS.includes(activeTab.value))
 
 const subtitle = computed(() => {
+  if (activeTab.value === 'health') {
+    return 'Fleet-wide health status and alerts'
+  }
+  if (activeTab.value === 'executions') {
+    return 'All task runs across your fleet'
+  }
+
   const queueCount = operatorQueueStore.pendingCount
   const notifCount = notificationsStore.pendingCount
   const total = queueCount + notifCount
 
   if (total === 0) {
-    return 'All clear \u2014 your agents are working independently'
+    return 'All clear — your agents are working independently'
   }
 
   const parts = []
@@ -174,9 +236,24 @@ function refresh() {
   notificationsStore.fetchPendingCount()
 }
 
+// If the role resolves asynchronously after mount and confirms non-admin,
+// bounce off the Health tab. (For admins deep-linking ?tab=health this
+// re-selects health once isAdmin flips true.)
+watch(isAdmin, (admin) => {
+  if (!admin && activeTab.value === 'health') {
+    switchTab('needs-response')
+  } else if (admin && route.query.tab === 'health' && activeTab.value !== 'health') {
+    activeTab.value = 'health'
+  }
+})
+
 onMounted(() => {
+  // Operator-queue polling runs at the container level (drives both the
+  // Needs Response / Resolved feeds and the NavBar Operations badge).
   operatorQueueStore.startPolling(10000)
   // Ensure agent data (including avatars) is available for QueueCard/ResolvedCard
+  // and the Executions agent filter. Single fetch here dedupes the panels'
+  // own length-guarded fetches.
   if (agentsStore.agents.length === 0) {
     agentsStore.fetchAgents()
   }

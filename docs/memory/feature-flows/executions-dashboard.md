@@ -2,11 +2,18 @@
 
 > Fleet-level view of all agent task runs — filtering, live stat cards, real-time updates.
 
+> **Updated 2026-06-09 (#1109):** Frontend IA refactor only — backend unchanged. The
+> standalone `/executions` page was deleted; its content now lives in
+> `components/ExecutionsPanel.vue`, rendered as the **"Executions" tab** of
+> `views/Operations.vue` (`/operations?tab=executions`). `/executions` is now a redirect.
+> The NavBar running-count badge was removed.
+
 ## UI → API → Database
 
 ```
-/executions (Executions.vue)
-  ├── onMounted → store.startPolling(30000)
+/operations?tab=executions → Operations.vue → ExecutionsPanel.vue (v-if Executions tab)
+  (legacy /executions redirects here; per-execution detail route unchanged)
+  ├── onMounted → store.startPolling(30000)   [tears down onUnmounted / on tab leave]
   │     └── refresh() → GET /api/executions + GET /api/executions/stats
   ├── WS agent_activity event (schedule_start / schedule_end)
   │     └── store.handleWebSocketEvent() → refresh() [guarded by loading flag]
@@ -80,7 +87,14 @@ Key behaviours:
 - `handleWebSocketEvent()` guards with `!loading.value` — skips if fetch in flight
 - `runningCount` computed from `stats.value?.running_count ?? 0`
 
-### View: `views/Executions.vue`
+### Component: `components/ExecutionsPanel.vue`
+
+> Extracted from the deleted `views/Executions.vue` (#1109). No `<NavBar/>`, no
+> `min-h-screen`/`<main>` wrapper; keeps its own `max-w-7xl mx-auto` root. The page
+> `<h1>Executions</h1>` was dropped — the Live/Polling status dot + Refresh button live
+> in a small toolbar. Same lifecycle: `onMounted → store.startPolling(30000)`,
+> `onUnmounted → store.stopPolling()` (polling tears down when the tab is left), plus the
+> WS-refresh guard. Rendered as the "Executions" tab inside `views/Operations.vue`.
 
 - Live status dot uses `isConnected` from `useWebSocket()` — green when WS connected,
   yellow-pulse when polling fallback
@@ -93,8 +107,14 @@ Key behaviours:
 
 ### NavBar: `components/NavBar.vue`
 
-- Executions link between Ops and Settings
-- Badge shows `executionsStore.runningCount` when > 0 (yellow background)
+- The dedicated Executions link + running-count badge were **removed** (#1109). NavBar no
+  longer imports `useExecutionsStore` or seeds `fetchStats()` in `onMounted`.
+- The running-count signal now lives ONLY inside the Executions tab — the existing
+  "N running now" amber strip driven by `store.runningCount` (see `ExecutionsPanel.vue`).
+- The single NavBar "Operations" badge counts only operator-queue + notifications (urgency
+  signal), not running executions.
+- The agent filter still uses `agentsStore`, now fetched once at the `Operations.vue`
+  container level.
 
 ## WebSocket Integration
 
@@ -131,19 +151,19 @@ running_count, queued_count, total_cost, success_rate, hours.
 
 ### 1. Admin sees all executions
 **Action**:
-- Log in as admin, navigate to `/executions`
+- Log in as admin, navigate to `/operations?tab=executions` (or `/executions`, which redirects there)
 
 **Expected**: All agents' runs appear; stat cards show non-zero totals
 
 **Verify**:
 - [x] Total count in stat card matches row count across all agents — verified 2026-05-15 with seeded data (32 in 24h window, stats card matched list)
-- [x] `running_count` badge in NavBar matches "N running now" strip count — verified visually
+- [x] "N running now" amber strip count matches `running_count` (#1109: NavBar running-count badge removed; signal now lives only in the tab)
 - [x] Live status dot is green when WebSocket connected — `isConnected` from `useWebSocket()`
 
 ### 2. Non-admin access control
 **Action**:
 - Log in as a non-admin user who owns/is shared on a subset of agents
-- Navigate to `/executions`
+- Navigate to `/operations?tab=executions`
 
 **Expected**: Only executions for accessible agents are shown
 
@@ -166,18 +186,17 @@ running_count, queued_count, total_cost, success_rate, hours.
 
 ### 4. Running strip and live updates
 **Action**:
-- Trigger a schedule manually while `/executions` is open
+- Trigger a schedule manually while the Executions tab (`/operations?tab=executions`) is open
 
 **Expected**: "N running now" yellow strip appears; row for the running execution appears at top
 
 **Verify**:
 - [ ] Strip disappears when execution completes (WS event fires refresh) — requires live schedule run to fully verify end-to-end; WS handler logic confirmed via code review
-- [ ] NavBar badge updates to match running count — covered by Fix in commit (NavBar `onMounted` now calls `fetchStats()`)
 - [x] No manual refresh required — `handleWebSocketEvent` calls `refresh()` on `schedule_start`/`schedule_end` events
 
 ### 5. Load more pagination
 **Action**:
-- Ensure >50 executions exist; navigate to `/executions` with no filters
+- Ensure >50 executions exist; navigate to `/operations?tab=executions` with no filters
 
 **Expected**: "Load more" button appears; clicking appends next 50 rows
 

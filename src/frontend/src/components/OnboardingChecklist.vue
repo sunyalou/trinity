@@ -290,7 +290,7 @@ const requiredItems = computed(() => [
     label: 'Monitor an execution',
     description: 'View progress and step outputs',
     completed: state.value?.checklist.monitorExecution || false,
-    link: '/executions',
+    link: '/operations?tab=executions',
     icon: null
   }
 ])
