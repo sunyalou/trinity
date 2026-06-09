@@ -12,7 +12,6 @@ Tests exercise PublicChatOperations directly against a temporary SQLite DB
 from __future__ import annotations
 
 import secrets
-import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,71 +29,20 @@ while _BACKEND_STR in sys.path:
     sys.path.remove(_BACKEND_STR)
 sys.path.insert(0, _BACKEND_STR)
 
-
-# ---------------------------------------------------------------------------
-# Minimal schema for the tables PublicChatOperations touches.
-# ---------------------------------------------------------------------------
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS public_chat_sessions (
-    id TEXT PRIMARY KEY,
-    link_id TEXT NOT NULL,
-    session_identifier TEXT NOT NULL,
-    identifier_type TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    last_message_at TEXT NOT NULL,
-    message_count INTEGER DEFAULT 0,
-    total_cost REAL DEFAULT 0.0
-);
-CREATE TABLE IF NOT EXISTS public_chat_messages (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    cost REAL
-);
-"""
+from db_harness import db_backend  # noqa: E402
 
 
 @pytest.fixture()
-def ops(tmp_path, monkeypatch):
+def ops(db_backend):
+    """PublicChatOperations on the active backend (db_harness, #300).
+
+    db_backend builds the full production schema and routes the engine at the
+    active backend (SQLite, or PostgreSQL when TEST_POSTGRES_URL is set).
+    PublicChatOperations is SQLAlchemy-Core based, so it just uses get_engine().
     """
-    Provision a fresh SQLite file DB, point the SQLAlchemy engine seam (#300)
-    at it, and return a PublicChatOperations instance ready to use.
-
-    PublicChatOperations is now SQLAlchemy-Core based (#300): it routes every
-    query through ``db/engine.py:get_engine()`` which resolves ``DATABASE_URL``.
-    So routing the ops at the temp DB means setting ``DATABASE_URL`` (not just
-    the legacy ``TRINITY_DB_PATH``) and disposing the engine cache — which is
-    keyed by URL — so the temp file's engine is the one created.
-    """
-    db_path = tmp_path / "trinity_test.db"
-    monkeypatch.setenv("TRINITY_DB_PATH", str(db_path))
-
-    # Evict any previously imported db.connection so the env var is re-read.
-    for mod in list(sys.modules):
-        if mod.startswith("db.") or mod == "db":
-            sys.modules.pop(mod, None)
-
-    conn = sqlite3.connect(str(db_path))
-    for stmt in _SCHEMA.strip().split(";"):
-        stmt = stmt.strip()
-        if stmt:
-            conn.execute(stmt)
-    conn.commit()
-    conn.close()
-
-    # Route the SQLAlchemy engine (#300) at the exact temp file. The engine
-    # cache is keyed by resolved URL, so dispose after setting DATABASE_URL so
-    # the temp file's engine is the one created (and dispose at teardown).
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    import db.engine as engine_mod
-    engine_mod.dispose_engines()
-
+    sys.modules.pop("db.public_chat", None)
     from db.public_chat import PublicChatOperations
-    yield PublicChatOperations()
-    engine_mod.dispose_engines()
+    return PublicChatOperations()
 
 
 # ---------------------------------------------------------------------------
