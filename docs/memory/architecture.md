@@ -2105,7 +2105,7 @@ credentials. See `docs/migrations/REDIS_AUTH.md` for the upgrade path.
   compose for Docker socket access on Linux hosts.
 - `CAP_DROP: ALL` + `CAP_ADD: NET_BIND_SERVICE`
 - `security_opt: no-new-privileges:true`
-- tmpfs `/tmp` with `noexec,nosuid`
+- tmpfs `/tmp` with `noexec,nosuid` (100 MB RAM-backed). Heavy scratch (pip/npm/build, ML wheels) is redirected off this tiny non-exec mount via a default `TMPDIR=/home/developer/.tmp` on the disk-backed home volume — created at container start by `startup.sh`, set by all provisioning paths. The mount spec + TMPDIR default live in `services/agent_service/capabilities.py` so create / recreate / system-agent can't drift. (#1098)
 - Isolated network (`172.28.0.0/16` — agents only; Redis lives on the platform network, see "Network Topology" above)
 - No external UI port exposure
 
