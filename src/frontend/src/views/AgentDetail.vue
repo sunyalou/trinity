@@ -71,26 +71,8 @@
 
           <!-- Tabs -->
           <div :class="['bg-white dark:bg-gray-800 shadow dark:shadow-gray-900 rounded-lg', isFullscreenTab ? 'flex-1 flex flex-col overflow-hidden' : '']">
-            <div class="border-b border-gray-200 dark:border-gray-700 overflow-x-auto overflow-y-hidden">
-              <nav class="-mb-px flex whitespace-nowrap">
-                <button
-                  v-for="tab in visibleTabs"
-                  :key="tab.id"
-                  @click="activeTab = tab.id"
-                  :class="[
-                    'px-4 py-3 border-b-2 font-medium text-sm transition-colors whitespace-nowrap',
-                    activeTab === tab.id
-                      ? 'border-action-primary-500 text-action-primary-600 dark:text-action-primary-400'
-                      : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:border-gray-300 dark:hover:border-gray-600'
-                  ]"
-                >
-                  {{ tab.label }}
-                  <span v-if="tab.badge" class="ml-1.5 px-1.5 py-0.5 text-[10px] font-semibold bg-status-success-100 dark:bg-status-success-900/50 text-status-success-700 dark:text-status-success-300 rounded-full leading-none">
-                    {{ tab.badge }}
-                  </span>
-                </button>
-              </nav>
-            </div>
+            <!-- #1114: tabs overflow into a "More ▾" dropdown instead of horizontal scroll -->
+            <OverflowTabs :tabs="visibleTabs" v-model="activeTab" />
 
             <!-- Overview Tab Content (#1107 — default landing tab) -->
             <div v-if="activeTab === 'overview'" class="p-6">
@@ -298,6 +280,7 @@ import PlaybooksPanel from '../components/PlaybooksPanel.vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import SessionPanel from '../components/SessionPanel.vue'  // SESSION_TAB_2026-04 Phase 3
 import NeverminedPanel from '../components/NeverminedPanel.vue'
+import OverflowTabs from '../components/OverflowTabs.vue'  // #1114: tab overflow dropdown
 
 // Import composables
 import { useNotification } from '../composables'
