@@ -466,7 +466,6 @@ async def get_monitoring_config(
 @router.put("/config", response_model=MonitoringConfig)
 async def update_monitoring_config(
     config: MonitoringConfig,
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(require_admin)
 ):
     """
@@ -475,34 +474,45 @@ async def update_monitoring_config(
     Admin only. Interval changes take effect on the next check cycle;
     a flipped `enabled` flag reconciles the loop immediately (#1121).
     """
+    # #1121: `enabled` is the loop's on/off switch, but every MonitoringConfig
+    # field has a default — so a body that omits `enabled` would deserialize to
+    # `enabled=False` and silently tear down a running loop on a routine
+    # interval tweak. Only treat `enabled` as authoritative when the client
+    # explicitly sent it; otherwise preserve the persisted run-state.
+    if "enabled" not in config.model_fields_set:
+        config = config.model_copy(update={"enabled": load_persisted_monitoring_config().enabled})
+
     # Save to settings
     db.set_setting(_MONITORING_CONFIG_KEY, json.dumps(config.model_dump()))
 
     # Update running service config, then reconcile its run state to the
-    # `enabled` flag so it stays the single source of truth (#1121):
-    # enabling here starts the loop; disabling here stops it.
+    # `enabled` flag so it stays the single source of truth (#1121).
+    # Start/stop are done inline (awaited) rather than via background tasks so
+    # the runtime state matches the persisted flag before we return — a
+    # backgrounded start could otherwise run after a racing disable and leave
+    # the loop up against a persisted `enabled=False`. start()/stop() do not
+    # block (create_task / cancel-a-sleeping-task).
     service = get_monitoring_service()
     service.config = config
     if config.enabled and not service.is_running:
-        background_tasks.add_task(start_monitoring_service, config)
+        await start_monitoring_service(config)
     elif not config.enabled and service.is_running:
-        background_tasks.add_task(stop_monitoring_service)
+        await stop_monitoring_service()
 
     return config
 
 
 @router.post("/enable")
 async def enable_monitoring(
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(require_admin)
 ):
     """
     Enable the monitoring service.
 
-    Admin only. Starts background health check tasks.
+    Admin only. Starts the periodic health check loop.
     """
     # #1121: persist enabled=True FIRST so the choice survives restarts even
-    # if the service is already running (or the start is still backgrounded).
+    # if the service is already running.
     config = _persist_monitoring_enabled(True)
 
     service = get_monitoring_service()
@@ -510,21 +520,23 @@ async def enable_monitoring(
         service.config = config
         return {"status": "already_running", "message": "Monitoring service is already running"}
 
-    # Start in background to avoid blocking
-    background_tasks.add_task(start_monitoring_service, config)
+    # #1121: start inline (awaited), not via a background task. start() only
+    # creates the loop task, so it doesn't block — and doing it synchronously
+    # closes the enable→disable race where a backgrounded start would run after
+    # a racing disable and leave the loop up against persisted `enabled=False`.
+    await start_monitoring_service(config)
 
     return {"status": "starting", "message": "Monitoring service is starting"}
 
 
 @router.post("/disable")
 async def disable_monitoring(
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(require_admin)
 ):
     """
     Disable the monitoring service.
 
-    Admin only. Stops background health check tasks.
+    Admin only. Stops the periodic health check loop.
     """
     # #1121: persist enabled=False FIRST so a disabled fleet stays disabled
     # across restarts even if the service wasn't running this process.
@@ -534,8 +546,10 @@ async def disable_monitoring(
     if not service.is_running:
         return {"status": "already_stopped", "message": "Monitoring service is not running"}
 
-    # Stop in background
-    background_tasks.add_task(stop_monitoring_service)
+    # #1121: stop inline (awaited), mirroring enable — keeps the persisted flag
+    # and the runtime state reconciled before returning. stop() cancels a
+    # loop task that is normally parked in asyncio.sleep, so it returns promptly.
+    await stop_monitoring_service()
 
     return {"status": "stopping", "message": "Monitoring service is stopping"}
 
