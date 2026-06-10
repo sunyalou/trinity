@@ -1385,6 +1385,25 @@ async def update_agent_default_access_policy(
         db.set_setting(AGENT_DEFAULT_REQUIRE_EMAIL_KEY, "1" if body.require_email else "0")
         updated.append("require_email")
 
+        # SEC-001 / #1129: audit this security-relevant default change — flipping
+        # the fleet-wide email-verification default weakens/strengthens the
+        # posture for every future agent, so it must leave a trace (mirrors the
+        # API-key / generic-setting audit path in this router).
+        await platform_audit_service.log(
+            event_type=AuditEventType.CONFIGURATION,
+            event_action="settings_change",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            endpoint=str(request.url.path),
+            request_id=getattr(request.state, "request_id", None),
+            details={
+                "setting": "agent_default_require_email",
+                "action": "update",
+                "require_email": body.require_email,
+            },
+        )
+
     return {
         "success": True,
         "updated": updated,
