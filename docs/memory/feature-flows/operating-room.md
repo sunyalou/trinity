@@ -1,6 +1,7 @@
-# Operating Room (OPS-001)
+# Operations (OPS-001)
 
 > **Status**: Implemented (Phases 1-4)
+> **Updated 2026-06-09 (#1109)**: Frontend IA refactor -- "Operating Room" renamed to **Operations** and extended from 3 to **5 tabs** (added Health + Executions). View `OperatingRoom.vue` -> `Operations.vue`, route `/operating-room` -> `/operations`. NavBar "Health"/"Ops"/"Executions" links collapsed into one "Operations" link. Legacy routes redirect. **No backend changes** -- all operator-queue protocol/sync/DB documentation below is unchanged.
 > **Requirements**: [OPERATOR_QUEUE_OPERATING_ROOM.md](../../requirements/OPERATOR_QUEUE_OPERATING_ROOM.md)
 > **Tests**: `tests/test_operator_queue.py`
 
@@ -8,12 +9,16 @@
 
 ## Overview
 
-The Operating Room is the unified command center for all agent-to-operator communication. It consolidates the operator queue (approval/question/alert requests) and agent notifications into a single 3-tab interface. Agents communicate through a standardized file-based protocol (`~/.trinity/operator-queue.json`), which the platform syncs to a database and presents as actionable cards.
+Operations is the unified command center for fleet operator-facing surfaces: agent-to-operator communication (the operator queue + notifications) plus fleet Health monitoring and the fleet Executions list. Agents communicate through a standardized file-based protocol (`~/.trinity/operator-queue.json`), which the platform syncs to a database and presents as actionable cards. The page is a single **5-tab** interface (`Operations.vue`).
 
-The three tabs cover:
+The five tabs cover:
 - **Needs Response** -- Operator queue items requiring action (approvals, questions, alerts)
 - **Notifications** -- Agent notifications with filtering, bulk actions, and acknowledgement (formerly the standalone Events page)
+- **Health** (admin-only) -- Fleet monitoring, rendered by `MonitoringPanel.vue` (extracted from the deleted `views/Monitoring.vue`). Tab is admin-gated; see below.
+- **Executions** -- Fleet execution list, rendered by `ExecutionsPanel.vue` (extracted from the deleted `views/Executions.vue`). Per-execution detail route `/agents/:name/executions/:executionId` (`ExecutionDetail.vue`) is unchanged.
 - **Resolved** -- Completed operator queue items
+
+`VALID_TABS = ['needs-response', 'notifications', 'health', 'executions', 'resolved']`.
 
 Three operator queue request types:
 - **Approval** -- Agent needs a yes/no or multi-choice decision
@@ -28,14 +33,16 @@ As an operator, I want a single inbox where I can see and respond to all agent r
 
 ## Entry Points
 
-- **UI**: `src/frontend/src/views/OperatingRoom.vue` -- `/operating-room` route (3 tabs via `?tab=` query param)
+- **UI**: `src/frontend/src/views/Operations.vue` -- `/operations` route (5 tabs via `?tab=` query param). Renders operator-queue tabs plus `MonitoringPanel.vue` (Health) and `ExecutionsPanel.vue` (Executions).
 - **API**: `GET /api/operator-queue` -- List queue items
 - **API**: `POST /api/operator-queue/{id}/respond` -- Submit response
 - **API**: `GET /api/operator-queue/stats` -- Queue statistics
 - **API**: `GET /api/notifications` -- List agent notifications (used by Notifications tab)
+- **API**: `GET /api/monitoring/status` -- Fleet health (Health tab, admin-only)
+- **API**: `GET /api/executions` / `GET /api/executions/stats` -- Fleet execution list + stats (Executions tab)
 - **MCP** (#1101): `list_operator_queue` (broad or scoped by `agent_name`) and `get_operator_queue_item` -- read-only triage surface over the queue for agents and external Claude Code clients (`src/mcp-server/src/tools/operator_queue.ts`). Agent-scoped keys are gated in the MCP layer to `{self} ∪ permitted` (the backend resolves an agent key to its owner, so agent-to-agent gating cannot live in the REST layer). Write/respond over MCP is deferred.
-- **NavBar**: Combined badge on "Ops" link showing `operatorQueueStore.pendingCount + notificationsStore.pendingCount` (`src/frontend/src/components/NavBar.vue:218-220`)
-- **Legacy redirects**: `/events` redirects to `/operating-room?tab=notifications`, `/alerts` still redirects to `/operating-room?tab=cost-alerts` (stale redirect -- tab no longer exists; lands on default tab)
+- **NavBar**: Single "Operations" link (`to="/operations"`, active when `$route.path === '/operations'`) with one combined badge `combinedOpsCount = operatorQueueStore.pendingCount + notificationsStore.pendingCount`. Replaces the former separate Health (`/monitoring`), Ops (`/operating-room`), and Executions (`/executions`) links + their badges.
+- **Legacy redirects** (all preserve bookmarks): `/operating-room` (FUNCTION form, preserves `?tab=` query) -> `/operations`; `/monitoring` -> `/operations?tab=health`; `/executions` -> `/operations?tab=executions`; `/events` -> `/operations?tab=notifications`
 - **Agent**: Writes `~/.trinity/operator-queue.json` inside container
 
 ---
@@ -46,44 +53,54 @@ As an operator, I want a single inbox where I can see and respond to all agent r
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/frontend/src/views/OperatingRoom.vue` | 1-195 | Main page -- 3-tab layout (Needs Response / Notifications / Resolved), `?tab=` deep linking, combined subtitle, refresh button, polling lifecycle. Imports `useAgentsStore` and fetches agents on mount to provide avatar URLs |
+| `src/frontend/src/views/Operations.vue` | -- | Main page -- 5-tab layout (Needs Response / Notifications / Health / Executions / Resolved), `?tab=` deep linking, combined subtitle, refresh button, polling lifecycle. Container is `max-w-7xl`; narrow operator card-feed tabs re-constrain to `max-w-3xl mx-auto`; Health/Executions panels own their `max-w-7xl` width. Tabs toggle by `v-if` (not v-show) so each panel's store-owned polling tears down on tab-leave. Operator-queue polling (`operatorQueueStore.startPolling(10000)`) and `agentsStore.fetchAgents()` run once at container level (queue polling drives Needs Response/Resolved feeds AND the NavBar badge). `isAdmin = computed(() => authStore.role === 'admin')` gates the Health tab. |
+| `src/frontend/src/components/MonitoringPanel.vue` | -- | Health tab -- fleet monitoring content extracted from the deleted `views/Monitoring.vue`. Rendered `v-if="activeTab === 'health' && isAdmin"`. |
+| `src/frontend/src/components/ExecutionsPanel.vue` | -- | Executions tab -- fleet execution list extracted from the deleted `views/Executions.vue`. Includes the "N running now" strip (the running-count badge that used to live on the NavBar Executions link). |
 | `src/frontend/src/components/operator/QueueCard.vue` | 1-253 | Expandable card -- `AgentAvatar` component (with real avatar images from agents store), markdown body, inline response controls |
 | `src/frontend/src/components/operator/ResolvedCard.vue` | 1-67 | Compact resolved item -- `AgentAvatar` component (with real avatar images), checkmark, response text, timestamp |
 | `src/frontend/src/components/operator/NotificationsPanel.vue` | 1-541 | Notification list with agent/type/priority/status filters, bulk actions (acknowledge/dismiss), stats row, expandable messages, empty state |
 | `src/frontend/src/components/operator/QueueList.vue` | 1-195 | Filterable list view (type, priority, agent, status) with priority indicators |
 | `src/frontend/src/components/operator/QueueStats.vue` | 1-88 | Stats sidebar -- pending by priority, today's total, avg response time, by agent |
 | `src/frontend/src/components/operator/QueueItemDetail.vue` | 1-286 | Detail panel -- full item view with response controls (approval/question/alert) |
-| `src/frontend/src/components/NavBar.vue` | 192-195, 218-224 | "Ops" nav link with combined badge count (queue + notifications); imports operatorQueue and notifications stores only |
+| `src/frontend/src/components/NavBar.vue` | -- | Single "Operations" nav link with combined badge count (queue + notifications); imports operatorQueue and notifications stores only |
 
 ### Route
 
 ```
-/operating-room          -> OperatingRoom.vue (requiresAuth: true)
-/operating-room?tab=needs-response    -> Needs Response tab (default)
-/operating-room?tab=notifications     -> Notifications tab
-/operating-room?tab=resolved          -> Resolved tab
-/events                  -> REDIRECT to /operating-room?tab=notifications
-/alerts                  -> REDIRECT to /operating-room?tab=cost-alerts  (STALE: tab removed; falls back to 'needs-response')
+/operations                          -> Operations.vue (route name 'Operations', meta: { requiresAuth: true })
+/operations?tab=needs-response       -> Needs Response tab (default)
+/operations?tab=notifications        -> Notifications tab
+/operations?tab=health               -> Health tab (admin-only; non-admins coerced to default)
+/operations?tab=executions           -> Executions tab
+/operations?tab=resolved             -> Resolved tab
+/operating-room                      -> REDIRECT to /operations (FUNCTION form, preserves ?tab= query)
+/monitoring                          -> REDIRECT to /operations?tab=health
+/executions                          -> REDIRECT to /operations?tab=executions
+/events                              -> REDIRECT to /operations?tab=notifications
 ```
 
-Registered in `src/frontend/src/router/index.js:72-76`:
+Registered in `src/frontend/src/router/index.js`:
 ```javascript
 {
-  path: '/operating-room',
-  name: 'OperatingRoom',
-  component: () => import('../views/OperatingRoom.vue'),
-  meta: { requiresAuth: true }
+  path: '/operations',
+  name: 'Operations',
+  component: () => import('../views/Operations.vue'),
+  meta: { requiresAuth: true }   // NOT requiresAdmin -- Health is gated at the tab level
 }
 ```
 
-Legacy redirects (`src/frontend/src/router/index.js:63-70`):
+Legacy redirects (`src/frontend/src/router/index.js`), all preserving bookmarks:
 ```javascript
-// Legacy redirects: Events and Alerts consolidated into Operating Room
-{ path: '/alerts', redirect: '/operating-room?tab=cost-alerts' },  // tab no longer valid
-{ path: '/events', redirect: '/operating-room?tab=notifications' },
+{ path: '/monitoring', redirect: { path: '/operations', query: { tab: 'health' } } },
+{ path: '/executions', redirect: { path: '/operations', query: { tab: 'executions' } } },
+{ path: '/events', redirect: '/operations?tab=notifications' },
+// FUNCTION form so existing ?tab= deep links survive the rename
+{ path: '/operating-room', redirect: to => ({ path: '/operations', query: to.query }) },
 ```
 
-Tab selection uses `?tab=` query parameter. `OperatingRoom.vue` reads `route.query.tab` on mount and validates against `VALID_TABS = ['needs-response', 'notifications', 'resolved']`. Defaults to `'needs-response'` if invalid or missing. Tab switches call `router.replace()` to update the URL without navigation (line 168-170).
+**Admin gating of the Health tab**: the `/operations` route is `requiresAuth` only -- non-admins still reach Ops/Executions. Health is gated at the tab level: the tab button is `v-if="isAdmin"`, the panel render is `v-if="activeTab === 'health' && isAdmin"`. A non-admin landing on `?tab=health` (e.g. via the `/monitoring` redirect) is coerced to the default `needs-response` tab by `resolveTab()`. A `watch(isAdmin)` bounces off health if the role resolves async to non-admin, and re-selects health for an admin deep-link once the role confirms.
+
+Tab selection uses `?tab=` query parameter. `Operations.vue` reads `route.query.tab` on mount and validates against `VALID_TABS = ['needs-response', 'notifications', 'health', 'executions', 'resolved']`. Defaults to `'needs-response'` if invalid, missing, or `health` for a non-admin. Tab switches call `switchTab()` -> `router.replace()` to update the URL without navigation.
 
 ### State Management
 
@@ -91,12 +108,12 @@ Tab selection uses `?tab=` query parameter. `OperatingRoom.vue` reads `route.que
 
 **Additional Stores** (used by Notifications tab; see its own flow doc for full details):
 - `src/frontend/src/stores/notifications.js` (315 lines) -- Manages notification list, filters, bulk actions, pending count. Used by `NotificationsPanel.vue`. Key getters: `pendingCount`, `hasUrgentPending`.
-- `src/frontend/src/stores/agents.js` -- Provides agent data including `avatar_url`. Fetched on mount by `OperatingRoom.vue` if not already loaded. Used by `QueueCard.vue` and `ResolvedCard.vue` to resolve agent avatar images.
+- `src/frontend/src/stores/agents.js` -- Provides agent data including `avatar_url`. Fetched on mount by `Operations.vue` (once, at container level) if not already loaded. Used by `QueueCard.vue` and `ResolvedCard.vue` to resolve agent avatar images.
 
 **Operator Queue Store State:**
 - `items` (ref) -- Array of queue items from backend API
 - `expandedItemId` (ref) -- Currently expanded card (null = none)
-- `activeTab` (ref) -- Tab state (note: the 3-tab switching is managed locally in OperatingRoom.vue, not in the store)
+- `activeTab` (ref) -- Tab state (note: the 5-tab switching is managed locally in Operations.vue, not in the store)
 - `loading` (ref) -- Loading state
 - `error` (ref) -- Error message
 
@@ -114,7 +131,7 @@ Tab selection uses `?tab=` query parameter. `OperatingRoom.vue` reads `route.que
 - `acknowledgeItem(id)` -- Shorthand that calls `respondToItem(id, 'acknowledged', '')` (line 128-130)
 - `toggleExpand(id)` -- Toggle expandedItemId (line 132-134)
 - `handleWebSocketEvent(data)` -- Handles real-time updates from WebSocket (line 137-157)
-- `startPolling(interval)` -- Begin polling with initial fetch + setInterval (default 15s, called with 10s from OperatingRoom.vue) (line 160-164)
+- `startPolling(interval)` -- Begin polling with initial fetch + setInterval (default 15s, called with 10s from Operations.vue at container level) (line 160-164)
 - `stopPolling()` -- Clear poll timer (line 166-171)
 
 ### API Calls
@@ -162,30 +179,31 @@ Event handling in the store (`handleWebSocketEvent`, line 137-157):
 
 ### NavBar Badge
 
-`src/frontend/src/components/NavBar.vue:192-224`:
+`src/frontend/src/components/NavBar.vue`:
 
-- Imports two stores: `useOperatorQueueStore` (line 195), `useNotificationsStore` (line 194)
-- **Combined count** (line 218-220): `combinedOpsCount = operatorQueueStore.pendingCount + notificationsStore.pendingCount`
+- Single "Operations" link (`to="/operations"`, active when `$route.path === '/operations'`). Replaces the former separate Health (`/monitoring`), Ops (`/operating-room`), and Executions (`/executions`) links (#1109).
+- Imports two stores: `useOperatorQueueStore`, `useNotificationsStore`
+- **Combined count**: `combinedOpsCount = operatorQueueStore.pendingCount + notificationsStore.pendingCount`
 - Badge shows `combinedOpsCount` with max display of "99+"
-- **Critical detection** (line 222-224): `hasCriticalOpsItem = operatorQueueStore.criticalCount > 0 || notificationsStore.hasUrgentPending`
+- **Critical detection**: `hasCriticalOpsItem = operatorQueueStore.criticalCount > 0 || notificationsStore.hasUrgentPending`
 - Color: `bg-red-500 animate-pulse` when `hasCriticalOpsItem`, otherwise `bg-orange-500`
 - Badge hidden when `combinedOpsCount === 0`
-- NavBar starts polling for notifications (60s) on mount (line 254), stops on unmount (line 269)
-- **Removed**: Standalone Events bell icon and Alerts bell icon that were previously in the NavBar
+- NavBar starts polling for notifications (60s) on mount, stops on unmount
+- **Removed** (#1109): the separate Executions running-count badge (running count now lives inside the Executions tab's "N running now" strip). Earlier: standalone Events bell icon and Alerts bell icon.
 
 ### UX Behaviors
 
-1. **3-tab layout** -- Needs Response, Notifications, Resolved. Each tab shows its own count badge when > 0 (line 16-60)
+1. **5-tab layout** -- Needs Response, Notifications, Health (admin-only), Executions, Resolved. Operator card-feed tabs show a count badge when > 0. Tabs toggle by `v-if` so each panel's store-owned polling tears down on tab-leave.
 2. **Deep linking** -- `?tab=` query parameter selects the active tab; `switchTab()` updates URL via `router.replace()` (line 168-170)
 3. **Dynamic subtitle** -- Shows combined summary like "3 pending responses, 2 notifications" or "All clear" (computed `subtitle`, line 152-165)
-4. **Auto-expand first item** on page load -- `watch` on `openItems.length` in `OperatingRoom.vue:213-217`
+4. **Auto-expand first item** on page load -- `watch` on `openItems.length` in `Operations.vue`
 5. **Auto-advance** after responding -- next open item expands automatically (store `respondToItem` line 119-122)
 6. **Collapse on click** -- X button in QueueCard header (`@click.stop="store.toggleExpand(item.id)"` line 52)
 7. **Context collapsible** -- "Show details" toggle in QueueCard (line 70-94)
 8. **Combined badge in NavBar** -- Orange when any items pending, red+pulse when critical queue items or urgent notifications
-9. **Polling fallback** -- 10s interval from OperatingRoom.vue for queue items, 60s for notifications (via NavBar)
+9. **Polling fallback** -- 10s interval from Operations.vue (container level) for queue items, 60s for notifications (via NavBar). Health/Executions panels own their own polling, torn down on tab-leave.
 10. **Form reset** -- `watch(isExpanded)` in QueueCard resets selectedOption, responseText, showContext on collapse (line 191-197)
-11. **Manual refresh** -- Refresh button next to tabs (`OperatingRoom.vue:63-79`). Shows spinning icon (`animate-spin`) while `store.loading` is true. Calls `store.fetchItems()` and `notificationsStore.fetchPendingCount()`. Disabled during loading. Positioned via `ml-auto` to sit at the right edge of the tab bar.
+11. **Manual refresh** -- Refresh button next to tabs (`Operations.vue`). Shows spinning icon (`animate-spin`) while `store.loading` is true. Calls `store.fetchItems()` and `notificationsStore.fetchPendingCount()`. Disabled during loading. Positioned via `ml-auto` to sit at the right edge of the tab bar.
 12. **Notifications tab features** -- Agent/type/priority/status filters, show-dismissed toggle, bulk acknowledge/dismiss, select-all, expandable messages, load-more pagination, stats cards (pending/acknowledged/total/agents)
 
 ---
@@ -530,7 +548,7 @@ The `/api/trinity/inject` endpoint compares the source `prompt.md` (at `/trinity
 5. WebSocket broadcast: {type: "operator_queue_new", data: {...}}
 6. websocket.js dispatches to operatorQueueStore.handleWebSocketEvent()
 7. Store calls fetchItems() -> GET /api/operator-queue
-8. OperatingRoom.vue re-renders with new card
+8. Operations.vue re-renders with new card
 9. NavBar badge count updates via computed pendingCount
 ```
 
@@ -583,10 +601,12 @@ The `/api/trinity/inject` endpoint compares the source `prompt.md` (at `/trinity
 
 ```
 +--------------------------------------------------------------------+
-| Operating Room                                                      |
+| Operations                                                          |
 | 3 pending responses, 2 notifications                               |
 |                                                                     |
-| [Needs Response (3)] [Notifications (2)] [Resolved]  [↻ Refresh]  |
+| [Needs Response (3)] [Notifications (2)] [Health*] [Executions]     |
+|                                          [Resolved]  [↻ Refresh]    |
+| (* Health tab admin-only)                                           |
 |                                                                     |
 |  === Needs Response tab ===                                         |
 | +-- Card (expanded) --------------------+                           |
@@ -661,7 +681,9 @@ The `/api/trinity/inject` endpoint compares the source `prompt.md` (at `/trinity
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/frontend/src/views/OperatingRoom.vue` | 195 | Main page with 3 tabs, `?tab=` deep linking, combined subtitle, refresh, polling lifecycle |
+| `src/frontend/src/views/Operations.vue` | -- | Main page with 5 tabs, `?tab=` deep linking, admin-gated Health tab, combined subtitle, refresh, container-level polling lifecycle (renamed from `OperatingRoom.vue`, #1109) |
+| `src/frontend/src/components/MonitoringPanel.vue` | -- | Health tab content (extracted from deleted `views/Monitoring.vue`, #1109) |
+| `src/frontend/src/components/ExecutionsPanel.vue` | -- | Executions tab content (extracted from deleted `views/Executions.vue`, #1109) |
 | `src/frontend/src/stores/operatorQueue.js` | 194 | Pinia store for operator queue (state, getters, actions, WS handler) |
 | `src/frontend/src/stores/notifications.js` | 315 | Pinia store for notifications (filters, bulk actions, polling) |
 | `src/frontend/src/components/operator/QueueCard.vue` | 257 | Expandable card with response controls |
@@ -670,15 +692,17 @@ The `/api/trinity/inject` endpoint compares the source `prompt.md` (at `/trinity
 | `src/frontend/src/components/operator/QueueList.vue` | 195 | Filterable list view |
 | `src/frontend/src/components/operator/QueueStats.vue` | 88 | Stats sidebar |
 | `src/frontend/src/components/operator/QueueItemDetail.vue` | 286 | Full item detail panel |
-| `src/frontend/src/components/NavBar.vue` | 192-195, 218-224, 254, 269 | "Ops" link + combined badge (2 stores), starts notification polling |
-| `src/frontend/src/router/index.js` | 63-70, 72-76 | Legacy redirect routes + Operating Room route registration |
+| `src/frontend/src/components/NavBar.vue` | -- | Single "Operations" link + combined badge (2 stores), starts notification polling (#1109: replaced separate Health/Ops/Executions links + Executions running badge) |
+| `src/frontend/src/router/index.js` | -- | `/operations` route registration + legacy redirects (`/operating-room`, `/monitoring`, `/executions`, `/events`) (#1109) |
 | `src/frontend/src/utils/websocket.js` | 4, 12, 96-98 | Import store, init store, dispatch WS events |
 
-**Deleted files** (consolidated into Operating Room, then subsequently removed):
+**Deleted files** (consolidated into Operations, then subsequently removed):
 - `src/frontend/src/views/Events.vue` -- Replaced by `NotificationsPanel.vue` in the Notifications tab
 - `src/frontend/src/views/Alerts.vue` -- Replaced by `CostAlertsPanel.vue` in the Cost Alerts tab (tab itself later removed in PR #430)
 - `src/frontend/src/components/operator/CostAlertsPanel.vue` -- Deleted in PR #430 (process engine deletion)
 - `src/frontend/src/stores/alerts.js` -- Deleted in PR #430 (process engine deletion)
+- `src/frontend/src/views/Monitoring.vue` -- Deleted in #1109; content extracted to `components/MonitoringPanel.vue` (Health tab)
+- `src/frontend/src/views/Executions.vue` -- Deleted in #1109; content extracted to `components/ExecutionsPanel.vue` (Executions tab). `ExecutionDetail.vue` retained (`/agents/:name/executions/:executionId` unchanged)
 
 ---
 
@@ -706,7 +730,7 @@ The `/api/trinity/inject` endpoint compares the source `prompt.md` (at `/trinity
 
 | Date | Change |
 |------|--------|
-| 2026-04-24 | Cost Alerts tab removed (PR #430, process engine deletion). Deleted CostAlertsPanel.vue and alerts.js store. OperatingRoom is now a 3-tab interface. NavBar badge formula no longer includes alertsStore. `/alerts` redirect in router is now stale. |
+| 2026-06-09 | #1109 frontend IA refactor: "Operating Room" -> **Operations**. `OperatingRoom.vue` -> `Operations.vue`, route `/operating-room` -> `/operations` (name `Operations`). Tabs 3 -> 5 (added Health + Executions; `VALID_TABS = ['needs-response','notifications','health','executions','resolved']`). Health renders new `MonitoringPanel.vue` (from deleted `views/Monitoring.vue`), admin-tab-gated. Executions renders new `ExecutionsPanel.vue` (from deleted `views/Executions.vue`); `ExecutionDetail.vue` unchanged. Tabs toggle via `v-if` for polling teardown; operator-queue polling + `fetchAgents()` stay container-level. NavBar collapsed Health/Ops/Executions links into one "Operations" link with the existing combined badge; removed the separate Executions running-count badge. Legacy redirects added: `/operating-room` (function form, preserves `?tab=`), `/monitoring`->`?tab=health`, `/executions`->`?tab=executions`, `/events`->`?tab=notifications`. No backend changes. |
 | 2026-03-08 | Consolidated Events page and Cost Alerts page into Operating Room as tabs. Added NotificationsPanel.vue, CostAlertsPanel.vue. Removed NavBar bell icons. Combined Ops badge count. Old routes redirect. |
 | 2026-03-08 | Restart-resilient sync, refresh button, stale prompt detection |
 | 2026-03-07 | Initial implementation (Phases 1-4): backend, sync service, frontend, meta-prompt |

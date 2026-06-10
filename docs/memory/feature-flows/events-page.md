@@ -1,6 +1,6 @@
 # Feature: Events Page UI (NOTIF-002)
 
-> **CONSOLIDATED (2026-03-08)**: The standalone Events page (`/events`) has been consolidated into the Operating Room as the **Notifications** tab. The `/events` route now redirects to `/operating-room?tab=notifications`. The UI content was extracted into `src/frontend/src/components/operator/NotificationsPanel.vue`. See [operating-room.md](operating-room.md) for current documentation.
+> **CONSOLIDATED (2026-03-08; route updated 2026-06-09 #1109)**: The standalone Events page (`/events`) has been consolidated into the **Notifications** tab of the **Operations** view (formerly Operating Room). The `/events` route now redirects to `/operations?tab=notifications` (was `/operating-room?tab=notifications` before the #1109 rename). The UI content was extracted into `src/frontend/src/components/operator/NotificationsPanel.vue`. See [operating-room.md](operating-room.md) for current documentation.
 >
 > `src/frontend/src/views/Events.vue` has been **deleted**. The notifications store (`notifications.js`) and all backend APIs remain unchanged.
 

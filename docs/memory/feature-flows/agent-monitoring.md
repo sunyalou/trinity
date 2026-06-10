@@ -124,10 +124,12 @@ last_task_at: Optional[str] = None            # db_models.py:855
 
 ## Entry Points
 
+> **UI surface moved 2026-06-09 (#1109):** the fleet-monitoring UI is no longer a standalone `/monitoring` page. Its content was extracted into `src/frontend/src/components/MonitoringPanel.vue` and is now the **admin-gated "Health" tab** of the consolidated **Operations** view (`/operations?tab=health`); `/monitoring` redirects there. The tab is gated on `authStore.role === 'admin'` (button `v-if` + panel `v-if`), and non-admin `?tab=health` deep links are coerced to the default tab. `views/Monitoring.vue` was deleted. The **backend monitoring service, endpoints, and models below are unchanged.** See [operating-room.md](operating-room.md) (now "Operations").
+
 | UI Location | API Endpoint | Purpose |
 |-------------|--------------|---------|
-| **NavBar "Health" link** | - | Navigate to `/monitoring` |
-| **Monitoring Page** | `GET /api/monitoring/status` | View fleet-wide health |
+| **NavBar "Operations" link** | - | Navigate to `/operations`; the **Health** tab (admin-only) shows fleet monitoring |
+| **Operations → Health tab** (`MonitoringPanel.vue`) | `GET /api/monitoring/status` | View fleet-wide health |
 | **Agent Row Click** | - | Navigate to agent detail |
 | **"Check All" button** | `POST /api/monitoring/check-all` | Trigger fleet-wide check (admin) |
 | **Agent refresh button** | `POST /api/monitoring/agents/{name}/check` | Trigger single agent check (admin) |

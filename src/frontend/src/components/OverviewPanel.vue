@@ -276,14 +276,14 @@ onMounted(() => {
     <!-- 2. Needs attention (count + link only; hidden when zero) -->
     <router-link
       v-if="attentionCount > 0"
-      :to="{ path: '/operating-room' }"
+      :to="{ path: '/operations' }"
       class="flex items-center justify-between px-4 py-3 rounded-lg bg-status-warning-50 dark:bg-status-warning-900/30 border border-status-warning-200 dark:border-status-warning-800 hover:bg-status-warning-100 dark:hover:bg-status-warning-900/50 transition-colors"
     >
       <span class="flex items-center text-sm font-medium text-status-warning-800 dark:text-status-warning-300">
         <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.74-3L13.74 4a2 2 0 00-3.48 0L3.34 16a2 2 0 001.73 3z" /></svg>
         {{ attentionCount }} {{ attentionCount === 1 ? 'item needs' : 'items need' }} attention
       </span>
-      <span class="text-xs text-status-warning-700 dark:text-status-warning-400">View in Operating Room →</span>
+      <span class="text-xs text-status-warning-700 dark:text-status-warning-400">View in Operations →</span>
     </router-link>
 
     <!-- 3. Trend charts -->

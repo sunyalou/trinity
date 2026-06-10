@@ -30,39 +30,22 @@
             >
               Templates
             </router-link>
+            <!-- #1109 — single Operations entry replaces the former
+                 Health / Ops / Executions links. One unified badge carries
+                 the actionable signal (pending operator-queue + notifications);
+                 running-execution count lives inside the Executions tab. -->
             <router-link
-              v-if="isAdmin"
-              to="/monitoring"
-              class="border-transparent text-gray-500 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600 hover:text-gray-700 dark:hover:text-gray-200 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
-              :class="{ 'border-blue-500 dark:border-blue-400 text-gray-900 dark:text-white': $route.path === '/monitoring' }"
-            >
-              Health
-            </router-link>
-            <router-link
-              to="/operating-room"
+              to="/operations"
               class="border-transparent text-gray-500 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600 hover:text-gray-700 dark:hover:text-gray-200 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium relative"
-              :class="{ 'border-blue-500 dark:border-blue-400 text-gray-900 dark:text-white': $route.path === '/operating-room' }"
+              :class="{ 'border-blue-500 dark:border-blue-400 text-gray-900 dark:text-white': $route.path === '/operations' }"
             >
-              Ops
+              Operations
               <span
                 v-if="combinedOpsCount > 0"
                 class="ml-1 inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-bold leading-none text-white rounded-full"
                 :class="hasCriticalOpsItem ? 'bg-status-danger-500 animate-pulse' : 'bg-status-urgent-500'"
               >
                 {{ combinedOpsCount > 99 ? '99+' : combinedOpsCount }}
-              </span>
-            </router-link>
-            <router-link
-              to="/executions"
-              class="border-transparent text-gray-500 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600 hover:text-gray-700 dark:hover:text-gray-200 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium relative"
-              :class="{ 'border-blue-500 dark:border-blue-400 text-gray-900 dark:text-white': $route.path === '/executions' }"
-            >
-              Executions
-              <span
-                v-if="executionsStore && executionsStore.runningCount > 0"
-                class="ml-1 inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-bold leading-none text-white bg-status-warning-500 rounded-full"
-              >
-                {{ executionsStore.runningCount > 99 ? '99+' : executionsStore.runningCount }}
               </span>
             </router-link>
             <!-- HIDDEN: Processes nav link - Process Engine de-emphasized from top nav (Issue #50) -->
@@ -295,7 +278,6 @@ import { useAuthStore } from '../stores/auth'
 import { useThemeStore } from '../stores/theme'
 import { useNotificationsStore } from '../stores/notifications'
 import { useOperatorQueueStore } from '../stores/operatorQueue'
-import { useExecutionsStore } from '../stores/executions'
 import { useEnterpriseStore } from '../stores/enterprise'
 import { useWebSocket } from '../utils/websocket'
 import { useBuildInfo } from '../composables/useBuildInfo'
@@ -306,7 +288,6 @@ const authStore = useAuthStore()
 const themeStore = useThemeStore()
 const notificationsStore = useNotificationsStore()
 const operatorQueueStore = useOperatorQueueStore()
-const executionsStore = useExecutionsStore()
 // #847 Phase 0 — feature-flags load is fired on mount below; the
 // `Enterprise` nav link template is `v-if="enterpriseStore.hasAnyEnterprise"`.
 const enterpriseStore = useEnterpriseStore()
@@ -365,9 +346,6 @@ onMounted(async () => {
 
   // Start polling for notifications
   notificationsStore.startPolling(60000)
-
-  // Populate running-count badge on initial load from any page
-  executionsStore.fetchStats().catch((e) => console.warn('NavBar fetchStats failed:', e))
 
   // #926: kick off the cached build-info fetch — failures are non-fatal
   // (chip is hidden if fetch fails; e.g., unauthenticated brief window).

@@ -33,11 +33,11 @@ const routes = [
     component: () => import('../views/Agents.vue'),
     meta: { requiresAuth: true }
   },
+  // #1109 — Health consolidated into the Operations "Health" tab.
+  // Redirect preserves bookmarks; the tab is admin-gated inside Operations.vue.
   {
     path: '/monitoring',
-    name: 'Monitoring',
-    component: () => import('../views/Monitoring.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true }
+    redirect: { path: '/operations', query: { tab: 'health' } }
   },
   {
     path: '/agents/:name',
@@ -75,22 +75,30 @@ const routes = [
     component: () => import('../views/Templates.vue'),
     meta: { requiresAuth: true }
   },
-  // Legacy redirect: Events consolidated into Operating Room Notifications tab
+  // Legacy redirect: Events consolidated into the Operations Notifications tab (#1109)
   {
     path: '/events',
-    redirect: '/operating-room?tab=notifications'
+    redirect: '/operations?tab=notifications'
   },
+  // #1109 — Operations: single fleet-operations surface (Needs Response,
+  // Notifications, Health [admin], Executions, Resolved). Intentionally NOT
+  // requiresAdmin — non-admins reach Ops/Executions; Health is gated at the
+  // tab level inside Operations.vue.
+  {
+    path: '/operations',
+    name: 'Operations',
+    component: () => import('../views/Operations.vue'),
+    meta: { requiresAuth: true }
+  },
+  // Legacy redirects — function form so existing ?tab= deep links survive
+  // the hop (a string/object redirect would drop the incoming query).
   {
     path: '/operating-room',
-    name: 'OperatingRoom',
-    component: () => import('../views/OperatingRoom.vue'),
-    meta: { requiresAuth: true }
+    redirect: to => ({ path: '/operations', query: to.query })
   },
   {
     path: '/executions',
-    name: 'Executions',
-    component: () => import('../views/Executions.vue'),
-    meta: { requiresAuth: true }
+    redirect: { path: '/operations', query: { tab: 'executions' } }
   },
   {
     // #302 — /api-keys absorbed into /settings as the "MCP Keys" tab.
