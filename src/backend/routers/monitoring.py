@@ -46,6 +46,33 @@ _STATUS_SORT_ORDER = {"critical": 0, "unhealthy": 1, "degraded": 2, "unknown": 3
 _websocket_manager = None
 _filtered_websocket_manager = None
 
+_MONITORING_CONFIG_KEY = "monitoring_config"
+
+
+def load_persisted_monitoring_config() -> MonitoringConfig:
+    """Load the persisted monitoring config, or DEFAULT_CONFIG (default-OFF).
+
+    #1121: single reader used by GET /config, enable/disable, and the
+    lifespan resume path so they can't drift. A corrupt persisted blob
+    (or one with an out-of-range interval that fails validation) falls
+    back to the default rather than raising.
+    """
+    setting = db.get_setting(_MONITORING_CONFIG_KEY)
+    if setting and setting.value:
+        try:
+            return MonitoringConfig(**json.loads(setting.value))
+        except Exception:
+            logger.warning("Invalid persisted monitoring_config; using default", exc_info=True)
+    return DEFAULT_CONFIG
+
+
+def _persist_monitoring_enabled(enabled: bool) -> MonitoringConfig:
+    """Persist the `enabled` flag onto the stored config so the choice
+    survives backend restarts (#1121). Preserves all other fields."""
+    config = load_persisted_monitoring_config().model_copy(update={"enabled": enabled})
+    db.set_setting(_MONITORING_CONFIG_KEY, json.dumps(config.model_dump()))
+    return config
+
 
 # ============================================================================
 # Builders (extracted for unit-test coverage — see #669)
@@ -433,38 +460,33 @@ async def get_monitoring_config(
 
     Admin only.
     """
-    # Try to get from settings
-    setting = db.get_setting("monitoring_config")
-    if setting and setting.value:
-        try:
-            import json
-            config_dict = json.loads(setting.value)
-            return MonitoringConfig(**config_dict)
-        except Exception:
-            pass
-
-    return DEFAULT_CONFIG
+    return load_persisted_monitoring_config()
 
 
 @router.put("/config", response_model=MonitoringConfig)
 async def update_monitoring_config(
     config: MonitoringConfig,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(require_admin)
 ):
     """
     Update monitoring configuration.
 
-    Admin only. Changes take effect on next check cycle.
+    Admin only. Interval changes take effect on the next check cycle;
+    a flipped `enabled` flag reconciles the loop immediately (#1121).
     """
-    import json
-
     # Save to settings
-    config_json = json.dumps(config.model_dump())
-    db.set_setting("monitoring_config", config_json)
+    db.set_setting(_MONITORING_CONFIG_KEY, json.dumps(config.model_dump()))
 
-    # Update running service
+    # Update running service config, then reconcile its run state to the
+    # `enabled` flag so it stays the single source of truth (#1121):
+    # enabling here starts the loop; disabling here stops it.
     service = get_monitoring_service()
     service.config = config
+    if config.enabled and not service.is_running:
+        background_tasks.add_task(start_monitoring_service, config)
+    elif not config.enabled and service.is_running:
+        background_tasks.add_task(stop_monitoring_service)
 
     return config
 
@@ -479,12 +501,17 @@ async def enable_monitoring(
 
     Admin only. Starts background health check tasks.
     """
+    # #1121: persist enabled=True FIRST so the choice survives restarts even
+    # if the service is already running (or the start is still backgrounded).
+    config = _persist_monitoring_enabled(True)
+
     service = get_monitoring_service()
     if service.is_running:
+        service.config = config
         return {"status": "already_running", "message": "Monitoring service is already running"}
 
     # Start in background to avoid blocking
-    background_tasks.add_task(start_monitoring_service)
+    background_tasks.add_task(start_monitoring_service, config)
 
     return {"status": "starting", "message": "Monitoring service is starting"}
 
@@ -499,6 +526,10 @@ async def disable_monitoring(
 
     Admin only. Stops background health check tasks.
     """
+    # #1121: persist enabled=False FIRST so a disabled fleet stays disabled
+    # across restarts even if the service wasn't running this process.
+    _persist_monitoring_enabled(False)
+
     service = get_monitoring_service()
     if not service.is_running:
         return {"status": "already_stopped", "message": "Monitoring service is not running"}
