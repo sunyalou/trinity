@@ -244,7 +244,7 @@ The avatar generation uses the shared image generation service (IMG-001).
 **File**: `src/backend/services/image_generation_service.py`
 
 **Models** (lines 29-30):
-- Text model (prompt refinement): `gemini-2.0-flash` (fast text generation)
+- Text model (prompt refinement): `GEMINI_TEXT_MODEL` (default `gemini-3.5-flash`, env-overridable — #1130)
 - Image model (image generation): `gemini-3.1-flash-image-preview` (latest image model)
 
 **Generate flow** (`generate_image()`, line 71):
