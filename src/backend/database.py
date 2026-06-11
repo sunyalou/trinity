@@ -1603,6 +1603,9 @@ class DatabaseManager:
     def get_agent_analytics(self, agent_name: str, hours: int):
         return self._schedule_ops.get_agent_analytics(agent_name, hours)
 
+    def get_agent_schedules_summary(self, agent_name: str, hours: int):
+        return self._schedule_ops.get_agent_schedules_summary(agent_name, hours)
+
     def get_agent_token_stats(self, agent_name: str):
         return self._schedule_ops.get_agent_token_stats(agent_name)
 
