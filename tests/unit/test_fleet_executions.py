@@ -381,3 +381,49 @@ class TestGetFleetExecutionStats:
         s_a = self._s(agent_names=["agent-a"], hours=0)
         s_all = self._s(agent_names=None, hours=0)
         assert s_a["total"] < s_all["total"]
+
+
+# ---------------------------------------------------------------------------
+# _VALID_TRIGGERS <-> ExecutionsPanel dropdown drift guard (#1150)
+# ---------------------------------------------------------------------------
+# The router silently nulls unknown trigger filters (treated as "no filter"),
+# so a dropdown option missing from the allowlist is a silent no-op: the UI
+# shows an active filter while the backend returns everything. The router
+# module can't be imported here (it pulls the full database facade), so we
+# parse both sources and assert the dropdown is a subset of the allowlist.
+
+import ast
+import re
+from pathlib import Path as _Path
+
+_ROOT = _Path(__file__).resolve().parent.parent.parent
+_ROUTER_SRC = _ROOT / "src" / "backend" / "routers" / "executions.py"
+_PANEL_SRC = _ROOT / "src" / "frontend" / "src" / "components" / "ExecutionsPanel.vue"
+
+
+def _parse_valid_triggers() -> set:
+    m = re.search(r"_VALID_TRIGGERS\s*=\s*(\{[^}]*\})", _ROUTER_SRC.read_text())
+    assert m, "_VALID_TRIGGERS literal not found in routers/executions.py"
+    return ast.literal_eval(m.group(1))
+
+
+def _parse_dropdown_triggers() -> set:
+    """Option values of the <select> bound to store.filters.triggered_by."""
+    text = _PANEL_SRC.read_text()
+    start = text.index('store.filters.triggered_by')
+    block = text[start:text.index("</select>", start)]
+    return {v for v in re.findall(r'<option value="([^"]*)"', block) if v}
+
+
+class TestTriggerFilterAllowlist:
+    def test_loop_in_valid_triggers(self):
+        """#1150 regression: the new dropdown option must be server-accepted."""
+        assert "loop" in _parse_valid_triggers()
+
+    def test_dropdown_options_subset_of_allowlist(self):
+        dropdown = _parse_dropdown_triggers()
+        assert dropdown, "trigger dropdown options not found in ExecutionsPanel.vue"
+        missing = dropdown - _parse_valid_triggers()
+        assert not missing, (
+            f"dropdown trigger options not in _VALID_TRIGGERS (silent no-op filters): {missing}"
+        )

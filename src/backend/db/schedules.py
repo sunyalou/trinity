@@ -40,7 +40,8 @@ _TRIGGER_BUCKETS = {
     "mcp": "MCP",
     "telegram": "Channels", "slack": "Channels", "whatsapp": "Channels",
     "public": "Public", "paid": "Public",
-    "schedule": "Scheduled", "webhook": "Scheduled", "loop": "Scheduled",
+    "schedule": "Scheduled", "webhook": "Scheduled",
+    "loop": "Loops",  # #1150: first-class bucket so loop bursts don't read as cron load
     "agent": "Agent-to-agent", "fan_out": "Agent-to-agent",
     "self_task": "Agent-to-agent",
     "voip": "Voice", "voice": "Voice",
@@ -48,7 +49,7 @@ _TRIGGER_BUCKETS = {
 # Stack / legend order; "Other" last so unmapped triggers are visible.
 _BUCKET_ORDER = [
     "Chat/Tasks", "MCP", "Channels", "Public",
-    "Scheduled", "Agent-to-agent", "Voice", "Other",
+    "Scheduled", "Loops", "Agent-to-agent", "Voice", "Other",
 ]
 _OTHER_BUCKET = "Other"
 

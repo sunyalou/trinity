@@ -629,7 +629,7 @@
         "analytics",
         "overview"
       ],
-      "description": "Agent-scoped execution analytics (#1107): triggered_by bucketing into user-facing buckets + Other fallback, terminal-based success rate, full-set avg vs sampled p95 correctness, NULL-skipping context avg, gap-filled timeline."
+      "description": "Agent-scoped execution analytics (#1107): triggered_by bucketing into user-facing buckets (incl. Loops, #1150) + Other fallback, terminal-based success rate, full-set avg vs sampled p95 correctness, NULL-skipping context avg, gap-filled timeline."
     },
     {
       "file": "test_ops_clear_all.py",
@@ -642,6 +642,17 @@
         "notifications"
       ],
       "description": "Bulk Clear All endpoints for the Operations page (#1017): bulk-cancel (ids-scoped), clear-resolved (terminal-row delete, responded kept), notifications dismiss-all; respond-race conflict marker; tri-state accessible-set scoping."
+    },
+    {
+      "file": "unit/test_fleet_executions.py",
+      "feature": "#18",
+      "added": "2026-06-11",
+      "categories": [
+        "backend",
+        "unit",
+        "executions"
+      ],
+      "description": "Fleet executions list/stats (EXEC-022): _narrow_to_agent access gate, status/trigger/search/hours SQL filters, windowed stats; plus the #1150 trigger-filter allowlist drift guard (ExecutionsPanel dropdown subset of _VALID_TRIGGERS)."
     }
   ]
 }
