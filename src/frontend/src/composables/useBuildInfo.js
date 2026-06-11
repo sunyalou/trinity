@@ -55,6 +55,16 @@ const isMissing = computed(() => {
   return fields.every((f) => !f || f === 'unknown')
 })
 
+// Display version with semver build metadata stripped: the build-stamped
+// VERSION is "0.6.0+g<sha>" (#993), but every UI surface already shows the
+// commit as its own field — repeating the sha inside the version string
+// reads as a duplicate (e.g. "v0.6.0+gcccac44d · cccac44d").
+const displayVersion = computed(() => {
+  const v = info.value?.version
+  if (!v || v === 'unknown') return v
+  return v.split('+')[0]
+})
+
 export function useBuildInfo() {
-  return { info, loading, error, isMissing, load }
+  return { info, loading, error, isMissing, displayVersion, load }
 }

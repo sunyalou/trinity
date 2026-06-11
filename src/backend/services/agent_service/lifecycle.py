@@ -94,6 +94,8 @@ from .capabilities import (  # noqa: F401
     RESTRICTED_CAPABILITIES,
     FULL_CAPABILITIES,
     PROHIBITED_CAPABILITIES,
+    AGENT_TMPFS_MOUNT,
+    AGENT_DEFAULT_TMPDIR,
 )
 
 
@@ -350,6 +352,12 @@ async def recreate_container_with_updated_config(agent_name: str, old_container,
     env_vars = {e.split("=", 1)[0]: e.split("=", 1)[1] for e in old_config.get("Env", []) if "=" in e}
     labels = old_config.get("Labels", {})
 
+    # #1098: redirect scratch (pip/npm/build) off the 100 MB noexec /tmp tmpfs
+    # onto the disk-backed home volume. setdefault so a template/user-set TMPDIR
+    # carried on the existing container wins; old-image containers (no TMPDIR)
+    # pick up the default on this recreate.
+    env_vars.setdefault('TMPDIR', AGENT_DEFAULT_TMPDIR)
+
     # Update auth env vars based on current setting (SUB-002).
     # Claude Code prioritizes ANTHROPIC_API_KEY over CLAUDE_CODE_OAUTH_TOKEN,
     # so when a subscription is assigned we must remove the API key and set
@@ -535,11 +543,15 @@ async def recreate_container_with_updated_config(agent_name: str, old_container,
         # Add back only the capabilities needed for the mode
         cap_add=FULL_CAPABILITIES if full_capabilities else RESTRICTED_CAPABILITIES,
         read_only=False,
-        # Always apply noexec,nosuid to /tmp for security
-        tmpfs={'/tmp': 'noexec,nosuid,size=100m'},
+        # Always apply noexec,nosuid to /tmp for security (#1098: scratch is
+        # redirected off this tiny tmpfs via the TMPDIR env var above).
+        tmpfs=AGENT_TMPFS_MOUNT,
         network='trinity-agent-network',
         mem_limit=memory,
-        cpu_count=int(cpu)
+        # #1126: nano_cpus (Linux CFS quota → HostConfig.NanoCpus), NOT
+        # cpu_count — docker-py's cpu_count maps to the Windows-only CpuCount
+        # and leaves NanoCpus=0 on Linux, so the CPU limit was never enforced.
+        nano_cpus=int(cpu) * 1_000_000_000,
     )
 
     logger.info(f"Recreated container for agent {agent_name} with updated configuration")

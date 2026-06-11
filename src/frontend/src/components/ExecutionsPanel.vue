@@ -117,6 +117,7 @@
             <option value="public">public</option>
             <option value="webhook">webhook</option>
             <option value="fan_out">fan_out</option>
+            <option value="loop">loop</option>
           </select>
           <svg class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"/></svg>
         </div>
@@ -359,6 +360,7 @@ function triggerLabelClass(trigger) {
     public:   'bg-teal-100 dark:bg-teal-900/30 text-teal-700 dark:text-teal-300',
     webhook:  'bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300',
     fan_out:  'bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300',
+    loop:     'bg-fuchsia-100 dark:bg-fuchsia-900/30 text-fuchsia-700 dark:text-fuchsia-300',
   }
   return map[trigger] || 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
 }

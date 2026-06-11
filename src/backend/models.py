@@ -485,6 +485,11 @@ class AgentDefaultResourcesUpdate(BaseModel):
     memory: Optional[str] = None
 
 
+class AgentDefaultAccessPolicyUpdate(BaseModel):
+    """Body for PUT /api/settings/agent-defaults/access-policy (#1129)."""
+    require_email: Optional[bool] = None
+
+
 # ---------------------------------------------------------------------------
 # Fleet Executions (EXEC-022 / Issue #18)
 # ---------------------------------------------------------------------------

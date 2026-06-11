@@ -42,7 +42,7 @@ Then install the plugins you need:
 
 ## The 5 Plugins
 
-### create-agent — 12 skills
+### create-agent — 13 skills
 
 Create new Claude Code agents with domain-specific wizards.
 
@@ -59,6 +59,7 @@ Create new Claude Code agents with domain-specific wizards.
 | `/create-agent:receptionist` | Email gateway agent |
 | `/create-agent:ghostwriter` | Content writer agent |
 | `/create-agent:kb-agent` | Knowledge-base agent (Zettelkasten) |
+| `/create-agent:doctor` | Personal medical-records agent |
 | `/create-agent:website` | Next.js website (no agent) |
 | `/create-agent:custom` | Blank canvas — you define everything |
 | `/create-agent:clone` | Clone an existing agent repo |
@@ -66,20 +67,26 @@ Create new Claude Code agents with domain-specific wizards.
 
 Every wizard-created agent includes `CLAUDE.md`, 2–4 starter skills, `template.yaml`, `dashboard.yaml`, and an onboarding tracker.
 
-### agent-dev — 9 skills
+### agent-dev — 19 skills
 
-Extend and develop existing agents.
+Extend and develop existing agents: playbooks, memory, git-backed state, a full GitHub Issues dev cycle, and long-running pipelines.
 
 ```bash
 /agent-dev:create-playbook    # Add a new skill/playbook
 /agent-dev:adjust-playbook    # Modify an existing skill
 /agent-dev:add-memory         # Add a memory system
-/agent-dev:add-backlog        # Add GitHub Issues task management
-/agent-dev:pick-work          # Claim the next issue
-/agent-dev:close-work         # Close the current issue
-/agent-dev:work-loop          # Run an autonomous work loop
+/agent-dev:add-git-sync       # Git-as-state hooks (auto-commit, rebase, snapshot)
+/agent-dev:add-backlog        # Install the GitHub Issues dev cycle
+/agent-dev:claim              # Claim the next issue
+/agent-dev:autoplan           # Analyze a claimed issue before implementing
+/agent-dev:commit             # Commit and close the issue with traceability
+/agent-dev:sprint             # Supervised cycle: claim → plan → implement → commit
+/agent-dev:work-loop          # Autonomous unit: pick one issue, do it, close, exit
+/agent-dev:add-pipeline       # Scaffold a long-running multi-stage pipeline
 /agent-dev:plan               # Plan multi-session work
 ```
+
+Plus `backlog`, `close`, `groom`, `roadmap`, `add-pipeline-instance`, `add-pipeline-stage`, and `validate-pipeline` — see the [agent-dev plugin page](../abilities/agent-dev-plugin.md) for the full table.
 
 **Memory systems** (via `/agent-dev:add-memory`):
 
@@ -90,32 +97,42 @@ Extend and develop existing agents.
 | `json-state` | Structured state, counters, config |
 | `workspace` | Multi-session project tracking |
 
-### trinity — 3 skills
+### trinity — 6 skills
 
-Connect, deploy, and sync agents to Trinity.
+Connect, deploy, operate, and sync agents on Trinity.
 
 ```bash
-/trinity:connect     # One-time: authenticate and save MCP config
-/trinity:onboard     # Per-agent: compatibility check + deploy
-/trinity:sync        # Sync local changes to the running remote agent
+/trinity:connect              # One-time: authenticate and save MCP config
+/trinity:onboard              # Per-agent: compatibility check + deploy
+/trinity:sync                 # Sync local changes to the running remote agent
+/trinity:loop                 # Run a remote agent in a sequential, bounded loop
+/trinity:create-dashboard     # Generate an /update-dashboard skill for dashboard.yaml
+/trinity:deploy-new-instance  # Deploy a Trinity instance + ops agent on any server
 ```
 
 After connecting, Trinity MCP tools are available directly in your session:
-`mcp__trinity__list_agents`, `mcp__trinity__chat_with_agent`, `mcp__trinity__deploy_local_agent`.
+`mcp__trinity__list_agents`, `mcp__trinity__chat_with_agent`, `mcp__trinity__deploy_local_agent`, `mcp__trinity__run_agent_loop`.
 
-### dev-methodology — 15 skills
+`/trinity:loop` is the conversational front-end to the platform's [Sequential Agent Loops](agent-loops.md): `/trinity:loop @ci-agent run the test suite until it passes, max 10` fires a server-side loop you can disconnect from.
+
+### dev-methodology — 24 skills
 
 Documentation-driven development methodology for any codebase.
 
 ```bash
 /dev-methodology:init             # Scaffold methodology into your project
+/dev-methodology:autoplan         # Reviewed implementation plan for an issue
 /dev-methodology:implement        # End-to-end feature implementation
+/dev-methodology:review           # Pre-landing structural code review
 /dev-methodology:validate-pr      # Validate PR against methodology
-/dev-methodology:security-analysis # Deep security audit
+/dev-methodology:sprint           # Full dev-cycle orchestrator (claim → PR)
+/dev-methodology:cso              # Security audit (branch diff or full codebase)
+/dev-methodology:release          # Cut a release with notes and tags
 /dev-methodology:commit           # Well-formatted commits
-/dev-methodology:refactor-audit   # Review changed code for reuse and quality
 /dev-methodology:generate-user-docs # Generate user-facing docs from source
 ```
+
+Plus grooming, roadmap, testing, refactor-audit, feature-flow, and the three drift validators (architecture/config/schema) — see the [dev-methodology plugin page](../abilities/dev-methodology-plugin.md).
 
 ### utilities — 7 skills
 

@@ -41,6 +41,8 @@ class AuditEventType(str, Enum):
     GIT_OPERATION = "git_operation"
     PROACTIVE_MESSAGE = "proactive_message"  # Issue #321
     SITE_ACCESS = "site_access"  # SITE-001: agent website proxy visits
+    OPERATOR_QUEUE = "operator_queue"  # Issue #1017: bulk clear actions
+    NOTIFICATION = "notification"  # Issue #1017: bulk dismiss
     SYSTEM = "system"
 
 

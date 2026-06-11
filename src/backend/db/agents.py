@@ -59,13 +59,24 @@ class AgentOperations(
     # Agent Ownership Management
     # =========================================================================
 
-    def register_agent_owner(self, agent_name: str, owner_username: str, is_system: bool = False) -> bool:
+    def register_agent_owner(
+        self,
+        agent_name: str,
+        owner_username: str,
+        is_system: bool = False,
+        require_email: bool = False,
+    ) -> bool:
         """Register the owner of an agent.
 
         Args:
             agent_name: Name of the agent
             owner_username: Username of the owner
             is_system: True for system agents (deletion-protected)
+            require_email: #1129 — initial value for the per-agent
+                ``require_email`` access-policy flag, seeded from the
+                fleet-wide default at creation. Defaults False so internal
+                callers (e.g. the system agent) are unaffected; user agent
+                creation passes the platform default.
         """
         user = self._user_ops.get_user_by_username(owner_username)
         if not user:
@@ -82,10 +93,13 @@ class AgentOperations(
                 # value explicitly here keeps new-agent timeouts at
                 # 60min on both fresh installs (where the schema.py
                 # default already lands as 3600) and existing instances.
+                # #1129: same reasoning for require_email — pass it
+                # explicitly so the secure-by-default seed lands on existing
+                # DBs whose baked-in column default is 0.
                 cursor.execute("""
-                    INSERT INTO agent_ownership (agent_name, owner_id, created_at, is_system, execution_timeout_seconds)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (agent_name, user["id"], utc_now_iso(), 1 if is_system else 0, 3600))
+                    INSERT INTO agent_ownership (agent_name, owner_id, created_at, is_system, execution_timeout_seconds, require_email)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (agent_name, user["id"], utc_now_iso(), 1 if is_system else 0, 3600, 1 if require_email else 0))
                 conn.commit()
                 return True
             except sqlite3.IntegrityError:

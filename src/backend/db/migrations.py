@@ -2383,6 +2383,25 @@ def _migrate_users_suspended_at(cursor, conn):
     conn.commit()
 
 
+def _migrate_operator_queue_cleared_at(cursor, conn):
+    """#1017 — Clear All on the Operations Resolved tab.
+
+    Adds `cleared_at TEXT` (NULL = visible) to `operator_queue`. Clearing
+    the Resolved tab hides rows rather than deleting them: a DELETE would
+    let the 5s sync loop resurrect any item whose agent-file entry still
+    says 'pending' (always true for expired items, and for cancelled items
+    whose status flip hasn't been written back yet). Actual deletion is the
+    retention sweep's job (#1142).
+    """
+    _safe_add_column(
+        cursor,
+        "operator_queue",
+        "cleared_at",
+        "ALTER TABLE operator_queue ADD COLUMN cleared_at TEXT",
+    )
+    conn.commit()
+
+
 MIGRATIONS = [
     ("agent_sharing", _migrate_agent_sharing_table),
     ("schedule_executions_observability", _migrate_schedule_executions_observability),
@@ -2455,4 +2474,5 @@ MIGRATIONS = [
     ("users_suspended_at", _migrate_users_suspended_at),
     ("agent_ownership_circuit_breaker", _migrate_agent_ownership_circuit_breaker),
     ("voip_tables", _migrate_voip_tables),
+    ("operator_queue_cleared_at", _migrate_operator_queue_cleared_at),
 ]

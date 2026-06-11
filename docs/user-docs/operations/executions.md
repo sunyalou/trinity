@@ -12,11 +12,16 @@ View, monitor, and manage task executions across all agents. Executions are crea
 |---------|--------|
 | `manual` | Tasks tab in agent detail |
 | `schedule` | Cron-based schedule |
-| `mcp` | Agent-to-agent call via MCP |
 | `chat` | Chat tab in agent detail |
-| `paid` | x402 payment-gated request |
+| `session` | Session tab in agent detail |
+| `agent` | Agent-to-agent call |
+| `mcp` | MCP client call |
+| `public` | Public chat link |
+| `webhook` | Webhook trigger URL |
+| `fan_out` | Fan-out to multiple agents |
+| `loop` | Sequential agent loop iteration |
 
-**Execution Status** -- Every execution moves through a lifecycle: `pending` -> `running` -> `completed`, `failed`, or `cancelled`.
+**Execution Status** -- Every execution moves through a lifecycle: `queued` -> `running` -> `success`, `failed`, `error`, `cancelled`, or `skipped`.
 
 **Parallel Capacity** -- Each agent has a configurable slot system (default: 3 concurrent slots). Slot TTL equals the agent timeout plus a 5-minute buffer. When all slots are occupied, new executions queue until a slot frees up.
 
@@ -26,11 +31,17 @@ View, monitor, and manage task executions across all agents. Executions are crea
 
 ## How It Works
 
-### Execution List Page (`/executions`)
+### Executions Tab (Operations Page)
 
-1. Lists all executions across all agents.
-2. Filter by agent, status, trigger type, or date range.
-3. Click any execution row to open its detail page.
+The fleet execution list lives on the **Executions** tab of the [Operations page](operating-room.md) (`/operations?tab=executions`). The legacy `/executions` route redirects there.
+
+1. Lists all executions across the fleet. Admins see every agent; other users see only agents they own or that are shared with them.
+2. Stat cards show Total, Success rate, and Cost for the selected time window. Running and queued counts are always live, regardless of the window.
+3. Filter by agent, status, trigger type, time range (1h to 30d, or all time), and free-text search over task messages.
+4. The list loads 50 rows at a time; **Load more** appends the next page.
+5. A "N running now" strip appears whenever executions are in flight.
+6. A status dot shows **Live** when WebSocket updates are connected, or **Polling** (every 30s) as fallback.
+7. Click any execution row to open its detail page (`/agents/{name}/executions/{id}` — this route is unchanged).
 
 ### Execution Detail Page
 
@@ -63,9 +74,15 @@ View, monitor, and manage task executions across all agents. Executions are crea
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/api/executions` | GET | Fleet execution list. Filters: `status`, `triggered_by`, `hours` (0 = all-time), `agent`, `search`; `limit` (max 200, default 50), `offset` |
+| `/api/executions/stats` | GET | Fleet stat cards: total, success/failed counts, total cost for the `hours` window; running and queued counts always live |
 | `/api/agents/{name}/executions` | GET | List executions for an agent |
 | `/api/agents/{name}/executions/{id}` | GET | Get execution details |
 | `/api/agents/{name}/task` | POST | Submit a new task |
+
+Access control on the fleet endpoints mirrors the UI: admins see everything; other users see only owned or shared agents.
+
+Full API reference: http://localhost:8000/docs
 
 ### MCP Tools
 
@@ -77,6 +94,7 @@ View, monitor, and manage task executions across all agents. Executions are crea
 
 ## See Also
 
-- [Schedules](../agents/schedules.md) -- Automate recurring executions with cron
-- [Chat](../agents/chat.md) -- Interactive chat sessions with agents
+- [Operations Page](operating-room.md) -- The tabbed view that hosts the Executions tab
+- [Scheduling](../automation/scheduling.md) -- Automate recurring executions with cron
+- [Agent Chat](../agents/agent-chat.md) -- Interactive chat sessions with agents
 - [Monitoring](monitoring.md) -- Fleet-wide health and activity monitoring

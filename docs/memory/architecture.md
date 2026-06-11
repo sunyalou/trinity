@@ -163,7 +163,7 @@
 
 *Monitoring & Activities:*
 - `activity_service.py` - Activity tracking and timeline
-- `monitoring_service.py` - Fleet-wide health monitoring, 30s loop — authoritative for aggregate status (MON-001)
+- `monitoring_service.py` - Fleet-wide health monitoring, 30s loop — authoritative for aggregate status; lifespan-resumed from persisted `monitoring_config`, default OFF (MON-001, #1121)
 - `monitoring_alerts.py` - Alert threshold configuration
 - `heartbeat_service.py` - Agent push-heartbeat liveness layer — see [Heartbeat Liveness](#heartbeat-liveness-reliability-004-307)
 - `operator_queue_service.py` - Operating Room sync with agent containers (OPS-001)
@@ -310,7 +310,7 @@ Services that run continuously in the backend process:
 | **Cleanup Service** | `cleanup_service.py` | Every 5 min: active watchdog reconciliation against agent process registries (orphan recovery, auto-terminate timeouts) + passive stale recovery (CLEANUP-001, #129). Also runs retention + soft-delete purge sweeps and the #740 startup orphan-loop hook — see [Soft Delete & Retention](#soft-delete-retention--recovery-834-772) |
 | **Operator Queue Sync** | `operator_queue_service.py` | Polls running agents every 5s, reads `~/.trinity/operator-queue.json`, syncs to DB, writes responses back (OPS-001) |
 | **Sync Health Service** | `sync_health_service.py` | Polls git-enabled agents every 60s — see [Git Sync Health](#git-sync-health-389390) |
-| **Monitoring Service** | `monitoring_service.py` | Fleet-wide health checks on configurable interval (30s default); authoritative for aggregate status (MON-001) |
+| **Monitoring Service** | `monitoring_service.py` | Fleet-wide health checks on configurable interval (30s default); authoritative for aggregate status. **Lifespan-resumed (#1121):** boot reads the persisted `monitoring_config` (staggered +12s) and starts the loop only when `enabled` — the flag is the single source of truth, **defaults OFF**, persisted by `enable`/`disable`/`PUT /config` (which also reconcile the running loop) so the choice survives restarts; `*_check_interval` rejects non-positive values (422), loop clamps sleep ≥1s (MON-001) |
 | **Heartbeat Watch Loop** | `heartbeat_service.py` | 5s loop acting on missed agent heartbeats — see [Heartbeat Liveness](#heartbeat-liveness-reliability-004-307) |
 | **Scheduler Service** | `scheduler_service.py` | APScheduler cron execution; async fire-and-forget with DB polling for status. On each cron fire, optionally invokes the agent's `~/.trinity/pre-check` (see Agent Containers) |
 | **Capacity Maintenance** | `capacity_manager.py` | `run_maintenance()` every 60s — see [Capacity & Backlog](#capacity--backlog-428) |
@@ -348,7 +348,7 @@ API: `GET`/`PUT /api/agents/{name}/circuit-breaker` (owner-only toggle), `POST .
 
 ### Heartbeat Liveness (RELIABILITY-004, #307)
 
-Additive push-heartbeat layer; the 30s `monitoring_service` loop stays authoritative for aggregate status.
+Additive push-heartbeat layer; the 30s `monitoring_service` loop (lifespan-resumed, default-off, #1121) stays authoritative for aggregate status when enabled.
 
 **Agent side** (`agent_server/heartbeat.py`): 5s loop, gated on both `TRINITY_BACKEND_URL` and `TRINITY_MCP_API_KEY` being present. POSTs `{memory_mb, active_executions, uptime_s}` to `POST /api/agents/{name}/heartbeat`, authenticated with the agent's own agent-scoped MCP key (Option B — least privilege, no master secret injected). `memory_mb` from `/proc/self/status` VmRSS (no psutil). Sleeps-first and swallows **all** exceptions — a failed beat is silent by design; the backend watch loop acts on absence.
 
@@ -605,18 +605,22 @@ Access: admins see all; non-admins only owned/shared agents (`accessible_agent_n
 |--------|------|------|-------------|
 | GET | `/api/agents/{name}/analytics` | `AuthorizedAgent` | Multi-day execution analytics for the Overview tab. `?window=` ∈ {`7d`,`14d`,`30d`} (422 otherwise). Returns per-day counts stacked by type bucket, per-day + headline terminal success rate, duration avg (full-set) + p95 (sampled), avg context use, per-bucket totals, gap-filled UTC-day timeline |
 
-Generalises #868 to agent scope (`db/schedules.py:get_agent_analytics`); read-only, DB-sourced (renders when the agent is stopped). Data-source discipline (locked by /autoplan review): all per-day series and headline `avg`/`context_avg` are **full-set** aggregates — never the capped pool (a sampled avg would be silently wrong on high-traffic agents); only headline p95 uses the newest 5,000 success rows (`sampled=true` when capped). `triggered_by` grouped in Python via `_TRIGGER_BUCKETS` (Chat/Tasks, MCP, Channels, Public, Scheduled, Agent-to-agent, Voice) with an explicit `Other` catch-all so a new trigger never silently vanishes (`manual` → Chat/Tasks). `success_rate` is terminal-based; zero-terminal days report `null` so charts render a gap, not a false 0%; `context_avg` uses NULL-skipping AVG.
+Generalises #868 to agent scope (`db/schedules.py:get_agent_analytics`); read-only, DB-sourced (renders when the agent is stopped). Data-source discipline (locked by /autoplan review): all per-day series and headline `avg`/`context_avg` are **full-set** aggregates — never the capped pool (a sampled avg would be silently wrong on high-traffic agents); only headline p95 uses the newest 5,000 success rows (`sampled=true` when capped). `triggered_by` grouped in Python via `_TRIGGER_BUCKETS` (Chat/Tasks, MCP, Channels, Public, Scheduled, Loops, Agent-to-agent, Voice) with an explicit `Other` catch-all so a new trigger never silently vanishes (`manual` → Chat/Tasks; `loop` → Loops, #1150). `success_rate` is terminal-based; zero-terminal days report `null` so charts render a gap, not a false 0%; `context_avg` uses NULL-skipping AVG.
 
 ### Operator Queue (OPS-001)
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/operator-queue` | List queue items (filters: status, type, priority, agent_name, since) |
 | GET | `/api/operator-queue/stats` | Counts by status/type/priority/agent |
+| POST | `/api/operator-queue/bulk-cancel` | Cancel listed pending items (`{ids: [...]}`, 1–500, ids-scoped so a sync race can't cancel unseen items); returns `{cancelled, skipped}`; audit-logged (#1017) |
+| POST | `/api/operator-queue/clear-resolved` | Hide terminal rows (acknowledged/cancelled/expired) by setting `cleared_at` — NOT a DELETE (the 5s sync loop would resurrect items whose agent-file entry still says `pending`); `responded` kept visible until delivered; actual deletion deferred to the retention sweep (#1142); returns `{cleared}`; audit-logged (#1017) |
 | GET | `/api/operator-queue/{id}` | Single item |
-| POST | `/api/operator-queue/{id}/respond` / `/cancel` | Submit operator response / cancel pending item |
+| POST | `/api/operator-queue/{id}/respond` / `/cancel` | Submit operator response / cancel pending item. Respond returns **409** if the item left `pending` under the caller (race vs bulk-cancel, #1017) |
 | GET | `/api/operator-queue/agents/{name}` | Items for one agent |
 
-WebSocket events: `operator_queue_new`, `operator_queue_responded`, `operator_queue_acknowledged`. Backed by the 5s Operator Queue Sync background service.
+Bulk ops scope writes to the caller's accessible agents (tri-state: admin = no filter, empty set = no-op). The sync service write-back also propagates `cancelled`/`expired` status into agent queue files (in-place flips of still-`pending` entries only) so agents stop waiting on cleared items and stale file entries can't resurrect purged rows (#1017). The Operations UI exposes these as a per-tab **Clear All** button (`notifications` tab uses `POST /api/notifications/dismiss-all` — bulk pending+acknowledged → dismissed, same accessible-set scoping).
+
+WebSocket events: `operator_queue_new`, `operator_queue_responded`, `operator_queue_acknowledged`, `operator_queue_cleared` (one per bulk op, #1017; `notifications_cleared` for the notifications variant). Backed by the 5s Operator Queue Sync background service.
 
 ### Platform Audit Log (SEC-001)
 | Method | Path | Auth | Description |
@@ -673,6 +677,7 @@ Coverage: agent lifecycle, auth, sharing, credentials, settings, rename; request
 | GET/PUT/DELETE | `/api/settings/mcp-url` | Get (any auth user) / set / reset-to-auto-detect (admin-only) MCP server URL |
 | GET | `/api/settings/feature-flags` | Public-safe UI gating flags (any auth user): `session_tab_enabled`, `voice_available` (`VOICE_ENABLED && GEMINI_API_KEY`), `workspace_available` (voice AND `WORKSPACE_ENABLED`, opt-in #860), `voip_available` (#1056), `enterprise_features` (registered enterprise modules; empty in OSS-only builds or under `TRINITY_OSS_ONLY=1`) (#847) |
 | GET/PUT | `/api/settings/agent-defaults/resources` | Fleet-wide default CPU/memory for new containers (admin-only; CPU 1/2/4/8/16, memory 1g–32g) (RES-001) |
+| GET/PUT | `/api/settings/agent-defaults/access-policy` | Fleet-wide default `require_email` for new agents (admin-only, #1129). Stored in `system_settings`, **secure-by-default ON** (code fallback when unset — no migration); seeds `agent_ownership.require_email` at creation (`register_agent_owner`) for **new** agents only, never rewrites existing rows; owners still override per agent via `PUT /api/agents/{name}/access-policy` |
 
 ### Session Tab
 | Method | Path | Description |
@@ -1279,13 +1284,14 @@ CREATE TABLE operator_queue (
     responded_by_email TEXT,
     responded_at TEXT,
     acknowledged_at TEXT,
+    cleared_at TEXT,                    -- #1017: NULL = visible; set = hidden by Clear All (deletion deferred to retention sweep #1142)
     FOREIGN KEY (responded_by_id) REFERENCES users(id)
 );
-CREATE INDEX idx_opqueue_status ON operator_queue(status);
-CREATE INDEX idx_opqueue_agent ON operator_queue(agent_name);
-CREATE INDEX idx_opqueue_priority ON operator_queue(priority);
-CREATE INDEX idx_opqueue_created ON operator_queue(created_at);
-CREATE INDEX idx_opqueue_agent_status ON operator_queue(agent_name, status);
+CREATE INDEX idx_operator_queue_agent ON operator_queue(agent_name);
+CREATE INDEX idx_operator_queue_status ON operator_queue(status);
+CREATE INDEX idx_operator_queue_priority ON operator_queue(priority);
+CREATE INDEX idx_operator_queue_type ON operator_queue(type);
+CREATE INDEX idx_operator_queue_created ON operator_queue(created_at DESC);
 ```
 
 **agent_sync_state** (#389 — see [Git Sync Health](#git-sync-health-389390)):
@@ -1486,7 +1492,7 @@ Bridges (members of **both** networks): `backend` (primary HTTP API — Redis on
 ## Container Security
 
 - **Non-root execution** (Invariant #17, #874): backend and scheduler as `trinity` (UID 1000), MCP server as `node` (UID 1000), frontend as `nginx` (UID 101), agents as `developer` (UID 1000). Backend needs `group_add: ${DOCKER_GID:-999}` for Docker socket access on Linux.
-- `CAP_DROP: ALL` + `CAP_ADD: NET_BIND_SERVICE`; `security_opt: no-new-privileges:true`; tmpfs `/tmp` with `noexec,nosuid`; no external UI port exposure; network isolation per Network Topology above.
+- `CAP_DROP: ALL` + `CAP_ADD: NET_BIND_SERVICE`; `security_opt: no-new-privileges:true`; tmpfs `/tmp` with `noexec,nosuid` (100 MB RAM-backed — heavy scratch like pip/npm/ML wheels is redirected via a default `TMPDIR=/home/developer/.tmp` on the disk-backed home volume, created at start by `startup.sh`; mount spec + TMPDIR default live in `services/agent_service/capabilities.py` so create/recreate/system-agent can't drift, #1098); no external UI port exposure; network isolation per Network Topology above.
 - **Internal API security (C-003)**: `/api/internal/` endpoints (scheduler, agent containers) require the `X-Internal-Secret` header; falls back to `SECRET_KEY` if `INTERNAL_API_SECRET` unset.
 - **WebSocket security (C-002, #550)**: single-use ticket auth — see [Real-time Delivery](#real-time-delivery-reliability-003-306).
 - **Frontend XSS (H-005)**: all markdown rendering uses DOMPurify via `utils/markdown.js`; no direct `v-html` with unsanitized content.

@@ -118,7 +118,7 @@ Wizard-created agents include everything needed for Trinity:
 
 ## Next Steps
 
-- [create-agent Plugin](../abilities/create-agent-plugin.md) — All 12 creation wizards explained
+- [create-agent Plugin](../abilities/create-agent-plugin.md) — All 13 creation wizards explained
 - [agent-dev Plugin](../abilities/agent-dev-plugin.md) — Skills, memory systems, backlog, planning
 - [trinity Plugin](../abilities/trinity-plugin.md) — Connect, onboard, deploy, sync workflows
 
