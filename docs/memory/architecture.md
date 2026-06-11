@@ -218,6 +218,8 @@ Channel DB modules: `db/slack_channels.py` (workspace connections, channel-agent
 
 **Key directories:** `src/views/` (page components), `src/stores/` (Pinia state), `src/components/` (reusable UI), `src/utils/` (WebSocket client, helpers, `markdown.js` with DOMPurify).
 
+**In-app bug reporting (#1116):** `components/HelpChatWidget.vue` (the floating Help widget, mounted in `App.vue`) carries two tabs — **Ask** (existing `ask-trinity` Q&A) and **Report a bug**. The bug tab gathers scrubbed diagnostics (`utils/diagnostics.js` — app version from `GET /api/version` via `useBuildInfo`, route, browser env, and recent console errors from a capped ring buffer `utils/consoleBuffer.js` installed early in `main.js`), an optional user-confirmed screenshot (lazy `html-to-image`), shows them before sending behind an explicit "public GitHub issue" confirm, and POSTs to a **hosted Ability.ai intake service** (`VITE_BUG_REPORT_ENDPOINT`, toggled by `VITE_BUG_REPORT_ENABLED`) that holds the server-side GitHub token and files into `abilityai/trinity`. Client-side scrubbing (`utils/scrub.js`: tokens/emails/IPs) is first-line; the intake service does the authoritative secondary scrub + rate-limit + dedupe. Contract: `docs/integrations/bug-report-intake.md`.
+
 **Stores (domain-scoped, Invariant #6):**
 - `stores/agents.js` - Agent CRUD, chat, activity
 - `stores/auth.js` - Email/admin authentication + JWT

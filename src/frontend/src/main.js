@@ -5,6 +5,11 @@ import router from './router'
 import App from './App.vue'
 import './style.css'
 import { useAuthStore } from './stores/auth'
+import { installConsoleBuffer } from './utils/consoleBuffer'
+
+// #1116: capture console errors/warnings into a capped ring buffer as early
+// as possible so the in-app bug reporter can attach recent diagnostics.
+installConsoleBuffer()
 
 const app = createApp(App)
 const pinia = createPinia()
