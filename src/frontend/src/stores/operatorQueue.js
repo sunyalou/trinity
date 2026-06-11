@@ -8,6 +8,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import axios from 'axios'
+import api from '../api'
 import { useAuthStore } from './auth'
 
 // Agent display helpers
@@ -49,9 +50,13 @@ export const useOperatorQueueStore = defineStore('operatorQueue', () => {
     return result
   })
 
+  // Resolved feed includes cancelled/expired (#1017) — before that, items
+  // cancelled from Needs Response vanished from the UI entirely.
+  const RESOLVED_STATUSES = ['responded', 'acknowledged', 'cancelled', 'expired']
+
   const resolvedItems = computed(() => {
     return items.value
-      .filter(i => i.status === 'responded' || i.status === 'acknowledged')
+      .filter(i => RESOLVED_STATUSES.includes(i.status))
       .sort((a, b) => new Date(b.responded_at || b.created_at) - new Date(a.responded_at || a.created_at))
   })
 
@@ -121,7 +126,42 @@ export const useOperatorQueueStore = defineStore('operatorQueue', () => {
         expandedItemId.value = nextOpen.id
       }
     } catch (err) {
+      if (err.response?.status === 409) {
+        // Item left 'pending' under us (e.g. another operator cleared the
+        // queue) — the response was NOT recorded (#1017).
+        error.value = 'This item was cancelled or answered by another operator — your response was not recorded.'
+        fetchItems()
+      } else {
+        error.value = err.response?.data?.detail || err.message
+      }
+    }
+  }
+
+  // Bulk actions (#1017)
+  async function bulkCancel(ids) {
+    if (!ids || ids.length === 0) return { cancelled: 0, skipped: 0 }
+    error.value = null
+    try {
+      const response = await api.post('/api/operator-queue/bulk-cancel', { ids })
+      await fetchItems()
+      return response.data
+    } catch (err) {
       error.value = err.response?.data?.detail || err.message
+      throw err
+    }
+  }
+
+  async function clearResolved(agentName = null) {
+    error.value = null
+    try {
+      const response = await api.post('/api/operator-queue/clear-resolved', {
+        agent_name: agentName,
+      })
+      await fetchItems()
+      return response.data
+    } catch (err) {
+      error.value = err.response?.data?.detail || err.message
+      throw err
     }
   }
 
@@ -153,6 +193,9 @@ export const useOperatorQueueStore = defineStore('operatorQueue', () => {
       if (item) {
         item.status = 'acknowledged'
       }
+    } else if (data.type === 'operator_queue_cleared') {
+      // Bulk clear by an operator (#1017) — refetch authoritative state
+      fetchItems()
     }
   }
 
@@ -186,6 +229,8 @@ export const useOperatorQueueStore = defineStore('operatorQueue', () => {
     toggleExpand,
     respondToItem,
     acknowledgeItem,
+    bulkCancel,
+    clearResolved,
     handleWebSocketEvent,
     startPolling,
     stopPolling,

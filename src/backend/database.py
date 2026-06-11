@@ -1432,6 +1432,12 @@ class DatabaseManager:
     def dismiss_notification(self, notification_id: str, dismissed_by: str):
         return self._notification_ops.dismiss_notification(notification_id, dismissed_by)
 
+    def dismiss_all_notifications(self, dismissed_by: str, agent_name=None,
+                                  accessible_agent_names=None):
+        return self._notification_ops.dismiss_all(
+            dismissed_by, agent_name, accessible_agent_names
+        )
+
     def delete_agent_notifications(self, agent_name: str):
         return self._notification_ops.delete_agent_notifications(agent_name)
 
@@ -1952,6 +1958,20 @@ class DatabaseManager:
 
     def cancel_operator_queue_item(self, item_id):
         return self._operator_queue_ops.cancel_item(item_id)
+
+    def bulk_cancel_operator_queue_items(self, ids, accessible_agent_names=None):
+        return self._operator_queue_ops.bulk_cancel_items(ids, accessible_agent_names)
+
+    def clear_resolved_operator_queue_items(self, agent_name=None,
+                                            accessible_agent_names=None):
+        return self._operator_queue_ops.clear_resolved_items(
+            agent_name, accessible_agent_names
+        )
+
+    def get_operator_queue_terminal_for_agent(self, agent_name, since_hours=168):
+        return self._operator_queue_ops.get_terminal_items_for_agent(
+            agent_name, since_hours
+        )
 
     def mark_operator_queue_acknowledged(self, item_id):
         return self._operator_queue_ops.mark_acknowledged(item_id)

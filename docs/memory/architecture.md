@@ -612,11 +612,15 @@ Generalises #868 to agent scope (`db/schedules.py:get_agent_analytics`); read-on
 |--------|------|-------------|
 | GET | `/api/operator-queue` | List queue items (filters: status, type, priority, agent_name, since) |
 | GET | `/api/operator-queue/stats` | Counts by status/type/priority/agent |
+| POST | `/api/operator-queue/bulk-cancel` | Cancel listed pending items (`{ids: [...]}`, 1–500, ids-scoped so a sync race can't cancel unseen items); returns `{cancelled, skipped}`; audit-logged (#1017) |
+| POST | `/api/operator-queue/clear-resolved` | Hide terminal rows (acknowledged/cancelled/expired) by setting `cleared_at` — NOT a DELETE (the 5s sync loop would resurrect items whose agent-file entry still says `pending`); `responded` kept visible until delivered; actual deletion deferred to the retention sweep (#1142); returns `{cleared}`; audit-logged (#1017) |
 | GET | `/api/operator-queue/{id}` | Single item |
-| POST | `/api/operator-queue/{id}/respond` / `/cancel` | Submit operator response / cancel pending item |
+| POST | `/api/operator-queue/{id}/respond` / `/cancel` | Submit operator response / cancel pending item. Respond returns **409** if the item left `pending` under the caller (race vs bulk-cancel, #1017) |
 | GET | `/api/operator-queue/agents/{name}` | Items for one agent |
 
-WebSocket events: `operator_queue_new`, `operator_queue_responded`, `operator_queue_acknowledged`. Backed by the 5s Operator Queue Sync background service.
+Bulk ops scope writes to the caller's accessible agents (tri-state: admin = no filter, empty set = no-op). The sync service write-back also propagates `cancelled`/`expired` status into agent queue files (in-place flips of still-`pending` entries only) so agents stop waiting on cleared items and stale file entries can't resurrect purged rows (#1017). The Operations UI exposes these as a per-tab **Clear All** button (`notifications` tab uses `POST /api/notifications/dismiss-all` — bulk pending+acknowledged → dismissed, same accessible-set scoping).
+
+WebSocket events: `operator_queue_new`, `operator_queue_responded`, `operator_queue_acknowledged`, `operator_queue_cleared` (one per bulk op, #1017; `notifications_cleared` for the notifications variant). Backed by the 5s Operator Queue Sync background service.
 
 ### Platform Audit Log (SEC-001)
 | Method | Path | Auth | Description |
@@ -1279,13 +1283,14 @@ CREATE TABLE operator_queue (
     responded_by_email TEXT,
     responded_at TEXT,
     acknowledged_at TEXT,
+    cleared_at TEXT,                    -- #1017: NULL = visible; set = hidden by Clear All (deletion deferred to retention sweep #1142)
     FOREIGN KEY (responded_by_id) REFERENCES users(id)
 );
-CREATE INDEX idx_opqueue_status ON operator_queue(status);
-CREATE INDEX idx_opqueue_agent ON operator_queue(agent_name);
-CREATE INDEX idx_opqueue_priority ON operator_queue(priority);
-CREATE INDEX idx_opqueue_created ON operator_queue(created_at);
-CREATE INDEX idx_opqueue_agent_status ON operator_queue(agent_name, status);
+CREATE INDEX idx_operator_queue_agent ON operator_queue(agent_name);
+CREATE INDEX idx_operator_queue_status ON operator_queue(status);
+CREATE INDEX idx_operator_queue_priority ON operator_queue(priority);
+CREATE INDEX idx_operator_queue_type ON operator_queue(type);
+CREATE INDEX idx_operator_queue_created ON operator_queue(created_at DESC);
 ```
 
 **agent_sync_state** (#389 — see [Git Sync Health](#git-sync-health-389390)):

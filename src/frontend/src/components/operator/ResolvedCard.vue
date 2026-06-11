@@ -14,9 +14,18 @@
 
         <p class="text-sm text-gray-600 dark:text-gray-400">{{ item.title }}</p>
 
-        <!-- Response -->
+        <!-- Response (responded/acknowledged) or terminal status (cancelled/expired, #1017) -->
         <div class="mt-2 flex items-center gap-2">
-          <span class="inline-flex items-center gap-1 text-xs text-status-success-600 dark:text-status-success-400">
+          <span
+            v-if="isTerminalWithoutResponse"
+            class="inline-flex items-center gap-1 text-xs text-gray-400 dark:text-gray-500"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+            {{ item.status === 'expired' ? 'Expired' : 'Cancelled' }}
+          </span>
+          <span v-else class="inline-flex items-center gap-1 text-xs text-status-success-600 dark:text-status-success-400">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
             </svg>
@@ -26,7 +35,7 @@
             &mdash; {{ item.response_text }}
           </span>
           <span class="text-xs text-gray-400 dark:text-gray-500 ml-auto">
-            {{ timeAgo(item.responded_at) }}
+            {{ timeAgo(item.responded_at || item.created_at) }}
           </span>
         </div>
       </div>
@@ -46,6 +55,10 @@ const props = defineProps({
 
 const store = useOperatorQueueStore()
 const agentsStore = useAgentsStore()
+
+const isTerminalWithoutResponse = computed(() =>
+  props.item.status === 'cancelled' || props.item.status === 'expired'
+)
 const agentAvatarUrl = computed(() => {
   const agent = agentsStore.agents.find(a => a.name === props.item.agent_name)
   return agent?.avatar_url || null

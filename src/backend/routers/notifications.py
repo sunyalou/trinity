@@ -7,11 +7,13 @@ Notifications are persisted, broadcast via WebSocket, and queryable via API.
 
 import json
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 
 from database import db
 from dependencies import get_current_user, AuthorizedAgent
 from services.agent_service import get_accessible_agents
+from services.platform_audit_service import platform_audit_service, AuditEventType
 from db_models import (
     User,
     NotificationCreate,
@@ -19,6 +21,11 @@ from db_models import (
     NotificationList,
     NotificationAcknowledge
 )
+
+
+class DismissAllRequest(BaseModel):
+    """Body for bulk-dismissing notifications (#1017)."""
+    agent_name: Optional[str] = None
 
 
 router = APIRouter(prefix="/api", tags=["notifications"])
@@ -172,6 +179,56 @@ async def list_notifications(
         count=len(notifications),
         notifications=notifications
     )
+
+
+@router.post("/notifications/dismiss-all")
+async def dismiss_all_notifications(
+    body: DismissAllRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Dismiss all non-dismissed (pending + acknowledged) notifications (#1017).
+
+    Scoped to agents the caller can access — the same accessor the list
+    endpoint uses, so "what I see" and "what I can clear" never diverge.
+    Ignores priority/type filters by design; optionally narrowed to one
+    agent via `agent_name`. Idempotent: empty match returns {"dismissed": 0}.
+    """
+    accessible_agent_names = {a['name'] for a in get_accessible_agents(current_user)}
+
+    if body.agent_name and body.agent_name not in accessible_agent_names:
+        raise HTTPException(status_code=403, detail="Access denied to agent")
+
+    dismissed = db.dismiss_all_notifications(
+        dismissed_by=str(current_user.id),
+        agent_name=body.agent_name,
+        accessible_agent_names=accessible_agent_names,
+    )
+
+    if dismissed > 0:
+        await platform_audit_service.log(
+            event_type=AuditEventType.NOTIFICATION,
+            event_action="dismiss_all",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            target_type="notification",
+            target_id=body.agent_name,
+            endpoint=str(request.url.path),
+            details={"dismissed": dismissed, "agent_name": body.agent_name},
+        )
+        if _websocket_manager:
+            await _websocket_manager.broadcast(json.dumps({
+                "type": "notifications_cleared",
+                "data": {
+                    "count": dismissed,
+                    "agent_name": body.agent_name,
+                    "cleared_by": current_user.email or current_user.username,
+                }
+            }))
+
+    return {"dismissed": dismissed}
 
 
 @router.get("/notifications/{notification_id}", response_model=Notification)

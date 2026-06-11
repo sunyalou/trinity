@@ -253,6 +253,50 @@ class NotificationOperations:
 
         return self.get_notification(notification_id)
 
+    def dismiss_all(
+        self,
+        dismissed_by: str,
+        agent_name: Optional[str] = None,
+        accessible_agent_names: Optional[set] = None,
+    ) -> int:
+        """Dismiss all non-dismissed notifications in one statement (#1017).
+
+        Targets pending AND acknowledged rows — a button named "Clear All"
+        must clear the visible feed, which shows both.
+
+        accessible_agent_names: None = no filter; empty set = no-op (a
+        zero-agent user must not touch anything); non-empty = SQL IN filter.
+
+        Returns the number of notifications dismissed.
+        """
+        if accessible_agent_names is not None and len(accessible_agent_names) == 0:
+            return 0
+
+        now = utc_now_iso()
+        query = """
+            UPDATE agent_notifications
+            SET status = 'dismissed',
+                acknowledged_at = ?,
+                acknowledged_by = ?
+            WHERE status IN ('pending', 'acknowledged')
+        """
+        params: list = [now, dismissed_by]
+
+        if accessible_agent_names is not None:
+            placeholders = ",".join(["?"] * len(accessible_agent_names))
+            query += f" AND agent_name IN ({placeholders})"
+            params.extend(sorted(accessible_agent_names))
+
+        if agent_name:
+            query += " AND agent_name = ?"
+            params.append(agent_name)
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            conn.commit()
+            return cursor.rowcount
+
     def delete_agent_notifications(self, agent_name: str) -> int:
         """
         Delete all notifications for an agent.
