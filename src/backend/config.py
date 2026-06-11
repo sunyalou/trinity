@@ -125,6 +125,16 @@ VOICE_ENABLED = os.getenv("VOICE_ENABLED", "true").lower() == "true"
 VOICE_MODEL = os.getenv("VOICE_MODEL") or "models/gemini-3.1-flash-live-preview"
 VOICE_MAX_DURATION = int(os.getenv("VOICE_MAX_DURATION", "300"))  # seconds
 
+# Gemini text/audio models (#1130). Hardcoded `gemini-2.0-flash` was retired by
+# Google (404 NOT_FOUND) with no config escape hatch — these env overrides make
+# the next model retirement a config change instead of a code change. Same `or`
+# coalesce as VOICE_MODEL above (#1076): empty string must not shadow the default.
+# Two separate vars because the modalities can diverge: TEXT is text-only
+# (image-gen prompt refinement), TRANSCRIPTION needs inline-audio support
+# (Telegram voice messages). Both default to the same model today.
+GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL") or "gemini-3.5-flash"
+GEMINI_TRANSCRIPTION_MODEL = os.getenv("GEMINI_TRANSCRIPTION_MODEL") or "gemini-3.5-flash"
+
 # VoIP Telephony Configuration (VOIP-001, #1056 — Phase 1, outbound)
 # Default OFF — mirrors the workspace_available opt-in (#860). The feature
 # also requires a per-agent voip_bindings row to function. `voip_available`

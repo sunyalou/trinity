@@ -7,13 +7,14 @@ operator_queue_service background poller.
 """
 
 import json
-from typing import Optional, Set
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from typing import List, Optional, Set
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from database import db
 from dependencies import get_current_user
 from db_models import User
+from services.platform_audit_service import platform_audit_service, AuditEventType
 
 
 router = APIRouter(prefix="/api/operator-queue", tags=["operator-queue"])
@@ -36,6 +37,20 @@ class OperatorResponse(BaseModel):
     """Body for responding to a queue item."""
     response: str
     response_text: Optional[str] = None
+
+
+class BulkCancelRequest(BaseModel):
+    """Body for bulk-cancelling pending queue items (#1017).
+
+    The client sends the ids it actually rendered, so a sync-loop race can
+    never cancel items the operator never saw.
+    """
+    ids: List[str] = Field(..., min_length=1, max_length=500)
+
+
+class ClearResolvedRequest(BaseModel):
+    """Body for clearing the Resolved tab (#1017)."""
+    agent_name: Optional[str] = None
 
 
 # ============================================================================
@@ -100,6 +115,95 @@ async def get_queue_stats(
     return db.get_operator_queue_stats(accessible_agent_names=accessible)
 
 
+@router.post("/bulk-cancel")
+async def bulk_cancel_queue_items(
+    body: BulkCancelRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """Cancel a list of pending queue items in one call (#1017).
+
+    Only the listed ids are touched; non-pending or inaccessible ids are
+    skipped (reported in `skipped`). Affects all operators of the agents.
+    """
+    accessible = _accessible_set(current_user)
+    ids = list(dict.fromkeys(body.ids))  # dedupe, keep order — honest skipped count
+    cancelled = db.bulk_cancel_operator_queue_items(ids, accessible)
+    skipped = len(ids) - cancelled
+
+    if cancelled > 0:
+        await platform_audit_service.log(
+            event_type=AuditEventType.OPERATOR_QUEUE,
+            event_action="bulk_cancel",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            target_type="operator_queue",
+            endpoint=str(request.url.path),
+            details={"cancelled": cancelled, "skipped": skipped, "ids": body.ids},
+        )
+        if _websocket_manager:
+            await _websocket_manager.broadcast(json.dumps({
+                "type": "operator_queue_cleared",
+                "data": {
+                    "scope": "pending",
+                    "count": cancelled,
+                    "cleared_by": current_user.email or current_user.username,
+                }
+            }))
+
+    return {"cancelled": cancelled, "skipped": skipped}
+
+
+@router.post("/clear-resolved")
+async def clear_resolved_queue_items(
+    body: ClearResolvedRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """Hide terminal (acknowledged/cancelled/expired) queue items (#1017).
+
+    Sets cleared_at so the rows drop out of listings; actual deletion is
+    deferred to the retention sweep (#1142) because a DELETE could be
+    resurrected by the sync loop (see db layer docstring). 'responded'
+    items awaiting agent acknowledgement are kept visible — their response
+    still has to be delivered to the agent. Affects all operators of the
+    agents. Idempotent: an empty match returns {"cleared": 0}.
+    """
+    accessible = _accessible_set(current_user)
+    if body.agent_name:
+        _assert_agent_accessible(body.agent_name, accessible)
+
+    cleared = db.clear_resolved_operator_queue_items(
+        agent_name=body.agent_name,
+        accessible_agent_names=accessible,
+    )
+
+    if cleared > 0:
+        await platform_audit_service.log(
+            event_type=AuditEventType.OPERATOR_QUEUE,
+            event_action="clear_resolved",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            target_type="operator_queue",
+            target_id=body.agent_name,
+            endpoint=str(request.url.path),
+            details={"cleared": cleared, "agent_name": body.agent_name},
+        )
+        if _websocket_manager:
+            await _websocket_manager.broadcast(json.dumps({
+                "type": "operator_queue_cleared",
+                "data": {
+                    "scope": "resolved",
+                    "count": cleared,
+                    "cleared_by": current_user.email or current_user.username,
+                }
+            }))
+
+    return {"cleared": cleared}
+
+
 @router.get("/{item_id}")
 async def get_queue_item(
     item_id: str,
@@ -141,6 +245,15 @@ async def respond_to_queue_item(
         responded_by_id=str(current_user.id),
         responded_by_email=current_user.email or current_user.username,
     )
+
+    # Lost the race: the item left 'pending' between the check above and the
+    # UPDATE (e.g. a bulk-cancel landed). The response was NOT recorded —
+    # surface that instead of a silent 200 (#1017).
+    if item and item.pop("_status_conflict", False):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Item is no longer pending (now '{item['status']}') — response was not recorded"
+        )
 
     # Broadcast WebSocket event
     if _websocket_manager and item:

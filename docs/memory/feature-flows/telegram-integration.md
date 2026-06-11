@@ -142,7 +142,7 @@ Two routers are registered in `main.py:523-524`:
 - `process_photo(bot_token, photo_sizes)` (line 93) — Downloads largest photo, saves to temp file, returns size description. Temp file always cleaned up.
 - `process_document(bot_token, document)` (line 127) — Downloads and extracts text from plain text files (.txt, .md, .csv, .json, .py, etc.). Truncates at 10,000 chars. Non-text files get metadata-only description.
 - `process_voice(bot_token, voice)` (line 170) — **NEW (Issue #318)**: Downloads OGG voice message and transcribes via Gemini API. **Limits**: 5 minutes max duration, 10MB max size. Returns `🎙️ "transcribed text"` or error placeholder. Falls back to placeholder if GEMINI_API_KEY not configured.
-- `_transcribe_audio_gemini(audio_data, mime_type)` (line 209) — Internal: Calls Gemini 2.0 Flash with inline audio for transcription.
+- `_transcribe_audio_gemini(audio_data, mime_type)` (line 220) — Internal: Calls the configured Gemini model (`GEMINI_TRANSCRIPTION_MODEL`, default `gemini-3.5-flash`, env-overridable — #1130) with inline audio for transcription.
 
 ### Message Router: `src/backend/adapters/message_router.py`
 
@@ -921,3 +921,4 @@ The `GeminiRuntime` and `AgentRuntime` ABC gained an `images` parameter (ignored
 | 2026-04-18 | #318: Voice transcription via Gemini. `process_voice()` in telegram_media.py, voice processing hook in message_router.py. Limits: 5 min duration, 10MB size. 22 unit tests. |
 | 2026-04-25 | #487 Phase 2: workspace delivery hardened. New `_sanitize_filename` helper (NFKC + basename + safe-chars + 200-char truncation + collision dedup). Chat injection format `[File uploaded by {uploader}]: {name} ({size}) saved to {path}`. All-writes-failed now replies via channel and aborts execution. Audit entries include `uploader`. 16 new tests (27 total in `test_file_upload.py`). |
 | 2026-04-28 | #562: Vision delivery fixed. Replaced broken base64 data URI text embedding with proper `--input-format stream-json` vision content blocks delivered via Claude CLI stdin. `_handle_file_uploads` returns 4-tuple with `image_data`. `GeminiRuntime` and `AgentRuntime` ABC updated to accept `images` param. 17 new tests in `test_channel_image_vision.py`. |
+| 2026-06-10 | #1130: Transcription model no longer hardcoded. Google retired `gemini-2.0-flash` (404 on every voice message); `_transcribe_audio_gemini` now uses `GEMINI_TRANSCRIPTION_MODEL` from config.py (default `gemini-3.5-flash`, env-overridable, #1076 empty-string-safe wiring in both compose files). Explicit retired-model log hint on 404. |

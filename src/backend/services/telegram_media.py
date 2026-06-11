@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from config import GEMINI_API_KEY
+from config import GEMINI_API_KEY, GEMINI_TRANSCRIPTION_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +229,7 @@ async def _transcribe_audio_gemini(audio_data: bytes, mime_type: str = "audio/og
         client = genai.Client(api_key=GEMINI_API_KEY)
 
         response = await client.aio.models.generate_content(
-            model="gemini-2.0-flash",
+            model=GEMINI_TRANSCRIPTION_MODEL,
             contents=[
                 {
                     "parts": [
@@ -256,5 +256,14 @@ async def _transcribe_audio_gemini(audio_data: bytes, mime_type: str = "audio/og
         return None
 
     except Exception as e:
-        logger.error(f"Gemini transcription error: {e}", exc_info=True)
+        # 404 NOT_FOUND here usually means Google retired the model (#1130) —
+        # recoverable by config, no code change needed.
+        if "404" in str(e) or "NOT_FOUND" in str(e):
+            logger.error(
+                f"Gemini transcription error: model '{GEMINI_TRANSCRIPTION_MODEL}' "
+                f"not found — it may have been retired by Google. Set the "
+                f"GEMINI_TRANSCRIPTION_MODEL env var to a current model. {e}"
+            )
+        else:
+            logger.error(f"Gemini transcription error: {e}", exc_info=True)
         return None

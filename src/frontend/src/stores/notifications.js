@@ -8,6 +8,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import axios from 'axios'
+import api from '../api'
 
 export const useNotificationsStore = defineStore('notifications', () => {
   // State
@@ -180,6 +181,24 @@ export const useNotificationsStore = defineStore('notifications', () => {
     }
   }
 
+  // Server-side Clear All (#1017): one call dismisses every non-dismissed
+  // notification for accessible agents — including ones beyond the loaded
+  // page — unlike the per-id bulk helpers below.
+  async function dismissAll(agentName = null) {
+    error.value = null
+    try {
+      const response = await api.post('/api/notifications/dismiss-all', {
+        agent_name: agentName,
+      })
+      await fetchNotifications()
+      await fetchPendingCount()
+      return response.data
+    } catch (err) {
+      error.value = err.response?.data?.detail || 'Failed to dismiss notifications'
+      throw err
+    }
+  }
+
   async function bulkAcknowledge(ids) {
     const results = await Promise.allSettled(
       ids.map(id => acknowledgeNotification(id))
@@ -299,6 +318,7 @@ export const useNotificationsStore = defineStore('notifications', () => {
     fetchPendingCount,
     acknowledgeNotification,
     dismissNotification,
+    dismissAll,
     bulkAcknowledge,
     bulkDismiss,
     addNotification,
