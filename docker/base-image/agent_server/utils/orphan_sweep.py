@@ -70,6 +70,11 @@ _CGROUP_PROCS_PATH = Path("/sys/fs/cgroup/cgroup.procs")
 # pipe-writer sweep so operators see consistent log shape.
 _LOG_DETAIL_CAP = 10
 
+# #1153: cap the cmdline length in each per-kill log line. Long enough to
+# identify the victim (the misdiagnosis this fixes was "which process died?"),
+# short enough not to flood the log with a giant argv.
+_CMDLINE_LOG_CAP = 200
+
 
 def read_cgroup_procs(path: Path = _CGROUP_PROCS_PATH) -> Optional[list[int]]:
     """Read every PID in the container's cgroup.
@@ -147,21 +152,27 @@ def kill_cgroup_orphans(
     # Log identity before killing — once SIGKILL lands, /proc/<pid> is
     # gone and we lose the ability to attribute the leak. Cap to
     # _LOG_DETAIL_CAP entries; tail with count-only summary.
+    #
+    # #1153: a real kill is logged at WARNING with the victim's pid +
+    # (length-capped) cmdline. A single such line would have turned a
+    # weeks-long "which process keeps dying?" misdiagnosis into a 5-minute
+    # fix. dry_run (canary/tests) stays at INFO — nothing actually dies.
     label = "would kill" if dry_run else "SIGKILL"
+    log_kill = logger.info if dry_run else logger.warning
     for i, pid in enumerate(orphan_pids):
         if i >= _LOG_DETAIL_CAP:
             break
-        cmd = _read_cmdline(pid) or "?"
+        cmd = (_read_cmdline(pid) or "?")[:_CMDLINE_LOG_CAP]
         try:
             pgid_str = str(os.getpgid(pid))
         except OSError:
             pgid_str = "?"
-        logger.info(
+        log_kill(
             "[OrphanSweep] %s cgroup orphan: pid=%s pgid=%s cmd=%s",
             label, pid, pgid_str, cmd,
         )
     if len(orphan_pids) > _LOG_DETAIL_CAP:
-        logger.info(
+        log_kill(
             "[OrphanSweep] %s %d additional orphan PID(s) (detail capped at %d)",
             label, len(orphan_pids) - _LOG_DETAIL_CAP, _LOG_DETAIL_CAP,
         )
