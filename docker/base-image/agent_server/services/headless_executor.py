@@ -1030,9 +1030,15 @@ async def execute_headless_task(
                 # ctx.terminate() does up to 4s of process.wait() (SIGTERM grace + SIGKILL grace);
                 # off-load to the executor so the event loop stays responsive while we tear down.
                 await loop.run_in_executor(None, ctx.terminate)
+                # #1094: same semantic cause as the inner max-duration branch —
+                # keep the structured detail symmetric so consumers filtering on
+                # termination_reason see budget timeouts from either path.
                 raise HTTPException(
                     status_code=504,
-                    detail=f"Task execution timed out after {ctx.effective_timeout} seconds"
+                    detail={
+                        "message": f"Task execution timed out after {ctx.effective_timeout} seconds",
+                        "termination_reason": "max_duration",
+                    },
                 )
             except subprocess.TimeoutExpired:
                 # Inner process.wait() bounded out; tree has already been killed.
