@@ -35,13 +35,17 @@ const isRunning = computed(() => props.agent?.status === 'running')
 // emerald) led by the indigo `action-primary`. Deliberately no warm hues:
 // mixing amber/rose with green/blue reads as a traffic light. Soft
 // 400-level shades keep it calm on the dark theme; the ramp reads as one
-// cohesive family rather than a categorical rainbow.
+// cohesive family rather than a categorical rainbow. One deliberate
+// exception (#1150): Loops is a fuchsia accent — it sits stacked between
+// Scheduled (cyan) and Agent-to-agent (teal) and the whole point of the
+// bucket is distinguishing loop bursts from scheduled work.
 const BUCKET_COLORS = {
   'Chat/Tasks': '#6366f1',     // indigo-500  (action-primary, anchor)
   'MCP': '#a78bfa',            // violet-400  (accent-purple)
   'Channels': '#60a5fa',       // blue-400
   'Public': '#38bdf8',         // sky-400
   'Scheduled': '#22d3ee',      // cyan-400
+  'Loops': '#e879f9',          // fuchsia-400 (deliberate accent, #1150)
   'Agent-to-agent': '#2dd4bf', // teal-400
   'Voice': '#34d399',          // emerald-400
   'Other': '#94a3b8',          // slate-400
