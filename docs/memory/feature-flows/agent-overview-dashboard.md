@@ -134,6 +134,11 @@ are derived client-side from `…/history?check_type=network` and are inherently
 is the success-rate chart (from `schedule_executions`, retained ~90d) — a
 deliberately separate source so the execution charts aren't clipped.
 
+When there is no `agent_health_checks` history at all (e.g. the Monitoring
+Service was never enabled), the trend block's `v-else` renders a one-line empty
+state — "No health data available — the monitoring service may be off." —
+instead of a silently empty section (fix 6df68c96, 2026-06-10).
+
 ## Info tab redesign
 
 `components/InfoPanel.vue` leads with the **About** narrative (display name,

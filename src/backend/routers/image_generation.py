@@ -14,10 +14,10 @@ from pydantic import BaseModel
 
 from dependencies import get_current_user
 from models import User
+from config import GEMINI_TEXT_MODEL
 from services.image_generation_service import (
     get_image_generation_service,
     GEMINI_IMAGE_MODEL,
-    GEMINI_TEXT_MODEL,
 )
 from services.image_generation_prompts import VALID_ASPECT_RATIOS, VALID_USE_CASES
 

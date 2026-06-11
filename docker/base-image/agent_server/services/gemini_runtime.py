@@ -52,6 +52,8 @@ GEMINI_PRICING = {
         "input": 0.0003,    # $0.30 per 1M = $0.0003 per 1K
         "output": 0.0025,   # $2.50 per 1M = $0.0025 per 1K
     },
+    # Historical (retired by Google; kept only so cost calc of older
+    # executions still resolves — not offered in the /api/model lists, #1137)
     "gemini-2.0-flash": {
         "input": 0.0001,    # $0.10 per 1M = $0.0001 per 1K
         "output": 0.0004,   # $0.40 per 1M = $0.0004 per 1K

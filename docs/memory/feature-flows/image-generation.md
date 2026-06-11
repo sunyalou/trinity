@@ -63,7 +63,7 @@ router = APIRouter(prefix="/api/images", tags=["images"])
   {
       "available": true,
       "models": {
-          "text_refinement": "gemini-2.0-flash",
+          "text_refinement": "gemini-3.5-flash",
           "image_generation": "gemini-3.1-flash-image-preview"
       },
       "default_model": "gemini-3.1-flash-image-preview",
@@ -88,7 +88,7 @@ Singleton service accessed via `get_image_generation_service()` (line 395).
 **Constants** (lines 29-35):
 | Constant | Value |
 |----------|-------|
-| `GEMINI_TEXT_MODEL` | `gemini-2.0-flash` |
+| `GEMINI_TEXT_MODEL` | `gemini-3.5-flash` (env-overridable, defined in `config.py` — #1130) |
 | `GEMINI_IMAGE_MODEL` | `gemini-3.1-flash-image-preview` |
 | `GEMINI_API_BASE` | `https://generativelanguage.googleapis.com/v1beta/models` |
 | `PROMPT_REFINEMENT_TIMEOUT` | 30 seconds |
@@ -114,7 +114,7 @@ Main entry point. Parameters: `prompt`, `use_case`, `aspect_ratio`, `refine_prom
    - Returns `ImageGenerationResult` dataclass with image bytes, mime type, and metadata
 
 #### _call_gemini_text() (line 183)
-- **URL**: `{GEMINI_API_BASE}/gemini-2.0-flash:generateContent`
+- **URL**: `{GEMINI_API_BASE}/{GEMINI_TEXT_MODEL}:generateContent`
 - **Auth**: `x-goog-api-key` header with `GEMINI_API_KEY`
 - **Config**: temperature 0.7, maxOutputTokens 512
 - **Response parsing**: `data["candidates"][0]["content"]["parts"][0]["text"]`
@@ -244,10 +244,12 @@ Used by `avatar.py:_generate_emotions_background()` to build emotion-specific pr
 
 ### Configuration
 **File**: `src/backend/config.py`
-- **Line 103**: `GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")`
+- `GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")`
+- `GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL") or "gemini-3.5-flash"` -- prompt-refinement model, env-overridable (#1130; `or`-coalesce per #1076 so an empty var can't shadow the default)
 
-**File**: `docker-compose.yml`
-- **Line 20**: `GEMINI_API_KEY=${GEMINI_API_KEY:-}` -- Passed through from host `.env` to backend container
+**Files**: `docker-compose.yml` + `docker-compose.prod.yml`
+- `GEMINI_API_KEY=${GEMINI_API_KEY:-}` -- Passed through from host `.env` to backend container
+- `GEMINI_TEXT_MODEL=${GEMINI_TEXT_MODEL:-gemini-3.5-flash}` -- non-empty default (#1130)
 
 ---
 

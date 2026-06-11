@@ -224,6 +224,12 @@ class HeadlessRunContext:
     permission_mode_validated: bool = False
     result_seen: threading.Event = field(default_factory=threading.Event)  # #970: claude emitted {"type":"result"}
     stdout_exc: List[BaseException] = field(default_factory=list)
+    # #1094: which termination path fired, so the terminal 504 carries a
+    # distinct reason instead of always claiming the max-duration timeout.
+    #   "stall_no_output" — a tool produced no result for >_STALL_LIMIT_S
+    #   "max_duration"    — the effective_timeout budget was genuinely exhausted
+    termination_reason: Optional[str] = None
+    stalled_tool: Optional[str] = None
 
     # Shared mutable buffers (populated by stream_parser via process_stream_line)
     response_parts: List[str] = field(default_factory=list)
@@ -651,6 +657,14 @@ def _run_headless_subprocess(ctx: HeadlessRunContext) -> None:
                 if stalled_tool or time.monotonic() >= deadline:
                     raise
     except subprocess.TimeoutExpired:
+        # #1094: record which path fired so the terminal 504 (built in the
+        # orchestrator) can carry a distinct reason instead of the generic
+        # max-duration label.
+        if stalled_tool:
+            ctx.termination_reason = "stall_no_output"
+            ctx.stalled_tool = stalled_tool
+        else:
+            ctx.termination_reason = "max_duration"
         reason = (
             f"tool '{stalled_tool}' stalled with no result for >{_STALL_LIMIT_S:.0f}s"
             if stalled_tool
@@ -1016,16 +1030,46 @@ async def execute_headless_task(
                 # ctx.terminate() does up to 4s of process.wait() (SIGTERM grace + SIGKILL grace);
                 # off-load to the executor so the event loop stays responsive while we tear down.
                 await loop.run_in_executor(None, ctx.terminate)
+                # #1094: same semantic cause as the inner max-duration branch —
+                # keep the structured detail symmetric so consumers filtering on
+                # termination_reason see budget timeouts from either path.
                 raise HTTPException(
                     status_code=504,
-                    detail=f"Task execution timed out after {ctx.effective_timeout} seconds"
+                    detail={
+                        "message": f"Task execution timed out after {ctx.effective_timeout} seconds",
+                        "termination_reason": "max_duration",
+                    },
                 )
             except subprocess.TimeoutExpired:
-                # Inner process.wait() timed out; tree has already been killed.
+                # Inner process.wait() bounded out; tree has already been killed.
+                # #1094: two distinct causes reach here — the per-tool no-output
+                # stall watchdog and genuine max-duration budget exhaustion.
+                # Stamp a reason-specific 504 instead of always claiming the
+                # max-duration timeout (which misled operators into bumping the
+                # execution timeout — the wrong knob for a 300s stall-kill).
+                if ctx.termination_reason == "stall_no_output":
+                    logger.error(
+                        f"[Headless Task] Task {ctx.task_session_id} killed by stall "
+                        f"watchdog (tool '{ctx.stalled_tool}' silent >{_STALL_LIMIT_S:.0f}s)"
+                    )
+                    raise HTTPException(
+                        status_code=504,
+                        detail={
+                            "message": (
+                                f"Killed: tool '{ctx.stalled_tool}' produced no output "
+                                f"for {_STALL_LIMIT_S:.0f}s (stall watchdog)"
+                            ),
+                            "termination_reason": "stall_no_output",
+                            "stalled_tool": ctx.stalled_tool,
+                        },
+                    )
                 logger.error(f"[Headless Task] Task {ctx.task_session_id} timed out after {ctx.effective_timeout}s")
                 raise HTTPException(
                     status_code=504,
-                    detail=f"Task execution timed out after {ctx.effective_timeout} seconds"
+                    detail={
+                        "message": f"Task execution timed out after {ctx.effective_timeout} seconds",
+                        "termination_reason": "max_duration",
+                    },
                 )
             except RuntimeError as e:
                 # Permission mode validation failure — fast-fail with actionable error

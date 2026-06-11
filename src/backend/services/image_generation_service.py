@@ -2,7 +2,8 @@
 Platform-level image generation service (IMG-001).
 
 Two-step pipeline:
-1. Prompt refinement — Gemini 2.0 Flash (text) rewrites the raw prompt using best practices
+1. Prompt refinement — the configured Gemini text model (GEMINI_TEXT_MODEL) rewrites
+   the raw prompt using best practices
 2. Image generation — Gemini 3.1 Flash Image Preview produces the actual image
 
 Other code (routers, services, MCP tools, agents) calls:
@@ -16,7 +17,7 @@ from typing import Optional
 
 import httpx
 
-from config import GEMINI_API_KEY
+from config import GEMINI_API_KEY, GEMINI_TEXT_MODEL
 from services.image_generation_prompts import (
     USE_CASE_PROMPTS,
     VALID_ASPECT_RATIOS,
@@ -25,8 +26,7 @@ from services.image_generation_prompts import (
 
 logger = logging.getLogger(__name__)
 
-# Gemini API configuration
-GEMINI_TEXT_MODEL = "gemini-2.0-flash"
+# Gemini API configuration (text model lives in config.py — env-overridable, #1130)
 GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
@@ -156,7 +156,19 @@ class ImageGenerationService:
                 refined = await self.refine_prompt(prompt, use_case, aspect_ratio)
                 logger.info(f"{log_prefix} Refined prompt: {refined[:100]}...")
             except Exception as e:
-                logger.warning(f"{log_prefix} Prompt refinement failed, using raw prompt: {e}")
+                # 404 here usually means Google retired the model (#1130) —
+                # recoverable by config, no code change needed. Anchored on
+                # _call_gemini_text's own raise format to avoid misfiring on
+                # transport errors that happen to contain "404".
+                if "API error 404" in str(e):
+                    logger.error(
+                        f"{log_prefix} Prompt refinement failed, using raw prompt: "
+                        f"model '{GEMINI_TEXT_MODEL}' not found — it may have been "
+                        f"retired by Google. Set the GEMINI_TEXT_MODEL env var to a "
+                        f"current model. {e}"
+                    )
+                else:
+                    logger.warning(f"{log_prefix} Prompt refinement failed, using raw prompt: {e}")
                 refined = prompt
 
         # Step 2: Image generation

@@ -72,6 +72,16 @@ class TestImageModelsEndpoint:
         assert data["default_model"] == data["models"]["image_generation"]
 
     @pytest.mark.smoke
+    def test_text_refinement_model_not_retired(self, api_client: TrinityApiClient):
+        """Regression guard (#1130): the text-refinement model must not be a
+        Gemini generation Google has retired (gemini-2.0-* / gemini-1.x 404)."""
+        response = api_client.get("/api/images/models")
+        assert_status(response, 200)
+        model = response.json()["models"]["text_refinement"]
+        assert not model.startswith("gemini-2.0"), f"retired model configured: {model}"
+        assert not model.startswith("gemini-1."), f"retired model configured: {model}"
+
+    @pytest.mark.smoke
     def test_get_models_availability_is_boolean(self, api_client: TrinityApiClient):
         """GET /api/images/models 'available' field is a boolean."""
         response = api_client.get("/api/images/models")
