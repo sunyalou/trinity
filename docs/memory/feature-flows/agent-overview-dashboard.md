@@ -47,7 +47,9 @@ deliberately does **not** re-render any header element; where it references one
 - `components/StackedBarChart.vue` — executions-by-type, **CSS/flexbox** stacked
   bars (NOT uPlot bars — chosen for correct-by-construction per-segment
   tooltips, theme-aware colors, no cumulative-stacking math). One column/day,
-  ≤8 buckets, hover shows the per-bucket breakdown, legend with window totals.
+  ≤9 buckets, hover shows the per-bucket breakdown, legend with window totals.
+  Buckets missing from the `colors` prop render slate (`#94a3b8`) rather than
+  invisible — covers a stale cached bundle against a newer backend (#1150).
 - `components/TrendLineChart.vue` — uPlot line/area with axes + cursor. Dark-mode
   aware (axis/grid strokes re-resolved on theme toggle). uPlot's built-in legend
   is **disabled** (it reflows the layout on hover → labels jump); replaced by a

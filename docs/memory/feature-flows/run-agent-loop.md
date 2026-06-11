@@ -13,7 +13,7 @@ As an agent orchestrator, I want to run a task N times in order, optionally chai
 - **MCP tools**: `run_agent_loop`, `get_loop_status`, `stop_loop`
 - **Web UI (Phase 2, #1106)**: the **Loops** tab on the Agent Detail page (`AgentDetail.vue`, between Schedules and Playbooks).
 
-Phase 1 shipped headless (API/MCP only); iterations also appear in the standard execution timeline tagged with `loop_id`.
+Phase 1 shipped headless (API/MCP only); iterations also appear in the standard execution timeline tagged with `loop_id`, rendered as the distinct **Loops** analytics bucket and fuchsia trigger chip (#1150) rather than folding into Scheduled.
 
 ## Frontend Layer (Phase 2, #1106)
 - **Tab**: `src/frontend/src/views/AgentDetail.vue` adds `{ id: 'loops', label: 'Loops' }` and mounts `<LoopsPanel :agent-name :agent-status />`.
