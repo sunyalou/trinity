@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-from models import User, AgentDefaultResourcesUpdate
+from models import User, AgentDefaultResourcesUpdate, AgentDefaultAccessPolicyUpdate
 from database import db, SystemSetting, SystemSettingUpdate
 from dependencies import get_current_user
 from services.platform_audit_service import platform_audit_service, AuditEventType
@@ -35,6 +35,9 @@ from services.settings_service import (
     AGENT_DEFAULT_MEMORY_KEY,
     AGENT_DEFAULT_CPU,
     AGENT_DEFAULT_MEMORY,
+    AGENT_DEFAULT_REQUIRE_EMAIL_KEY,
+    AGENT_DEFAULT_REQUIRE_EMAIL,
+    get_agent_default_require_email,
 )
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -1334,6 +1337,77 @@ async def update_agent_default_resources(
         "cpu": cpu,
         "memory": memory,
         "restart_required": True
+    }
+
+
+# ============================================================================
+# Agent Default Access Policy (#1129 — secure-by-default require_email)
+# ============================================================================
+
+@router.get("/agent-defaults/access-policy")
+async def get_agent_default_access_policy(
+    request: Request,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get the fleet-wide default access policy applied to newly created agents.
+
+    Currently scopes to `require_email` (#1129): when ON, new agents require a
+    verified email on incoming DMs / public chat / shared access. Admin-only.
+    """
+    require_admin(current_user)
+
+    return {
+        "require_email": get_agent_default_require_email(),
+        "require_email_default": AGENT_DEFAULT_REQUIRE_EMAIL,
+        "note": "Applies to newly created agents only. Existing agents keep their "
+                "current per-agent value; owners can override per agent via the "
+                "agent's access policy.",
+    }
+
+
+@router.put("/agent-defaults/access-policy")
+async def update_agent_default_access_policy(
+    body: AgentDefaultAccessPolicyUpdate,
+    request: Request,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Set the fleet-wide default access policy for new agents (#1129).
+
+    Admin-only. Only the fields provided are updated. Stored in system_settings;
+    consumed at agent-creation time. Does NOT rewrite existing agents.
+    """
+    require_admin(current_user)
+
+    updated = []
+    if body.require_email is not None:
+        db.set_setting(AGENT_DEFAULT_REQUIRE_EMAIL_KEY, "1" if body.require_email else "0")
+        updated.append("require_email")
+
+        # SEC-001 / #1129: audit this security-relevant default change — flipping
+        # the fleet-wide email-verification default weakens/strengthens the
+        # posture for every future agent, so it must leave a trace (mirrors the
+        # API-key / generic-setting audit path in this router).
+        await platform_audit_service.log(
+            event_type=AuditEventType.CONFIGURATION,
+            event_action="settings_change",
+            source="api",
+            actor_user=current_user,
+            actor_ip=request.client.host if request.client else None,
+            endpoint=str(request.url.path),
+            request_id=getattr(request.state, "request_id", None),
+            details={
+                "setting": "agent_default_require_email",
+                "action": "update",
+                "require_email": body.require_email,
+            },
+        )
+
+    return {
+        "success": True,
+        "updated": updated,
+        "require_email": get_agent_default_require_email(),
     }
 
 

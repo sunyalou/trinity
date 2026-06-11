@@ -630,6 +630,18 @@
         "overview"
       ],
       "description": "Agent-scoped execution analytics (#1107): triggered_by bucketing into user-facing buckets + Other fallback, terminal-based success rate, full-set avg vs sampled p95 correctness, NULL-skipping context avg, gap-filled timeline."
+    },
+    {
+      "file": "test_ops_clear_all.py",
+      "feature": "#1017",
+      "added": "2026-06-11",
+      "categories": [
+        "backend",
+        "api",
+        "operator-queue",
+        "notifications"
+      ],
+      "description": "Bulk Clear All endpoints for the Operations page (#1017): bulk-cancel (ids-scoped), clear-resolved (terminal-row delete, responded kept), notifications dismiss-all; respond-race conflict marker; tri-state accessible-set scoping."
     }
   ]
 }

@@ -1,10 +1,15 @@
 version: 2
+# All version-update PRs target `dev` per the SDLC (feature → dev → main).
+# Note: Dependabot reads this file from the DEFAULT branch (main), so changes
+# here only take effect after a release cut. Security updates ignore
+# target-branch and still go to main by GitHub design.
 updates:
   # GitHub Actions: catch new SHAs for already-pinned third-party actions and
   # flag CVEs in first-party actions. Weekly cadence — security PRs from
   # Dependabot are auto-grouped by ecosystem so review burden stays low.
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
     labels:
@@ -14,6 +19,7 @@ updates:
   # Frontend (Vite + Vue): catches Vue / Vite / Chart.js / DOMPurify CVEs.
   - package-ecosystem: npm
     directory: /src/frontend
+    target-branch: dev
     schedule:
       interval: weekly
     labels:
@@ -30,6 +36,7 @@ updates:
   # this entry continues that cadence.
   - package-ecosystem: pip
     directory: /src/backend
+    target-branch: dev
     schedule:
       interval: weekly
     labels:
@@ -44,6 +51,7 @@ updates:
   # MCP server (TypeScript).
   - package-ecosystem: npm
     directory: /src/mcp-server
+    target-branch: dev
     schedule:
       interval: weekly
     labels:
@@ -65,6 +73,7 @@ updates:
       - /docker/backend
       - /docker/frontend
       - /docker/scheduler
+    target-branch: dev
     schedule:
       interval: weekly
     labels:

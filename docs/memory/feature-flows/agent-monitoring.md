@@ -279,57 +279,51 @@ class MonitoringConfig(BaseModel):
 
 ---
 
-## Frontend Layer
+## Frontend Layer (#1109: Health tab of Operations)
 
-### Route Definition (`src/frontend/src/router/index.js:36-40`)
+### Route (`src/frontend/src/router/index.js:39-41`)
+
+The standalone page is gone — `/monitoring` is now a query-preserving redirect:
 
 ```javascript
 {
   path: '/monitoring',
-  name: 'Monitoring',
-  component: () => import('../views/Monitoring.vue'),
-  meta: { requiresAuth: true, requiresAdmin: true }
+  redirect: { path: '/operations', query: { tab: 'health' } }
 }
 ```
 
-### Navigation (`src/frontend/src/components/NavBar.vue:25-32`)
+### Navigation (`src/frontend/src/components/NavBar.vue`)
 
-Admin-only visibility via `v-if="isAdmin"`:
+No dedicated Health link. The single **Operations** link (with the unified
+operator-queue + notifications badge) leads to `/operations`; the Health tab
+button inside `Operations.vue` is admin-gated (`authStore.role === 'admin'`),
+and non-admin `?tab=health` deep links are coerced to the default tab.
 
-```html
-<router-link v-if="isAdmin" to="/monitoring" ...>
-  Health
-</router-link>
-```
+### Monitoring Panel (`src/frontend/src/components/MonitoringPanel.vue`, 406 lines)
 
-### Monitoring Page (`src/frontend/src/views/Monitoring.vue`)
+Tab-embeddable content extracted from the deleted `views/Monitoring.vue`
+(#1109); rendered by `Operations.vue` via `v-if="activeTab === 'health' && isAdmin"`
+so its 30s auto-refresh polling tears down on tab-leave.
 
-**Template Structure** (lines 1-227):
-- Header with monitoring status badge and controls
+**Template Structure**:
+- Header strip with monitoring status badge ("Monitoring Active/Disabled"), auto-refresh toggle + countdown, Refresh and "Check All" buttons
 - Summary cards (total, healthy, degraded, unhealthy, critical counts)
 - Active alerts section (collapsible, shows recent alerts)
 - Agent health grid with status indicators and issues
 
-**Key State Variables** (lines 253-259):
-```javascript
-const monitoringStore = useMonitoringStore()
-const isAdmin = ref(false)
-const statusFilter = ref('')
-const triggeringCheck = ref(false)
-const checkingAgent = ref(null)
-const autoRefreshEnabled = ref(true)
-const refreshCountdown = ref(30)
-```
+**Key State Variables** (same shape as the old view): `monitoringStore`,
+`statusFilter`, `triggeringCheck`, `checkingAgent`, `autoRefreshEnabled`,
+`refreshCountdown`.
 
 **Key Methods**:
 
-| Method | Line | Description |
-|--------|------|-------------|
-| `refreshAll()` | 294-300 | Fetch status + alerts |
-| `triggerFleetCheck()` | 336-347 | POST to /check-all |
-| `triggerAgentCheck(name)` | 349-358 | POST to /agents/{name}/check |
-| `viewAgentDetail(name)` | 360-362 | Navigate to agent page |
-| `startAutoRefresh()` | 302-316 | 30s polling interval |
+| Method | Description |
+|--------|-------------|
+| `refreshAll()` | Fetch status + alerts |
+| `triggerFleetCheck()` | POST to /check-all |
+| `triggerAgentCheck(name)` | POST to /agents/{name}/check |
+| `viewAgentDetail(name)` | Navigate to agent page |
+| `startAutoRefresh()` | 30s polling interval (torn down on unmount/tab-leave) |
 
 ### Monitoring Store (`src/frontend/src/stores/monitoring.js`)
 

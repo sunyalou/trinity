@@ -144,8 +144,13 @@ export function useWebSocket() {
         break
       default:
         // Handle events keyed by 'type' instead of 'event'
-        if (data.type === 'operator_queue_new' || data.type === 'operator_queue_responded' || data.type === 'operator_queue_acknowledged') {
+        if (data.type === 'operator_queue_new' || data.type === 'operator_queue_responded' || data.type === 'operator_queue_acknowledged' || data.type === 'operator_queue_cleared') {
           operatorQueueStore.handleWebSocketEvent(data)
+        }
+        // #1017: bulk dismiss by an operator — refresh badge + loaded list
+        if (data.type === 'notifications_cleared') {
+          notificationsStore.fetchPendingCount()
+          notificationsStore.fetchNotifications()
         }
         if (data.type === 'agent_activity') {
           executionsStore.handleWebSocketEvent(data)

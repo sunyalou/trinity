@@ -193,8 +193,8 @@ async def get_model():
         return {
             "model": agent_state.current_model,
             "runtime": runtime,
-            "available_models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
-            "note": "Gemini models. 2.5-pro has 1M context window."
+            "available_models": ["gemini-3-pro", "gemini-3-flash", "gemini-2.5-pro", "gemini-2.5-flash"],
+            "note": "Gemini models. 3-pro is the most capable; 3-flash is the fast default."
         }
     else:
         return {
@@ -214,7 +214,7 @@ async def set_model(request: ModelRequest):
 
     # Validate based on runtime
     if runtime == "gemini-cli" or runtime == "gemini":
-        valid_models = ["gemini-3-pro", "gemini-3-flash", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
+        valid_models = ["gemini-3-pro", "gemini-3-flash", "gemini-2.5-pro", "gemini-2.5-flash"]
         if request.model in valid_models or request.model.startswith("gemini-"):
             agent_state.current_model = request.model
             logger.info(f"Model changed to: {request.model}")
@@ -226,7 +226,7 @@ async def set_model(request: ModelRequest):
         else:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid Gemini model: {request.model}. Use: gemini-2.5-pro, gemini-2.5-flash, etc."
+                detail=f"Invalid Gemini model: {request.model}. Use: gemini-3-pro, gemini-3-flash, gemini-2.5-pro, gemini-2.5-flash."
             )
     else:
         # Claude Code validation

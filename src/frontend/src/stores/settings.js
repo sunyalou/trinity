@@ -43,6 +43,26 @@ export const useSettingsStore = defineStore('settings', {
     },
 
     /**
+     * #1129: Fleet-wide default access policy for new agents.
+     * Returns { require_email, require_email_default, note }. Admin-only.
+     */
+    async getAgentDefaultAccessPolicy() {
+      const response = await axios.get('/api/settings/agent-defaults/access-policy')
+      return response.data
+    },
+
+    /**
+     * #1129: Set the fleet-wide default `require_email` for new agents.
+     * Applies to newly created agents only. Admin-only.
+     */
+    async setAgentDefaultRequireEmail(requireEmail) {
+      const response = await axios.put('/api/settings/agent-defaults/access-policy', {
+        require_email: requireEmail,
+      })
+      return response.data
+    },
+
+    /**
      * Get a specific setting by key.
      */
     async getSetting(key) {

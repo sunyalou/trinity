@@ -30,7 +30,7 @@ from services.template_service import (
     generate_credential_files,
 )
 from services import git_service
-from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities, get_agent_quota_for_role, get_agent_default_resources
+from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities, get_agent_quota_for_role, get_agent_default_resources, get_agent_default_require_email
 from services.github_service import GitHubService, GitHubError
 from utils.helpers import sanitize_agent_name, utc_now_iso
 from .helpers import validate_base_image
@@ -735,7 +735,10 @@ async def create_agent_internal(
                 tmpfs=AGENT_TMPFS_MOUNT,
                 network='trinity-agent-network',
                 mem_limit=config.resources.get('memory') or _get_default_resource('memory'),
-                cpu_count=int(config.resources.get('cpu') or _get_default_resource('cpu'))
+                # #1126: nano_cpus (Linux CFS quota), NOT cpu_count — the latter
+                # is Windows-only in docker-py and left NanoCpus=0, so newly
+                # created agents never got a CPU limit on Linux.
+                nano_cpus=int(config.resources.get('cpu') or _get_default_resource('cpu')) * 1_000_000_000,
             )
 
             agent_status = get_agent_status_from_container(container)
@@ -754,7 +757,13 @@ async def create_agent_internal(
                     }
                 }))
 
-            db.register_agent_owner(config.name, current_user.username)
+            # #1129: seed require_email from the fleet-wide default
+            # (secure-by-default ON) at creation; owners can override per agent.
+            db.register_agent_owner(
+                config.name,
+                current_user.username,
+                require_email=get_agent_default_require_email(),
+            )
 
             # Persist auto-assigned subscription (#74)
             if auto_assigned_subscription_id:

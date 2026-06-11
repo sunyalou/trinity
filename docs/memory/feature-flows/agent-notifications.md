@@ -10,9 +10,11 @@ Enables agents to send structured notifications to the Trinity platform. Agents 
 
 ## Entry Points
 - **MCP Tool**: `send_notification` in `src/mcp-server/src/tools/notifications.ts:40-117`
+- **UI**: `src/frontend/src/views/Operations.vue:95-106` - "Clear All" button on the Operations page Notifications tab (#1017)
 - **API Endpoints**:
   - `POST /api/notifications` - Create notification (MCP clients)
   - `GET /api/notifications` - List with filters
+  - `POST /api/notifications/dismiss-all` - Bulk-dismiss all non-dismissed notifications (#1017)
   - `GET /api/notifications/{id}` - Get single notification
   - `POST /api/notifications/{id}/acknowledge` - Acknowledge
   - `POST /api/notifications/{id}/dismiss` - Dismiss
@@ -198,7 +200,7 @@ The correct agent name attribution involves three layers:
    )
    ```
 
-3. **Notification Router** (`src/backend/routers/notifications.py:106-109`):
+3. **Notification Router** (`src/backend/routers/notifications.py:114-117`):
    ```python
    # Get agent name from user context
    # For agent-scoped keys, current_user.agent_name is the agent sending the notification
@@ -224,11 +226,12 @@ class User(BaseModel):
 
 ### Router (`src/backend/routers/notifications.py`)
 
-**Module Setup** (lines 1-40):
-- Imports `get_current_user`, `AuthorizedAgent` dependencies
+**Module Setup** (lines 1-47):
+- Imports `get_current_user`, `AuthorizedAgent` dependencies, `get_accessible_agents` accessor, and `platform_audit_service`/`AuditEventType` (#1017)
+- `DismissAllRequest` body model defined in-router (lines 26-28)
 - Global variables for WebSocket managers (set during app startup)
 
-**WebSocket Manager Injection** (lines 30-39):
+**WebSocket Manager Injection** (lines 38-47):
 ```python
 _websocket_manager = None
 _filtered_websocket_manager = None
@@ -242,7 +245,7 @@ def set_filtered_websocket_manager(manager):
     _filtered_websocket_manager = manager
 ```
 
-**Broadcast Helper** (lines 42-63):
+**Broadcast Helper** (lines 50-70):
 ```python
 async def _broadcast_notification(notification: Notification):
     event = {
@@ -267,15 +270,18 @@ async def _broadcast_notification(notification: Notification):
 
 | Line | Endpoint | Method | Description |
 |------|----------|--------|-------------|
-| 69-118 | `/api/notifications` | POST | Create notification |
-| 121-163 | `/api/notifications` | GET | List with filters |
-| 166-177 | `/api/notifications/{id}` | GET | Get single |
-| 180-202 | `/api/notifications/{id}/acknowledge` | POST | Acknowledge |
-| 205-227 | `/api/notifications/{id}/dismiss` | POST | Dismiss |
-| 234-261 | `/api/agents/{name}/notifications` | GET | Agent-specific list |
-| 264-272 | `/api/agents/{name}/notifications/count` | GET | Pending count |
+| 77-124 | `/api/notifications` | POST | Create notification |
+| 127-181 | `/api/notifications` | GET | List with filters |
+| 184-231 | `/api/notifications/dismiss-all` | POST | Bulk-dismiss all non-dismissed (#1017) |
+| 234-247 | `/api/notifications/{id}` | GET | Get single |
+| 250-279 | `/api/notifications/{id}/acknowledge` | POST | Acknowledge |
+| 282-311 | `/api/notifications/{id}/dismiss` | POST | Dismiss |
+| 318-345 | `/api/agents/{name}/notifications` | GET | Agent-specific list |
+| 348-356 | `/api/agents/{name}/notifications/count` | GET | Pending count |
 
-**Create Notification** (`POST /api/notifications`, lines 69-116):
+**Route registration order**: `/notifications/dismiss-all` is registered BEFORE the `/notifications/{notification_id}` routes so the literal path segment `dismiss-all` is never captured as a notification ID (Architectural Invariant #4).
+
+**Create Notification** (`POST /api/notifications`, lines 77-124):
 ```python
 @router.post("/notifications", response_model=Notification, status_code=201)
 async def create_notification(
@@ -296,29 +302,51 @@ async def create_notification(
     return notification
 ```
 
-**List Notifications** (`GET /api/notifications`, lines 121-163):
+**List Notifications** (`GET /api/notifications`, lines 127-181):
 - Query params: `agent_name`, `status`, `priority` (comma-separated), `limit` (1-500, default 50)
+- Filters results to agents from `get_accessible_agents(current_user)`; explicit `agent_name` outside that set → 403
 - Returns `NotificationList` with count and notifications array
 
-**Agent Notifications** (`GET /api/agents/{name}/notifications`, lines 234-261):
+**Dismiss All** (`POST /api/notifications/dismiss-all`, lines 184-231, #1017):
+- Body: `DismissAllRequest` `{agent_name?: string}` (model defined in the router at lines 26-28)
+- Dismisses ALL non-dismissed (pending + acknowledged) notifications in one SQL UPDATE — sets `status='dismissed'`, `acknowledged_at`, `acknowledged_by`
+- Scoped via the **same** `get_accessible_agents(current_user)` accessor the GET list endpoint uses, so "what I see" == "what I can clear"
+- Explicit `agent_name` outside the accessible set → 403; empty accessible set → no-op `{"dismissed": 0}` (tri-state contract enforced in the DB layer)
+- Ignores priority/type filters by design (a "Clear All" button clears the whole feed, including rows beyond the loaded page)
+- When `dismissed > 0`: audit-logged via `platform_audit_service.log(event_type=AuditEventType.NOTIFICATION, event_action="dismiss_all", ...)` with `{dismissed, agent_name}` details, and broadcasts ONE `notifications_cleared` WebSocket event (main manager only)
+- Response: `{"dismissed": <count>}` (200)
+
+**Agent Notifications** (`GET /api/agents/{name}/notifications`, lines 318-345):
 - Uses `AuthorizedAgent` dependency (owner, shared, or admin required)
 - Query params: `status`, `limit` (1-500, default 50)
 
 ### CRUD Operations (`src/backend/db/notifications.py`)
 
-**Class: NotificationOperations** (lines 17-315)
+**Class: NotificationOperations** (lines 18-366)
 
 | Line | Method | Description |
 |------|--------|-------------|
-| 20-75 | `create_notification()` | Insert new notification, return model |
-| 77-101 | `get_notification()` | Get by ID, parse metadata JSON |
-| 103-152 | `list_notifications()` | Query with filters, ORDER BY created_at DESC |
-| 154-175 | `list_agent_notifications()` | Delegate to list_notifications |
-| 177-214 | `acknowledge_notification()` | Update status to 'acknowledged' |
-| 216-247 | `dismiss_notification()` | Update status to 'dismissed' |
-| 249-266 | `delete_agent_notifications()` | Delete all for agent |
-| 268-291 | `count_pending_notifications()` | Count pending with optional agent filter |
-| 293-315 | `_row_to_notification()` | Convert SQLite row to Pydantic model |
+| 21-76 | `create_notification()` | Insert new notification, return model |
+| 78-102 | `get_notification()` | Get by ID, parse metadata JSON |
+| 104-159 | `list_notifications()` | Query with filters, ORDER BY created_at DESC |
+| 161-182 | `list_agent_notifications()` | Delegate to list_notifications |
+| 184-221 | `acknowledge_notification()` | Update status to 'acknowledged' |
+| 223-254 | `dismiss_notification()` | Update status to 'dismissed' |
+| 256-298 | `dismiss_all()` | Bulk UPDATE of pending+acknowledged rows (#1017) |
+| 300-317 | `delete_agent_notifications()` | Delete all for agent |
+| 319-342 | `count_pending_notifications()` | Count pending with optional agent filter |
+| 344-366 | `_row_to_notification()` | Convert SQLite row to Pydantic model |
+
+**dismiss_all tri-state accessible-set contract** (`db/notifications.py:256-298`, #1017):
+```python
+def dismiss_all(self, dismissed_by, agent_name=None, accessible_agent_names=None) -> int:
+    # accessible_agent_names: None = no filter; empty set = no-op (return 0);
+    # non-empty = "AND agent_name IN (?,...)" SQL filter
+```
+- Targets `status IN ('pending', 'acknowledged')` — the visible feed shows both, so "Clear All" must clear both
+- Optional `agent_name` adds a further `AND agent_name = ?` narrowing
+- Returns `cursor.rowcount` (number of rows dismissed)
+- Facade delegation: `database.py:1435-1439` `dismiss_all_notifications()`
 
 **ID Generation** (line 35):
 ```python
@@ -393,7 +421,7 @@ app.include_router(notifications_router)  # Agent Notifications (NOTIF-001)
 }
 ```
 
-**Filtered Broadcast** (`routers/notifications.py:60-62`):
+**Filtered Broadcast** (`routers/notifications.py:68-70`):
 ```python
 # Broadcast to filtered WebSocket (Trinity Connect clients)
 if _filtered_websocket_manager:
@@ -401,6 +429,34 @@ if _filtered_websocket_manager:
 ```
 
 The `FilteredWebSocketManager` (in `main.py`) extracts `agent_name` from the event and only forwards to clients who have access to that agent.
+
+### Event Type: notifications_cleared (#1017)
+
+Emitted once per successful dismiss-all (only when `dismissed > 0`), main WebSocket only (`routers/notifications.py:221-229`):
+```json
+{
+  "type": "notifications_cleared",
+  "data": {
+    "count": 12,
+    "agent_name": null,
+    "cleared_by": "user@example.com"
+  }
+}
+```
+
+Frontend handler (`src/frontend/src/utils/websocket.js:151-154`): routes `notifications_cleared` → `notificationsStore.fetchPendingCount()` + `fetchNotifications()` so every connected client's badge and loaded list refresh, not just the operator who clicked.
+
+---
+
+## Frontend Layer (#1017 — Clear All)
+
+### State Management
+- `src/frontend/src/stores/notifications.js:187-200` - `dismissAll(agentName = null)` action: `api.post('/api/notifications/dismiss-all', {agent_name: agentName})` via the shared `api.js` client (Invariant #7), then refetches `fetchNotifications()` + `fetchPendingCount()`. Unlike the per-id `bulkDismiss()` helper below it (one request per loaded row), one server-side call clears rows beyond the loaded page.
+
+### Components
+- `src/frontend/src/views/Operations.vue:95-106` - "Clear All" button on the Operations page tab strip (shared across Needs Response / Notifications / Resolved tabs; shown when `isOperatorTab && clearableCount > 0`, `data-testid="ops-clear-all"`)
+- `Operations.vue:180-190` - `ConfirmDialog` (danger variant). The Notifications-tab message warns the action ignores the current type/priority filters and clears beyond the loaded page: "This dismisses every non-dismissed notification from your accessible agents — including any not shown by the current filters — for all operators of these agents." (lines 289-298)
+- `Operations.vue:300-318` - `confirmClearAll()` dispatches per tab; the `notifications` branch calls `notificationsStore.dismissAll()` (line 308)
 
 ---
 
@@ -415,6 +471,8 @@ The `FilteredWebSocketManager` (in `main.py`) extracts `agent_name` from the eve
 | Notification not found | 404 | "Notification not found" |
 | Invalid status filter | 400 | "Invalid status. Must be: pending, acknowledged, or dismissed" |
 | Invalid priority filter | 400 | "Invalid priorities: {invalid_list}" |
+| dismiss-all with `agent_name` outside accessible set | 403 | "Access denied to agent" |
+| dismiss-all with zero accessible agents | 200 | `{"dismissed": 0}` (no-op, not an error) |
 | No MCP API key | Error | "MCP API key authentication required but no API key found in request context" (MCP tool) |
 
 ---
@@ -426,6 +484,7 @@ The `FilteredWebSocketManager` (in `main.py`) extracts `agent_name` from the eve
 3. **Authorization on Agent Endpoints**: `GET /api/agents/{name}/notifications` uses `AuthorizedAgent` dependency (owner, shared, or admin)
 4. **WebSocket Filtering**: Filtered WebSocket only sends notifications for agents the client has access to
 5. **Input Validation**: Title length, enum values, JSON metadata all validated server-side
+6. **Dismiss-All Scoping** (#1017): Uses the same `get_accessible_agents()` accessor as the GET list endpoint, so the clearable set can never exceed the visible set. The DB layer enforces a tri-state contract (`None` = no filter, empty set = no-op, non-empty = SQL IN) so an empty accessible set never falls through to "dismiss everything". Successful bulk dismissals are audit-logged (`AuditEventType.NOTIFICATION` / `dismiss_all`).
 
 ---
 
@@ -515,6 +574,27 @@ curl -X POST -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/notifi
 - [ ] Acknowledge changes status to "acknowledged"
 - [ ] Dismiss changes status to "dismissed"
 
+### 4b. Test Dismiss All (#1017)
+**Action**:
+```bash
+# Dismiss everything (all accessible agents)
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{}' "http://localhost:8000/api/notifications/dismiss-all"
+
+# Dismiss for one agent only
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"agent_name": "my-agent"}' "http://localhost:8000/api/notifications/dismiss-all"
+```
+
+**Verify**:
+- [ ] Returns `{"dismissed": N}` where N = pending + acknowledged rows for accessible agents
+- [ ] Second identical call returns `{"dismissed": 0}` (idempotent)
+- [ ] `agent_name` for an inaccessible agent returns 403
+- [ ] `notifications_cleared` WebSocket event observed on `/ws` (only when N > 0)
+- [ ] Audit row: `sqlite3 ~/trinity-data/trinity.db "SELECT event_action, details FROM audit_log WHERE event_action='dismiss_all' ORDER BY id DESC LIMIT 1"`
+
+**Automated tests**: `tests/test_ops_clear_all.py` — `TestDismissAllNotifications` (happy path + idempotency exercised at the DB layer because the `get_accessible_agents` accessor is Docker-backed; auth-required, foreign-agent 403, and zero-agent no-op covered at the API level).
+
 ### 5. Test Agent-Specific Endpoints
 **Action**:
 ```bash
@@ -599,5 +679,6 @@ sqlite3 ~/trinity-data/trinity.db "DELETE FROM agent_notifications WHERE title L
 
 | Date | Changes |
 |------|---------|
+| 2026-06-11 | **#1017 Dismiss All**: New `POST /api/notifications/dismiss-all` (registered before `/{notification_id}` routes) bulk-dismisses pending + acknowledged notifications scoped to the caller's accessible agents in one SQL UPDATE. DB layer `db/notifications.py:dismiss_all()` with tri-state accessible-set contract; facade `database.py:dismiss_all_notifications`. Audit event `NOTIFICATION/dismiss_all` + WS event `notifications_cleared`. Frontend: `stores/notifications.js:dismissAll()`, `utils/websocket.js` refresh handler, Clear All button + ConfirmDialog on Operations → Notifications tab. Tests: `tests/test_ops_clear_all.py::TestDismissAllNotifications`. |
 | 2026-02-20 | **NOTIF-003 Bug Fix**: Fixed agent attribution - notifications now correctly show agent name instead of API key owner. Root cause: `agent_name` from agent-scoped MCP keys was not being passed to `User` model in `get_current_user()`. Fix: Added `agent_name` field to User model (models.py:62-63), updated `get_current_user()` to extract from mcp_key_info (dependencies.py:147-154), simplified notification router logic (notifications.py:106-109). |
 | 2026-02-20 | Initial implementation (Phase 1: Backend + MCP Tool) |

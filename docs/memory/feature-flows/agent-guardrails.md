@@ -37,14 +37,14 @@ platform's baseline protections.
 
 ## Entry Points
 
-- **UI (Agent Detail)**: owner-only **Guardrails** tab — `GuardrailsPanel.vue`, wired in `AgentDetail.vue:193-195` (tab gated on `agent.can_share` at `637-639`). Exposes `max_turns_chat` / `max_turns_task` only (#967 / #992).
+- **UI (Agent Detail)**: owner-only **Settings** tab (renamed from "Guardrails", #1108/#1122) — `GuardrailsPanel.vue` rendered unchanged as **section #1** inside `components/settings/SettingsPanel.vue`, wired in `AgentDetail.vue:187` (tab pushed at `647`, gated on `agent.can_share`). Old `?tab=guardrails` deep links resolve via `TAB_ALIASES` (`guardrails → settings`). Exposes `max_turns_chat` / `max_turns_task` only (#967 / #992).
 - **API (read)**: `GET /api/agents/{name}/guardrails` — any authenticated user; 404 if no container.
 - **API (write)**: `PUT /api/agents/{name}/guardrails` — **owner-only**; empty body clears overrides. Requires agent restart to apply.
 - **Agent creation**: overrides serialized into the `AGENT_GUARDRAILS` env var (`crud.py`).
 - **Agent restart**: env var re-serialized from DB (`lifecycle.py`); runtime config regenerated at boot (`startup.sh` → `write-runtime-config.py`).
 - **Tool-call time**: Claude Code `PreToolUse` / `PostToolUse` hooks fire on every `Bash` / file-write tool call.
 
-> **UI scope is narrower than the API.** The Guardrails tab only edits the two turn caps; `execution_timeout_sec` and the `extra_bash_deny` / `extra_path_deny` / `disallowed_tools` lists remain API-only and are *preserved* by the panel's whole-config PUT (see Frontend Layer).
+> **UI scope is narrower than the API.** The Settings tab's Guardrails section only edits the two turn caps; `execution_timeout_sec` and the `extra_bash_deny` / `extra_path_deny` / `disallowed_tools` lists remain API-only and are *preserved* by the panel's whole-config PUT (see Frontend Layer).
 
 ---
 
@@ -52,7 +52,7 @@ platform's baseline protections.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ OWNER:  Guardrails tab (GuardrailsPanel.vue) → stores/agents.js       │
+│ OWNER:  Settings tab (SettingsPanel → GuardrailsPanel) → stores/agents.js │
 │         setGuardrails() → PUT /api/agents/{name}/guardrails  {...}    │
 └───────────────────────────────┬───────────────────────────────────────┘
                                 ▼
@@ -147,11 +147,24 @@ Delegated from the facade in `database.py:538-545`. Mixin composes into `AgentOp
 
 ---
 
-## Frontend Layer (#967 / #992)
+## Frontend Layer (#967 / #992, tab renamed #1108/#1122)
 
-Owner-only **Guardrails** tab in Agent Detail. Deliberately exposes only the
-two turn caps — the highest-value, lowest-footgun knobs — while leaving regex
-deny-lists, timeout, and `disallowed_tools` to the API.
+Owner-only **Settings** tab in Agent Detail (renamed from "Guardrails",
+#1108/#1122). The tab is a sectioned config home — `GuardrailsPanel.vue`
+renders unchanged as section #1 inside `components/settings/SettingsPanel.vue`;
+future per-agent settings land as additive `<section>` cards, not new
+top-level tabs. The panel deliberately exposes only the two turn caps — the
+highest-value, lowest-footgun knobs — while leaving regex deny-lists, timeout,
+and `disallowed_tools` to the API.
+
+### `components/settings/SettingsPanel.vue` (37 lines, #1122)
+
+Thin sectioned container: a `space-y-4` stack of `<section>` cards (no outer
+gutter — the child panel's own `p-6` is the card padding, avoiding the doubled
+padding that forced a scroller in the first cut). Section #1 wraps
+`<GuardrailsPanel :agent-name :notify />`. Growth path (endpoints already
+exist): Behavior/Execution, Resources, Reliability (circuit breaker),
+Compute/Auth, Git sync.
 
 ### `components/GuardrailsPanel.vue` (171 lines)
 
@@ -174,9 +187,10 @@ Goes through the single Axios client with the auth interceptor (Invariant #7); d
 
 | Lines | Wiring |
 |-------|--------|
-| 272 | `import GuardrailsPanel` |
-| 637-639 | Owner-gated tab pushed only when `agent.can_share` |
-| 193-195 | Tab content: `<GuardrailsPanel :agent-name :notify="showNotification" />` |
+| 267 | `import SettingsPanel from '../components/settings/SettingsPanel.vue'` |
+| 309-315 | `DEEP_LINK_TABS` includes `'settings'`; `TAB_ALIASES = { guardrails: 'settings' }` applied by `resolveDeepLinkTab()` so old `?tab=guardrails` deep links keep working |
+| 647 | Owner-gated tab `{ id: 'settings', label: 'Settings' }` pushed only when `agent.can_share` |
+| 187 | Tab content: `<SettingsPanel :agent-name :notify="showNotification" />` |
 
 The `can_share` gate matches the backend's owner-only `PUT` check, so a non-owner never sees the tab. Restart-required toast follows the same pattern as Read-Only and Resource-limit panels.
 
@@ -294,8 +308,9 @@ See [read-only-mode.md](read-only-mode.md).
 | Layer | File | Lines |
 |-------|------|-------|
 | Frontend panel | `src/frontend/src/components/GuardrailsPanel.vue` | 1-171 |
+| Frontend tab container | `src/frontend/src/components/settings/SettingsPanel.vue` | 1-37 |
 | Frontend store | `src/frontend/src/stores/agents.js` | 769-784 |
-| Frontend tab | `src/frontend/src/views/AgentDetail.vue` | 193-195, 272, 637-639 |
+| Frontend tab | `src/frontend/src/views/AgentDetail.vue` | 187, 267, 309-315, 647 |
 | Router | `src/backend/routers/agent_config.py` | 550-656 |
 | DB | `src/backend/db/agent_settings/security.py` | 120-151 |
 | DB facade | `src/backend/database.py` | 538-545 |
