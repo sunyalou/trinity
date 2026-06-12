@@ -68,6 +68,7 @@ class TaskExecutionErrorCode(str, Enum):
     AGENT_ERROR = "agent_error"     # Agent returned non-zero exit code
     NETWORK = "network"             # HTTP/connection error to agent container
     CIRCUIT_OPEN = "circuit_open"   # Circuit breaker open — agent known unhealthy (#767)
+    RECONCILED = "reconciled"       # Terminal write lost the CAS; row reflects another writer's terminal (#671/H4)
 
 
 @dataclass
@@ -892,8 +893,14 @@ class TaskExecutionService:
                 total_cost = retry_cost
 
             # ---- 6. Update execution record ------------------------------
+            # #671/H4: consume the CAS winner. A SUCCESS write loses the CAS
+            # ONLY to a CANCELLED row (user/operator cancel, watchdog). On a
+            # lost CAS the agent's late "done" must NOT be reported as a
+            # billable success, must NOT complete the activity as COMPLETED,
+            # and must NOT reset the dispatch breaker — reconcile to the
+            # persisted terminal instead (never bless a cancelled turn's work).
             if execution_id:
-                db.update_execution_status(
+                won = db.update_execution_status(
                     execution_id=execution_id,
                     status=TaskExecutionStatus.SUCCESS,
                     response=sanitized_resp,
@@ -906,6 +913,29 @@ class TaskExecutionService:
                     compact_metadata=compact_metadata_json,
                     retry_count=retry_count or None,
                 )
+                if not won:
+                    reconciled = db.get_execution(execution_id)
+                    reconciled_status = (
+                        reconciled.status if reconciled else TaskExecutionStatus.FAILED
+                    )
+                    logger.warning(
+                        "[TaskExecService] SUCCESS write lost CAS for %s — row is "
+                        "%s; reconciling, not reporting success",
+                        execution_id,
+                        reconciled_status,
+                    )
+                    if activity_id:
+                        await activity_service.complete_activity(
+                            activity_id=activity_id,
+                            status=ActivityState.FAILED,
+                            error=f"superseded by {reconciled_status}",
+                        )
+                    return TaskExecutionResult(
+                        execution_id=execution_id,
+                        status=reconciled_status,
+                        response="",
+                        error_code=TaskExecutionErrorCode.RECONCILED,
+                    )
 
             # ---- 7. Complete activity ------------------------------------
             if activity_id:
