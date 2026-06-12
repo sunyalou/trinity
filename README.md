@@ -11,7 +11,7 @@
   <a href="#documentation"><strong>Docs</strong></a> &middot;
   <a href="#community--support"><strong>Community</strong></a> &middot;
   <a href="https://www.ability.ai/trinity"><strong>Website</strong></a> &middot;
-  <a href="https://www.ability.ai/workshopsgt"><strong>Free workshops</strong></a>
+  <a href="https://www.ability.ai/workshops"><strong>Free workshops</strong></a>
 </p>
 
 <p align="center">
@@ -34,6 +34,8 @@ Trinity is the production runtime for your AI agents — governed, auditable, on
 Each agent runs in its own isolated Docker container with real-time observability, fleet-wide scheduling, agent-to-agent delegation, and a tamper-evident audit trail. Self-host it, or run it on any cloud you control.
 
 > Source-available · **Polyform Noncommercial** — free for non-commercial use; commercial use needs a commercial license and deploys anywhere you run it · Independently pentested — **UnderDefense Grade A** · We run Trinity in production ourselves — and so do our customers.
+
+> 🤖 **AI agent reading this repo?** Start at [AGENTS.md](AGENTS.md) — a task router with exact commands, key facts, and verification steps. Detailed docs index: [docs/user-docs/README.md](docs/user-docs/README.md).
 
 ## Why Trinity?
 
@@ -67,19 +69,30 @@ Each agent runs in its own isolated Docker container with real-time observabilit
 
 A short teaser of the live interface — the full, zoomable detail is in [the screenshots below](#your-whole-fleet-in-one-console).
 
+**Watch more:**
+
+- [Trinity Demo](https://youtu.be/ivljtZqsxeo) — full platform walkthrough
+- [From Zero to Deployed AI Agent](https://youtu.be/-TSZyekDS6o) — your first Trinity agent in 30 minutes
+- [Plugins + Trinity: Build and Deploy Agents in Cursor](https://youtu.be/amqiysdlEWY) — the plugin workflow end-to-end
+- [Loops Engineering with Trinity](https://youtu.be/q3YvFYtuhec) — bounded autonomous work loops in practice
+- [The Multi-Agent Platform I Run My Company On](https://youtu.be/8j6q-kABRqc) — live fleet tour: delegation, memory, observability
+- [Autonomous Cornelius on Trinity](https://youtu.be/QUZ5ZgB5f6E) — a real second-brain agent running autonomously ([Cornelius on GitHub](https://github.com/Abilityai/cornelius))
+
+More recordings — agent dev pipelines, GitHub-backed agents, an ops agent that deploys other agents — in the [workshop archive](https://www.ability.ai/workshops). Live and free, every Thursday.
+
 ## Up and running in minutes, not months
 
 | | |
 |---|---|
 | **01 · Deploy an instance** | Self-host with one command, or run a managed instance on any cloud you control. |
-| **02 · Connect your agents** | Point Claude Code at it over MCP — shared state, identity, and memory. |
+| **02 · Connect Claude Code** | Install the [abilities plugins](https://github.com/abilityai/abilities) — scaffold, connect, and deploy agents over MCP. |
 | **03 · Run in production** | Scheduled, multi-user, audited — inside your own perimeter. |
 
 ---
 
 ## Quick Start
 
-Two paths. Pick the one that fits: **stand up an instance** (Phase A), then **deploy agents to it** with the CLI (Phase B).
+Two phases: **stand up an instance** (Phase A), then **build and deploy agents to it** from Claude Code (Phase B).
 
 ### Phase A — Stand up a Trinity instance
 
@@ -132,60 +145,69 @@ cp .env.example .env
 
 > **Don't want to self-host?** Trinity also runs as a managed instance on any cloud you control. [Talk to an engineer →](mailto:hello@ability.ai) — an engineer reads this, not a CRM. Reply in one business day, your time zone.
 
-### Phase B — Deploy an agent to it (CLI)
+> **Deploying to a remote server?** `/trinity:deploy-new-instance` from the [abilities marketplace](https://github.com/abilityai/abilities) provisions Trinity on any server you can SSH into — and scaffolds an ops agent to manage it.
 
-You need: the instance from Phase A (localhost or remote) and a local agent directory with `CLAUDE.md` and `template.yaml`.
+### Phase B — Build & deploy agents from Claude Code
+
+Most of the Trinity workflow lives in the **[abilities plugin marketplace](https://github.com/abilityai/abilities)** — Claude Code plugins covering the full agent lifecycle: scaffold, develop, deploy, iterate. You need the instance from Phase A (localhost or remote) and [Claude Code](https://claude.com/claude-code).
 
 ```bash
-# 1. Install the CLI
+# 1. Add the marketplace and install the core plugins (one-time)
+/plugin marketplace add abilityai/abilities
+/plugin install trinity@abilityai
+/plugin install create-agent@abilityai
+
+# 2. Connect to your Trinity instance (one-time)
+/trinity:connect
+#    → Instance URL + email verification code
+#    → MCP API key auto-provisioned, .mcp.json written
+
+# 3. Scaffold an agent — or start from any existing Claude Code agent directory
+/create-agent:create
+#    → Pick a wizard (prospector, chief-of-staff, recon, ghostwriter, kb-agent, …)
+#      or /create-agent:custom for a blank canvas
+
+# 4. Deploy it to Trinity
+/trinity:onboard
+#    → Compatibility check, creates the Trinity files, deploys + starts the container
+
+# 5. Operate and iterate
+/trinity:sync                                   # push/pull changes between local and remote
+/trinity:loop @my-agent "work the backlog" 10 times   # bounded server-side task loops
+/trinity:create-dashboard                       # scaffold a metrics dashboard for the agent
+```
+
+Once connected, Trinity's MCP tools (`list_agents`, `chat_with_agent`, schedules, executions, …) are available directly inside Claude Code — chat with remote agents, create cron schedules, and poll executions without leaving your editor.
+
+> The marketplace also covers what happens *between* scaffold and deploy — adding skills, memory systems, GitHub backlog workflows, and autonomous work loops. See [Abilities — The Agent Development Toolkit](#abilities--the-agent-development-toolkit).
+
+### Other ways to deploy
+
+**Trinity CLI** — terminal-first alternative to the plugin workflow:
+
+```bash
 pip install trinity-cli                     # or: brew install abilityai/tap/trinity-cli
 
-# Upgrade to latest version
-pip install --upgrade trinity-cli           # or: brew upgrade abilityai/tap/trinity-cli
-
-# 2. Connect to your Trinity instance
-trinity init
-#    → Enter instance URL (e.g. trinity.example.com — bare domains work)
-#    → Enter your email
-#    → Enter the 6-digit verification code from your inbox
-#    → Done — JWT + MCP key auto-provisioned
-
-# Or login as admin (password-based)
-trinity login --instance trinity.example.com --admin
-
-# 3. Deploy your agent
-cd my-agent/
-trinity deploy .
-#    → Packages directory, uploads, creates + starts the agent container
-#    → Writes .trinity-remote.yaml for future redeploys
-
-# 4. Use it
-trinity agents list                         # see your agents
+trinity init                                # connect: instance URL + email code → JWT + MCP key
+cd my-agent/ && trinity deploy .            # package, upload, create + start the agent
 trinity chat my-agent "Hello, what can you do?"
 trinity logs my-agent                       # container logs
 trinity health fleet                        # fleet overview
-
-# 5. Redeploy after changes
-trinity deploy .                            # updates the same agent
 ```
 
-> Managing multiple instances? The CLI supports named profiles (`trinity --profile staging.example.com agents list`). See the [CLI documentation](docs/CLI.md) for the full command reference and profile management.
+> Redeploys (`trinity deploy .` again), multi-instance profiles, and the full command reference: [CLI documentation](docs/CLI.md).
 
-### Other Ways to Use Trinity
+**Web UI** — open the Trinity web UI → **Create Agent** → pick a template (blank, built-in, or `github:org/repo@branch`) → configure credentials → start chatting.
 
-**Deploy from Claude Code (Plugin)** — already have a Claude Code agent? Deploy it with the Trinity plugin:
+**Multi-Agent System** — define a fleet in one YAML manifest and deploy via MCP (`mcp__trinity__deploy_system`) or the REST API. See [Multi-Agent Systems](#multi-agent-systems) below.
 
-```bash
-/plugin marketplace add abilityai/abilities
-/plugin install trinity@abilityai
-/trinity:onboard
-```
+### For AI Agents
 
-After onboarding you get management skills: `/trinity:sync` (push/pull code), `/trinity:remote` (execute tasks), `/trinity:schedules` (cron automation).
+If you're an agent working with this repository, **[AGENTS.md](AGENTS.md)** is your entry point — a task router with exact commands, key facts (ports, auth, endpoints), and a verification step for every path above. For detailed feature documentation, use the index at **[docs/user-docs/README.md](docs/user-docs/README.md)**.
 
-**Create via Web UI** — open the Trinity web UI → **Create Agent** → pick a template (blank, built-in, or `github:org/repo@branch`) → configure credentials → start chatting.
-
-**Deploy a Multi-Agent System** — define a fleet in one YAML manifest and deploy via MCP (`mcp__trinity__deploy_system`) or the REST API. See [Multi-Agent Systems](#multi-agent-systems) below.
+- **Deploy yourself to Trinity** → `/plugin install trinity@abilityai`, then `/trinity:connect` + `/trinity:onboard` — [AGENTS.md → Deploy an agent](AGENTS.md#deploy-an-agent-to-trinity)
+- **Operate an existing instance** → MCP tools at `http://<instance>:8080/mcp` — [MCP Integration](#mcp-integration)
+- **Contribute to Trinity itself** → [CLAUDE.md](CLAUDE.md) (auto-loaded by Claude Code) + [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ---
 
@@ -429,32 +451,43 @@ See the [Multi-Agent System Guide](docs/MULTI_AGENT_SYSTEM_GUIDE.md) for archite
 
 ## Abilities — The Agent Development Toolkit
 
-> **[abilityai/abilities](https://github.com/abilityai/abilities)** is the canonical development workflow for building and managing autonomous agents with Claude Code.
+> **[abilityai/abilities](https://github.com/abilityai/abilities)** is the canonical workflow for building and managing autonomous agents with Claude Code — most Trinity usage workflows are defined there as plugins.
 
-It provides 5 focused plugins covering the full agent lifecycle — from scaffolding and onboarding to deployment, scheduling, and ongoing operations:
+Abilities structures agent work as a four-step lifecycle:
+
+```
+1. Scaffold              2. Develop                    3. Deploy                 4. Iterate
+/create-agent:*          /agent-dev:create-playbook    /trinity:connect (once)   /trinity:sync
+                         /agent-dev:add-memory         /trinity:onboard          /trinity:loop
+                         /agent-dev:add-backlog        (or: trinity deploy .)    /create-agent:adjust
+```
+
+**Scaffold** — wizards like `/create-agent:prospector` or `/create-agent:custom` produce a fully configured, Trinity-compatible agent: `CLAUDE.md`, initial skills, `template.yaml`, a metrics dashboard, and an onboarding tracker.
+
+**Develop** — `/agent-dev:create-playbook` adds capabilities, `/agent-dev:add-memory` adds persistence (file index, knowledge graph, JSON state, or workspace tracking), `/agent-dev:add-backlog` wires a GitHub Issues workflow.
+
+**Deploy** — `/trinity:connect` once per instance, then `/trinity:onboard` per agent (or `trinity deploy .` via the CLI).
+
+**Iterate** — `/trinity:sync` pushes and pulls changes, `/trinity:loop` runs bounded server-side task loops, `/create-agent:adjust` audits the agent against best practices and applies improvements.
+
+The 5 plugins:
 
 | Plugin | What it does |
 |--------|-------------|
-| **create-agent** | 12 wizards for agent scaffolding (prospector, chief-of-staff, webmaster, recon, receptionist, ghostwriter, kb-agent, website, custom, clone, adjust) |
-| **agent-dev** | Add skills, memory systems, GitHub backlog workflow, autonomous work loops |
-| **trinity** | Deploy to Trinity platform: connect, onboard, sync |
-| **dev-methodology** | 14 skills for implementation, testing, security, and PR validation |
-| **utilities** | Ops: incident investigation, safe deployment, Docker ops, batch processing |
+| **create-agent** | Agent scaffolding: a `/create-agent:create` discovery entry point + 12 wizards (prospector, chief-of-staff, webmaster, recon, receptionist, ghostwriter, kb-agent, doctor, website, custom, clone, adjust) |
+| **agent-dev** | Extend existing agents: playbooks, memory systems, git-sync hooks, GitHub backlog workflow, grooming, sprints, agent-owned pipelines, autonomous work loops |
+| **trinity** | The platform workflow: `connect`, `onboard`, `sync`, `loop`, `create-dashboard`, `deploy-new-instance` |
+| **dev-methodology** | Documentation-driven development for any codebase: implementation, testing, security audits, PR validation, release, architecture/schema/config validation |
+| **utilities** | Ops & productivity: incident investigation, safe deployment, Docker ops, batch processing, conversation export |
 
 ```bash
-# Install the abilities marketplace (one-time)
+# Add the marketplace (one-time), then install the plugins you need
 /plugin marketplace add abilityai/abilities
-
-# Example: onboard an agent to Trinity
 /plugin install trinity@abilityai
-/trinity:onboard
-
-# Example: scaffold a new agent
 /plugin install create-agent@abilityai
-/create-agent:create
 ```
 
-See the **[abilities repository](https://github.com/abilityai/abilities)** for full plugin documentation and installation instructions.
+See the **[abilities repository](https://github.com/abilityai/abilities)** for full plugin documentation and skill references.
 
 ## MCP Integration
 
@@ -598,17 +631,10 @@ EMAIL_PROVIDER=console  # Use 'resend' or 'smtp' for production
 
 **Data residency** — EU + US · BYOC available · no training on customer data.
 
-## For AI Agents
-
-If you're an AI agent given this repository:
-
-1. **This repo is a Claude Code plugin** — Run `/plugin marketplace add abilityai/abilities` to install Trinity management skills
-2. **To deploy yourself to Trinity** — Run `/plugin install trinity@abilityai` then `/trinity:onboard`
-3. **To interact with a Trinity instance** — Use the MCP tools (list_agents, chat_with_agent, etc.) after configuring the MCP server connection
-4. **To contribute to Trinity itself** — Read `CLAUDE.md` for development guidelines
-
 ## Documentation
 
+- [**AGENTS.md**](AGENTS.md) — Entry point for AI agents: task router, key facts, verification steps
+- [**Abilities Plugin Marketplace**](https://github.com/abilityai/abilities) — Claude Code plugins defining the agent lifecycle workflows (scaffold, develop, deploy, iterate)
 - [**User Documentation**](docs/user-docs/README.md) — Complete guide for UI workflows, agent management, and API reference
 - [**User Scenarios**](docs/user-scenarios/README.md) — Step-by-step task walkthroughs (CLI, UI, API)
 - [CLI Reference](docs/CLI.md) — Full `trinity` command reference and multi-instance profiles
@@ -685,8 +711,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 - **Ask Trinity**: [docs.ability.ai](https://docs.ability.ai) — full documentation with a built-in agent you can chat with for instant answers
 - **GitHub Issues**: [Report bugs and request features](https://github.com/abilityai/trinity/issues)
 - **GitHub Discussions**: [Ask questions and share ideas](https://github.com/abilityai/trinity/discussions)
-- **Demo Video**: [Watch Trinity in action](https://youtu.be/SWpNphnuPpQ)
-- **Free Workshops**: [Learn to build AI agents on Trinity](https://www.ability.ai/workshopsgt)
+- **Videos**: [Trinity Demo](https://youtu.be/ivljtZqsxeo) · [Loops Engineering](https://youtu.be/q3YvFYtuhec) · [Autonomous Cornelius](https://youtu.be/QUZ5ZgB5f6E)
+- **Free Workshops**: [Live every Thursday + full recording archive](https://www.ability.ai/workshops)
 - **Security Issues**: See [SECURITY.md](SECURITY.md) for reporting vulnerabilities
 - **Commercial inquiries**: [hello@ability.ai](mailto:hello@ability.ai)
 
