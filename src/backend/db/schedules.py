@@ -14,7 +14,7 @@ from typing import Optional, List, Dict
 
 import pytz
 from croniter import croniter
-from sqlalchemy import select, insert, update, delete, and_, or_, func, text
+from sqlalchemy import select, insert, update, delete, and_, or_, func, text, case
 from sqlalchemy.exc import IntegrityError
 
 from .engine import get_engine
@@ -1841,68 +1841,60 @@ class ScheduleOperations:
         cap = _PERCENTILE_ROWSET_CAP
         FAILED_STATES = (TaskExecutionStatus.FAILED, "error")
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        # #300 rebase: ported to SQLAlchemy Core (this #852 analytics method
+        # landed on dev after the Step-C bulk conversion). substr/AVG/CASE/
+        # COUNT are dialect-agnostic; the p95 is computed in Python below.
+        day_col = func.substr(schedule_executions.c.started_at, 1, 10).label("day")
+        base_where = and_(
+            schedule_executions.c.agent_name == agent_name,
+            schedule_executions.c.started_at > cutoff,
+        )
+        dur_avg_expr = func.avg(
+            case((schedule_executions.c.status == "success", schedule_executions.c.duration_ms))
+        ).label("dur_avg")
+        ctx_avg_expr = func.avg(schedule_executions.c.context_used).label("ctx_avg")
 
-            # Q1: counts + per-day type stacks (full set).
-            cursor.execute(
-                """
-                SELECT substr(started_at, 1, 10) AS day,
-                       status,
-                       triggered_by,
-                       COUNT(*) AS n
-                FROM schedule_executions
-                WHERE agent_name = ? AND started_at > ?
-                GROUP BY day, status, triggered_by
-                """,
-                (agent_name, cutoff),
+        # Q1: counts + per-day type stacks (full set).
+        q1 = (
+            select(
+                day_col,
+                schedule_executions.c.status,
+                schedule_executions.c.triggered_by,
+                func.count().label("n"),
             )
-            count_rows = cursor.fetchall()
+            .where(base_where)
+            .group_by(day_col, schedule_executions.c.status, schedule_executions.c.triggered_by)
+        )
 
-            # Q2: per-day duration AVG (success only) + context AVG
-            # (NULL-skipped, all statuses). CASE→NULL means AVG skips
-            # non-success durations; AVG(context_used) skips unmeasured rows.
-            cursor.execute(
-                """
-                SELECT substr(started_at, 1, 10) AS day,
-                       AVG(CASE WHEN status = 'success' THEN duration_ms END) AS dur_avg,
-                       AVG(context_used) AS ctx_avg
-                FROM schedule_executions
-                WHERE agent_name = ? AND started_at > ?
-                GROUP BY day
-                """,
-                (agent_name, cutoff),
-            )
-            daily_metric_rows = cursor.fetchall()
+        # Q2: per-day duration AVG (success only) + context AVG
+        # (NULL-skipped, all statuses). CASE→NULL means AVG skips
+        # non-success durations; AVG(context_used) skips unmeasured rows.
+        q2 = select(day_col, dur_avg_expr, ctx_avg_expr).where(base_where).group_by(day_col)
 
-            # Q3: overall duration AVG + context AVG (full set, single row).
-            cursor.execute(
-                """
-                SELECT AVG(CASE WHEN status = 'success' THEN duration_ms END) AS dur_avg,
-                       AVG(context_used) AS ctx_avg
-                FROM schedule_executions
-                WHERE agent_name = ? AND started_at > ?
-                """,
-                (agent_name, cutoff),
-            )
-            overall = cursor.fetchone()
+        # Q3: overall duration AVG + context AVG (full set, single row).
+        q3 = select(dur_avg_expr, ctx_avg_expr).where(base_where)
 
-            # Q4: capped success-duration pool for the headline p95 only.
-            # `cap + 1` so we can detect sampling without a second COUNT.
-            cursor.execute(
-                """
-                SELECT duration_ms
-                FROM schedule_executions
-                WHERE agent_name = ?
-                  AND started_at > ?
-                  AND status = 'success'
-                  AND duration_ms IS NOT NULL
-                ORDER BY started_at DESC
-                LIMIT ?
-                """,
-                (agent_name, cutoff, cap + 1),
+        # Q4: capped success-duration pool for the headline p95 only.
+        # `cap + 1` so we can detect sampling without a second COUNT.
+        q4 = (
+            select(schedule_executions.c.duration_ms)
+            .where(
+                and_(
+                    schedule_executions.c.agent_name == agent_name,
+                    schedule_executions.c.started_at > cutoff,
+                    schedule_executions.c.status == "success",
+                    schedule_executions.c.duration_ms.isnot(None),
+                )
             )
-            dur_rows = cursor.fetchall()
+            .order_by(schedule_executions.c.started_at.desc())
+            .limit(cap + 1)
+        )
+
+        with get_engine().connect() as conn:
+            count_rows = conn.execute(q1).mappings().all()
+            daily_metric_rows = conn.execute(q2).mappings().all()
+            overall = conn.execute(q3).mappings().first()
+            dur_rows = conn.execute(q4).mappings().all()
 
         # --- counts, per-day stacks, per-bucket window totals ---
         success_count = 0

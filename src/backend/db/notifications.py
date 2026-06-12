@@ -280,29 +280,19 @@ class NotificationOperations:
             return 0
 
         now = utc_now_iso()
-        query = """
-            UPDATE agent_notifications
-            SET status = 'dismissed',
-                acknowledged_at = ?,
-                acknowledged_by = ?
-            WHERE status IN ('pending', 'acknowledged')
-        """
-        params: list = [now, dismissed_by]
-
+        conds = [agent_notifications.c.status.in_(("pending", "acknowledged"))]
         if accessible_agent_names is not None:
-            placeholders = ",".join(["?"] * len(accessible_agent_names))
-            query += f" AND agent_name IN ({placeholders})"
-            params.extend(sorted(accessible_agent_names))
-
+            conds.append(agent_notifications.c.agent_name.in_(sorted(accessible_agent_names)))
         if agent_name:
-            query += " AND agent_name = ?"
-            params.append(agent_name)
+            conds.append(agent_notifications.c.agent_name == agent_name)
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            conn.commit()
-            return cursor.rowcount
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_notifications)
+                .where(and_(*conds))
+                .values(status="dismissed", acknowledged_at=now, acknowledged_by=dismissed_by)
+            )
+            return result.rowcount
 
     def delete_agent_notifications(self, agent_name: str) -> int:
         """
