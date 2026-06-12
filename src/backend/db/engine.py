@@ -8,10 +8,11 @@ SQLAlchemy engine factory — the configurable database backend seam (#300).
 
 SQLite stays the zero-config default — nothing changes without DATABASE_URL.
 
-Phase 1 (#300): only modules already migrated to SQLAlchemy Core route through
-this engine (the `db/users.py` pilot). Legacy modules still open raw sqlite3
-connections via `db/connection.py`. Each module is migrated independently in
-Phase 2, so the two access styles coexist by design during the transition.
+All 44 db modules route through this engine via SQLAlchemy Core. The raw
+sqlite3 context manager in `db/connection.py` remains for sqlite-specific
+maintenance paths (PRAGMA migrations, WAL checkpoint, VACUUM, the /health
+migration gate — all gated to `is_sqlite()` at their call sites) and for the
+default-off canary snapshot reader (PG support is a #300 follow-up).
 """
 
 import os
