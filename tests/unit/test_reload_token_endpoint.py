@@ -86,6 +86,25 @@ def test_reload_sets_env_and_writes_durable_override(client):
     assert client._inject_calls == []
 
 
+def test_override_retightened_when_preexisting_world_readable(client):
+    """#1089 hardening: if the override already exists with loose perms (e.g.
+    0644 left by an older write path or tampering), a reload re-tightens it to
+    0600. ``os.open(..., 0o600)`` only applies its mode on *creation* — for an
+    existing file the mode arg is ignored — so the atomic create is paired with
+    an fchmod to enforce 0600 on the existing fd too (the old write_text()+chmod()
+    always re-tightened; the os.open() refinement must not silently lose that)."""
+    client._override.write_text("stale-token")
+    client._override.chmod(0o644)
+
+    resp = client.post(
+        "/api/credentials/reload-token", json={"token": "sk-ant-oat01-retighten"}
+    )
+
+    assert resp.status_code == 200
+    assert client._override.read_text() == "sk-ant-oat01-retighten"
+    assert stat.S_IMODE(client._override.stat().st_mode) == 0o600
+
+
 def test_reload_does_not_write_env_or_other_files(client):
     """The endpoint writes ONLY the override — no sibling .env / .mcp.json
     (proves it is not reusing the destructive /update or /inject flow)."""

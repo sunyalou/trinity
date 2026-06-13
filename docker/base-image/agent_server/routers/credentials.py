@@ -167,10 +167,18 @@ async def reload_subscription_token(request: TokenReloadRequest):
     if request.remove_api_key:
         os.environ.pop("ANTHROPIC_API_KEY", None)
 
-    # Persist to the writable-layer override (0600). Parent dir is created +
-    # chowned in the Dockerfile, so the agent (UID 1000) can write here.
-    _TOKEN_OVERRIDE.write_text(request.token)
-    _TOKEN_OVERRIDE.chmod(0o600)
+    # Persist to the writable-layer override. Parent dir is created + chowned in
+    # the Dockerfile, so the agent (UID 1000) can write here. Create the file
+    # atomically with 0600 via os.open() rather than write_text()+chmod(): the
+    # latter creates the file under the process umask (typically 0644) and leaves
+    # it world-readable until the follow-up chmod, a brief but avoidable window.
+    # The mode arg only applies on *creation*, so also fchmod the fd — a
+    # pre-existing override (older write path / tampering) keeps its own perms
+    # through O_CREAT|O_TRUNC, and we must still force it back to 0600.
+    fd = os.open(_TOKEN_OVERRIDE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        os.fchmod(f.fileno(), 0o600)
+        f.write(request.token)
 
     # Add the new token to the log-redaction set (drops the old exact-match
     # value; OAuth tokens stay caught by the sk-ant value regex regardless).

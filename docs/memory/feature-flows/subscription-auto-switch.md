@@ -51,7 +51,10 @@ longer kills every parallel execution (#1037). Falls back to the previous
 `_restart_agent` recreate on a 404 (old base image), transport failure, or a
 missing token. Durability across a plain restart is handled by the
 `/var/lib/trinity/oauth-token` writable-layer override that `startup.sh` reads
-before launching the agent server. Canonical home: architecture.md
+before launching the agent server. The override is created **atomically at mode
+`0600`** via `os.open(..., O_CREAT, 0o600)` — not `write_text()`+`chmod()`, which
+would leave the token file briefly world-readable under the process umask between
+create and chmod. Canonical home: architecture.md
 §"Subscription Token Rotation via Hot-Reload".
 
 ## Trigger Surface
@@ -86,7 +89,7 @@ import from `backend.services`. Keep the two in sync when editing either.
 | Tests | `tests/test_subscription_auto_switch.py` | Smoke tests |
 | Tests | `tests/unit/test_subscription_auto_switch_pingpong.py` | Unit regression for #444 ping-pong prevention; `TestRateLimitAging` (#476) pins 2h-window correctness; `TestHotReloadSwitch` + `TestKeyRolloverFanOut` (#1089) pin the hot-reload helper, auto-switch wire-in, and key-rollover fan-out |
 | Tests | `tests/unit/test_subscription_reassign_hotreload.py` | #1089 — manual sub→sub hot-reload under the lock (no `container_stop`), mode-change still recreates, register/upsert key-rollover fan-out |
-| Tests | `tests/unit/test_reload_token_endpoint.py` | #1089 — agent-server `POST /api/credentials/reload-token`: sets env, writes the `/var/lib/trinity/oauth-token` override (0600), no `.env` write, `remove_api_key` pops `ANTHROPIC_API_KEY`, empty token → 400 |
+| Tests | `tests/unit/test_reload_token_endpoint.py` | #1089 — agent-server `POST /api/credentials/reload-token`: sets env, atomically writes the `/var/lib/trinity/oauth-token` override at `0600`, no `.env` write, `remove_api_key` pops `ANTHROPIC_API_KEY`, empty token → 400 |
 | Tests | `tests/unit/test_subscription_auto_switch_no_cred_import.py` | Chain-level regression for #606 — pins `_restart_agent → start_agent_internal → inject_assigned_credentials` reaches the `lifecycle.py:155` `subscription_mode` short-circuit and never re-enters file-based credential import |
 | Tests | `tests/unit/test_iso_cutoff.py` | Format parity between `iso_cutoff(N)` and `utc_now_iso()` (#476) |
 | Util | `src/backend/utils/helpers.py::iso_cutoff` | Canonical cutoff helper for ISO-Z TEXT comparisons (#476) |
