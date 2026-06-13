@@ -851,3 +851,57 @@ class TestDispatchTimeoutRegression:
         # The #1022 signature inverted: error must NOT be blank.
         assert row["error"] is not None and row["error"].strip() != ""
         assert "timed out" in row["error"]
+
+
+class TestRetryDispatchTimeoutRegression:
+    """#1022 — the second persistence path the fix touched: `_execute_retry`.
+
+    A blank-stringifying timeout raised by the backend dispatch during a
+    retry attempt must land a NON-EMPTY `error` on the retry's FAILED row
+    (service.py:`error=_describe_exception(e)[:2000]`), not the silent
+    `error=str(e)=''` it replaced.
+    """
+
+    @pytest.mark.asyncio
+    async def test_retry_dispatch_timeout_persists_nonempty_error(
+        self,
+        db_with_data: SchedulerDatabase,
+        mock_lock_manager: LockManager,
+    ):
+        service = SchedulerService(
+            database=db_with_data,
+            lock_manager=mock_lock_manager,
+        )
+
+        # The dispatch inside the retry blank-stringifies (the #1022 trigger).
+        service._call_backend_execute_task = AsyncMock(
+            side_effect=httpx.ReadTimeout("")
+        )
+
+        await service._execute_retry(
+            original_execution_id="orig-exec",
+            failed_execution_id="failed-exec",
+            schedule_id="schedule-1",
+            agent_name="test-agent",
+            message="Retry me",
+            timeout_seconds=None,
+            model="claude-sonnet-4-6",
+            allowed_tools=[],
+            next_attempt_number=2,
+        )
+
+        with db_with_data.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT status, error FROM schedule_executions
+                WHERE schedule_id = 'schedule-1' AND triggered_by = 'retry'
+                ORDER BY started_at DESC
+                LIMIT 1
+            """)
+            row = cursor.fetchone()
+
+        assert row is not None, "retry execution row was never created"
+        assert row["status"] == ExecutionStatus.FAILED
+        # #1022 inverted: a blank-stringifying timeout must NOT persist blank.
+        assert row["error"] is not None and row["error"].strip() != ""
+        assert "ReadTimeout" in row["error"]
