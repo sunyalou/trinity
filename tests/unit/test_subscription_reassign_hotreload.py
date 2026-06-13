@@ -160,6 +160,47 @@ class TestManualReassignHotReload:
         assert result["restart_result"] == "success"
 
     @pytest.mark.asyncio
+    async def test_old_sub_snapshot_read_under_lock(self, manual_env, owner_user, monkeypatch):
+        """#1089 TOCTOU: the agent's CURRENT subscription is snapshotted AFTER the
+        per-agent switch lock is entered, never before. Reading it outside the
+        lock lets a concurrent auto-switch change the assignment between the read
+        and the assign, so the recreate-vs-hot-reload branch could be chosen
+        against a stale `old_sub_id`."""
+        import services.subscription_auto_switch as auto_switch
+
+        order: list[str] = []
+
+        class _RecordingLock:
+            async def __aenter__(self):
+                order.append("lock_enter")
+                return self
+
+            async def __aexit__(self, *exc):
+                order.append("lock_exit")
+                return False
+
+        async def _lock(name):
+            return _RecordingLock()
+
+        monkeypatch.setattr(auto_switch, "agent_switch_lock", _lock)
+
+        def _read_sub(name):
+            order.append("read_sub")
+            return "sub-a"  # already on a sub → hot-reload branch
+
+        manual_env.db.get_agent_subscription_id.side_effect = _read_sub
+
+        await manual_env.rs.assign_subscription_to_agent(
+            agent_name="agent-x",
+            subscription_name="sub-B",
+            current_user=owner_user,
+        )
+
+        # the snapshot read happens strictly INSIDE the lock window
+        assert order == ["lock_enter", "read_sub", "lock_exit"]
+        assert manual_env.hot_calls == ["agent-x"]  # branch chosen off the in-lock read
+
+    @pytest.mark.asyncio
     async def test_non_owner_rejected(self, manual_env, owner_user):
         """Owner/admin gate is unchanged — a non-owner gets 403 before any switch."""
         from fastapi import HTTPException

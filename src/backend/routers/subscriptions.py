@@ -262,11 +262,6 @@ async def assign_subscription_to_agent(
     if not subscription:
         raise HTTPException(status_code=404, detail=f"Subscription '{subscription_name}' not found")
 
-    # #1089: snapshot the agent's CURRENT subscription BEFORE reassigning. A
-    # sub→sub swap (old_sub_id is not None) can hot-reload the token in place; an
-    # auth-mode change (old_sub_id is None) still needs the container recreated.
-    old_sub_id = db.get_agent_subscription_id(agent_name)
-
     try:
         from services.subscription_auto_switch import (
             agent_switch_lock,
@@ -276,6 +271,13 @@ async def assign_subscription_to_agent(
         # #799/#1089: serialize the assign + apply window per agent so a manual
         # reassignment can't interleave with a concurrent auto-switch.
         async with await agent_switch_lock(agent_name):
+            # #1089: snapshot the agent's CURRENT subscription under the lock,
+            # before reassigning, so a concurrent auto-switch can't change it
+            # between the read and the assign (TOCTOU). A sub→sub swap
+            # (old_sub_id is not None) hot-reloads the token in place; an
+            # auth-mode change (old_sub_id is None) still needs the container
+            # recreated.
+            old_sub_id = db.get_agent_subscription_id(agent_name)
             db.assign_subscription_to_agent(agent_name, subscription.id)
 
             logger.info(
