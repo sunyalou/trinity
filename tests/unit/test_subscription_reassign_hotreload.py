@@ -280,3 +280,19 @@ class TestRegisterKeyRollover:
         result = await register_env.rs.register_subscription(request, current_user=admin_user)
 
         assert result is register_env.created  # upsert NOT failed by the fan-out error
+
+    @pytest.mark.asyncio
+    async def test_non_admin_rejected(self, register_env, owner_user):
+        """register_subscription is admin-only — a non-admin gets 403 before any
+        create or key-rollover fan-out (mirrors the owner gate on reassign)."""
+        from fastapi import HTTPException
+        from db_models import SubscriptionCredentialCreate
+
+        request = SubscriptionCredentialCreate(name="sub-X", token="sk-ant-oat01-rolled")
+
+        with pytest.raises(HTTPException) as exc:
+            await register_env.rs.register_subscription(request, current_user=owner_user)
+
+        assert exc.value.status_code == 403
+        assert register_env.fanout_calls == []  # never reached the rollover fan-out
+        register_env.db.create_subscription.assert_not_called()
