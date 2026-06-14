@@ -94,6 +94,8 @@ services:
       - EXTRA_CORS_ORIGINS=${EXTRA_CORS_ORIGINS:-}
       # Slack channel adapter
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
+      # Socket Mode concurrent WebSocket count (#244); clamped to [1,10], default 2
+      - SLACK_SOCKET_CONNECTION_COUNT=${SLACK_SOCKET_CONNECTION_COUNT:-2}
       # SSH access host override
       - SSH_HOST=${SSH_HOST:-}
       # Canary invariant harness (CANARY-001 / Issue #411).
