@@ -98,6 +98,11 @@ services:
       - SLACK_SOCKET_CONNECTION_COUNT=${SLACK_SOCKET_CONNECTION_COUNT:-2}
       # SSH access host override
       - SSH_HOST=${SSH_HOST:-}
+      # Host telemetry (/api/telemetry) — container-stats cache freshness (s) and
+      # max concurrent Docker stat fetches per refresh. Without these lines the
+      # .env knobs are inert (the #1039 packaging-gap class).
+      - TELEMETRY_CONTAINER_STATS_TTL=${TELEMETRY_CONTAINER_STATS_TTL:-10}
+      - TELEMETRY_DOCKER_POOL_SIZE=${TELEMETRY_DOCKER_POOL_SIZE:-16}
       # Canary invariant harness (CANARY-001 / Issue #411).
       # When 1, services/canary_service.py runs the 5-min watcher loop on
       # staging/dev. Default 0 — production users see no canary activity.
