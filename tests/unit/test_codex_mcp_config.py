@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import tomllib
 
+import pytest
+
 from agent_server.services import trinity_mcp  # noqa: E402
 
 
@@ -195,3 +197,95 @@ def test_codex_array_of_tables_preserved_not_corrupted(tmp_path, monkeypatch):
         {"name": "a"},
         {"name": "b"},
     ]
+
+
+# ---------------------------------------------------------------------------
+# Added coverage (#1187 follow-up): the template-server dispatcher, the TOML
+# scalar/escape primitives, and the no-command / empty-input edges.
+# ---------------------------------------------------------------------------
+
+def test_configure_mcp_servers_dispatcher_routes_codex(tmp_path, monkeypatch):
+    """configure_mcp_servers() (template servers, distinct from the Trinity-MCP
+    injector) routes AGENT_RUNTIME=codex to the codex writer."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_RUNTIME", "codex")
+    assert trinity_mcp.configure_mcp_servers({"gh": {"command": "npx"}}) is True
+    cfg = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert "gh" in cfg["mcp_servers"]
+
+
+def test_configure_mcp_servers_empty_is_noop_true(monkeypatch):
+    """No servers → True without touching disk (the early-return guard)."""
+    monkeypatch.setenv("AGENT_RUNTIME", "codex")
+    assert trinity_mcp.configure_mcp_servers({}) is True
+
+
+def test_configure_codex_skips_server_without_command(tmp_path, monkeypatch, caplog):
+    """A template server with no command is skipped with a warning; when it is
+    the only server, nothing is written and the call reports False (no servers
+    configured)."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="agent_server.services.trinity_mcp")
+    result = trinity_mcp._configure_codex_mcp_servers({"broken": {"args": ["x"]}})
+    assert result is False  # one server in, zero written → not all-empty input
+    assert any("no command specified" in r.getMessage() for r in caplog.records)
+    # Nothing was written for an all-skipped batch.
+    assert not (tmp_path / "config.toml").exists()
+
+
+def test_configure_codex_empty_input_returns_true(tmp_path, monkeypatch):
+    """An empty server dict is a no-op success (len == 0 → True)."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    assert trinity_mcp._configure_codex_mcp_servers({}) is True
+
+
+# -- TOML scalar / escape primitives ---------------------------------------
+
+def test_toml_escape_encodes_control_characters():
+    """A control char (< 0x20, or DEL 0x7F) with no shorthand becomes a \\uXXXX
+    escape so the file stays valid TOML."""
+    out = trinity_mcp._toml_escape("a\x01b\x7fc")
+    assert "\\u0001" in out
+    assert "\\u007F" in out
+    # Shorthand escapes still win for the common control chars.
+    assert trinity_mcp._toml_escape("x\ty\nz") == "x\\ty\\nz"
+
+
+def test_toml_scalar_bool_int_float():
+    assert trinity_mcp._toml_scalar(True) == "true"
+    assert trinity_mcp._toml_scalar(False) == "false"
+    assert trinity_mcp._toml_scalar(7) == "7"
+    assert trinity_mcp._toml_scalar(1.5) == "1.5"
+
+
+def test_toml_scalar_list_of_scalars():
+    assert trinity_mcp._toml_scalar(["a", "b"]) == '["a", "b"]'
+
+
+def test_toml_scalar_rejects_dict():
+    """A dict reaching _toml_scalar is unexpected nesting — it must raise rather
+    than emit a stringified dict (which would corrupt the file)."""
+    with pytest.raises(TypeError):
+        trinity_mcp._toml_scalar({"k": "v"})
+
+
+def test_toml_scalar_rejects_array_of_tables():
+    with pytest.raises(TypeError):
+        trinity_mcp._toml_scalar([{"name": "a"}])
+
+
+def test_codex_preserves_foreign_bool_and_int_scalars(tmp_path, monkeypatch):
+    """Foreign top-level bool/int settings survive a Trinity MCP merge
+    round-trip (exercises the bool/int branches of the scalar writer)."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[tui]\nenabled = true\nmax_width = 120\n")
+
+    assert trinity_mcp._inject_codex_mcp("http://mcp-server:8080/mcp", "tok") is True
+
+    cfg = tomllib.loads(config_path.read_text())
+    assert cfg["tui"]["enabled"] is True
+    assert cfg["tui"]["max_width"] == 120
+    assert cfg["mcp_servers"]["trinity"]["url"] == "http://mcp-server:8080/mcp"
