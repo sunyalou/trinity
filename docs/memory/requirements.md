@@ -2900,8 +2900,14 @@ ABC. Follow-up to spike #854.
   read-only mode maps to `--sandbox read-only`; guardrails are honored where they
   map to Codex's control surface and surfaced (logged) where they don't; Codex
   output + logs pass through the credential sanitizer.
-- **FR-4 — Sandbox + network:** `--sandbox workspace-write` + `network_access=true`
-  (filesystem-confined, network restored); `--sandbox read-only` for read-only agents.
+- **FR-4 — Sandbox + network:** normal (writable) agents run `--sandbox danger-full-access`,
+  which DISABLES Codex's own bubblewrap sandbox — `workspace-write`/`read-only` both invoke
+  `bwrap` to create a user namespace, which the hardened Trinity container forbids
+  (`bwrap: No permissions to create a new namespace`), blocking every shell tool. The Trinity
+  container is already the boundary (`cap_drop ALL` + AppArmor + `no-new-privileges`), the same
+  posture Claude/Gemini run under, so dropping the redundant inner sandbox weakens nothing.
+  Read-only agents keep `--sandbox read-only` (sandbox-native write protection) as the interim
+  enforcement — read-only's enforcement story for Codex is an open #1187 PR discussion.
 - **FR-5 — Credentials:** `OPENAI_API_KEY` from the agent's `.env` (CRED-002),
   loaded into the subprocess env; Codex agents are NOT assigned a Claude subscription.
 - **FR-6 — MCP:** Trinity HTTP MCP + template MCP servers wired via `$CODEX_HOME/config.toml`;
