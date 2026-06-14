@@ -665,22 +665,42 @@ def test_compose_prompt_passthrough_without_system_prompt():
 def test_read_result_file_reads_content(tmp_path):
     f = tmp_path / "out.txt"
     f.write_text("the durable answer")
-    assert _read_and_consume_result_file(str(f)) == "the durable answer"
+    assert _read_and_consume_result_file(str(f), str(tmp_path)) == "the durable answer"
     # The reader itself must not delete — finally owns deletion.
     assert f.exists()
 
 
 def test_read_result_file_missing_returns_none(tmp_path):
-    assert _read_and_consume_result_file(str(tmp_path / "nope.txt")) is None
+    assert _read_and_consume_result_file(str(tmp_path / "nope.txt"), str(tmp_path)) is None
 
 
 def test_safe_unlink_removes_and_tolerates_missing(tmp_path):
     f = tmp_path / "gone.txt"
     f.write_text("x")
-    _safe_unlink(str(f))
+    _safe_unlink(str(f), str(tmp_path))
     assert not f.exists()
     # Second unlink (already gone) must not raise.
-    _safe_unlink(str(f))
+    _safe_unlink(str(f), str(tmp_path))
+
+
+def test_ensure_within_rejects_escape(tmp_path):
+    """Sink-side containment guard: a path resolving outside ``base`` is
+    rejected, and the two wrappers degrade safely (no read, no unlink) rather
+    than touching the out-of-bounds file."""
+    base = tmp_path / "codex_home"
+    base.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret")
+
+    with pytest.raises(ValueError):
+        codex_runtime._ensure_within(str(base), str(outside))
+
+    # Reader refuses → returns None and leaves the file untouched.
+    assert _read_and_consume_result_file(str(outside), str(base)) is None
+    assert outside.exists()
+    # Unlink refuses → no-op, must not raise, file still present.
+    _safe_unlink(str(outside), str(base))
+    assert outside.exists()
 
 
 # ---------------------------------------------------------------------------

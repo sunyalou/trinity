@@ -25,18 +25,41 @@ from fastapi import HTTPException
 # ``KNOWN_RUNTIME_NAMES``/``validate_runtime`` to Mock attributes ("'Mock'
 # object is not iterable"). Evict the stubbed subtree first so we always bind
 # the real module from disk, independent of collection order.
-for _stub in (
+_STUBBED_MODULE_NAMES = [
     "services.agent_service.helpers",
     "services.agent_service.read_only",
     "services.agent_service.file_sharing",
     "services.agent_service",
-):
+]
+
+for _stub in _STUBBED_MODULE_NAMES:  # import-time eviction (monkeypatch can't reach)
     sys.modules.pop(_stub, None)
 
 from services.agent_service.helpers import (  # noqa: E402  (must follow the stub eviction above)
     KNOWN_RUNTIME_NAMES,
     validate_runtime,
 )
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_modules():
+    """Snapshot/restore the stubbed subtree around each test.
+
+    Pairs with ``_STUBBED_MODULE_NAMES`` to form the sanctioned snapshot/restore
+    escape hatch the sys.modules lint recognizes (precedent:
+    tests/unit/test_telegram_webhook_backfill.py), and prevents this module's
+    import-time eviction from leaking the unstubbed real modules into the
+    collection state other files depend on.
+    """
+    saved = {name: sys.modules.get(name) for name in _STUBBED_MODULE_NAMES}
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = value
 
 
 def test_known_runtimes_pass():

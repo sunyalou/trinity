@@ -303,19 +303,43 @@ def _compose_prompt(system_prompt: Optional[str], prompt: str) -> str:
     return prompt
 
 
-def _read_and_consume_result_file(path: str) -> Optional[str]:
+def _ensure_within(base: str, path: str) -> str:
+    """Resolve ``path`` and confirm it stays within ``base``; raise otherwise.
+
+    Defense-in-depth at the filesystem sink. The result filename is already
+    reduced to a safe token by ``_safe_result_token`` + a fixed ``-last.txt``
+    suffix, so this never trips in practice — but anchoring the containment
+    check at the ``open``/``unlink`` sink keeps the safety property local to the
+    operation that actually touches the filesystem (and is the barrier static
+    analysis recognizes)."""
+    base_real = os.path.realpath(base)
+    target = os.path.realpath(path)
+    if target != base_real and not target.startswith(base_real + os.sep):
+        raise ValueError(f"result path escapes codex_home: {path!r}")
+    return target
+
+
+def _read_and_consume_result_file(path: str, base: str) -> Optional[str]:
     """Read the ``-o`` durable result file. Deletion is the caller's ``finally``
-    (read-then-delete, happy + error path — #1187 decision 5)."""
+    (read-then-delete, happy + error path — #1187 decision 5). ``base`` anchors
+    the sink-side containment guard (see ``_ensure_within``)."""
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        with open(_ensure_within(base, path), "r", encoding="utf-8", errors="replace") as fh:
             return fh.read()
+    except ValueError:
+        # Containment guard tripped — must never happen in practice; surface it
+        # rather than masking a genuine path bug as a benign missing file.
+        logger.warning("[Codex] refusing to read result file outside codex_home: %r", path)
+        return None
     except (IOError, OSError):
         return None
 
 
-def _safe_unlink(path: str) -> None:
+def _safe_unlink(path: str, base: str) -> None:
     try:
-        os.unlink(path)
+        os.unlink(_ensure_within(base, path))
+    except ValueError:
+        logger.warning("[Codex] refusing to unlink result file outside codex_home: %r", path)
     except OSError:
         pass
 
@@ -877,7 +901,7 @@ class CodexRuntime(AgentRuntime):
                 raise HTTPException(status_code=status_code, detail=detail)
 
             # -o file is authoritative; JSONL parts are the fallback.
-            result_text = _read_and_consume_result_file(result_file)
+            result_text = _read_and_consume_result_file(result_file, codex_home)
             response_text = _finalize_codex_response(result_text, response_parts)
             response_text = sanitize_text(response_text)
 
@@ -897,7 +921,7 @@ class CodexRuntime(AgentRuntime):
             return response_text, execution_log, metadata, raw_messages, session_id
         finally:
             # Read-then-delete in finally — happy + error path (#1187 decision 5).
-            _safe_unlink(result_file)
+            _safe_unlink(result_file, codex_home)
             registry.unregister(execution_id)
 
     # -- public interface ------------------------------------------------------
