@@ -109,6 +109,12 @@ class ExecutionMetadata(BaseModel):
     compact_events: List[CompactEvent] = []  # Auto-compact events observed mid-turn
     recovered_from_jsonl: bool = False  # Stdout race + JSONL fallback fired (response from disk, not stream)
     model_name: Optional[str] = None  # Actual model id from assistant.message.model (e.g., "claude-sonnet-4-5") — #678
+    # #1187: typed terminal-result seed (the #945 taxonomy). Populated by
+    # newer runtimes (Codex) and currently UNUSED by the backend in the MVP —
+    # the backend still infers AUTH from the HTTP status. A fast-follow makes
+    # the backend read error_code directly and retire status-inference.
+    status: Optional[str] = None  # "success" | "error"
+    error_code: Optional[str] = None  # "AUTH" | "RATE_LIMIT" | "TIMEOUT" | "AGENT_ERROR" | "RUNTIME_UNAVAILABLE"
 
 
 # ============================================================================

@@ -47,6 +47,23 @@ from services.platform_prompt_service import (
     is_execution_context_enabled,
 )
 
+
+def _resolve_agent_runtime(agent_name: str) -> str:
+    """Best-effort resolve an agent's runtime for the platform prompt (#1187).
+
+    Lazy + guarded import: a top-level ``from services.docker_service import
+    get_agent_runtime`` would make a *re-import* of this module fail when a unit
+    test has stubbed ``services.docker_service`` with a partial stub that lacks
+    the symbol (the conftest pops + re-imports this module between tests). Resolve
+    to the Claude default on any failure — never block dispatch.
+    """
+    try:
+        from services.docker_service import get_agent_runtime
+
+        return get_agent_runtime(agent_name)
+    except Exception:
+        return "claude-code"
+
 logger = logging.getLogger(__name__)
 
 
@@ -691,6 +708,9 @@ class TaskExecutionService:
             # ---- 4. Call agent with retry --------------------------------
             # Compose platform prompt + execution context (#171) + caller system_prompt.
             # Never let context-building fail the request.
+            # Resolve the agent runtime (best-effort, never raises) so the
+            # MCP-tool naming matches the harness (#1187 F-MCP).
+            agent_runtime = _resolve_agent_runtime(agent_name)
             try:
                 exec_ctx = ExecutionContext(
                     agent_name=agent_name,
@@ -711,12 +731,13 @@ class TaskExecutionService:
                     execution_context=exec_ctx,
                     caller_prompt=system_prompt,
                     include_execution_context=is_execution_context_enabled(),
+                    runtime=agent_runtime,
                 )
             except Exception as e:
                 logger.warning(
                     f"[TaskExecService] execution context build failed, falling back: {e}"
                 )
-                platform_prompt = get_platform_system_prompt()
+                platform_prompt = get_platform_system_prompt(runtime=agent_runtime)
                 effective_system_prompt = (
                     platform_prompt + "\n\n" + system_prompt if system_prompt else platform_prompt
                 )

@@ -141,6 +141,42 @@ The `execution_id` is in the **Execution Context** block below. The platform sto
 - Only available during user-facing sessions (public link, Slack, Telegram, WhatsApp). The tool returns an error if called from a scheduled task or agent-to-agent call."""
 
 
+# ---------------------------------------------------------------------------
+# Runtime-aware MCP tool naming (#1187 F-MCP)
+# ---------------------------------------------------------------------------
+
+# Claude Code exposes Trinity MCP tools as ``mcp__trinity__<tool>``; the
+# PLATFORM_INSTRUCTIONS above document them that way. Codex auto-discovers MCP
+# tools from the configured ``trinity`` server and invokes them by their bare
+# names, so the Claude-only prefix must be stripped for Codex agents — otherwise
+# the model emits ``mcp__trinity`` and Codex answers "unknown MCP server".
+# Mirrors runtime_adapter._CODEX_RUNTIMES (the only non-Claude-named surface in
+# the MVP); Gemini and unknown runtimes keep the canonical Claude naming.
+_CODEX_RUNTIMES = frozenset({"codex"})
+
+# Prepended to the Codex variant. Intentionally avoids the literal
+# ``mcp__trinity__`` token so the stripped prompt contains it nowhere.
+_CODEX_MCP_ORIENTATION = (
+    "## MCP Tools (Codex runtime)\n\n"
+    "A Trinity MCP server named `trinity` is configured for you. Call its tools "
+    "by the bare names documented below — `list_agents`, `chat_with_agent`, "
+    "`share_file`, `write_user_memory` — exactly as your client auto-discovers "
+    "them. Do not add any vendor-specific tool-name prefix.\n\n---\n\n"
+)
+
+
+def _adapt_instructions_for_runtime(instructions: str, runtime: str) -> str:
+    """Rewrite the MCP-tool references in ``instructions`` for ``runtime``.
+
+    Codex → strip the Claude-only ``mcp__trinity__`` prefix and prepend a short
+    orientation note. Claude/Gemini/unknown → return the text unchanged (the
+    plan's ``default claude-code`` behavior). Pure — never mutates the input.
+    """
+    if (runtime or "").lower() in _CODEX_RUNTIMES:
+        return _CODEX_MCP_ORIENTATION + instructions.replace("mcp__trinity__", "")
+    return instructions
+
+
 def format_user_memory_block(memory_record: dict) -> Optional[str]:
     """Format a user-memory record into a system-prompt block for injection.
 
@@ -274,17 +310,23 @@ async def summarize_user_memory_background(
         )
 
 
-def get_platform_system_prompt() -> str:
+def get_platform_system_prompt(runtime: str = "claude-code") -> str:
     """
     Build the full platform system prompt.
 
     Combines static platform instructions with the operator's custom prompt
     from the trinity_prompt database setting.
 
+    Args:
+        runtime: the agent's execution runtime (``trinity.agent-runtime`` label).
+            Codex gets MCP-tool references without the Claude-only
+            ``mcp__trinity__`` prefix; Claude/Gemini/unknown keep the canonical
+            naming (#1187 F-MCP).
+
     Returns:
         Combined system prompt string
     """
-    parts = [PLATFORM_INSTRUCTIONS]
+    parts = [_adapt_instructions_for_runtime(PLATFORM_INSTRUCTIONS, runtime)]
 
     # Append custom prompt from database setting (operator-configurable)
     custom_prompt = db.get_setting_value("trinity_prompt", default=None)
@@ -519,14 +561,18 @@ def compose_system_prompt(
     caller_prompt: Optional[str] = None,
     *,
     include_execution_context: bool = True,
+    runtime: str = "claude-code",
 ) -> str:
     """Compose the full system prompt: platform instructions + execution context + caller prompt.
 
     Single composition entry point. Keeps ordering and defaults in one place
     (invariant #15). Callers should use this instead of concatenating prompt
     fragments themselves.
+
+    ``runtime`` is threaded to :func:`get_platform_system_prompt` so the MCP-tool
+    naming matches the agent's harness (Codex vs. Claude/Gemini, #1187 F-MCP).
     """
-    parts: List[str] = [get_platform_system_prompt()]
+    parts: List[str] = [get_platform_system_prompt(runtime=runtime)]
 
     if include_execution_context and execution_context is not None:
         # Auto-fill collaborators and platform URL without mutating the caller's

@@ -679,6 +679,7 @@ _GITIGNORE_PATTERNS: Tuple[str, ...] = (
     ".npm/",
     ".ssh/",
     ".trinity/",
+    ".tmp/",  # #1098 disk-backed scratch (TMPDIR); #1187 relocated CODEX_HOME
     # Large generated content
     "content/",
     # Claude Code runtime — commit commands/skills/agents, exclude runtime data

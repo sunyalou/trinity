@@ -62,6 +62,7 @@ def wait_for_agent_ready(monkeypatch):
             check_resource_limits_match=None,
             check_full_capabilities_match=None,
             check_guardrails_env_matches=None,
+            is_claude_runtime=None,  # added to lifecycle.py import (#1187)
         ),
         "services.settings_service": types.SimpleNamespace(
             get_anthropic_api_key=None, get_github_pat=None,

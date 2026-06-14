@@ -25,7 +25,7 @@ from services.docker_utils import (
 from services.agent_service.helpers import validate_base_image
 from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities, get_agent_default_resources
 from services.skill_service import skill_service
-from .helpers import check_shared_folder_mounts_match, check_api_key_env_matches, check_github_pat_env_matches, check_resource_limits_match, check_full_capabilities_match, check_guardrails_env_matches
+from .helpers import check_shared_folder_mounts_match, check_api_key_env_matches, check_github_pat_env_matches, check_resource_limits_match, check_full_capabilities_match, check_guardrails_env_matches, is_claude_runtime
 from .file_sharing import check_public_folder_mount_matches
 from .read_only import inject_read_only_hooks, remove_read_only_hooks
 
@@ -362,11 +362,26 @@ async def recreate_container_with_updated_config(agent_name: str, old_container,
     # Claude Code prioritizes ANTHROPIC_API_KEY over CLAUDE_CODE_OAUTH_TOKEN,
     # so when a subscription is assigned we must remove the API key and set
     # the token env var instead.
+    #
+    # This whole juggle is Claude-only: subscriptions are Claude-OAuth tokens.
+    # Non-Claude runtimes (Gemini, Codex) authenticate from their own .env
+    # (CRED-002) and must NEVER receive a Claude subscription token on recreate,
+    # even if a subscription row somehow exists for them (#1187 decision 7).
+    _runtime = (
+        env_vars.get('AGENT_RUNTIME')
+        or labels.get('trinity.agent-runtime')
+        or 'claude-code'
+    )
+    _is_claude_runtime = is_claude_runtime(_runtime)
     subscription_id = db.get_agent_subscription_id(agent_name)
     has_subscription = subscription_id is not None
     use_platform_key = db.get_use_platform_api_key(agent_name)
 
-    if has_subscription:
+    if not _is_claude_runtime:
+        # Non-Claude: leave the agent's own credentials in place; never inject a
+        # Claude token.
+        env_vars.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
+    elif has_subscription:
         # Subscription assigned — inject token, remove API key
         token = db.get_subscription_token(subscription_id)
         if token:

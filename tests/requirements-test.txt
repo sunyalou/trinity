@@ -43,7 +43,10 @@ twilio>=9.10.0
 Pillow>=11.1.0
 tenacity>=9.0.0
 passlib[bcrypt]>=1.7.4
-bcrypt>=4.2.0
+# Cap bcrypt <5: bcrypt 5.0.0 removed the `__about__` shim passlib 1.7.4 reads at
+# import, so an uncapped fresh venv breaks every test at conftest DB-init. Pin
+# until passlib ships a 5.x-compatible release.
+bcrypt>=4.2.0,<5
 pydantic-settings>=2.0.0
 google-genai>=1.0.0
 payments-py>=1.0.0

@@ -31,6 +31,49 @@ DEFAULT_BASE_IMAGE_ALLOWLIST = [
     "trinity-agent-base:*",
 ]
 
+# #1187: runtime classification. Subscriptions are Claude-OAuth tokens, so the
+# auto-assign (crud) and the CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY juggle
+# (lifecycle recreate) apply ONLY to the Claude Code runtime. Gemini and Codex
+# bring their own credentials via .env (CRED-002).
+CLAUDE_RUNTIME_NAMES = frozenset({"claude-code", "claude"})
+
+
+def is_claude_runtime(runtime: Optional[str]) -> bool:
+    """True for the Claude Code runtime, INCLUDING the default (unset/empty →
+    claude-code). Non-Claude runtimes (gemini-cli, gemini, codex) return False.
+    """
+    return (runtime or "claude-code").lower() in CLAUDE_RUNTIME_NAMES
+
+
+# #1187: every runtime the platform can launch. Mirrors the agent-side
+# `runtime_adapter.KNOWN_RUNTIMES` (which lives in the base image and isn't
+# importable from the backend). Keep the two in sync when adding a runtime.
+KNOWN_RUNTIME_NAMES = CLAUDE_RUNTIME_NAMES | frozenset({"gemini-cli", "gemini", "codex"})
+
+
+def validate_runtime(runtime: Optional[str]) -> None:
+    """Reject an unknown ``runtime`` at create time.
+
+    The agent-side ``get_runtime()`` already fails loud on a bad
+    ``AGENT_RUNTIME``, but only when the container boots — by then the agent
+    exists and the failure is a cryptic crash-loop. Catching a typo'd
+    ``runtime:`` here turns it into a clear 400 at creation. Unset/empty is
+    valid (defaults to claude-code).
+
+    Raises:
+        HTTPException(400): if ``runtime`` is set to an unrecognized value.
+    """
+    if not runtime:
+        return
+    if runtime.lower() not in KNOWN_RUNTIME_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown runtime {runtime!r}. "
+                f"Supported runtimes: {sorted(KNOWN_RUNTIME_NAMES)}."
+            ),
+        )
+
 
 def validate_base_image(image: str) -> None:
     """
