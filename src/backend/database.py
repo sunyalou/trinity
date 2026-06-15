@@ -149,14 +149,16 @@ def init_database():
     3. Creates schema (tables and indexes)
     4. Ensures admin user exists
     """
-    # PostgreSQL path (#300, experimental): a fresh PG database is built
-    # directly from schema.py at head, so the sqlite-only PRAGMA migrations are
-    # skipped. SQLite remains the default and keeps the original path below.
+    # PostgreSQL path (#300/#1183): schema is owned by Alembic — a fresh DB is
+    # built by `alembic upgrade head` (the baseline revision reuses the same
+    # head DDL that init_schema_postgres emitted), and an existing DB is
+    # migrated in place. The sqlite-only PRAGMA migrations below are skipped;
+    # SQLite keeps the legacy bespoke path (the two coexist during the Postgres
+    # transition).
     from db.engine import is_sqlite
     if not is_sqlite():
-        from db.engine import get_engine
-        from db.schema import init_schema_postgres
-        init_schema_postgres(get_engine())
+        from db.alembic_runner import upgrade_to_head
+        upgrade_to_head()
         _ensure_admin_user_engine()
         return
 
