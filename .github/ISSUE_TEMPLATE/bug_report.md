@@ -2,7 +2,7 @@
 name: Bug Report
 about: Report a bug to help us improve Trinity
 title: '[BUG] '
-labels: bug
+labels: type-bug
 assignees: ''
 ---
 

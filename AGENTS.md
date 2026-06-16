@@ -121,7 +121,7 @@ Caveats that matter to agents:
 - Tests: `python -m pytest -v --tb=short` (markers: `unit` needs no backend, `requires_agent` needs a running agent).
 - Layout: `src/backend` (FastAPI), `src/frontend` (Vue 3 + Pinia), `src/mcp-server` (TypeScript MCP proxy), `src/cli`, `docker/base-image` (agent runtime).
 - Backend pattern: router → service → db (`src/backend/routers|services|db`); schema changes require a versioned migration in `src/backend/db/migrations.py`.
-- Workflow: GitHub Issues with priority/type/theme labels; feature branches off `dev`; PRs target `dev` (releases merge `dev` → `main`). See [CONTRIBUTING.md](CONTRIBUTING.md).
+- Workflow: GitHub Issues with priority/type/theme labels; feature branches off `dev`; PRs target `dev` (releases merge `dev` → `main`). **Two-tracker open-core model:** bugs/refactor/docs live in public `abilityai/trinity`; features/epics in private `abilityai/trinity-enterprise` (see `.claude/DEVELOPMENT_WORKFLOW.md` → Repository Routing). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation map
 

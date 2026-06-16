@@ -701,8 +701,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 ## Community & Support
 
 - **Ask Trinity**: [docs.ability.ai](https://docs.ability.ai) — full documentation with a built-in agent you can chat with for instant answers
-- **GitHub Issues**: [Report bugs and request features](https://github.com/abilityai/trinity/issues)
-- **GitHub Discussions**: [Ask questions and share ideas](https://github.com/abilityai/trinity/discussions)
+- **GitHub Issues**: [Report bugs](https://github.com/abilityai/trinity/issues) — the public tracker is for bugs & core maintenance
+- **GitHub Discussions**: [Request features, ask questions, share ideas](https://github.com/abilityai/trinity/discussions) — feature ideas are triaged into the roadmap here
 - **Videos**: [Trinity Demo](https://youtu.be/ivljtZqsxeo) · [Loops Engineering](https://youtu.be/q3YvFYtuhec) · [Autonomous Cornelius](https://youtu.be/QUZ5ZgB5f6E)
 - **Free Workshops**: [Live every Thursday + full recording archive](https://www.ability.ai/workshops)
 - **Security Issues**: See [SECURITY.md](SECURITY.md) for reporting vulnerabilities
