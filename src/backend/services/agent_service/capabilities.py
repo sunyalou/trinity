@@ -15,6 +15,9 @@ re-adds one of these sets. The pattern (defense in depth):
 
 from __future__ import annotations
 
+import os
+import re
+
 
 # Restricted mode capabilities - minimum for agent operation (default)
 RESTRICTED_CAPABILITIES: list[str] = [
@@ -66,17 +69,44 @@ PROHIBITED_CAPABILITIES: list[str] = [
 ]
 
 
-# Agent /tmp mount + scratch-space defaults (#1098)
+# Agent /tmp mount + scratch-space defaults (#1098, #1231)
 # -----------------------------------------------------------------------------
-# /tmp is a small RAM-backed tmpfs, hardened noexec,nosuid. It is deliberately
-# tiny and non-exec so a compromised agent can't stage/execute payloads there.
-# The catch: heavy scratch (pip/npm install, compiling C extensions, ML wheels
+# /tmp is a RAM-backed tmpfs, hardened noexec,nosuid. It is deliberately
+# non-exec so a compromised agent can't stage/execute payloads there. The
+# catch: heavy scratch (pip/npm install, compiling C extensions, ML wheels
 # like torch/transformers) must NOT land on /tmp — it hits "No space left on
-# device" at 100 MB, and "Permission denied" on the noexec flag.
+# device" at the cap, and "Permission denied" on the noexec flag. #1098
+# redirects $TMPDIR-honoring tools off /tmp; but install scripts that hardcode
+# /tmp (e.g. the `gh` CLI) still exhaust the cap, silently breaking later /tmp
+# writes (incl. git's commit scratch) — #1231.
+#
+# Size is operator-tunable via AGENT_TMP_SIZE (e.g. "512m", "2g"), default
+# 512m. ONLY the size is configurable — noexec,nosuid stay hardcoded (security
+# posture), and the value stays bounded (it counts against the container memory
+# cgroup). An empty/invalid value falls back to the default rather than
+# producing a broken or unbounded mount spec. Mount specs are creation-time, so
+# existing agents pick up a new size on recreate, not restart.
 #
 # Defined here (single source of truth) so the create path (crud.py) and the
-# recreate path (lifecycle.py) can't drift — both import these constants.
-AGENT_TMPFS_MOUNT: dict[str, str] = {'/tmp': 'noexec,nosuid,size=100m'}
+# recreate path (lifecycle.py) can't drift — both import this constant.
+_AGENT_TMP_SIZE_DEFAULT = "512m"
+_AGENT_TMP_SIZE_RE = re.compile(r"^\d+[mg]$")
+
+
+def _resolve_agent_tmp_size() -> str:
+    """Validated /tmp tmpfs size from AGENT_TMP_SIZE (env), else the default.
+
+    Accepts ``<int>m`` / ``<int>g`` (case-insensitive); anything else — empty,
+    a bare number, a Kubernetes-style suffix — falls back to the default so a
+    typo can never yield a broken or unbounded mount spec.
+    """
+    raw = (os.getenv("AGENT_TMP_SIZE") or "").strip().lower()
+    return raw if _AGENT_TMP_SIZE_RE.match(raw) else _AGENT_TMP_SIZE_DEFAULT
+
+
+AGENT_TMPFS_MOUNT: dict[str, str] = {
+    '/tmp': f'noexec,nosuid,size={_resolve_agent_tmp_size()}'
+}
 
 # Default TMPDIR redirects scratch onto the disk-backed, exec-capable agent
 # home volume. pip / npm / most build tooling honor TMPDIR, so this dodges both

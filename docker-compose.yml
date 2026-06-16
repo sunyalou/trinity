@@ -46,6 +46,10 @@ services:
       - VOIP_INTENT_TTL_SECONDS=${VOIP_INTENT_TTL_SECONDS:-180}   # staged Gemini-intent TTL
       - GITHUB_PAT=${GITHUB_PAT:-}
       - HOST_TEMPLATES_PATH=${PWD}/config/agent-templates
+      # Agent /tmp tmpfs size (#1231) — read by capabilities.py to build the
+      # agent container mount spec. noexec,nosuid stay fixed; only size tunes.
+      # Existing agents pick up a change on recreate, not restart.
+      - AGENT_TMP_SIZE=${AGENT_TMP_SIZE:-512m}
       # OpenTelemetry Configuration (Optional)
       - OTEL_ENABLED=${OTEL_ENABLED:-0}
       - OTEL_COLLECTOR_ENDPOINT=${OTEL_COLLECTOR_ENDPOINT:-http://trinity-otel-collector:4317}
