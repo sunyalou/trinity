@@ -84,3 +84,51 @@ AGENT_TMPFS_MOUNT: dict[str, str] = {'/tmp': 'noexec,nosuid,size=100m'}
 # The directory is created (writable by UID 1000) at container start by
 # docker/base-image/startup.sh, so existing agents pick it up on restart.
 AGENT_DEFAULT_TMPDIR: str = '/home/developer/.tmp'
+
+
+# Container resource limits (#1197)
+# -----------------------------------------------------------------------------
+# Canonical allowed values for the per-agent CPU / memory limits, shared by the
+# admin defaults endpoint (routers/settings.py) and the three container-create
+# sites (crud.py create, lifecycle.py recreate, system_agent_service.py). Kept
+# here — stdlib-only, import-light — so the value set has ONE home and the
+# create paths can't drift from what the API accepts.
+#
+# CPU is an integer processor count fed to Docker's NanoCpus (#1126); memory is
+# a Docker memory string fed to mem_limit. A template.yaml carrying a fractional
+# or Kubernetes-style value (cpu: "0.5", memory: "512Mi") is rejected up front
+# with an actionable message instead of crashing deep in container creation on a
+# raw int() / an invalid Docker mem string (#1197).
+VALID_CPU: tuple[str, ...] = ("1", "2", "4", "8", "16")
+VALID_MEMORY: tuple[str, ...] = ("1g", "2g", "4g", "8g", "16g", "32g")
+
+
+def normalize_cpu(value, default) -> str:
+    """Validate/normalize a CPU value against VALID_CPU.
+
+    ``value`` is the template/config value (may be None/empty); ``default`` is
+    the system fallback (already admin-validated). Returns the canonical string
+    or raises ``ValueError`` with an actionable message.
+    """
+    cpu = str(value if value not in (None, "") else default).strip()
+    if cpu not in VALID_CPU:
+        raise ValueError(
+            f"Invalid cpu '{cpu}': must be one of {', '.join(VALID_CPU)} "
+            f"(integer processor count — not a fractional or Kubernetes-style value)"
+        )
+    return cpu
+
+
+def normalize_memory(value, default) -> str:
+    """Validate/normalize a memory value against VALID_MEMORY (Docker form).
+
+    Case-folds so ``4G`` → ``4g``. Returns the canonical string or raises
+    ``ValueError`` with an actionable message.
+    """
+    mem = str(value if value not in (None, "") else default).strip().lower()
+    if mem not in VALID_MEMORY:
+        raise ValueError(
+            f"Invalid memory '{mem}': must be one of {', '.join(VALID_MEMORY)} "
+            f"(Docker form like '4g' — not a Kubernetes-style value like '512Mi')"
+        )
+    return mem

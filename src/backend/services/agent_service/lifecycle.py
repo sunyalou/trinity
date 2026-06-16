@@ -96,6 +96,8 @@ from .capabilities import (  # noqa: F401
     PROHIBITED_CAPABILITIES,
     AGENT_TMPFS_MOUNT,
     AGENT_DEFAULT_TMPDIR,
+    normalize_cpu,
+    normalize_memory,
 )
 
 
@@ -409,6 +411,13 @@ async def recreate_container_with_updated_config(agent_name: str, old_container,
     else:
         cpu = labels.get("trinity.cpu") or system_defaults["cpu"]
         memory = labels.get("trinity.memory") or system_defaults["memory"]
+
+    # #1197: validate/normalize before they reach Docker (int(cpu) NanoCpus /
+    # mem_limit). A stale label or DB override carrying a non-integer cpu or a
+    # Kubernetes-style memory would otherwise crash recreate with an opaque
+    # ValueError; fail with a clear message instead.
+    cpu = normalize_cpu(cpu, system_defaults["cpu"])
+    memory = normalize_memory(memory, system_defaults["memory"])
 
     # Update labels with new resource limits for future reference
     labels["trinity.cpu"] = cpu
