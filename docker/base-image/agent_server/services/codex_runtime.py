@@ -261,8 +261,8 @@ def _resolve_sandbox_mode() -> str:
     dropping Codex's redundant inner sandbox weakens nothing.
 
     Read-only mode is the deliberate exception: it keeps ``--sandbox read-only``
-    (sandbox-native write protection) as the interim enforcement. Read-only's
-    enforcement story for Codex is an open discussion on the #1187 PR.
+    (sandbox-native write protection) as the interim enforcement. A fail-closed
+    read-only enforcement story for Codex is a fast-follow.
     """
     return "read-only" if _is_read_only() else "danger-full-access"
 

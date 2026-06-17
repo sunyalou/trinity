@@ -2907,7 +2907,7 @@ ABC. Follow-up to spike #854.
   container is already the boundary (`cap_drop ALL` + AppArmor + `no-new-privileges`), the same
   posture Claude/Gemini run under, so dropping the redundant inner sandbox weakens nothing.
   Read-only agents keep `--sandbox read-only` (sandbox-native write protection) as the interim
-  enforcement — read-only's enforcement story for Codex is an open #1187 PR discussion.
+  enforcement — a fail-closed read-only enforcement story for Codex is a fast-follow.
 - **FR-5 — Credentials:** `OPENAI_API_KEY` from the agent's `.env` (CRED-002),
   loaded into the subprocess env; Codex agents are NOT assigned a Claude subscription.
 - **FR-6 — MCP:** Trinity HTTP MCP + template MCP servers wired via `$CODEX_HOME/config.toml`;

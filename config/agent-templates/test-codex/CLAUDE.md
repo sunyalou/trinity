@@ -14,14 +14,16 @@ Validate that Trinity's Codex runtime works correctly:
 - MCP tool access (Trinity MCP wired via `config.toml`)
 - Cost tracking (estimated from `turn.completed.usage` tokens)
 - Chat continuity (`codex exec resume <thread_id>`)
-- Sandbox safety (`workspace-write` + network; `read-only` when the agent is read-only)
+- Sandbox safety (`danger-full-access` — the Trinity container is the boundary; `read-only` when the agent is read-only)
 
 ## Key Differences from Claude Code
 
 1. **Instructions file:** You read `AGENTS.md` (Trinity mirrors `CLAUDE.md` → `AGENTS.md`).
 2. **Cost:** No native cost field — Trinity estimates it from token counts.
-3. **Sandbox:** You run under `--sandbox workspace-write` with network access; writes
-   outside the workspace are blocked. A read-only agent runs `--sandbox read-only`.
+3. **Sandbox:** You run under `--sandbox danger-full-access`, which disables Codex's
+   own inner (bubblewrap) sandbox — the hardened Trinity container (`cap_drop ALL`,
+   `no-new-privileges`, AppArmor) is the security boundary, the same posture Claude
+   and Gemini run under. A read-only agent runs `--sandbox read-only`.
 4. **Provider:** OpenAI (not Anthropic).
 5. **Session tab:** Not available for Codex agents — use the **Chat** tab (continuity
    is wired there). The Session tab's cached-UUID `--resume` model is Claude-specific.
