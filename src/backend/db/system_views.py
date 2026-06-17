@@ -3,16 +3,45 @@ System Views operations for agent organization (ORG-001 Phase 2).
 
 System Views are saved filters that group agents by tags.
 Views can be private (owned) or shared (visible to all users).
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL. The public API of ``SystemViewOperations`` is
+unchanged.
 """
 
 import json
 import secrets
 from typing import List, Optional
-from datetime import datetime
 
-from db.connection import get_db_connection
+from sqlalchemy import select, insert, update, delete, func, or_, cast, Text
+
+from .engine import get_engine
+from .tables import system_views, users, agent_tags
 from db_models import SystemView, SystemViewCreate, SystemViewUpdate
 from utils.helpers import utc_now_iso
+
+
+# Column selection mirroring the original JOIN projection (sv.* + owner_email).
+_VIEW_COLUMNS = (
+    system_views.c.id,
+    system_views.c.name,
+    system_views.c.description,
+    system_views.c.icon,
+    system_views.c.color,
+    system_views.c.filter_tags,
+    system_views.c.owner_id,
+    system_views.c.is_shared,
+    system_views.c.created_at,
+    system_views.c.updated_at,
+    users.c.email.label("owner_email"),
+)
+
+# system_views.owner_id is TEXT (holds a stringified user id) but users.id is
+# INTEGER. SQLite coerces across the JOIN; PostgreSQL rejects `text = integer`
+# (#300). Cast users.id to text so both sides match on either backend.
+_VIEW_JOIN = system_views.outerjoin(
+    users, system_views.c.owner_id == cast(users.c.id, Text)
+)
 
 
 class SystemViewOperations:
@@ -35,48 +64,39 @@ class SystemViewOperations:
         # Normalize and validate tags
         filter_tags = sorted(set(t.lower().strip() for t in data.filter_tags if t.strip()))
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO system_views (
-                    id, name, description, icon, color, filter_tags,
-                    owner_id, is_shared, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                view_id,
-                data.name.strip(),
-                data.description.strip() if data.description else None,
-                data.icon,
-                data.color,
-                json.dumps(filter_tags),
-                owner_id,
-                1 if data.is_shared else 0,
-                now,
-                now
-            ))
-            conn.commit()
-
-            return self.get_view(view_id)
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(system_views).values(
+                    id=view_id,
+                    name=data.name.strip(),
+                    description=data.description.strip() if data.description else None,
+                    icon=data.icon,
+                    color=data.color,
+                    filter_tags=json.dumps(filter_tags),
+                    owner_id=str(owner_id),  # owner_id column is TEXT (#300)
+                    is_shared=1 if data.is_shared else 0,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            return self._get_view_conn(conn, view_id)
 
     def get_view(self, view_id: str) -> Optional[SystemView]:
         """Get a system view by ID."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT sv.id, sv.name, sv.description, sv.icon, sv.color,
-                       sv.filter_tags, sv.owner_id, sv.is_shared,
-                       sv.created_at, sv.updated_at,
-                       u.email as owner_email
-                FROM system_views sv
-                LEFT JOIN users u ON sv.owner_id = u.id
-                WHERE sv.id = ?
-            """, (view_id,))
-            row = cursor.fetchone()
+        with get_engine().connect() as conn:
+            return self._get_view_conn(conn, view_id)
 
-            if not row:
-                return None
-
-            return self._row_to_view(row, cursor)
+    def _get_view_conn(self, conn, view_id: str) -> Optional[SystemView]:
+        """Fetch a single view (and its agent count) using an existing connection."""
+        stmt = (
+            select(*_VIEW_COLUMNS)
+            .select_from(_VIEW_JOIN)
+            .where(system_views.c.id == view_id)
+        )
+        row = conn.execute(stmt).mappings().first()
+        if not row:
+            return None
+        return self._row_to_view(row, conn)
 
     def list_user_views(self, user_id: str) -> List[SystemView]:
         """
@@ -88,44 +108,26 @@ class SystemViewOperations:
         Returns:
             List of SystemView objects sorted by name
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT sv.id, sv.name, sv.description, sv.icon, sv.color,
-                       sv.filter_tags, sv.owner_id, sv.is_shared,
-                       sv.created_at, sv.updated_at,
-                       u.email as owner_email
-                FROM system_views sv
-                LEFT JOIN users u ON sv.owner_id = u.id
-                WHERE sv.owner_id = ? OR sv.is_shared = 1
-                ORDER BY sv.name ASC
-            """, (user_id,))
-
-            views = []
-            for row in cursor.fetchall():
-                views.append(self._row_to_view(row, cursor))
-
-            return views
+        stmt = (
+            select(*_VIEW_COLUMNS)
+            .select_from(_VIEW_JOIN)
+            .where(or_(system_views.c.owner_id == str(user_id), system_views.c.is_shared == 1))
+            .order_by(system_views.c.name.asc())
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+            return [self._row_to_view(row, conn) for row in rows]
 
     def list_all_views(self) -> List[SystemView]:
         """List all system views (admin use)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT sv.id, sv.name, sv.description, sv.icon, sv.color,
-                       sv.filter_tags, sv.owner_id, sv.is_shared,
-                       sv.created_at, sv.updated_at,
-                       u.email as owner_email
-                FROM system_views sv
-                LEFT JOIN users u ON sv.owner_id = u.id
-                ORDER BY sv.name ASC
-            """)
-
-            views = []
-            for row in cursor.fetchall():
-                views.append(self._row_to_view(row, cursor))
-
-            return views
+        stmt = (
+            select(*_VIEW_COLUMNS)
+            .select_from(_VIEW_JOIN)
+            .order_by(system_views.c.name.asc())
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+            return [self._row_to_view(row, conn) for row in rows]
 
     def update_view(self, view_id: str, data: SystemViewUpdate) -> Optional[SystemView]:
         """
@@ -138,54 +140,39 @@ class SystemViewOperations:
         Returns:
             The updated SystemView or None if not found
         """
-        updates = []
-        params = []
+        values = {}
 
         if data.name is not None:
-            updates.append("name = ?")
-            params.append(data.name.strip())
+            values["name"] = data.name.strip()
 
         if data.description is not None:
-            updates.append("description = ?")
-            params.append(data.description.strip() if data.description else None)
+            values["description"] = data.description.strip() if data.description else None
 
         if data.icon is not None:
-            updates.append("icon = ?")
-            params.append(data.icon)
+            values["icon"] = data.icon
 
         if data.color is not None:
-            updates.append("color = ?")
-            params.append(data.color)
+            values["color"] = data.color
 
         if data.filter_tags is not None:
             filter_tags = sorted(set(t.lower().strip() for t in data.filter_tags if t.strip()))
-            updates.append("filter_tags = ?")
-            params.append(json.dumps(filter_tags))
+            values["filter_tags"] = json.dumps(filter_tags)
 
         if data.is_shared is not None:
-            updates.append("is_shared = ?")
-            params.append(1 if data.is_shared else 0)
+            values["is_shared"] = 1 if data.is_shared else 0
 
-        if not updates:
+        if not values:
             return self.get_view(view_id)
 
-        updates.append("updated_at = ?")
-        params.append(utc_now_iso())
-        params.append(view_id)
+        values["updated_at"] = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"""
-                UPDATE system_views
-                SET {', '.join(updates)}
-                WHERE id = ?
-            """, params)
-            conn.commit()
-
-            if cursor.rowcount == 0:
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(system_views).where(system_views.c.id == view_id).values(**values)
+            )
+            if result.rowcount == 0:
                 return None
-
-            return self.get_view(view_id)
+            return self._get_view_conn(conn, view_id)
 
     def delete_view(self, view_id: str) -> bool:
         """
@@ -197,18 +184,17 @@ class SystemViewOperations:
         Returns:
             True if deleted, False if not found
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM system_views WHERE id = ?", (view_id,))
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                delete(system_views).where(system_views.c.id == view_id)
+            )
+            return result.rowcount > 0
 
     def get_view_owner(self, view_id: str) -> Optional[str]:
         """Get the owner_id of a view."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT owner_id FROM system_views WHERE id = ?", (view_id,))
-            row = cursor.fetchone()
+        stmt = select(system_views.c.owner_id).where(system_views.c.id == view_id)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
             return row[0] if row else None
 
     def can_user_edit_view(self, user_id: str, view_id: str, is_admin: bool = False) -> bool:
@@ -216,45 +202,41 @@ class SystemViewOperations:
         if is_admin:
             return True
         owner_id = self.get_view_owner(view_id)
-        return owner_id == user_id
+        return owner_id is not None and str(owner_id) == str(user_id)
 
     def can_user_view(self, user_id: str, view_id: str) -> bool:
         """Check if a user can view a system view (owner or shared)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT 1 FROM system_views
-                WHERE id = ? AND (owner_id = ? OR is_shared = 1)
-            """, (view_id, user_id))
-            return cursor.fetchone() is not None
+        stmt = select(system_views.c.id).where(
+            system_views.c.id == view_id,
+            or_(system_views.c.owner_id == str(user_id), system_views.c.is_shared == 1),
+        )
+        with get_engine().connect() as conn:
+            return conn.execute(stmt).first() is not None
 
-    def _row_to_view(self, row, cursor) -> SystemView:
-        """Convert a database row to a SystemView object with agent count."""
-        filter_tags = json.loads(row[5]) if row[5] else []
+    def _row_to_view(self, row, conn) -> SystemView:
+        """Convert a database row (RowMapping) to a SystemView object with agent count."""
+        filter_tags = json.loads(row["filter_tags"]) if row["filter_tags"] else []
 
         # Count agents matching any of the filter tags
         agent_count = 0
         if filter_tags:
-            placeholders = ",".join("?" * len(filter_tags))
-            cursor.execute(f"""
-                SELECT COUNT(DISTINCT agent_name)
-                FROM agent_tags
-                WHERE tag IN ({placeholders})
-            """, filter_tags)
-            result = cursor.fetchone()
+            count_stmt = select(
+                func.count(func.distinct(agent_tags.c.agent_name))
+            ).where(agent_tags.c.tag.in_(filter_tags))
+            result = conn.execute(count_stmt).first()
             agent_count = result[0] if result else 0
 
         return SystemView(
-            id=row[0],
-            name=row[1],
-            description=row[2],
-            icon=row[3],
-            color=row[4],
+            id=row["id"],
+            name=row["name"],
+            description=row["description"],
+            icon=row["icon"],
+            color=row["color"],
             filter_tags=filter_tags,
-            owner_id=row[6],
-            owner_email=row[10],
-            is_shared=bool(row[7]),
+            owner_id=row["owner_id"],
+            owner_email=row["owner_email"],
+            is_shared=bool(row["is_shared"]),
             agent_count=agent_count,
-            created_at=row[8],
-            updated_at=row[9]
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )

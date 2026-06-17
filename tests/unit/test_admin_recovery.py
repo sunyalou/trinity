@@ -1,12 +1,17 @@
 """
-Tests for the recover/list helpers backing the admin recovery
-endpoint (#834 Phase 1c). Stays at the DB-layer — router behavior is
-exercised by the live smoke test in the PR.
+Tests for admin soft-delete recovery (#834 Phase 1c).
+
+Exercises `AgentOperations.recover_agent_ownership` / `list_soft_deleted_agents`
+and `ScheduleOperations.recover_schedule` / `list_soft_deleted_schedules`.
+
+Backend-agnostic via ``db_harness`` (#300): every test runs on SQLite and,
+when ``TEST_POSTGRES_URL`` is set, PostgreSQL too. Schema is the full
+production schema; the ``_seed_*`` helpers + inline reads go through the
+active engine.
 """
 
 from __future__ import annotations
 
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -19,66 +24,16 @@ while _BACKEND_STR in sys.path:
     sys.path.remove(_BACKEND_STR)
 sys.path.insert(0, _BACKEND_STR)
 
-
-def _make_db(conn: sqlite3.Connection) -> None:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE users (
-            id INTEGER PRIMARY KEY,
-            username TEXT UNIQUE NOT NULL,
-            email TEXT,
-            role TEXT DEFAULT 'user'
-        )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE agent_ownership (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_name TEXT UNIQUE NOT NULL,
-            owner_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            deleted_at TEXT
-        )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE agent_schedules (
-            id TEXT PRIMARY KEY,
-            agent_name TEXT NOT NULL,
-            name TEXT NOT NULL,
-            cron_expression TEXT NOT NULL,
-            message TEXT NOT NULL,
-            enabled INTEGER DEFAULT 1,
-            owner_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            deleted_at TEXT
-        )
-        """
-    )
-    cur.execute(
-        "INSERT INTO users(id, username, role) VALUES (1, 'owner', 'user'), (2, 'admin', 'admin')"
-    )
-    conn.commit()
+from db_harness import db_backend, seed_user, run as _hrun, scalar as _hscalar  # noqa: E402
 
 
 @pytest.fixture
-def tmp_db(tmp_path, monkeypatch):
-    try:
-        import db.connection as connection_mod
-    except ImportError:
-        pytest.skip("backend venv required")
-
-    db_path = tmp_path / "trinity.db"
-    conn = sqlite3.connect(str(db_path))
-    _make_db(conn)
-    conn.close()
-
-    monkeypatch.setattr(connection_mod, "DB_PATH", str(db_path))
-    return str(db_path)
+def tmp_db(db_backend):
+    """Active backend with a fresh full schema; seeds owner (id=1) + admin
+    (id=2). Returns the backend marker (leading positional arg for helpers)."""
+    seed_user(1, "owner", "user")
+    seed_user(2, "admin", "admin")
+    return db_backend
 
 
 @pytest.fixture
@@ -103,31 +58,23 @@ def schedule_ops(tmp_db):
     return ScheduleOperations(user_ops, AgentOperations(user_ops))
 
 
-def _seed_agent(db_path: str, name: str, deleted_at: str | None = None):
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        "INSERT INTO agent_ownership(agent_name, owner_id, created_at, deleted_at) "
-        "VALUES (?, 1, '2026-01-01T00:00:00Z', ?)",
-        (name, deleted_at),
+def _seed_agent(_db, name: str, deleted_at: str | None = None):
+    _hrun(
+        "INSERT INTO agent_ownership (agent_name, owner_id, created_at, deleted_at) "
+        "VALUES (:n, 1, '2026-01-01T00:00:00Z', :deleted)",
+        n=name, deleted=deleted_at,
     )
-    conn.commit()
-    conn.close()
 
 
-def _seed_schedule(db_path: str, sid: str, deleted_at: str | None = None):
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        """
-        INSERT INTO agent_schedules
-            (id, agent_name, name, cron_expression, message, enabled,
-             owner_id, created_at, updated_at, deleted_at)
-        VALUES (?, 'agent-1', 'sched', '0 0 * * *', 'hi', 1, 1,
-                '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', ?)
-        """,
-        (sid, deleted_at),
+def _seed_schedule(_db, sid: str, deleted_at: str | None = None):
+    _hrun(
+        "INSERT INTO agent_schedules "
+        "(id, agent_name, name, cron_expression, message, enabled, owner_id, "
+        " created_at, updated_at, deleted_at) "
+        "VALUES (:id, 'agent-1', 'sched', '0 0 * * *', 'hi', 1, 1, "
+        " '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', :deleted)",
+        id=sid, deleted=deleted_at,
     )
-    conn.commit()
-    conn.close()
 
 
 # -----------------------------------------------------------------------------
@@ -138,9 +85,9 @@ def test_recover_agent_clears_deleted_at(tmp_db, agent_ops):
     _seed_agent(tmp_db, "ghost", deleted_at="2026-01-01T00:00:00Z")
     assert agent_ops.recover_agent_ownership("ghost") is True
 
-    conn = sqlite3.connect(tmp_db)
-    row = conn.execute("SELECT deleted_at FROM agent_ownership WHERE agent_name = ?", ("ghost",)).fetchone()
-    assert row[0] is None
+    assert _hscalar(
+        "SELECT deleted_at FROM agent_ownership WHERE agent_name = :n", n="ghost"
+    ) is None
 
 
 def test_recover_agent_refuses_live_row(tmp_db, agent_ops):
@@ -181,9 +128,9 @@ def test_recover_schedule_clears_deleted_at(tmp_db, schedule_ops):
     _seed_schedule(tmp_db, "s-1", deleted_at="2026-01-01T00:00:00Z")
     assert schedule_ops.recover_schedule("s-1") is True
 
-    conn = sqlite3.connect(tmp_db)
-    row = conn.execute("SELECT deleted_at FROM agent_schedules WHERE id = ?", ("s-1",)).fetchone()
-    assert row[0] is None
+    assert _hscalar(
+        "SELECT deleted_at FROM agent_schedules WHERE id = :id", id="s-1"
+    ) is None
 
 
 def test_recover_schedule_refuses_live(tmp_db, schedule_ops):
@@ -210,19 +157,13 @@ def test_list_soft_deleted_schedules_scoped_to_agent(tmp_db, schedule_ops):
     schedules — the URL-pattern the admin endpoint exposes."""
     # Insert one for default 'agent-1' and one for a different agent
     _seed_schedule(tmp_db, "a1-ghost", deleted_at="2026-01-01T00:00:00Z")
-    conn = sqlite3.connect(tmp_db)
-    conn.execute(
-        """
-        INSERT INTO agent_schedules
-            (id, agent_name, name, cron_expression, message, enabled,
-             owner_id, created_at, updated_at, deleted_at)
-        VALUES ('a2-ghost', 'agent-2', 'sched', '0 0 * * *', 'hi', 1, 1,
-                '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z',
-                '2026-01-01T00:00:00Z')
-        """
+    _hrun(
+        "INSERT INTO agent_schedules "
+        "(id, agent_name, name, cron_expression, message, enabled, owner_id, "
+        " created_at, updated_at, deleted_at) "
+        "VALUES ('a2-ghost', 'agent-2', 'sched', '0 0 * * *', 'hi', 1, 1, "
+        " '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
     )
-    conn.commit()
-    conn.close()
 
     rows = schedule_ops.list_soft_deleted_schedules(agent_name="agent-1")
     ids = {r["id"] for r in rows}

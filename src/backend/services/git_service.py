@@ -12,13 +12,13 @@ import httpx
 import os
 import re
 import shlex
-import sqlite3
 import uuid
 import logging
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Optional, Dict, Any, List, Tuple
+from sqlalchemy.exc import IntegrityError
 from database import db, AgentGitConfig, GitSyncResult
 from services.docker_service import get_agent_container, execute_command_in_container
 
@@ -375,11 +375,12 @@ async def reserve_and_generate_instance_id(
                 source_branch=source_branch,
                 source_mode=source_mode,
             )
-        except sqlite3.IntegrityError as exc:
+        except IntegrityError as exc:
             last_error = exc
             # The partial UNIQUE index on (github_repo, working_branch) WHERE
             # source_mode = 0 fired — another agent already owns this branch.
-            # Retry with a fresh UUID.
+            # Retry with a fresh UUID. (#300: db.create_git_config now raises
+            # sqlalchemy.exc.IntegrityError on both backends.)
             logger.warning(
                 "reserve_and_generate_instance_id: DB collision for %s "
                 "(attempt %d/%d): %s",

@@ -24,45 +24,7 @@ _BACKEND = Path(__file__).resolve().parent.parent.parent / "src" / "backend"
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-
-_VOIP_BINDINGS_DDL = """
-    CREATE TABLE voip_bindings (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        agent_name TEXT NOT NULL UNIQUE,
-        account_sid TEXT NOT NULL,
-        auth_token_encrypted TEXT NOT NULL,
-        from_number TEXT NOT NULL,
-        inbound_number TEXT,
-        webhook_secret TEXT NOT NULL UNIQUE,
-        webhook_url TEXT,
-        daily_call_cap INTEGER DEFAULT 50,
-        display_name TEXT,
-        enabled INTEGER DEFAULT 1,
-        created_by TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT
-    )
-"""
-
-_VOIP_CALL_LOGS_DDL = """
-    CREATE TABLE voip_call_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        call_id TEXT NOT NULL UNIQUE,
-        agent_name TEXT NOT NULL,
-        chat_session_id TEXT,
-        to_number TEXT NOT NULL,
-        direction TEXT NOT NULL DEFAULT 'outbound',
-        status TEXT NOT NULL DEFAULT 'initiated',
-        twilio_call_sid TEXT,
-        initiated_by_user_id INTEGER,
-        initiated_by_email TEXT,
-        error TEXT,
-        started_at TEXT NOT NULL,
-        connected_at TEXT,
-        ended_at TEXT,
-        duration_ms INTEGER
-    )
-"""
+from db_harness import db_backend, engine_conn  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -72,24 +34,15 @@ def encryption_key(monkeypatch):
 
 
 @pytest.fixture
-def voip_ops(tmp_path, monkeypatch):
-    """VoipOperations bound to a temp SQLite DB with the voip schema."""
+def voip_ops(db_backend):
+    """VoipOperations + an engine-backed conn shim, on the active backend
+    (db_harness, #300). Runs on SQLite and, when TEST_POSTGRES_URL is set,
+    PostgreSQL. db_backend builds the full schema (incl. voip_bindings /
+    voip_call_logs); the yielded shim mimics a sqlite3 connection for the
+    tests' direct verification reads + legacy-row seeding."""
     from db import voip as voip_db
 
-    conn = sqlite3.connect(str(tmp_path / "voip.db"))
-    conn.execute(_VOIP_BINDINGS_DDL)
-    conn.execute(_VOIP_CALL_LOGS_DDL)
-    conn.commit()
-
-    class _ConnCtx:
-        def __enter__(self):
-            return conn
-        def __exit__(self, *args):
-            return False
-
-    monkeypatch.setattr(voip_db, "get_db_connection", lambda: _ConnCtx())
-    yield voip_db.VoipOperations(), conn
-    conn.close()
+    yield voip_db.VoipOperations(), engine_conn()
 
 
 # ---------------------------------------------------------------------------

@@ -3,13 +3,23 @@ Operator queue database operations (OPS-001).
 
 Persists operator queue items synced from agent JSON files.
 Supports listing, filtering, responding, and statistics.
+
+Converted from raw sqlite3 to SQLAlchemy Core for the configurable database
+backend (#300): runs unchanged on both SQLite and PostgreSQL. Queries are built
+from the ``operator_queue`` table in ``db/tables.py`` (dialect-agnostic
+expressions, no ``?`` placeholders, no ``datetime('now')``/``julianday`` —
+time math is done in Python). The public API of ``OperatorQueueOperations`` is
+unchanged.
 """
 
 import json
 from typing import Optional, List, Dict, Set
 from datetime import datetime
 
-from .connection import get_db_connection
+from sqlalchemy import select, update, func, and_, case
+
+from .engine import get_engine, make_insert
+from .tables import operator_queue
 from utils.helpers import utc_now_iso, iso_cutoff
 
 
@@ -18,36 +28,51 @@ class OperatorQueueOperations:
 
     @staticmethod
     def _row_to_item(row) -> Dict:
-        """Convert a database row to a queue item dict."""
+        """Convert a database row (RowMapping) to a queue item dict."""
         return {
-            "id": row[0],
-            "agent_name": row[1],
-            "type": row[2],
-            "status": row[3],
-            "priority": row[4],
-            "title": row[5],
-            "question": row[6],
-            "options": json.loads(row[7]) if row[7] else None,
-            "context": json.loads(row[8]) if row[8] else None,
-            "execution_id": row[9],
-            "created_at": row[10],
-            "expires_at": row[11],
-            "response": row[12],
-            "response_text": row[13],
-            "responded_by_id": row[14],
-            "responded_by_email": row[15],
-            "responded_at": row[16],
-            "acknowledged_at": row[17],
-            "cleared_at": row[18],
+            "id": row["id"],
+            "agent_name": row["agent_name"],
+            "type": row["type"],
+            "status": row["status"],
+            "priority": row["priority"],
+            "title": row["title"],
+            "question": row["question"],
+            "options": json.loads(row["options"]) if row["options"] else None,
+            "context": json.loads(row["context"]) if row["context"] else None,
+            "execution_id": row["execution_id"],
+            "created_at": row["created_at"],
+            "expires_at": row["expires_at"],
+            "response": row["response"],
+            "response_text": row["response_text"],
+            "responded_by_id": row["responded_by_id"],
+            "responded_by_email": row["responded_by_email"],
+            "responded_at": row["responded_at"],
+            "acknowledged_at": row["acknowledged_at"],
+            "cleared_at": row["cleared_at"],  # #1017
         }
 
-    # cleared_at must stay LAST — _row_to_item indexes positionally (#1017)
-    _SELECT_COLS = """
-        id, agent_name, type, status, priority, title, question,
-        options, context, execution_id, created_at, expires_at,
-        response, response_text, responded_by_id, responded_by_email,
-        responded_at, acknowledged_at, cleared_at
-    """
+    # Columns selected for a full queue-item record, in the canonical order.
+    _SELECT_COLS = (
+        operator_queue.c.id,
+        operator_queue.c.agent_name,
+        operator_queue.c.type,
+        operator_queue.c.status,
+        operator_queue.c.priority,
+        operator_queue.c.title,
+        operator_queue.c.question,
+        operator_queue.c.options,
+        operator_queue.c.context,
+        operator_queue.c.execution_id,
+        operator_queue.c.created_at,
+        operator_queue.c.expires_at,
+        operator_queue.c.response,
+        operator_queue.c.response_text,
+        operator_queue.c.responded_by_id,
+        operator_queue.c.responded_by_email,
+        operator_queue.c.responded_at,
+        operator_queue.c.acknowledged_at,
+        operator_queue.c.cleared_at,  # #1017 — Clear All hide flag
+    )
 
     def create_item(self, agent_name: str, item: Dict) -> str:
         """Create a queue item from agent JSON data.
@@ -63,39 +88,30 @@ class OperatorQueueOperations:
         options_json = json.dumps(item.get("options")) if item.get("options") else None
         context_json = json.dumps(item.get("context")) if item.get("context") else None
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT OR IGNORE INTO operator_queue (
-                    id, agent_name, type, status, priority, title, question,
-                    options, context, execution_id, created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                item_id,
-                agent_name,
-                item.get("type", "question"),
-                item.get("status", "pending"),
-                item.get("priority", "medium"),
-                item["title"],
-                item["question"],
-                options_json,
-                context_json,
-                item.get("context", {}).get("execution_id") if item.get("context") else None,
-                item["created_at"],
-                item.get("expires_at"),
-            ))
-            conn.commit()
-            return item_id
+        stmt = make_insert(operator_queue).values(
+            id=item_id,
+            agent_name=agent_name,
+            type=item.get("type", "question"),
+            status=item.get("status", "pending"),
+            priority=item.get("priority", "medium"),
+            title=item["title"],
+            question=item["question"],
+            options=options_json,
+            context=context_json,
+            execution_id=item.get("context", {}).get("execution_id") if item.get("context") else None,
+            created_at=item["created_at"],
+            expires_at=item.get("expires_at"),
+        ).on_conflict_do_nothing(index_elements=["id"])
+
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
+        return item_id
 
     def get_item(self, item_id: str) -> Optional[Dict]:
         """Get a single queue item by ID."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"""
-                SELECT {self._SELECT_COLS}
-                FROM operator_queue WHERE id = ?
-            """, (item_id,))
-            row = cursor.fetchone()
+        stmt = select(*self._SELECT_COLS).where(operator_queue.c.id == item_id)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
 
         if not row:
             return None
@@ -126,53 +142,51 @@ class OperatorQueueOperations:
         if accessible_agent_names is not None and len(accessible_agent_names) == 0:
             return []
 
-        query = f"SELECT {self._SELECT_COLS} FROM operator_queue WHERE 1=1"
-        params = []
-
+        conds = []
         if not include_cleared:
-            query += " AND cleared_at IS NULL"
+            conds.append(operator_queue.c.cleared_at.is_(None))  # #1017
 
         if accessible_agent_names is not None:
-            placeholders = ",".join(["?"] * len(accessible_agent_names))
-            query += f" AND agent_name IN ({placeholders})"
-            params.extend(sorted(accessible_agent_names))
-
+            conds.append(operator_queue.c.agent_name.in_(sorted(accessible_agent_names)))
         if status:
-            query += " AND status = ?"
-            params.append(status)
+            conds.append(operator_queue.c.status == status)
         if type:
-            query += " AND type = ?"
-            params.append(type)
+            conds.append(operator_queue.c.type == type)
         if priority:
-            query += " AND priority = ?"
-            params.append(priority)
+            conds.append(operator_queue.c.priority == priority)
         if agent_name:
-            query += " AND agent_name = ?"
-            params.append(agent_name)
+            conds.append(operator_queue.c.agent_name == agent_name)
         if since:
-            query += " AND created_at >= ?"
-            params.append(since)
+            conds.append(operator_queue.c.created_at >= since)
 
         # Sort: pending items by priority then age, others by created_at desc
-        query += """
-            ORDER BY
-                CASE status WHEN 'pending' THEN 0 ELSE 1 END,
-                CASE priority
-                    WHEN 'critical' THEN 0
-                    WHEN 'high' THEN 1
-                    WHEN 'medium' THEN 2
-                    WHEN 'low' THEN 3
-                    ELSE 4
-                END,
-                created_at DESC
-            LIMIT ? OFFSET ?
-        """
-        params.extend([limit, offset])
+        status_order = case(
+            (operator_queue.c.status == "pending", 0),
+            else_=1,
+        )
+        priority_order = case(
+            (operator_queue.c.priority == "critical", 0),
+            (operator_queue.c.priority == "high", 1),
+            (operator_queue.c.priority == "medium", 2),
+            (operator_queue.c.priority == "low", 3),
+            else_=4,
+        )
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
+        stmt = select(*self._SELECT_COLS)
+        if conds:
+            stmt = stmt.where(and_(*conds))
+        stmt = (
+            stmt.order_by(
+                status_order,
+                priority_order,
+                operator_queue.c.created_at.desc(),
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
 
         return [self._row_to_item(row) for row in rows]
 
@@ -190,24 +204,32 @@ class OperatorQueueOperations:
         """
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE operator_queue
-                SET status = 'responded',
-                    response = ?,
-                    response_text = ?,
-                    responded_by_id = ?,
-                    responded_by_email = ?,
-                    responded_at = ?
-                WHERE id = ? AND status = 'pending'
-            """, (response, response_text, responded_by_id, responded_by_email, now, item_id))
-            conn.commit()
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(operator_queue)
+                .where(
+                    and_(
+                        operator_queue.c.id == item_id,
+                        operator_queue.c.status == "pending",
+                    )
+                )
+                .values(
+                    status="responded",
+                    response=response,
+                    response_text=response_text,
+                    responded_by_id=responded_by_id,
+                    responded_by_email=responded_by_email,
+                    responded_at=now,
+                )
+            )
 
-            if cursor.rowcount == 0:
+            if result.rowcount == 0:
                 # Check if item exists at all
-                cursor.execute("SELECT id, status FROM operator_queue WHERE id = ?", (item_id,))
-                row = cursor.fetchone()
+                row = conn.execute(
+                    select(operator_queue.c.id, operator_queue.c.status).where(
+                        operator_queue.c.id == item_id
+                    )
+                ).mappings().first()
                 if not row:
                     return None
                 # Item exists but not pending — lost a race (e.g. bulk-cancel
@@ -222,18 +244,23 @@ class OperatorQueueOperations:
 
     def cancel_item(self, item_id: str) -> Optional[Dict]:
         """Cancel a pending queue item."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE operator_queue
-                SET status = 'cancelled'
-                WHERE id = ? AND status = 'pending'
-            """, (item_id,))
-            conn.commit()
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(operator_queue)
+                .where(
+                    and_(
+                        operator_queue.c.id == item_id,
+                        operator_queue.c.status == "pending",
+                    )
+                )
+                .values(status="cancelled")
+            )
 
-            if cursor.rowcount == 0:
-                cursor.execute("SELECT id FROM operator_queue WHERE id = ?", (item_id,))
-                if not cursor.fetchone():
+            if result.rowcount == 0:
+                exists = conn.execute(
+                    select(operator_queue.c.id).where(operator_queue.c.id == item_id)
+                ).first()
+                if not exists:
                     return None
 
         return self.get_item(item_id)
@@ -260,24 +287,18 @@ class OperatorQueueOperations:
         if accessible_agent_names is not None and len(accessible_agent_names) == 0:
             return 0
 
-        id_placeholders = ",".join(["?"] * len(ids))
-        query = f"""
-            UPDATE operator_queue
-            SET status = 'cancelled'
-            WHERE status = 'pending' AND id IN ({id_placeholders})
-        """
-        params: List = list(ids)
-
+        conds = [
+            operator_queue.c.status == "pending",
+            operator_queue.c.id.in_(list(ids)),
+        ]
         if accessible_agent_names is not None:
-            agent_placeholders = ",".join(["?"] * len(accessible_agent_names))
-            query += f" AND agent_name IN ({agent_placeholders})"
-            params.extend(sorted(accessible_agent_names))
+            conds.append(operator_queue.c.agent_name.in_(sorted(accessible_agent_names)))
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            conn.commit()
-            return cursor.rowcount
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(operator_queue).where(and_(*conds)).values(status="cancelled")
+            )
+            return result.rowcount
 
     def clear_resolved_items(
         self,
@@ -303,41 +324,36 @@ class OperatorQueueOperations:
             return 0
 
         now = utc_now_iso()
-        query = """
-            UPDATE operator_queue
-            SET cleared_at = ?
-            WHERE status IN ('acknowledged', 'cancelled', 'expired')
-              AND cleared_at IS NULL
-        """
-        params: List = [now]
-
+        conds = [
+            operator_queue.c.status.in_(("acknowledged", "cancelled", "expired")),
+            operator_queue.c.cleared_at.is_(None),
+        ]
         if accessible_agent_names is not None:
-            placeholders = ",".join(["?"] * len(accessible_agent_names))
-            query += f" AND agent_name IN ({placeholders})"
-            params.extend(sorted(accessible_agent_names))
-
+            conds.append(operator_queue.c.agent_name.in_(sorted(accessible_agent_names)))
         if agent_name:
-            query += " AND agent_name = ?"
-            params.append(agent_name)
+            conds.append(operator_queue.c.agent_name == agent_name)
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            conn.commit()
-            return cursor.rowcount
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(operator_queue).where(and_(*conds)).values(cleared_at=now)
+            )
+            return result.rowcount
 
     def mark_acknowledged(self, item_id: str) -> bool:
         """Mark an item as acknowledged by the agent."""
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE operator_queue
-                SET status = 'acknowledged', acknowledged_at = ?
-                WHERE id = ? AND status = 'responded'
-            """, (now, item_id))
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(operator_queue)
+                .where(
+                    and_(
+                        operator_queue.c.id == item_id,
+                        operator_queue.c.status == "responded",
+                    )
+                )
+                .values(status="acknowledged", acknowledged_at=now)
+            )
+            return result.rowcount > 0
 
     def mark_expired(self) -> int:
         """Mark pending items past their expires_at as expired.
@@ -345,17 +361,19 @@ class OperatorQueueOperations:
         Returns number of items expired.
         """
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE operator_queue
-                SET status = 'expired'
-                WHERE status = 'pending'
-                  AND expires_at IS NOT NULL
-                  AND expires_at < ?
-            """, (now,))
-            conn.commit()
-            return cursor.rowcount
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(operator_queue)
+                .where(
+                    and_(
+                        operator_queue.c.status == "pending",
+                        operator_queue.c.expires_at.isnot(None),
+                        operator_queue.c.expires_at < now,
+                    )
+                )
+                .values(status="expired")
+            )
+            return result.rowcount
 
     def get_stats(self, accessible_agent_names: Optional[Set[str]] = None) -> Dict:
         """Get queue statistics.
@@ -374,65 +392,77 @@ class OperatorQueueOperations:
                 "responded_today": 0,
             }
 
-        # Build access filter fragment applied to every sub-query
-        access_filter = ""
-        access_params: List = []
+        # Access filter applied to every aggregate query.
+        access_cond = None
         if accessible_agent_names is not None:
-            placeholders = ",".join(["?"] * len(accessible_agent_names))
-            access_filter = f" AND agent_name IN ({placeholders})"
-            access_params = sorted(accessible_agent_names)
+            access_cond = operator_queue.c.agent_name.in_(sorted(accessible_agent_names))
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        def _with_access(*conds):
+            all_conds = list(conds)
+            if access_cond is not None:
+                all_conds.append(access_cond)
+            return all_conds
 
+        with get_engine().connect() as conn:
             # Counts by status
-            cursor.execute(
-                f"SELECT status, COUNT(*) FROM operator_queue WHERE 1=1{access_filter} GROUP BY status",
-                access_params,
-            )
-            by_status = {row[0]: row[1] for row in cursor.fetchall()}
+            status_stmt = select(
+                operator_queue.c.status, func.count()
+            ).group_by(operator_queue.c.status)
+            access_only = _with_access()
+            if access_only:
+                status_stmt = status_stmt.where(and_(*access_only))
+            by_status = {row[0]: row[1] for row in conn.execute(status_stmt).all()}
 
             # Counts by type (pending only)
-            cursor.execute(
-                f"SELECT type, COUNT(*) FROM operator_queue WHERE status = 'pending'{access_filter} GROUP BY type",
-                access_params,
+            type_stmt = (
+                select(operator_queue.c.type, func.count())
+                .where(and_(*_with_access(operator_queue.c.status == "pending")))
+                .group_by(operator_queue.c.type)
             )
-            by_type = {row[0]: row[1] for row in cursor.fetchall()}
+            by_type = {row[0]: row[1] for row in conn.execute(type_stmt).all()}
 
             # Counts by priority (pending only)
-            cursor.execute(
-                f"SELECT priority, COUNT(*) FROM operator_queue WHERE status = 'pending'{access_filter} GROUP BY priority",
-                access_params,
+            priority_stmt = (
+                select(operator_queue.c.priority, func.count())
+                .where(and_(*_with_access(operator_queue.c.status == "pending")))
+                .group_by(operator_queue.c.priority)
             )
-            by_priority = {row[0]: row[1] for row in cursor.fetchall()}
+            by_priority = {row[0]: row[1] for row in conn.execute(priority_stmt).all()}
 
             # Counts by agent (pending only)
-            cursor.execute(
-                f"SELECT agent_name, COUNT(*) FROM operator_queue WHERE status = 'pending'{access_filter} GROUP BY agent_name",
-                access_params,
+            agent_stmt = (
+                select(operator_queue.c.agent_name, func.count())
+                .where(and_(*_with_access(operator_queue.c.status == "pending")))
+                .group_by(operator_queue.c.agent_name)
             )
-            by_agent = {row[0]: row[1] for row in cursor.fetchall()}
+            by_agent = {row[0]: row[1] for row in conn.execute(agent_stmt).all()}
 
-            # Average response time (for responded items)
-            cursor.execute(
-                f"""SELECT AVG(
-                    (julianday(responded_at) - julianday(created_at)) * 86400
-                ) FROM operator_queue
-                WHERE responded_at IS NOT NULL{access_filter}""",
-                access_params,
-            )
-            avg_row = cursor.fetchone()
-            avg_response_seconds = round(avg_row[0], 1) if avg_row[0] else None
+            # Average response time (for responded items). Computed in Python
+            # from the ISO-Z timestamp strings — julianday() is SQLite-only.
+            resp_conds = [operator_queue.c.responded_at.isnot(None)]
+            avg_stmt = select(
+                operator_queue.c.created_at, operator_queue.c.responded_at
+            ).where(and_(*_with_access(*resp_conds)))
+            deltas = []
+            for created_at, responded_at in conn.execute(avg_stmt).all():
+                if not created_at or not responded_at:
+                    continue
+                try:
+                    c = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    r = datetime.fromisoformat(responded_at.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    continue
+                deltas.append((r - c).total_seconds())
+            avg_response_seconds = round(sum(deltas) / len(deltas), 1) if deltas else None
 
             # Items responded today
             today = datetime.utcnow().strftime("%Y-%m-%d")
-            cursor.execute(
-                f"""SELECT COUNT(*) FROM operator_queue
-                WHERE responded_at IS NOT NULL
-                  AND responded_at >= ?{access_filter}""",
-                [today] + access_params,
-            )
-            responded_today = cursor.fetchone()[0]
+            today_conds = [
+                operator_queue.c.responded_at.isnot(None),
+                operator_queue.c.responded_at >= today,
+            ]
+            today_stmt = select(func.count()).where(and_(*_with_access(*today_conds)))
+            responded_today = conn.execute(today_stmt).scalar() or 0
 
         return {
             "by_status": by_status,
@@ -446,24 +476,24 @@ class OperatorQueueOperations:
 
     def get_pending_item_ids(self) -> List[str]:
         """Get IDs of all pending items (for sync service to check)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT id FROM operator_queue WHERE status = 'pending'")
-            return [row[0] for row in cursor.fetchall()]
+        stmt = select(operator_queue.c.id).where(operator_queue.c.status == "pending")
+        with get_engine().connect() as conn:
+            return [row[0] for row in conn.execute(stmt).all()]
 
     def get_responded_items_for_agent(self, agent_name: str) -> List[Dict]:
         """Get responded (not yet acknowledged) items for a specific agent.
 
         Used by sync service to write responses back to agent files.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"""
-                SELECT {self._SELECT_COLS}
-                FROM operator_queue
-                WHERE agent_name = ? AND status = 'responded'
-            """, (agent_name,))
-            return [self._row_to_item(row) for row in cursor.fetchall()]
+        stmt = select(*self._SELECT_COLS).where(
+            and_(
+                operator_queue.c.agent_name == agent_name,
+                operator_queue.c.status == "responded",
+            )
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [self._row_to_item(row) for row in rows]
 
     def get_terminal_items_for_agent(self, agent_name: str, since_hours: int = 168) -> List[Dict]:
         """Get recently cancelled/expired items for a specific agent (#1017).
@@ -477,19 +507,19 @@ class OperatorQueueOperations:
         5s sync query stays cheap.
         """
         cutoff = iso_cutoff(since_hours)
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"""
-                SELECT {self._SELECT_COLS}
-                FROM operator_queue
-                WHERE agent_name = ? AND status IN ('cancelled', 'expired')
-                  AND created_at >= ?
-            """, (agent_name, cutoff))
-            return [self._row_to_item(row) for row in cursor.fetchall()]
+        stmt = select(*self._SELECT_COLS).where(
+            and_(
+                operator_queue.c.agent_name == agent_name,
+                operator_queue.c.status.in_(("cancelled", "expired")),
+                operator_queue.c.created_at >= cutoff,
+            )
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [self._row_to_item(row) for row in rows]
 
     def item_exists(self, item_id: str) -> bool:
         """Check if an item exists in the database."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1 FROM operator_queue WHERE id = ?", (item_id,))
-            return cursor.fetchone() is not None
+        stmt = select(operator_queue.c.id).where(operator_queue.c.id == item_id)
+        with get_engine().connect() as conn:
+            return conn.execute(stmt).first() is not None

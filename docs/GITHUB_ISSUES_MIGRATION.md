@@ -1,6 +1,6 @@
 # GitHub Issues Migration Plan
 
-> **Status**: Migration complete. Roadmap is now tracked via GitHub Issues and the **Trinity Roadmap** project board. The old `docs/memory/roadmap.md` has been archived to `docs/memory/roadmap-archive.md`. See `CONTRIBUTING.md` for the current SDLC.
+> **Status**: Historical (migration complete). Roadmap moved from `docs/memory/roadmap.md` (archived to `docs/memory/roadmap-archive.md`) to GitHub Issues. **Superseded since:** the project board was deprecated (issues-only SDLC), and tracking is now split across **two trackers** — public `abilityai/trinity` (bugs/refactor/docs) and private `abilityai/trinity-enterprise` (features/epics). For the current model see `.claude/DEVELOPMENT_WORKFLOW.md` → Repository Routing and `CONTRIBUTING.md`.
 >
 > Original purpose: Migrate from `docs/memory/roadmap.md` to GitHub Issues for roadmap tracking.
 

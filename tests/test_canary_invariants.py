@@ -388,7 +388,17 @@ def canary_db(monkeypatch):
     fake_db_connection.get_db_connection = lambda: _ConnCtx()
     monkeypatch.setitem(sys.modules, "db.connection", fake_db_connection)
 
+    # Route the SQLAlchemy engine seam (#300) at the SAME temp file. Converted
+    # db modules (e.g. CanaryOperations) use get_engine(), whose cache is keyed
+    # by URL — dispose so the temp file's engine is created, and dispose again
+    # at teardown so the cached engine is dropped.
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    import db.engine as engine_mod
+    engine_mod.dispose_engines()
+
     yield db_path
+
+    engine_mod.dispose_engines()
     os.unlink(db_path)
 
 

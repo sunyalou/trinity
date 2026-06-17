@@ -272,15 +272,16 @@ class SystemAgentService:
 
     def _set_system_scope(self, key_id: str):
         """Update MCP key to have system scope (bypasses permissions)."""
-        from db.connection import get_db_connection
+        from sqlalchemy import update
+        from db.engine import get_engine
+        from db.tables import mcp_api_keys
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE mcp_api_keys SET scope = ? WHERE id = ?",
-                ("system", key_id)
+        with get_engine().begin() as conn:
+            conn.execute(
+                update(mcp_api_keys)
+                .where(mcp_api_keys.c.id == key_id)
+                .values(scope="system")
             )
-            conn.commit()
 
 
 # Global service instance

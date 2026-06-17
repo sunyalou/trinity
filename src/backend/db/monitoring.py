@@ -3,6 +3,11 @@ Monitoring database operations for agent health checks.
 
 Handles storage and retrieval of health check results, alert cooldowns,
 and historical data for trend analysis.
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL. Queries are built from the table handles in
+``db/tables.py``; the engine is resolved from ``DATABASE_URL`` via
+``db/engine.py``. Public method signatures and return shapes are unchanged.
 """
 
 import json
@@ -10,7 +15,10 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
-from .connection import get_db_connection
+from sqlalchemy import select, insert, delete, func, and_, text
+
+from .engine import get_engine, make_insert
+from .tables import agent_health_checks, monitoring_alert_cooldowns
 from utils.helpers import iso_cutoff, utc_now_iso
 
 
@@ -54,45 +62,34 @@ class MonitoringOperations:
         network = network_metrics or {}
         business = business_metrics or {}
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO agent_health_checks (
-                    id, agent_name, check_type, status,
-                    container_status, cpu_percent, memory_percent, memory_mb,
-                    restart_count, oom_killed,
-                    reachable, latency_ms,
-                    runtime_available, claude_available, context_percent,
-                    active_executions, error_rate,
-                    error_message, checked_at, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                check_id,
-                agent_name,
-                check_type,
-                status,
-                # Docker metrics
-                docker.get("container_status"),
-                docker.get("cpu_percent"),
-                docker.get("memory_percent"),
-                docker.get("memory_mb"),
-                docker.get("restart_count"),
-                1 if docker.get("oom_killed") else 0 if docker.get("oom_killed") is False else None,
-                # Network metrics
-                1 if network.get("reachable") else 0 if network.get("reachable") is False else None,
-                network.get("latency_ms"),
-                # Business metrics
-                1 if business.get("runtime_available") else 0 if business.get("runtime_available") is False else None,
-                1 if business.get("claude_available") else 0 if business.get("claude_available") is False else None,
-                business.get("context_percent"),
-                business.get("active_executions"),
-                business.get("error_rate"),
-                # Common fields
-                error_message,
-                now,
-                now,
-            ))
-            conn.commit()
+        stmt = insert(agent_health_checks).values(
+            id=check_id,
+            agent_name=agent_name,
+            check_type=check_type,
+            status=status,
+            # Docker metrics
+            container_status=docker.get("container_status"),
+            cpu_percent=docker.get("cpu_percent"),
+            memory_percent=docker.get("memory_percent"),
+            memory_mb=docker.get("memory_mb"),
+            restart_count=docker.get("restart_count"),
+            oom_killed=1 if docker.get("oom_killed") else 0 if docker.get("oom_killed") is False else None,
+            # Network metrics
+            reachable=1 if network.get("reachable") else 0 if network.get("reachable") is False else None,
+            latency_ms=network.get("latency_ms"),
+            # Business metrics
+            runtime_available=1 if business.get("runtime_available") else 0 if business.get("runtime_available") is False else None,
+            claude_available=1 if business.get("claude_available") else 0 if business.get("claude_available") is False else None,
+            context_percent=business.get("context_percent"),
+            active_executions=business.get("active_executions"),
+            error_rate=business.get("error_rate"),
+            # Common fields
+            error_message=error_message,
+            checked_at=now,
+            created_at=now,
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
         return check_id
 
@@ -102,18 +99,22 @@ class MonitoringOperations:
         check_type: str = "aggregate"
     ) -> Optional[Dict]:
         """Get the most recent health check for an agent."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM agent_health_checks
-                WHERE agent_name = ? AND check_type = ?
-                ORDER BY checked_at DESC
-                LIMIT 1
-            """, (agent_name, check_type))
-            row = cursor.fetchone()
-            if not row:
-                return None
-            return self._row_to_health_check(cursor, row)
+        stmt = (
+            select(agent_health_checks)
+            .where(
+                and_(
+                    agent_health_checks.c.agent_name == agent_name,
+                    agent_health_checks.c.check_type == check_type,
+                )
+            )
+            .order_by(agent_health_checks.c.checked_at.desc())
+            .limit(1)
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if not row:
+            return None
+        return self._row_to_health_check(row)
 
     def get_agent_health_history(
         self,
@@ -125,16 +126,21 @@ class MonitoringOperations:
         """Get health check history for an agent."""
         since = (datetime.utcnow() - timedelta(hours=hours)).isoformat() + "Z"
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM agent_health_checks
-                WHERE agent_name = ? AND check_type = ? AND checked_at >= ?
-                ORDER BY checked_at DESC
-                LIMIT ?
-            """, (agent_name, check_type, since, limit))
-            rows = cursor.fetchall()
-            return [self._row_to_health_check(cursor, row) for row in rows]
+        stmt = (
+            select(agent_health_checks)
+            .where(
+                and_(
+                    agent_health_checks.c.agent_name == agent_name,
+                    agent_health_checks.c.check_type == check_type,
+                    agent_health_checks.c.checked_at >= since,
+                )
+            )
+            .order_by(agent_health_checks.c.checked_at.desc())
+            .limit(limit)
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [self._row_to_health_check(row) for row in rows]
 
     def get_all_latest_health_checks(
         self,
@@ -147,38 +153,51 @@ class MonitoringOperations:
         Returns:
             Dict mapping agent_name -> health check record
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        # Kept as a parameterised text() query: the self-join against a
+        # per-agent MAX(checked_at) subquery is awkward to express in Core and
+        # was already hand-tuned SQL. All sqlite-only constructs were removed
+        # and placeholders are named (portable across SQLite + PostgreSQL).
+        with get_engine().connect() as conn:
             if agent_names:
-                placeholders = ",".join("?" * len(agent_names))
-                cursor.execute(f"""
-                    SELECT h1.* FROM agent_health_checks h1
-                    INNER JOIN (
-                        SELECT agent_name, MAX(checked_at) as max_checked
-                        FROM agent_health_checks
-                        WHERE check_type = ? AND agent_name IN ({placeholders})
-                        GROUP BY agent_name
-                    ) h2 ON h1.agent_name = h2.agent_name AND h1.checked_at = h2.max_checked
-                    WHERE h1.check_type = ?
-                """, [check_type] + agent_names + [check_type])
+                params: Dict[str, Any] = {"check_type": check_type}
+                name_keys = []
+                for i, name in enumerate(agent_names):
+                    key = f"name_{i}"
+                    name_keys.append(f":{key}")
+                    params[key] = name
+                placeholders = ",".join(name_keys)
+                rows = conn.execute(
+                    text(f"""
+                        SELECT h1.* FROM agent_health_checks h1
+                        INNER JOIN (
+                            SELECT agent_name, MAX(checked_at) as max_checked
+                            FROM agent_health_checks
+                            WHERE check_type = :check_type AND agent_name IN ({placeholders})
+                            GROUP BY agent_name
+                        ) h2 ON h1.agent_name = h2.agent_name AND h1.checked_at = h2.max_checked
+                        WHERE h1.check_type = :check_type
+                    """),
+                    params,
+                ).mappings().all()
             else:
-                cursor.execute("""
-                    SELECT h1.* FROM agent_health_checks h1
-                    INNER JOIN (
-                        SELECT agent_name, MAX(checked_at) as max_checked
-                        FROM agent_health_checks
-                        WHERE check_type = ?
-                        GROUP BY agent_name
-                    ) h2 ON h1.agent_name = h2.agent_name AND h1.checked_at = h2.max_checked
-                    WHERE h1.check_type = ?
-                """, (check_type, check_type))
+                rows = conn.execute(
+                    text("""
+                        SELECT h1.* FROM agent_health_checks h1
+                        INNER JOIN (
+                            SELECT agent_name, MAX(checked_at) as max_checked
+                            FROM agent_health_checks
+                            WHERE check_type = :check_type
+                            GROUP BY agent_name
+                        ) h2 ON h1.agent_name = h2.agent_name AND h1.checked_at = h2.max_checked
+                        WHERE h1.check_type = :check_type
+                    """),
+                    {"check_type": check_type},
+                ).mappings().all()
 
-            rows = cursor.fetchall()
-            return {
-                self._row_to_health_check(cursor, row)["agent_name"]: self._row_to_health_check(cursor, row)
-                for row in rows
-            }
+        return {
+            self._row_to_health_check(row)["agent_name"]: self._row_to_health_check(row)
+            for row in rows
+        }
 
     def get_health_summary(
         self,
@@ -250,29 +269,26 @@ class MonitoringOperations:
 
         cutoff = iso_cutoff(hours=days * 24)
         total = 0
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            while True:
-                cursor.execute(
-                    """
-                    SELECT id FROM agent_health_checks
-                    WHERE checked_at < ?
-                    LIMIT ?
-                    """,
-                    (cutoff, chunk_size),
-                )
-                ids = [row["id"] for row in cursor.fetchall()]
+        while True:
+            with get_engine().begin() as conn:
+                ids = [
+                    row["id"]
+                    for row in conn.execute(
+                        select(agent_health_checks.c.id)
+                        .where(agent_health_checks.c.checked_at < cutoff)
+                        .limit(chunk_size)
+                    ).mappings()
+                ]
                 if not ids:
                     break
-                placeholders = ",".join("?" * len(ids))
-                cursor.execute(
-                    f"DELETE FROM agent_health_checks WHERE id IN ({placeholders})",
-                    ids,
+                result = conn.execute(
+                    delete(agent_health_checks).where(
+                        agent_health_checks.c.id.in_(ids)
+                    )
                 )
-                conn.commit()
-                total += cursor.rowcount
-                if len(ids) < chunk_size:
-                    break
+                total += result.rowcount
+            if len(ids) < chunk_size:
+                break
 
         return total
 
@@ -286,14 +302,15 @@ class MonitoringOperations:
         condition: str
     ) -> Optional[str]:
         """Get the last alert timestamp for a condition."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT last_alert_at FROM monitoring_alert_cooldowns
-                WHERE agent_name = ? AND condition = ?
-            """, (agent_name, condition))
-            row = cursor.fetchone()
-            return row[0] if row else None
+        stmt = select(monitoring_alert_cooldowns.c.last_alert_at).where(
+            and_(
+                monitoring_alert_cooldowns.c.agent_name == agent_name,
+                monitoring_alert_cooldowns.c.condition == condition,
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
+        return row[0] if row else None
 
     def set_cooldown(
         self,
@@ -304,14 +321,21 @@ class MonitoringOperations:
         now = utc_now_iso()
         cooldown_id = f"cd_{secrets.token_urlsafe(8)}"
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO monitoring_alert_cooldowns (id, agent_name, condition, last_alert_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(agent_name, condition) DO UPDATE SET last_alert_at = ?
-            """, (cooldown_id, agent_name, condition, now, now))
-            conn.commit()
+        stmt = (
+            make_insert(monitoring_alert_cooldowns)
+            .values(
+                id=cooldown_id,
+                agent_name=agent_name,
+                condition=condition,
+                last_alert_at=now,
+            )
+            .on_conflict_do_update(
+                index_elements=["agent_name", "condition"],
+                set_={"last_alert_at": now},
+            )
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
     def clear_cooldown(
         self,
@@ -319,15 +343,15 @@ class MonitoringOperations:
         condition: str
     ) -> bool:
         """Clear a cooldown entry. Returns True if entry existed."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM monitoring_alert_cooldowns
-                WHERE agent_name = ? AND condition = ?
-            """, (agent_name, condition))
-            deleted = cursor.rowcount > 0
-            conn.commit()
-            return deleted
+        stmt = delete(monitoring_alert_cooldowns).where(
+            and_(
+                monitoring_alert_cooldowns.c.agent_name == agent_name,
+                monitoring_alert_cooldowns.c.condition == condition,
+            )
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     def is_in_cooldown(
         self,
@@ -355,27 +379,23 @@ class MonitoringOperations:
         Returns:
             Number of deleted records
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            if agent_name:
-                cursor.execute("""
-                    DELETE FROM monitoring_alert_cooldowns
-                    WHERE agent_name = ?
-                """, (agent_name,))
-            else:
-                cursor.execute("DELETE FROM monitoring_alert_cooldowns")
-            deleted = cursor.rowcount
-            conn.commit()
-            return deleted
+        if agent_name:
+            stmt = delete(monitoring_alert_cooldowns).where(
+                monitoring_alert_cooldowns.c.agent_name == agent_name
+            )
+        else:
+            stmt = delete(monitoring_alert_cooldowns)
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount
 
     # =========================================================================
     # Helper Methods
     # =========================================================================
 
-    def _row_to_health_check(self, cursor, row) -> Dict[str, Any]:
-        """Convert a database row to a health check dict."""
-        columns = [desc[0] for desc in cursor.description]
-        result = dict(zip(columns, row))
+    def _row_to_health_check(self, row) -> Dict[str, Any]:
+        """Convert a database row (RowMapping) to a health check dict."""
+        result = dict(row)
 
         # Convert boolean fields
         for bool_field in ["oom_killed", "reachable", "runtime_available", "claude_available"]:

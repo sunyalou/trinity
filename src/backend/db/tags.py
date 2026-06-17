@@ -3,13 +3,19 @@ Tag operations for agent organization (ORG-001).
 
 Tags enable lightweight grouping of agents into logical systems.
 Agents can have multiple tags, enabling multi-system membership.
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL. Queries are built from the ``agent_tags`` table in
+``db/tables.py``; the engine is resolved via ``db/engine.py``. Public API is
+unchanged.
 """
 
-import json
-from typing import List, Optional
-from datetime import datetime
+from typing import List
 
-from db.connection import get_db_connection
+from sqlalchemy import select, insert, delete, func
+
+from .engine import get_engine, make_insert
+from .tables import agent_tags
 from db_models import AgentTagList, TagWithCount
 from utils.helpers import utc_now_iso
 
@@ -19,13 +25,13 @@ class TagOperations:
 
     def get_agent_tags(self, agent_name: str) -> List[str]:
         """Get all tags for an agent, sorted alphabetically."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT tag FROM agent_tags WHERE agent_name = ? ORDER BY tag",
-                (agent_name,)
-            )
-            return [row[0] for row in cursor.fetchall()]
+        stmt = (
+            select(agent_tags.c.tag)
+            .where(agent_tags.c.agent_name == agent_name)
+            .order_by(agent_tags.c.tag)
+        )
+        with get_engine().connect() as conn:
+            return [row[0] for row in conn.execute(stmt).all()]
 
     def set_agent_tags(self, agent_name: str, tags: List[str]) -> List[str]:
         """
@@ -41,25 +47,22 @@ class TagOperations:
         # Normalize tags: lowercase, strip whitespace, remove duplicates
         normalized = sorted(set(t.lower().strip() for t in tags if t.strip()))
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Delete existing tags
-            cursor.execute(
-                "DELETE FROM agent_tags WHERE agent_name = ?",
-                (agent_name,)
+            conn.execute(
+                delete(agent_tags).where(agent_tags.c.agent_name == agent_name)
             )
 
             # Insert new tags
             now = utc_now_iso()
             for tag in normalized:
-                cursor.execute(
-                    "INSERT INTO agent_tags (agent_name, tag, created_at) VALUES (?, ?, ?)",
-                    (agent_name, tag, now)
+                conn.execute(
+                    insert(agent_tags).values(
+                        agent_name=agent_name, tag=tag, created_at=now
+                    )
                 )
 
-            conn.commit()
-            return normalized
+        return normalized
 
     def add_tag(self, agent_name: str, tag: str) -> List[str]:
         """
@@ -76,16 +79,14 @@ class TagOperations:
         if not normalized_tag:
             return self.get_agent_tags(agent_name)
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            now = utc_now_iso()
+        now = utc_now_iso()
 
-            # Use INSERT OR IGNORE to handle duplicates
-            cursor.execute(
-                "INSERT OR IGNORE INTO agent_tags (agent_name, tag, created_at) VALUES (?, ?, ?)",
-                (agent_name, normalized_tag, now)
-            )
-            conn.commit()
+        # Use ON CONFLICT DO NOTHING to handle duplicates (composite PK)
+        stmt = make_insert(agent_tags).values(
+            agent_name=agent_name, tag=normalized_tag, created_at=now
+        ).on_conflict_do_nothing(index_elements=["agent_name", "tag"])
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
         return self.get_agent_tags(agent_name)
 
@@ -102,13 +103,12 @@ class TagOperations:
         """
         normalized_tag = tag.lower().strip()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM agent_tags WHERE agent_name = ? AND tag = ?",
-                (agent_name, normalized_tag)
-            )
-            conn.commit()
+        stmt = delete(agent_tags).where(
+            agent_tags.c.agent_name == agent_name,
+            agent_tags.c.tag == normalized_tag,
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
         return self.get_agent_tags(agent_name)
 
@@ -119,17 +119,16 @@ class TagOperations:
         Returns:
             List of tags with their usage counts, sorted by count descending
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT tag, COUNT(*) as count
-                FROM agent_tags
-                GROUP BY tag
-                ORDER BY count DESC, tag ASC
-            """)
+        count_col = func.count().label("count")
+        stmt = (
+            select(agent_tags.c.tag, count_col)
+            .group_by(agent_tags.c.tag)
+            .order_by(count_col.desc(), agent_tags.c.tag.asc())
+        )
+        with get_engine().connect() as conn:
             return [
                 TagWithCount(tag=row[0], count=row[1])
-                for row in cursor.fetchall()
+                for row in conn.execute(stmt).all()
             ]
 
     def get_agents_by_tag(self, tag: str) -> List[str]:
@@ -144,13 +143,13 @@ class TagOperations:
         """
         normalized_tag = tag.lower().strip()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT agent_name FROM agent_tags WHERE tag = ? ORDER BY agent_name",
-                (normalized_tag,)
-            )
-            return [row[0] for row in cursor.fetchall()]
+        stmt = (
+            select(agent_tags.c.agent_name)
+            .where(agent_tags.c.tag == normalized_tag)
+            .order_by(agent_tags.c.agent_name)
+        )
+        with get_engine().connect() as conn:
+            return [row[0] for row in conn.execute(stmt).all()]
 
     def get_agents_by_tags(self, tags: List[str]) -> List[str]:
         """
@@ -169,15 +168,14 @@ class TagOperations:
         if not normalized_tags:
             return []
 
-        placeholders = ",".join("?" * len(normalized_tags))
-
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                f"SELECT DISTINCT agent_name FROM agent_tags WHERE tag IN ({placeholders}) ORDER BY agent_name",
-                normalized_tags
-            )
-            return [row[0] for row in cursor.fetchall()]
+        stmt = (
+            select(agent_tags.c.agent_name)
+            .where(agent_tags.c.tag.in_(normalized_tags))
+            .distinct()
+            .order_by(agent_tags.c.agent_name)
+        )
+        with get_engine().connect() as conn:
+            return [row[0] for row in conn.execute(stmt).all()]
 
     def delete_agent_tags(self, agent_name: str) -> None:
         """
@@ -186,13 +184,9 @@ class TagOperations:
         Args:
             agent_name: The agent name
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM agent_tags WHERE agent_name = ?",
-                (agent_name,)
-            )
-            conn.commit()
+        stmt = delete(agent_tags).where(agent_tags.c.agent_name == agent_name)
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
     def get_tags_for_agents(self, agent_names: List[str]) -> dict:
         """
@@ -207,17 +201,16 @@ class TagOperations:
         if not agent_names:
             return {}
 
-        placeholders = ",".join("?" * len(agent_names))
+        stmt = (
+            select(agent_tags.c.agent_name, agent_tags.c.tag)
+            .where(agent_tags.c.agent_name.in_(agent_names))
+            .order_by(agent_tags.c.agent_name, agent_tags.c.tag)
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).all()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                f"SELECT agent_name, tag FROM agent_tags WHERE agent_name IN ({placeholders}) ORDER BY agent_name, tag",
-                agent_names
-            )
+        result = {name: [] for name in agent_names}
+        for row in rows:
+            result[row[0]].append(row[1])
 
-            result = {name: [] for name in agent_names}
-            for row in cursor.fetchall():
-                result[row[0]].append(row[1])
-
-            return result
+        return result

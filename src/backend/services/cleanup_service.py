@@ -124,7 +124,13 @@ def _wal_checkpoint_truncate() -> None:
     Called after retention sweeps reclaim measurable space. TRUNCATE mode is
     safe under concurrent readers — it only blocks if another writer holds
     the lock, in which case the checkpoint returns busy and we move on.
+
+    SQLite-only: WAL is a SQLite concept. On PostgreSQL (#300) this is a no-op
+    — the server manages its own WAL/autovacuum.
     """
+    from db.engine import is_sqlite
+    if not is_sqlite():
+        return
     from db.connection import get_db_connection
 
     with get_db_connection() as conn:

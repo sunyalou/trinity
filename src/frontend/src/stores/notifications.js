@@ -119,7 +119,9 @@ export const useNotificationsStore = defineStore('notifications', () => {
   async function fetchPendingCount() {
     try {
       const token = localStorage.getItem('token')
-      const response = await axios.get('/api/notifications?status=pending&limit=1', {
+      // #1143: use the dedicated count endpoint — the list endpoint's `count`
+      // is page-capped (len of returned page), so limit=1 clamped the badge to 1.
+      const response = await axios.get('/api/notifications/count?status=pending', {
         headers: { Authorization: `Bearer ${token}` },
       })
       pendingCount.value = response.data.count || 0

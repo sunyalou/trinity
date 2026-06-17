@@ -6,14 +6,27 @@ Tokens are generated via `claude setup-token` (~1 year lifetime) and injected
 as `CLAUDE_CODE_OAUTH_TOKEN` env var on agent containers.
 Subscriptions are registered once and can be assigned to multiple agents.
 Tokens are encrypted using the same AES-256-GCM system as other credentials.
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL. The public API of ``SubscriptionOperations`` and
+every return shape is preserved exactly.
 """
 
 import uuid
-import sqlite3
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
-from .connection import get_db_connection
+from sqlalchemy import select, insert, update, delete, func, and_
+
+from .engine import get_engine
+from .tables import (
+    subscription_credentials,
+    subscription_rate_limit_events,
+    agent_ownership,
+    chat_messages,
+    schedule_executions,
+    users,
+)
 from db_models import SubscriptionCredential, SubscriptionUsage, SubscriptionUsageWindow, SubscriptionWithAgents
 from utils.helpers import iso_cutoff, utc_now_iso
 
@@ -40,7 +53,7 @@ class SubscriptionOperations:
     @staticmethod
     def _row_to_subscription(row, include_agents: bool = False) -> SubscriptionCredential:
         """Convert a database row to a SubscriptionCredential model."""
-        # Convert row to dict for safe access (sqlite3.Row doesn't have .get())
+        # Convert row to dict for safe access (RowMapping doesn't have .get())
         row_dict = dict(row) if row else {}
         data = {
             "id": row_dict["id"],
@@ -59,6 +72,50 @@ class SubscriptionOperations:
             return SubscriptionWithAgents(**data)
 
         return SubscriptionCredential(**data)
+
+    # Columns selected for a subscription row joined with its owner. Mirrors the
+    # prior `SELECT s.*, u.email as owner_email` projection (only the columns the
+    # model converter actually reads — encrypted_credentials is intentionally
+    # omitted, as it was never read by _row_to_subscription).
+    @staticmethod
+    def _subscription_select_columns():
+        return [
+            subscription_credentials.c.id,
+            subscription_credentials.c.name,
+            subscription_credentials.c.subscription_type,
+            subscription_credentials.c.rate_limit_tier,
+            subscription_credentials.c.owner_id,
+            subscription_credentials.c.created_at,
+            subscription_credentials.c.updated_at,
+            users.c.email.label("owner_email"),
+        ]
+
+    @staticmethod
+    def _agent_count_subquery():
+        """Correlated agent-count subquery: live (non-deleted) agents per subscription.
+
+        ``agent_ownership`` is aliased (#1199) so the subquery's FROM table is
+        always distinct from any ``agent_ownership`` in the enclosing query.
+        Without the alias, callers that *also* join ``agent_ownership`` in their
+        outer FROM (``get_agent_subscription``) make SQLAlchemy auto-correlate
+        ``agent_ownership`` out of the subquery, leaving it with no FROM clause —
+        a compile-time ``InvalidRequestError``. With the alias, auto-correlation
+        only removes ``subscription_credentials`` (the intended correlation), so
+        the helper is safe in every caller.
+        """
+        ao = agent_ownership.alias("ao_count")
+        return (
+            select(func.count())
+            .select_from(ao)
+            .where(
+                and_(
+                    ao.c.subscription_id == subscription_credentials.c.id,
+                    ao.c.deleted_at.is_(None),
+                )
+            )
+            .scalar_subquery()
+            .label("agent_count")
+        )
 
     # =========================================================================
     # CRUD Operations
@@ -94,46 +151,53 @@ class SubscriptionOperations:
 
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Check if subscription with this name already exists
-            cursor.execute(
-                "SELECT id FROM subscription_credentials WHERE name = ?",
-                (name,)
-            )
-            existing = cursor.fetchone()
+            existing = conn.execute(
+                select(subscription_credentials.c.id).where(
+                    subscription_credentials.c.name == name
+                )
+            ).mappings().first()
 
             if existing:
                 # Update existing subscription
                 subscription_id = existing["id"]
-                cursor.execute("""
-                    UPDATE subscription_credentials
-                    SET encrypted_credentials = ?,
-                        subscription_type = ?,
-                        rate_limit_tier = ?,
-                        updated_at = ?
-                    WHERE id = ?
-                """, (encrypted, subscription_type, rate_limit_tier, now, subscription_id))
+                conn.execute(
+                    update(subscription_credentials)
+                    .where(subscription_credentials.c.id == subscription_id)
+                    .values(
+                        encrypted_credentials=encrypted,
+                        subscription_type=subscription_type,
+                        rate_limit_tier=rate_limit_tier,
+                        updated_at=now,
+                    )
+                )
             else:
                 # Create new subscription
                 subscription_id = str(uuid.uuid4())
-                cursor.execute("""
-                    INSERT INTO subscription_credentials
-                    (id, name, encrypted_credentials, subscription_type, rate_limit_tier, owner_id, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (subscription_id, name, encrypted, subscription_type, rate_limit_tier, owner_id, now, now))
-
-            conn.commit()
+                conn.execute(
+                    insert(subscription_credentials).values(
+                        id=subscription_id,
+                        name=name,
+                        encrypted_credentials=encrypted,
+                        subscription_type=subscription_type,
+                        rate_limit_tier=rate_limit_tier,
+                        owner_id=owner_id,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
 
             # Return the subscription (without agent count for now)
-            cursor.execute("""
-                SELECT s.*, u.email as owner_email
-                FROM subscription_credentials s
-                JOIN users u ON s.owner_id = u.id
-                WHERE s.id = ?
-            """, (subscription_id,))
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(*self._subscription_select_columns())
+                .select_from(
+                    subscription_credentials.join(
+                        users, subscription_credentials.c.owner_id == users.c.id
+                    )
+                )
+                .where(subscription_credentials.c.id == subscription_id)
+            ).mappings().first()
 
             return self._row_to_subscription(row)
 
@@ -147,20 +211,21 @@ class SubscriptionOperations:
         Returns:
             SubscriptionCredential or None if not found
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT s.*, u.email as owner_email,
-                    (SELECT COUNT(*) FROM agent_ownership WHERE subscription_id = s.id AND deleted_at IS NULL) as agent_count
-                FROM subscription_credentials s
-                JOIN users u ON s.owner_id = u.id
-                WHERE s.id = ?
-            """, (subscription_id,))
-            row = cursor.fetchone()
+        stmt = (
+            select(*self._subscription_select_columns(), self._agent_count_subquery())
+            .select_from(
+                subscription_credentials.join(
+                    users, subscription_credentials.c.owner_id == users.c.id
+                )
+            )
+            .where(subscription_credentials.c.id == subscription_id)
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
 
-            if row:
-                return self._row_to_subscription(row)
-            return None
+        if row:
+            return self._row_to_subscription(row)
+        return None
 
     def get_subscription_by_name(self, name: str) -> Optional[SubscriptionCredential]:
         """
@@ -172,20 +237,21 @@ class SubscriptionOperations:
         Returns:
             SubscriptionCredential or None if not found
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT s.*, u.email as owner_email,
-                    (SELECT COUNT(*) FROM agent_ownership WHERE subscription_id = s.id AND deleted_at IS NULL) as agent_count
-                FROM subscription_credentials s
-                JOIN users u ON s.owner_id = u.id
-                WHERE s.name = ?
-            """, (name,))
-            row = cursor.fetchone()
+        stmt = (
+            select(*self._subscription_select_columns(), self._agent_count_subquery())
+            .select_from(
+                subscription_credentials.join(
+                    users, subscription_credentials.c.owner_id == users.c.id
+                )
+            )
+            .where(subscription_credentials.c.name == name)
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
 
-            if row:
-                return self._row_to_subscription(row)
-            return None
+        if row:
+            return self._row_to_subscription(row)
+        return None
 
     def get_subscription_token(self, subscription_id: str) -> Optional[str]:
         """
@@ -202,36 +268,35 @@ class SubscriptionOperations:
         import logging
         _logger = logging.getLogger(__name__)
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT name, encrypted_credentials FROM subscription_credentials WHERE id = ?",
-                (subscription_id,)
-            )
-            row = cursor.fetchone()
+        stmt = select(
+            subscription_credentials.c.name,
+            subscription_credentials.c.encrypted_credentials,
+        ).where(subscription_credentials.c.id == subscription_id)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
 
-            if not row:
-                return None
-
-            # Decrypt credentials
-            encryption_service = self._get_encryption_service()
-            decrypted = encryption_service.decrypt(row["encrypted_credentials"])
-
-            # SUB-002 format: {"token": "sk-ant-oat01-..."}
-            token = decrypted.get("token")
-            if token:
-                return token
-
-            # Legacy SUB-001 format: {".credentials.json": "..."} — return None with warning
-            if ".credentials.json" in decrypted:
-                _logger.warning(
-                    f"Subscription '{row['name']}' ({subscription_id}) uses legacy "
-                    f".credentials.json format. Re-register with `claude setup-token`."
-                )
-                return None
-
-            _logger.warning(f"Subscription '{row['name']}' ({subscription_id}) has unknown credential format")
+        if not row:
             return None
+
+        # Decrypt credentials
+        encryption_service = self._get_encryption_service()
+        decrypted = encryption_service.decrypt(row["encrypted_credentials"])
+
+        # SUB-002 format: {"token": "sk-ant-oat01-..."}
+        token = decrypted.get("token")
+        if token:
+            return token
+
+        # Legacy SUB-001 format: {".credentials.json": "..."} — return None with warning
+        if ".credentials.json" in decrypted:
+            _logger.warning(
+                f"Subscription '{row['name']}' ({subscription_id}) uses legacy "
+                f".credentials.json format. Re-register with `claude setup-token`."
+            )
+            return None
+
+        _logger.warning(f"Subscription '{row['name']}' ({subscription_id}) has unknown credential format")
+        return None
 
     def list_subscriptions(self, owner_id: Optional[int] = None) -> List[SubscriptionCredential]:
         """
@@ -243,28 +308,22 @@ class SubscriptionOperations:
         Returns:
             List of SubscriptionCredential objects
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        stmt = (
+            select(*self._subscription_select_columns(), self._agent_count_subquery())
+            .select_from(
+                subscription_credentials.join(
+                    users, subscription_credentials.c.owner_id == users.c.id
+                )
+            )
+            .order_by(subscription_credentials.c.name)
+        )
+        if owner_id:
+            stmt = stmt.where(subscription_credentials.c.owner_id == owner_id)
 
-            if owner_id:
-                cursor.execute("""
-                    SELECT s.*, u.email as owner_email,
-                        (SELECT COUNT(*) FROM agent_ownership WHERE subscription_id = s.id AND deleted_at IS NULL) as agent_count
-                    FROM subscription_credentials s
-                    JOIN users u ON s.owner_id = u.id
-                    WHERE s.owner_id = ?
-                    ORDER BY s.name
-                """, (owner_id,))
-            else:
-                cursor.execute("""
-                    SELECT s.*, u.email as owner_email,
-                        (SELECT COUNT(*) FROM agent_ownership WHERE subscription_id = s.id AND deleted_at IS NULL) as agent_count
-                    FROM subscription_credentials s
-                    JOIN users u ON s.owner_id = u.id
-                    ORDER BY s.name
-                """)
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
 
-            return [self._row_to_subscription(row) for row in cursor.fetchall()]
+        return [self._row_to_subscription(row) for row in rows]
 
     def list_subscriptions_with_agents(self, owner_id: Optional[int] = None) -> List[SubscriptionWithAgents]:
         """
@@ -279,15 +338,17 @@ class SubscriptionOperations:
         subscriptions = self.list_subscriptions(owner_id)
 
         result = []
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().connect() as conn:
             for sub in subscriptions:
-                cursor.execute(
-                    "SELECT agent_name FROM agent_ownership WHERE subscription_id = ? AND deleted_at IS NULL",
-                    (sub.id,)
-                )
-                agents = [row["agent_name"] for row in cursor.fetchall()]
+                rows = conn.execute(
+                    select(agent_ownership.c.agent_name).where(
+                        and_(
+                            agent_ownership.c.subscription_id == sub.id,
+                            agent_ownership.c.deleted_at.is_(None),
+                        )
+                    )
+                ).mappings().all()
+                agents = [row["agent_name"] for row in rows]
 
                 result.append(SubscriptionWithAgents(
                     id=sub.id,
@@ -314,32 +375,28 @@ class SubscriptionOperations:
         Returns:
             True if deleted, False if not found
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # First clear all agent assignments
-            cursor.execute(
-                "UPDATE agent_ownership SET subscription_id = NULL WHERE subscription_id = ?",
-                (subscription_id,)
-            )
-            cleared_count = cursor.rowcount
+            cleared_count = conn.execute(
+                update(agent_ownership)
+                .where(agent_ownership.c.subscription_id == subscription_id)
+                .values(subscription_id=None)
+            ).rowcount
 
             # Then delete the subscription
-            cursor.execute(
-                "DELETE FROM subscription_credentials WHERE id = ?",
-                (subscription_id,)
-            )
-            deleted = cursor.rowcount > 0
-
-            conn.commit()
-
-            if deleted and cleared_count > 0:
-                import logging
-                logging.getLogger(__name__).info(
-                    f"Deleted subscription {subscription_id}, cleared {cleared_count} agent assignments"
+            deleted = conn.execute(
+                delete(subscription_credentials).where(
+                    subscription_credentials.c.id == subscription_id
                 )
+            ).rowcount > 0
 
-            return deleted
+        if deleted and cleared_count > 0:
+            import logging
+            logging.getLogger(__name__).info(
+                f"Deleted subscription {subscription_id}, cleared {cleared_count} agent assignments"
+            )
+
+        return deleted
 
     # =========================================================================
     # Agent Assignment Operations
@@ -360,28 +417,26 @@ class SubscriptionOperations:
         Returns:
             True if successful
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Verify subscription exists
-            cursor.execute(
-                "SELECT id FROM subscription_credentials WHERE id = ?",
-                (subscription_id,)
-            )
-            if not cursor.fetchone():
+            existing = conn.execute(
+                select(subscription_credentials.c.id).where(
+                    subscription_credentials.c.id == subscription_id
+                )
+            ).mappings().first()
+            if not existing:
                 raise ValueError(f"Subscription {subscription_id} not found")
 
             # Update agent ownership
-            cursor.execute("""
-                UPDATE agent_ownership
-                SET subscription_id = ?
-                WHERE agent_name = ?
-            """, (subscription_id, agent_name))
+            result = conn.execute(
+                update(agent_ownership)
+                .where(agent_ownership.c.agent_name == agent_name)
+                .values(subscription_id=subscription_id)
+            )
 
-            if cursor.rowcount == 0:
+            if result.rowcount == 0:
                 raise ValueError(f"Agent {agent_name} not found in ownership table")
 
-            conn.commit()
             return True
 
     def clear_agent_subscription(self, agent_name: str) -> bool:
@@ -394,14 +449,12 @@ class SubscriptionOperations:
         Returns:
             True if cleared (even if was already null)
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_ownership
-                SET subscription_id = NULL
-                WHERE agent_name = ?
-            """, (agent_name,))
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                update(agent_ownership)
+                .where(agent_ownership.c.agent_name == agent_name)
+                .values(subscription_id=None)
+            )
             return True
 
     def get_agent_subscription(self, agent_name: str) -> Optional[SubscriptionCredential]:
@@ -414,21 +467,29 @@ class SubscriptionOperations:
         Returns:
             SubscriptionCredential or None if no subscription assigned
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT s.*, u.email as owner_email,
-                    (SELECT COUNT(*) FROM agent_ownership WHERE subscription_id = s.id AND deleted_at IS NULL) as agent_count
-                FROM subscription_credentials s
-                JOIN users u ON s.owner_id = u.id
-                JOIN agent_ownership ao ON ao.subscription_id = s.id
-                WHERE ao.agent_name = ? AND ao.deleted_at IS NULL
-            """, (agent_name,))
-            row = cursor.fetchone()
+        stmt = (
+            select(*self._subscription_select_columns(), self._agent_count_subquery())
+            .select_from(
+                subscription_credentials
+                .join(users, subscription_credentials.c.owner_id == users.c.id)
+                .join(
+                    agent_ownership,
+                    agent_ownership.c.subscription_id == subscription_credentials.c.id,
+                )
+            )
+            .where(
+                and_(
+                    agent_ownership.c.agent_name == agent_name,
+                    agent_ownership.c.deleted_at.is_(None),
+                )
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
 
-            if row:
-                return self._row_to_subscription(row)
-            return None
+        if row:
+            return self._row_to_subscription(row)
+        return None
 
     def get_agents_by_subscription(self, subscription_id: str) -> List[str]:
         """
@@ -440,13 +501,15 @@ class SubscriptionOperations:
         Returns:
             List of agent names
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT agent_name FROM agent_ownership WHERE subscription_id = ? AND deleted_at IS NULL",
-                (subscription_id,)
+        stmt = select(agent_ownership.c.agent_name).where(
+            and_(
+                agent_ownership.c.subscription_id == subscription_id,
+                agent_ownership.c.deleted_at.is_(None),
             )
-            return [row["agent_name"] for row in cursor.fetchall()]
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [row["agent_name"] for row in rows]
 
     def get_agent_subscription_id(self, agent_name: str) -> Optional[str]:
         """
@@ -458,14 +521,15 @@ class SubscriptionOperations:
         Returns:
             Subscription ID or None
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT subscription_id FROM agent_ownership WHERE agent_name = ? AND deleted_at IS NULL",
-                (agent_name,)
+        stmt = select(agent_ownership.c.subscription_id).where(
+            and_(
+                agent_ownership.c.agent_name == agent_name,
+                agent_ownership.c.deleted_at.is_(None),
             )
-            row = cursor.fetchone()
-            return row["subscription_id"] if row else None
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        return row["subscription_id"] if row else None
 
     # =========================================================================
     # Rate-Limit Tracking (SUB-003: Auto-Switch)
@@ -486,58 +550,65 @@ class SubscriptionOperations:
         now = utc_now_iso()
         event_id = str(uuid.uuid4())
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO subscription_rate_limit_events
-                (id, agent_name, subscription_id, error_message, occurred_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (event_id, agent_name, subscription_id, error_message, now))
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(subscription_rate_limit_events).values(
+                    id=event_id,
+                    agent_name=agent_name,
+                    subscription_id=subscription_id,
+                    error_message=error_message,
+                    occurred_at=now,
+                )
+            )
 
             # Count consecutive events in last 2 hours (#476: iso_cutoff,
             # not datetime('now', ...), so the format matches occurred_at)
-            cursor.execute("""
-                SELECT COUNT(*) as cnt
-                FROM subscription_rate_limit_events
-                WHERE agent_name = ? AND subscription_id = ?
-                  AND occurred_at > ?
-            """, (agent_name, subscription_id, iso_cutoff(2)))
-            return cursor.fetchone()["cnt"]
+            cnt = conn.execute(
+                select(func.count().label("cnt"))
+                .select_from(subscription_rate_limit_events)
+                .where(
+                    and_(
+                        subscription_rate_limit_events.c.agent_name == agent_name,
+                        subscription_rate_limit_events.c.subscription_id == subscription_id,
+                        subscription_rate_limit_events.c.occurred_at > iso_cutoff(2),
+                    )
+                )
+            ).scalar_one()
+            return cnt
 
     def is_subscription_rate_limited(self, subscription_id: str) -> bool:
         """Check if a subscription has been rate-limited in the last 2 hours."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT COUNT(*) as cnt
-                FROM subscription_rate_limit_events
-                WHERE subscription_id = ?
-                  AND occurred_at > ?
-            """, (subscription_id, iso_cutoff(2)))
-            return cursor.fetchone()["cnt"] > 0
+        stmt = (
+            select(func.count().label("cnt"))
+            .select_from(subscription_rate_limit_events)
+            .where(
+                and_(
+                    subscription_rate_limit_events.c.subscription_id == subscription_id,
+                    subscription_rate_limit_events.c.occurred_at > iso_cutoff(2),
+                )
+            )
+        )
+        with get_engine().connect() as conn:
+            return conn.execute(stmt).scalar_one() > 0
 
     def clear_rate_limit_events(self, agent_name: str, subscription_id: str) -> None:
         """Clear rate-limit events for an (agent, subscription) pair after successful switch."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM subscription_rate_limit_events
-                WHERE agent_name = ? AND subscription_id = ?
-            """, (agent_name, subscription_id))
-            conn.commit()
+        stmt = delete(subscription_rate_limit_events).where(
+            and_(
+                subscription_rate_limit_events.c.agent_name == agent_name,
+                subscription_rate_limit_events.c.subscription_id == subscription_id,
+            )
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
     def cleanup_old_rate_limit_events(self) -> int:
         """Remove rate-limit tracking records older than 24 hours. Returns count deleted."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM subscription_rate_limit_events
-                WHERE occurred_at < ?
-            """, (iso_cutoff(24),))
-            count = cursor.rowcount
-            conn.commit()
-            return count
+        stmt = delete(subscription_rate_limit_events).where(
+            subscription_rate_limit_events.c.occurred_at < iso_cutoff(24)
+        )
+        with get_engine().begin() as conn:
+            return conn.execute(stmt).rowcount
 
     def get_least_used_subscription(self) -> Optional[SubscriptionCredential]:
         """
@@ -550,26 +621,30 @@ class SubscriptionOperations:
         Returns:
             SubscriptionCredential with fewest agents, or None if no viable subscription
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT s.*, u.email as owner_email,
-                    (SELECT COUNT(*) FROM agent_ownership WHERE subscription_id = s.id AND deleted_at IS NULL) as agent_count
-                FROM subscription_credentials s
-                JOIN users u ON s.owner_id = u.id
-                ORDER BY agent_count ASC, s.name ASC
-            """)
-            for row in cursor.fetchall():
-                sub = self._row_to_subscription(row)
-                # Skip rate-limited subscriptions
-                if self.is_subscription_rate_limited(sub.id):
-                    continue
-                # Skip subscriptions with invalid/legacy tokens (#340)
-                token = self.get_subscription_token(sub.id)
-                if not token:
-                    continue
-                return sub
-            return None
+        agent_count = self._agent_count_subquery()
+        stmt = (
+            select(*self._subscription_select_columns(), agent_count)
+            .select_from(
+                subscription_credentials.join(
+                    users, subscription_credentials.c.owner_id == users.c.id
+                )
+            )
+            .order_by(agent_count.asc(), subscription_credentials.c.name.asc())
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+
+        for row in rows:
+            sub = self._row_to_subscription(row)
+            # Skip rate-limited subscriptions
+            if self.is_subscription_rate_limited(sub.id):
+                continue
+            # Skip subscriptions with invalid/legacy tokens (#340)
+            token = self.get_subscription_token(sub.id)
+            if not token:
+                continue
+            return sub
+        return None
 
     def select_best_alternative_subscription(
         self,
@@ -586,26 +661,28 @@ class SubscriptionOperations:
         Returns:
             Best alternative SubscriptionCredential, or None if no viable option
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        agent_count = self._agent_count_subquery()
+        # Get all subscriptions except current, ordered by agent count (ascending)
+        stmt = (
+            select(*self._subscription_select_columns(), agent_count)
+            .select_from(
+                subscription_credentials.join(
+                    users, subscription_credentials.c.owner_id == users.c.id
+                )
+            )
+            .where(subscription_credentials.c.id != current_subscription_id)
+            .order_by(agent_count.asc())
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
 
-            # Get all subscriptions except current, ordered by agent count (ascending)
-            cursor.execute("""
-                SELECT s.*, u.email as owner_email,
-                    (SELECT COUNT(*) FROM agent_ownership WHERE subscription_id = s.id AND deleted_at IS NULL) as agent_count
-                FROM subscription_credentials s
-                JOIN users u ON s.owner_id = u.id
-                WHERE s.id != ?
-                ORDER BY agent_count ASC
-            """, (current_subscription_id,))
+        for row in rows:
+            sub = self._row_to_subscription(row)
+            # Skip if rate-limited in the last 2 hours
+            if not self.is_subscription_rate_limited(sub.id):
+                return sub
 
-            for row in cursor.fetchall():
-                sub = self._row_to_subscription(row)
-                # Skip if rate-limited in the last 2 hours
-                if not self.is_subscription_rate_limited(sub.id):
-                    return sub
-
-            return None
+        return None
 
     # =========================================================================
     # Usage Tracking (SUB-004: Per-subscription usage windows)
@@ -629,36 +706,39 @@ class SubscriptionOperations:
         cutoff_5h = (now - timedelta(hours=5)).isoformat()
         cutoff_7d = (now - timedelta(hours=168)).isoformat()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        with get_engine().connect() as conn:
 
             def _query_window(cutoff: str) -> SubscriptionUsageWindow:
                 # Chat messages: input tokens stored in context_used, output in output_tokens
-                cursor.execute("""
-                    SELECT
-                        COALESCE(SUM(context_used), 0) AS input_tokens,
-                        COALESCE(SUM(output_tokens), 0) AS output_tokens,
-                        COALESCE(SUM(cost), 0.0) AS cost_usd,
-                        COUNT(*) AS message_count
-                    FROM chat_messages
-                    WHERE subscription_id = ?
-                      AND role = 'assistant'
-                      AND timestamp >= ?
-                """, (subscription_id, cutoff))
-                chat_row = cursor.fetchone()
+                chat_row = conn.execute(
+                    select(
+                        func.coalesce(func.sum(chat_messages.c.context_used), 0).label("input_tokens"),
+                        func.coalesce(func.sum(chat_messages.c.output_tokens), 0).label("output_tokens"),
+                        func.coalesce(func.sum(chat_messages.c.cost), 0.0).label("cost_usd"),
+                        func.count().label("message_count"),
+                    ).where(
+                        and_(
+                            chat_messages.c.subscription_id == subscription_id,
+                            chat_messages.c.role == "assistant",
+                            chat_messages.c.timestamp >= cutoff,
+                        )
+                    )
+                ).mappings().first()
 
                 # Schedule executions: input tokens in context_used (no separate output_tokens)
-                cursor.execute("""
-                    SELECT
-                        COALESCE(SUM(context_used), 0) AS input_tokens,
-                        COALESCE(SUM(cost), 0.0) AS cost_usd,
-                        COUNT(*) AS exec_count
-                    FROM schedule_executions
-                    WHERE subscription_id = ?
-                      AND started_at >= ?
-                      AND status NOT IN ('running', 'pending')
-                """, (subscription_id, cutoff))
-                exec_row = cursor.fetchone()
+                exec_row = conn.execute(
+                    select(
+                        func.coalesce(func.sum(schedule_executions.c.context_used), 0).label("input_tokens"),
+                        func.coalesce(func.sum(schedule_executions.c.cost), 0.0).label("cost_usd"),
+                        func.count().label("exec_count"),
+                    ).where(
+                        and_(
+                            schedule_executions.c.subscription_id == subscription_id,
+                            schedule_executions.c.started_at >= cutoff,
+                            schedule_executions.c.status.notin_(["running", "pending"]),
+                        )
+                    )
+                ).mappings().first()
 
                 return SubscriptionUsageWindow(
                     input_tokens=int(chat_row["input_tokens"] or 0) + int(exec_row["input_tokens"] or 0),
@@ -671,11 +751,15 @@ class SubscriptionOperations:
             window_7d = _query_window(cutoff_7d)
 
             # Currently-assigned agents (live assignment, not historical)
-            cursor.execute(
-                "SELECT agent_name FROM agent_ownership WHERE subscription_id = ? AND deleted_at IS NULL",
-                (subscription_id,)
-            )
-            agents = [row["agent_name"] for row in cursor.fetchall()]
+            agent_rows = conn.execute(
+                select(agent_ownership.c.agent_name).where(
+                    and_(
+                        agent_ownership.c.subscription_id == subscription_id,
+                        agent_ownership.c.deleted_at.is_(None),
+                    )
+                )
+            ).mappings().all()
+            agents = [row["agent_name"] for row in agent_rows]
 
         return SubscriptionUsage(
             subscription_id=subscription_id,

@@ -2,6 +2,10 @@
 Activity stream database operations.
 
 Handles activity logging for real-time state monitoring and tool-level observability.
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL. Queries are built from the ``agent_activities`` table
+in ``db/tables.py`` (dialect-agnostic expressions, no ``?``/``%s`` placeholders).
 """
 
 import json
@@ -9,9 +13,32 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict
 
-from .connection import get_db_connection
+from sqlalchemy import select, insert, update, and_
+
+from .engine import get_engine
+from .tables import agent_activities
 from models import ActivityState
 from utils.helpers import utc_now_iso, to_utc_iso, parse_iso_timestamp
+
+
+# Columns in DDL order so positional row access ([0]..[14]) stays correct.
+_ACTIVITY_COLUMNS = (
+    agent_activities.c.id,
+    agent_activities.c.agent_name,
+    agent_activities.c.activity_type,
+    agent_activities.c.activity_state,
+    agent_activities.c.parent_activity_id,
+    agent_activities.c.started_at,
+    agent_activities.c.completed_at,
+    agent_activities.c.duration_ms,
+    agent_activities.c.user_id,
+    agent_activities.c.triggered_by,
+    agent_activities.c.related_chat_message_id,
+    agent_activities.c.related_execution_id,
+    agent_activities.c.details,
+    agent_activities.c.error,
+    agent_activities.c.created_at,
+)
 
 
 class ActivityOperations:
@@ -45,30 +72,23 @@ class ActivityOperations:
         activity_id = str(uuid.uuid4())
         now = utc_now_iso()  # Use UTC with 'Z' suffix for frontend compatibility
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO agent_activities (
-                    id, agent_name, activity_type, activity_state, parent_activity_id,
-                    started_at, user_id, triggered_by, related_chat_message_id,
-                    related_execution_id, details, error, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                activity_id,
-                activity.agent_name,
-                activity.activity_type.value if isinstance(activity.activity_type, ActivityType) else activity.activity_type,
-                activity.activity_state.value if isinstance(activity.activity_state, ActivityState) else activity.activity_state,
-                activity.parent_activity_id,
-                now,
-                activity.user_id,
-                activity.triggered_by,
-                activity.related_chat_message_id,
-                activity.related_execution_id,
-                json.dumps(activity.details) if activity.details else None,
-                activity.error,
-                now
-            ))
-            conn.commit()
+        stmt = insert(agent_activities).values(
+            id=activity_id,
+            agent_name=activity.agent_name,
+            activity_type=activity.activity_type.value if isinstance(activity.activity_type, ActivityType) else activity.activity_type,
+            activity_state=activity.activity_state.value if isinstance(activity.activity_state, ActivityState) else activity.activity_state,
+            parent_activity_id=activity.parent_activity_id,
+            started_at=now,
+            user_id=activity.user_id,
+            triggered_by=activity.triggered_by,
+            related_chat_message_id=activity.related_chat_message_id,
+            related_execution_id=activity.related_execution_id,
+            details=json.dumps(activity.details) if activity.details else None,
+            error=activity.error,
+            created_at=now,
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
         return activity_id
 
@@ -78,50 +98,45 @@ class ActivityOperations:
         Complete an activity by updating its state, completion time, and duration.
         Returns True if activity was found and updated.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Get start time to calculate duration
-            cursor.execute("SELECT started_at, details FROM agent_activities WHERE id = ?", (activity_id,))
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(agent_activities.c.started_at, agent_activities.c.details)
+                .where(agent_activities.c.id == activity_id)
+            ).mappings().first()
             if not row:
                 return False
 
             # Use parse_iso_timestamp to handle both 'Z' and non-'Z' timestamps
-            started_at = parse_iso_timestamp(row[0])
+            started_at = parse_iso_timestamp(row["started_at"])
             completed_at = parse_iso_timestamp(utc_now_iso())
             duration_ms = int((completed_at - started_at).total_seconds() * 1000)
 
             # Merge existing details with new details
-            existing_details = json.loads(row[1]) if row[1] else {}
+            existing_details = json.loads(row["details"]) if row["details"] else {}
             if details:
                 existing_details.update(details)
 
-            cursor.execute("""
-                UPDATE agent_activities
-                SET activity_state = ?,
-                    completed_at = ?,
-                    duration_ms = ?,
-                    details = ?,
-                    error = ?
-                WHERE id = ?
-            """, (
-                status,
-                to_utc_iso(completed_at),  # Use UTC with 'Z' suffix
-                duration_ms,
-                json.dumps(existing_details) if existing_details else None,
-                error,
-                activity_id
-            ))
-            conn.commit()
-            return cursor.rowcount > 0
+            result = conn.execute(
+                update(agent_activities)
+                .where(agent_activities.c.id == activity_id)
+                .values(
+                    activity_state=status,
+                    completed_at=to_utc_iso(completed_at),  # Use UTC with 'Z' suffix
+                    duration_ms=duration_ms,
+                    details=json.dumps(existing_details) if existing_details else None,
+                    error=error,
+                )
+            )
+            return result.rowcount > 0
 
     def get_activity(self, activity_id: str) -> Optional[Dict]:
         """Get a single activity by ID."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM agent_activities WHERE id = ?", (activity_id,))
-            row = cursor.fetchone()
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                select(*_ACTIVITY_COLUMNS)
+                .where(agent_activities.c.id == activity_id)
+            ).first()
             if not row:
                 return None
             return self._row_to_activity(row)
@@ -132,25 +147,22 @@ class ActivityOperations:
         Get activities for a specific agent.
         Optionally filter by activity_type and/or activity_state.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        conditions = [agent_activities.c.agent_name == agent_name]
 
-            query = "SELECT * FROM agent_activities WHERE agent_name = ?"
-            params = [agent_name]
+        if activity_type:
+            conditions.append(agent_activities.c.activity_type == activity_type)
 
-            if activity_type:
-                query += " AND activity_type = ?"
-                params.append(activity_type)
+        if activity_state:
+            conditions.append(agent_activities.c.activity_state == activity_state)
 
-            if activity_state:
-                query += " AND activity_state = ?"
-                params.append(activity_state)
-
-            query += " ORDER BY created_at DESC LIMIT ?"
-            params.append(limit)
-
-            cursor.execute(query, params)
-            return [self._row_to_activity(row) for row in cursor.fetchall()]
+        stmt = (
+            select(*_ACTIVITY_COLUMNS)
+            .where(and_(*conditions))
+            .order_by(agent_activities.c.created_at.desc())
+            .limit(limit)
+        )
+        with get_engine().connect() as conn:
+            return [self._row_to_activity(row) for row in conn.execute(stmt).all()]
 
     def get_activities_in_range(self, start_time: Optional[str] = None,
                                 end_time: Optional[str] = None,
@@ -160,30 +172,24 @@ class ActivityOperations:
         Get activities across all agents in a time range.
         Optionally filter by activity types.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        conditions = []
 
-            query = "SELECT * FROM agent_activities WHERE 1=1"
-            params = []
+        if start_time:
+            conditions.append(agent_activities.c.created_at >= start_time)
 
-            if start_time:
-                query += " AND created_at >= ?"
-                params.append(start_time)
+        if end_time:
+            conditions.append(agent_activities.c.created_at <= end_time)
 
-            if end_time:
-                query += " AND created_at <= ?"
-                params.append(end_time)
+        if activity_types:
+            conditions.append(agent_activities.c.activity_type.in_(activity_types))
 
-            if activity_types:
-                placeholders = ",".join("?" * len(activity_types))
-                query += f" AND activity_type IN ({placeholders})"
-                params.extend(activity_types)
+        stmt = select(*_ACTIVITY_COLUMNS)
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+        stmt = stmt.order_by(agent_activities.c.created_at.desc()).limit(limit)
 
-            query += " ORDER BY created_at DESC LIMIT ?"
-            params.append(limit)
-
-            cursor.execute(query, params)
-            return [self._row_to_activity(row) for row in cursor.fetchall()]
+        with get_engine().connect() as conn:
+            return [self._row_to_activity(row) for row in conn.execute(stmt).all()]
 
     def mark_stale_activities_failed(self, timeout_minutes: int = 30) -> int:
         """Mark started activities older than timeout as failed.
@@ -200,16 +206,17 @@ class ActivityOperations:
         # Compute threshold in ISO 8601 format to match stored started_at
         # (SQLite's datetime() returns space-separated format which breaks string comparison)
         threshold = (datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)).strftime('%Y-%m-%dT%H:%M:%S')
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Find stale activities for duration calculation
-            cursor.execute("""
-                SELECT id, started_at FROM agent_activities
-                WHERE activity_state = ?
-                AND started_at < ?
-            """, (ActivityState.STARTED, threshold))
-            stale_rows = cursor.fetchall()
+            stale_rows = conn.execute(
+                select(agent_activities.c.id, agent_activities.c.started_at)
+                .where(
+                    and_(
+                        agent_activities.c.activity_state == ActivityState.STARTED,
+                        agent_activities.c.started_at < threshold,
+                    )
+                )
+            ).mappings().all()
 
             if not stale_rows:
                 return 0
@@ -218,16 +225,17 @@ class ActivityOperations:
             for row in stale_rows:
                 started_at = parse_iso_timestamp(row["started_at"])
                 duration_ms = int((completed_at - started_at).total_seconds() * 1000)
-                cursor.execute("""
-                    UPDATE agent_activities
-                    SET activity_state = ?,
-                        completed_at = ?,
-                        duration_ms = ?,
-                        error = 'Marked as failed by cleanup: exceeded ' || ? || '-minute timeout'
-                    WHERE id = ?
-                """, (ActivityState.FAILED, now, duration_ms, str(timeout_minutes), row["id"]))
+                conn.execute(
+                    update(agent_activities)
+                    .where(agent_activities.c.id == row["id"])
+                    .values(
+                        activity_state=ActivityState.FAILED,
+                        completed_at=now,
+                        duration_ms=duration_ms,
+                        error='Marked as failed by cleanup: exceeded ' + str(timeout_minutes) + '-minute timeout',
+                    )
+                )
 
-            conn.commit()
             return len(stale_rows)
 
     def get_current_activities(self, agent_name: str) -> List[Dict]:

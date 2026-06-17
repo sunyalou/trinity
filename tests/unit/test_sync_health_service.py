@@ -13,8 +13,6 @@ fake so no agent containers are needed.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
-import sqlite3
 import sys
 import types
 from pathlib import Path
@@ -32,70 +30,49 @@ while _BACKEND_STR in sys.path:
     sys.path.remove(_BACKEND_STR)
 sys.path.insert(0, _BACKEND_STR)
 
-
-def _load(rel: str, name: str):
-    spec = importlib.util.spec_from_file_location(name, _BACKEND / rel)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_schema = _load("db/schema.py", "_schema_sh")
-_migrations = _load("db/migrations.py", "_migrations_sh")
+from db_harness import db_backend, run as _hrun  # noqa: E402
 
 
 pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def tmp_db(tmp_path, monkeypatch):
-    db_path = tmp_path / "trinity.db"
-    monkeypatch.setenv("TRINITY_DB_PATH", str(db_path))
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    _schema.init_schema(cursor, conn)
-    _migrations.run_all_migrations(cursor, conn)
-    conn.commit()
-    conn.close()
-    # Evict cached modules aggressively so production code (the
-    # DatabaseManager singleton especially) sees the new DB path.
+def tmp_db(db_backend, monkeypatch):
+    """Active backend with a fresh FULL schema (db_harness, #300). Runs on
+    SQLite and, when TEST_POSTGRES_URL is set, PostgreSQL. Evicts cached db /
+    service modules and stubs services.agent_client (the real module needs
+    docker/redis; tests patch _fetch_git_status so it's never called)."""
     for modname in list(sys.modules):
         if modname == "database" or modname.startswith("db.") \
-                or modname == "services.sync_health_service" \
-                or modname == "services.agent_client":
+                or modname in ("services.sync_health_service", "services.agent_client"):
+            if modname in ("db.engine", "db.tables", "db.schema"):
+                continue
             sys.modules.pop(modname, None)
-    # Install a stub for services.agent_client. The real module requires
-    # docker/redis; all tests patch _fetch_git_status so AgentClient is never
-    # actually called. Using monkeypatch ensures the stub is removed after each
-    # test, preventing contamination of subsequent test files.
     monkeypatch.setitem(
         sys.modules,
         "services.agent_client",
         types.SimpleNamespace(AgentClient=MagicMock()),
     )
-    yield db_path
+    return db_backend
 
 
 @pytest.fixture
 def seed_agent(tmp_db):
     def _seed(name: str, auto_sync: bool = True):
-        conn = sqlite3.connect(str(tmp_db))
-        conn.execute(
+        _hrun(
             "INSERT INTO agent_ownership (agent_name, owner_id, created_at) "
-            "VALUES (?, 1, datetime('now'))",
-            (name,),
+            "VALUES (:n, 1, '2026-01-01T00:00:00Z')",
+            n=name,
         )
-        conn.execute(
-            """INSERT INTO agent_git_config
-               (id, agent_name, github_repo, working_branch, instance_id,
-                created_at, sync_enabled, auto_sync_enabled)
-               VALUES (?, ?, ?, ?, ?, datetime('now'), 1, ?)""",
-            (name + "-git", name, "org/repo", f"trinity/{name}/abc123",
-             "abc123", 1 if auto_sync else 0),
+        _hrun(
+            "INSERT INTO agent_git_config "
+            "(id, agent_name, github_repo, working_branch, instance_id, "
+            " created_at, sync_enabled, auto_sync_enabled) "
+            "VALUES (:gid, :n, 'org/repo', :wb, 'abc123', "
+            " '2026-01-01T00:00:00Z', 1, :asy)",
+            gid=name + "-git", n=name, wb=f"trinity/{name}/abc123",
+            asy=1 if auto_sync else 0,
         )
-        conn.commit()
-        conn.close()
     return _seed
 
 

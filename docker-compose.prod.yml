@@ -40,6 +40,10 @@ services:
       - SLACK_CLIENT_ID=${SLACK_CLIENT_ID}
       - SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET}
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
+      # Socket Mode concurrent WebSocket count (#244); clamped to [1,10], default 2.
+      # Mirrors docker-compose.yml — without this line the .env knob is inert in
+      # prod (the #1039 packaging-gap class).
+      - SLACK_SOCKET_CONNECTION_COUNT=${SLACK_SOCKET_CONNECTION_COUNT:-2}
       - CREDENTIAL_ENCRYPTION_KEY=${CREDENTIAL_ENCRYPTION_KEY:-}
       - EMAIL_PROVIDER=${EMAIL_PROVIDER:-resend}
       - RESEND_API_KEY=${RESEND_API_KEY:-}
@@ -93,8 +97,30 @@ services:
       - PUBLIC_CHAT_URL=${PUBLIC_CHAT_URL:-}
       # Frontend URL for post-OAuth redirects
       - FRONTEND_URL=${FRONTEND_URL:-}
+      # Backend's own public origin — used to build OAuth redirect URIs
+      # ({BACKEND_URL}/api/oauth/{provider}/callback, read by config.py). Mirrors
+      # docker-compose.yml; without this line the .env value is inert in prod (the
+      # #1039 packaging-gap class) and OAuth callbacks fall back to localhost — set
+      # this to your public backend URL. The scheduler reads BACKEND_URL too but
+      # keeps its own internal default (http://backend:8000); intentionally not
+      # wired here so it still reaches the backend over the Docker network.
+      - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
       # Internal API shared secret (C-003) - for scheduler/agent communication
       - INTERNAL_API_SECRET=${INTERNAL_API_SECRET}
+      # Configurable database backend (#300, experimental) — mirrors
+      # docker-compose.yml; without these lines the .env lever is inert in prod
+      # (the #1039/#1056 packaging-gap class). Unset → SQLite at /data/trinity.db.
+      # Prod compose ships no postgres service: a postgresql:// URL must point at
+      # an operator-managed PostgreSQL instance (see docs/POSTGRESQL_SETUP.md).
+      - DATABASE_URL=${DATABASE_URL:-}
+      - DB_POOL_SIZE=${DB_POOL_SIZE:-10}
+      - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW:-20}
+      # Host telemetry (/api/telemetry) — container-stats cache freshness (s) and
+      # max concurrent Docker stat fetches per refresh. Mirrors docker-compose.yml;
+      # without these lines the .env knobs are inert in prod (the #1039
+      # packaging-gap class).
+      - TELEMETRY_CONTAINER_STATS_TTL=${TELEMETRY_CONTAINER_STATS_TTL:-10}
+      - TELEMETRY_DOCKER_POOL_SIZE=${TELEMETRY_DOCKER_POOL_SIZE:-16}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./config/agent-templates:/agent-configs/templates:ro
@@ -262,12 +288,18 @@ services:
     restart: unless-stopped
     environment:
       - DATABASE_PATH=/data/trinity.db
+      # #300: when set to a postgresql:// URL the scheduler reads/writes Postgres
+      # (the same DB the backend uses); unset → shared SQLite at DATABASE_PATH.
+      - DATABASE_URL=${DATABASE_URL:-}
       # Scheduler uses the same `backend` ACL user (identical access patterns).
       - "REDIS_URL=redis://backend:${REDIS_BACKEND_PASSWORD:?REDIS_BACKEND_PASSWORD must be set in .env}@redis:6379"
       - HEALTH_PORT=8001
       - LOG_LEVEL=${SCHEDULER_LOG_LEVEL:-INFO}
       - LOCK_TIMEOUT=600
       - AGENT_TIMEOUT=900
+      # #1022: scheduler→backend dispatch + pre-check deadlines (operator-tunable).
+      - DISPATCH_TIMEOUT=${DISPATCH_TIMEOUT:-30}
+      - PRE_CHECK_TIMEOUT=${PRE_CHECK_TIMEOUT:-70}
       - MISFIRE_GRACE_TIME=3600
       - PUBLISH_EVENTS=true
       - INTERNAL_API_SECRET=${INTERNAL_API_SECRET}

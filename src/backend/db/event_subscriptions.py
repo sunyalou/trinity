@@ -3,14 +3,22 @@ Event subscription operations for agent event pub/sub (EVT-001).
 
 Enables agents to subscribe to events from other agents and
 trigger async tasks when matching events are emitted.
+
+Converted from raw sqlite3 to SQLAlchemy Core for the configurable database
+backend (#300) so it runs unchanged on both SQLite and PostgreSQL. Queries are
+built from the ``agent_event_subscriptions`` / ``agent_events`` tables in
+``db/tables.py`` (dialect-agnostic, no ``?`` placeholders) and the engine is
+resolved from ``DATABASE_URL`` via ``db/engine.py``. The public API is unchanged.
 """
 
 import json
 import secrets
 from typing import List, Optional
-from datetime import datetime
 
-from db.connection import get_db_connection
+from sqlalchemy import select, insert, update, delete, and_, or_
+
+from .engine import get_engine
+from .tables import agent_event_subscriptions, agent_events
 from db_models import EventSubscription, EventSubscriptionCreate, AgentEvent
 from utils.helpers import utc_now_iso
 
@@ -32,25 +40,20 @@ class EventSubscriptionOperations:
         sub_id = f"esub_{secrets.token_urlsafe(12)}"
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO agent_event_subscriptions (
-                    id, subscriber_agent, source_agent, event_type,
-                    target_message, enabled, created_at, updated_at, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                sub_id,
-                subscriber_agent,
-                data.source_agent,
-                data.event_type,
-                data.target_message,
-                1 if data.enabled else 0,
-                now,
-                now,
-                created_by
-            ))
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(agent_event_subscriptions).values(
+                    id=sub_id,
+                    subscriber_agent=subscriber_agent,
+                    source_agent=data.source_agent,
+                    event_type=data.event_type,
+                    target_message=data.target_message,
+                    enabled=1 if data.enabled else 0,
+                    created_at=now,
+                    updated_at=now,
+                    created_by=created_by,
+                )
+            )
 
         return EventSubscription(
             id=sub_id,
@@ -66,15 +69,14 @@ class EventSubscriptionOperations:
 
     def get_subscription(self, subscription_id: str) -> Optional[EventSubscription]:
         """Get a subscription by ID."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, subscriber_agent, source_agent, event_type,
-                       target_message, enabled, created_at, updated_at, created_by
-                FROM agent_event_subscriptions
-                WHERE id = ?
-            """, (subscription_id,))
-            row = cursor.fetchone()
+        t = agent_event_subscriptions
+        stmt = select(
+            t.c.id, t.c.subscriber_agent, t.c.source_agent, t.c.event_type,
+            t.c.target_message, t.c.enabled, t.c.created_at, t.c.updated_at,
+            t.c.created_by,
+        ).where(t.c.id == subscription_id)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
 
         if not row:
             return None
@@ -88,32 +90,28 @@ class EventSubscriptionOperations:
         limit: int = 100
     ) -> List[EventSubscription]:
         """List event subscriptions with optional filters."""
-        query = """
-            SELECT id, subscriber_agent, source_agent, event_type,
-                   target_message, enabled, created_at, updated_at, created_by
-            FROM agent_event_subscriptions
-            WHERE 1=1
-        """
-        params = []
+        t = agent_event_subscriptions
+        stmt = select(
+            t.c.id, t.c.subscriber_agent, t.c.source_agent, t.c.event_type,
+            t.c.target_message, t.c.enabled, t.c.created_at, t.c.updated_at,
+            t.c.created_by,
+        )
 
+        conds = []
         if subscriber_agent:
-            query += " AND subscriber_agent = ?"
-            params.append(subscriber_agent)
-
+            conds.append(t.c.subscriber_agent == subscriber_agent)
         if source_agent:
-            query += " AND source_agent = ?"
-            params.append(source_agent)
-
+            conds.append(t.c.source_agent == source_agent)
         if enabled_only:
-            query += " AND enabled = 1"
+            conds.append(t.c.enabled == 1)
 
-        query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        if conds:
+            stmt = stmt.where(and_(*conds))
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
+        stmt = stmt.order_by(t.c.created_at.desc()).limit(limit)
+
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).all()
 
         return [self._row_to_subscription(row) for row in rows]
 
@@ -125,63 +123,55 @@ class EventSubscriptionOperations:
         enabled: Optional[bool] = None
     ) -> Optional[EventSubscription]:
         """Update an existing subscription."""
-        updates = []
-        params = []
+        values = {}
 
         if event_type is not None:
-            updates.append("event_type = ?")
-            params.append(event_type)
+            values["event_type"] = event_type
 
         if target_message is not None:
-            updates.append("target_message = ?")
-            params.append(target_message)
+            values["target_message"] = target_message
 
         if enabled is not None:
-            updates.append("enabled = ?")
-            params.append(1 if enabled else 0)
+            values["enabled"] = 1 if enabled else 0
 
-        if not updates:
+        if not values:
             return self.get_subscription(subscription_id)
 
-        now = utc_now_iso()
-        updates.append("updated_at = ?")
-        params.append(now)
-        params.append(subscription_id)
+        values["updated_at"] = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                f"UPDATE agent_event_subscriptions SET {', '.join(updates)} WHERE id = ?",
-                params
+        t = agent_event_subscriptions
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(t).where(t.c.id == subscription_id).values(**values)
             )
-            conn.commit()
 
-            if cursor.rowcount == 0:
+            if result.rowcount == 0:
                 return None
 
         return self.get_subscription(subscription_id)
 
     def delete_subscription(self, subscription_id: str) -> bool:
         """Delete a subscription. Returns True if deleted."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM agent_event_subscriptions WHERE id = ?",
-                (subscription_id,)
+        t = agent_event_subscriptions
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                delete(t).where(t.c.id == subscription_id)
             )
-            conn.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0
 
     def delete_agent_subscriptions(self, agent_name: str) -> int:
         """Delete all subscriptions where agent is subscriber or source."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM agent_event_subscriptions WHERE subscriber_agent = ? OR source_agent = ?",
-                (agent_name, agent_name)
+        t = agent_event_subscriptions
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                delete(t).where(
+                    or_(
+                        t.c.subscriber_agent == agent_name,
+                        t.c.source_agent == agent_name,
+                    )
+                )
             )
-            conn.commit()
-            return cursor.rowcount
+            return result.rowcount
 
     # =========================================================================
     # Event Matching
@@ -193,15 +183,20 @@ class EventSubscriptionOperations:
         event_type: str
     ) -> List[EventSubscription]:
         """Find enabled subscriptions that match a source agent and event type."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, subscriber_agent, source_agent, event_type,
-                       target_message, enabled, created_at, updated_at, created_by
-                FROM agent_event_subscriptions
-                WHERE source_agent = ? AND event_type = ? AND enabled = 1
-            """, (source_agent, event_type))
-            rows = cursor.fetchall()
+        t = agent_event_subscriptions
+        stmt = select(
+            t.c.id, t.c.subscriber_agent, t.c.source_agent, t.c.event_type,
+            t.c.target_message, t.c.enabled, t.c.created_at, t.c.updated_at,
+            t.c.created_by,
+        ).where(
+            and_(
+                t.c.source_agent == source_agent,
+                t.c.event_type == event_type,
+                t.c.enabled == 1,
+            )
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).all()
 
         return [self._row_to_subscription(row) for row in rows]
 
@@ -221,22 +216,17 @@ class EventSubscriptionOperations:
         now = utc_now_iso()
         payload_json = json.dumps(payload) if payload else None
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO agent_events (
-                    id, source_agent, event_type, payload,
-                    subscriptions_triggered, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                event_id,
-                source_agent,
-                event_type,
-                payload_json,
-                subscriptions_triggered,
-                now
-            ))
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(agent_events).values(
+                    id=event_id,
+                    source_agent=source_agent,
+                    event_type=event_type,
+                    payload=payload_json,
+                    subscriptions_triggered=subscriptions_triggered,
+                    created_at=now,
+                )
+            )
 
         return AgentEvent(
             id=event_id,
@@ -254,29 +244,25 @@ class EventSubscriptionOperations:
         limit: int = 50
     ) -> List[AgentEvent]:
         """List events with optional filters."""
-        query = """
-            SELECT id, source_agent, event_type, payload,
-                   subscriptions_triggered, created_at
-            FROM agent_events
-            WHERE 1=1
-        """
-        params = []
+        t = agent_events
+        stmt = select(
+            t.c.id, t.c.source_agent, t.c.event_type, t.c.payload,
+            t.c.subscriptions_triggered, t.c.created_at,
+        )
 
+        conds = []
         if source_agent:
-            query += " AND source_agent = ?"
-            params.append(source_agent)
-
+            conds.append(t.c.source_agent == source_agent)
         if event_type:
-            query += " AND event_type = ?"
-            params.append(event_type)
+            conds.append(t.c.event_type == event_type)
 
-        query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        if conds:
+            stmt = stmt.where(and_(*conds))
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
+        stmt = stmt.order_by(t.c.created_at.desc()).limit(limit)
+
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).all()
 
         return [self._row_to_event(row) for row in rows]
 

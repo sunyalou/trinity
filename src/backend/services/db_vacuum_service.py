@@ -50,6 +50,13 @@ class DBVacuumService:
             logger.info("DB vacuum disabled (DB_VACUUM_ENABLED=false)")
             return
 
+        # SQLite-only: VACUUM reclaims pages from the SQLite file. PostgreSQL
+        # (#300) manages reclamation via autovacuum — this service is a no-op.
+        from db.engine import is_sqlite
+        if not is_sqlite():
+            logger.info("DB vacuum skipped (PostgreSQL backend manages autovacuum)")
+            return
+
         self.scheduler.add_job(
             self.vacuum,
             CronTrigger(hour=DB_VACUUM_HOUR, minute=DB_VACUUM_MINUTE),

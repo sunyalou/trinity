@@ -59,6 +59,9 @@ def _load_service(api_key=""):
     # Create a mock config module with GEMINI_API_KEY
     mock_config = MagicMock()
     mock_config.GEMINI_API_KEY = api_key
+    # #1130: the service imports GEMINI_TEXT_MODEL from config — must be a
+    # real string or it lands as a MagicMock repr in the request URL
+    mock_config.GEMINI_TEXT_MODEL = "gemini-3.5-flash"
 
     # Pre-populate sys.modules so the service can import its dependencies
     saved_modules = {}

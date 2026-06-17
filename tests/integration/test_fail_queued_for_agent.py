@@ -4,15 +4,15 @@ AC: queued rows for the agent close FAILED (NOT CANCELLED, which is what
 cancel_queued_for_agent does), running rows and other agents' rows are
 untouched.
 
-Isolation: ``fail_queued_for_agent`` resolves ``get_db_connection`` from its
-own ``__globals__`` (the dict of the module that *defined* it), so we patch
-exactly that dict to point at a factory bound to a throwaway sqlite file. We
-target ``__globals__`` rather than ``sys.modules["db.schedules"]`` because the
-evict/re-import + conftest-baseline-restore dance other test files run (#660,
-#762) can leave the imported module object and the method's defining-module
-object as two DIFFERENT objects — a plain ``setattr(module, ...)`` would patch
-the wrong one. ``ScheduleOperations.__init__`` merely stores its collaborators
-(unused by this method), so ``ScheduleOperations(None, None)`` is enough.
+Isolation (#300): ``fail_queued_for_agent`` was converted to the SQLAlchemy
+engine seam — it resolves the backend via ``get_engine()`` (which reads
+``DATABASE_URL``), not the legacy ``get_db_connection`` seam. So we build the
+schema on a temp FILE and point ``DATABASE_URL`` at exactly that file, then
+``dispose_engines()`` so the engine cache (keyed by URL) builds the temp file's
+engine. The raw-sqlite ``_conn`` factory bound to the SAME file is retained so
+the test's insert/read helpers verify against the very DB the engine writes to.
+``ScheduleOperations.__init__`` merely stores its collaborators (unused by this
+method), so ``ScheduleOperations(None, None)`` is enough.
 """
 
 from __future__ import annotations
@@ -31,6 +31,18 @@ if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def cleanup_after_test():
+    """Override the parent conftest's autouse ``cleanup_after_test``, which
+    depends on the session-scoped ``api_client`` fixture and therefore forces a
+    live backend connection (ConnectError when none is running). This file is a
+    pure DB-layer test against a throwaway SQLite file — no backend needed — so
+    we shadow that fixture with a no-op, exactly as tests/unit/conftest.py does.
+    """
+    yield
+
 
 _SCHEDULE_EXECUTIONS_DDL = """
 CREATE TABLE IF NOT EXISTS schedule_executions (
@@ -52,7 +64,7 @@ CREATE TABLE IF NOT EXISTS schedule_executions (
 
 @pytest.fixture
 def ops(monkeypatch):
-    """ScheduleOperations whose get_db_connection points at a throwaway DB."""
+    """ScheduleOperations routed to a throwaway DB via the #300 engine seam."""
     from db.schedules import ScheduleOperations
 
     db_path = str(Path(tempfile.mkdtemp()) / "trinity.db")
@@ -70,14 +82,16 @@ def ops(monkeypatch):
         finally:
             conn.close()
 
-    # Patch the EXACT dict the method's get_db_connection() call resolves
-    # against (its defining-module __globals__), so the test DB is used even
-    # when sys.modules["db.schedules"] is a different object (see docstring).
-    method_globals = ScheduleOperations.fail_queued_for_agent.__globals__
-    monkeypatch.setitem(method_globals, "get_db_connection", _conn)
+    # Build the schema on the temp FILE, then route the SQLAlchemy engine (#300)
+    # at that exact file. get_engine() caches by URL, so dispose after setting
+    # DATABASE_URL to force the temp file's engine to be the one created.
     with _conn() as c:
         c.execute(_SCHEDULE_EXECUTIONS_DDL)
-    return ScheduleOperations(None, None), _conn
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    import db.engine as engine_mod
+    engine_mod.dispose_engines()
+    yield ScheduleOperations(None, None), _conn
+    engine_mod.dispose_engines()
 
 
 def _insert(get_conn, *, agent_name, status):

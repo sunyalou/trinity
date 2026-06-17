@@ -4,13 +4,19 @@ Agent session and session-message persistence (Session tab).
 Parallels db/chat.py but adds Claude Code --resume UUID caching and per-message
 audit fields (cache_read_tokens, claude_session_id). See
 docs/planning/SESSION_TAB_2026-04.md for the design.
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL.
 """
 
 import secrets
 from datetime import datetime
 from typing import Optional, List
 
-from .connection import get_db_connection
+from sqlalchemy import select, insert, update, delete, func, and_, case
+
+from .engine import get_engine
+from .tables import agent_sessions, agent_session_messages
 from db_models import AgentSession, AgentSessionMessage, SessionMessageInsert
 from utils.helpers import utc_now_iso
 
@@ -78,27 +84,32 @@ class SessionOperations:
         subscription_id: Optional[str] = None,
     ) -> AgentSession:
         """Create a new agent_sessions row with empty cached_claude_session_id."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            session_id = secrets.token_urlsafe(16)
-            now = utc_now_iso()
+        session_id = secrets.token_urlsafe(16)
+        now = utc_now_iso()
 
-            cursor.execute("""
-                INSERT INTO agent_sessions (
-                    id, agent_name, user_id, user_email,
-                    started_at, last_message_at, subscription_id
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(agent_sessions).values(
+                    id=session_id,
+                    agent_name=agent_name,
+                    user_id=user_id,
+                    user_email=user_email,
+                    started_at=now,
+                    last_message_at=now,
+                    subscription_id=subscription_id,
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (session_id, agent_name, user_id, user_email, now, now, subscription_id))
+            )
 
-            cursor.execute("SELECT * FROM agent_sessions WHERE id = ?", (session_id,))
-            return self._row_to_session(cursor.fetchone())
+            row = conn.execute(
+                select(agent_sessions).where(agent_sessions.c.id == session_id)
+            ).mappings().first()
+            return self._row_to_session(row)
 
     def get_session(self, session_id: str) -> Optional[AgentSession]:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM agent_sessions WHERE id = ?", (session_id,))
-            row = cursor.fetchone()
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                select(agent_sessions).where(agent_sessions.c.id == session_id)
+            ).mappings().first()
             return self._row_to_session(row) if row else None
 
     def list_sessions(
@@ -107,19 +118,18 @@ class SessionOperations:
         user_id: Optional[int] = None,
         status: Optional[str] = None,
     ) -> List[AgentSession]:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            query = "SELECT * FROM agent_sessions WHERE agent_name = ?"
-            params: list = [agent_name]
-            if user_id is not None:
-                query += " AND user_id = ?"
-                params.append(user_id)
-            if status:
-                query += " AND status = ?"
-                params.append(status)
-            query += " ORDER BY last_message_at DESC"
-            cursor.execute(query, params)
-            return [self._row_to_session(r) for r in cursor.fetchall()]
+        conds = [agent_sessions.c.agent_name == agent_name]
+        if user_id is not None:
+            conds.append(agent_sessions.c.user_id == user_id)
+        if status:
+            conds.append(agent_sessions.c.status == status)
+        stmt = (
+            select(agent_sessions)
+            .where(and_(*conds))
+            .order_by(agent_sessions.c.last_message_at.desc())
+        )
+        with get_engine().connect() as conn:
+            return [self._row_to_session(r) for r in conn.execute(stmt).mappings()]
 
     def delete_session(self, session_id: str) -> bool:
         """Delete the session and all its messages.
@@ -127,11 +137,16 @@ class SessionOperations:
         agent_session_messages has ON DELETE CASCADE, but the platform doesn't
         enable PRAGMA foreign_keys, so we delete messages explicitly.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM agent_session_messages WHERE session_id = ?", (session_id,))
-            cursor.execute("DELETE FROM agent_sessions WHERE id = ?", (session_id,))
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            conn.execute(
+                delete(agent_session_messages).where(
+                    agent_session_messages.c.session_id == session_id
+                )
+            )
+            result = conn.execute(
+                delete(agent_sessions).where(agent_sessions.c.id == session_id)
+            )
+            return result.rowcount > 0
 
     # ---- messages ----------------------------------------------------------
 
@@ -145,27 +160,30 @@ class SessionOperations:
         tally so the frontend can drive the inline reset-memory hint without
         scanning per-message rows.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            message_id = secrets.token_urlsafe(16)
-            now = utc_now_iso()
+        message_id = secrets.token_urlsafe(16)
+        now = utc_now_iso()
 
-            cursor.execute("""
-                INSERT INTO agent_session_messages (
-                    id, session_id, agent_name, user_id, user_email,
-                    role, content, timestamp,
-                    cost, context_used, context_max, cache_read_tokens,
-                    tool_calls, execution_time_ms, claude_session_id,
-                    compact_metadata
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(agent_session_messages).values(
+                    id=message_id,
+                    session_id=msg.session_id,
+                    agent_name=msg.agent_name,
+                    user_id=msg.user_id,
+                    user_email=msg.user_email,
+                    role=msg.role,
+                    content=msg.content,
+                    timestamp=now,
+                    cost=msg.cost,
+                    context_used=msg.context_used,
+                    context_max=msg.context_max,
+                    cache_read_tokens=msg.cache_read_tokens,
+                    tool_calls=msg.tool_calls,
+                    execution_time_ms=msg.execution_time_ms,
+                    claude_session_id=msg.claude_session_id,
+                    compact_metadata=msg.compact_metadata,
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                message_id, msg.session_id, msg.agent_name, msg.user_id, msg.user_email,
-                msg.role, msg.content, now,
-                msg.cost, msg.context_used, msg.context_max, msg.cache_read_tokens,
-                msg.tool_calls, msg.execution_time_ms, msg.claude_session_id,
-                msg.compact_metadata,
-            ))
+            )
 
             # total_context_used reflects the most recent assistant turn's
             # cache size, capped at total_context_max. Claude Code's auto-
@@ -175,102 +193,121 @@ class SessionOperations:
             # users care about is "what did the last turn cost," which
             # bounces honestly between low (post-compact rebuild) and high
             # (heavy turn that didn't compact).
-            cursor.execute("""
-                UPDATE agent_sessions
-                SET last_message_at = ?,
-                    message_count = message_count + 1,
-                    total_cost = total_cost + COALESCE(?, 0),
-                    total_context_used = MIN(
-                        COALESCE(?, total_context_used),
-                        total_context_max
+            #
+            # The original SQL used SQLite's two-arg MIN(a, b) scalar; that is
+            # an aggregate in PostgreSQL, so we express the same "cap at
+            # total_context_max" via a portable CASE.
+            new_context_used = func.coalesce(
+                msg.context_used, agent_sessions.c.total_context_used
+            )
+            capped_context_used = case(
+                (
+                    new_context_used > agent_sessions.c.total_context_max,
+                    agent_sessions.c.total_context_max,
+                ),
+                else_=new_context_used,
+            )
+            conn.execute(
+                update(agent_sessions)
+                .where(agent_sessions.c.id == msg.session_id)
+                .values(
+                    last_message_at=now,
+                    message_count=agent_sessions.c.message_count + 1,
+                    total_cost=agent_sessions.c.total_cost + func.coalesce(msg.cost or 0, 0),
+                    total_context_used=capped_context_used,
+                    total_context_max=func.coalesce(
+                        msg.context_max, agent_sessions.c.total_context_max
                     ),
-                    total_context_max = COALESCE(?, total_context_max),
-                    compact_count = compact_count + ?
-                WHERE id = ?
-            """, (now, msg.cost or 0, msg.context_used, msg.context_max, msg.compact_event_count, msg.session_id))
+                    compact_count=agent_sessions.c.compact_count + msg.compact_event_count,
+                )
+            )
 
-            cursor.execute("SELECT * FROM agent_session_messages WHERE id = ?", (message_id,))
-            return self._row_to_message(cursor.fetchone())
+            row = conn.execute(
+                select(agent_session_messages).where(
+                    agent_session_messages.c.id == message_id
+                )
+            ).mappings().first()
+            return self._row_to_message(row)
 
     def get_session_messages(
         self, session_id: str, limit: int = 100
     ) -> List[AgentSessionMessage]:
         """Return the most recent ``limit`` messages, oldest-first for display."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM (
-                    SELECT * FROM agent_session_messages
-                    WHERE session_id = ?
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                ) sub ORDER BY timestamp ASC
-            """, (session_id, limit))
-            return [self._row_to_message(r) for r in cursor.fetchall()]
+        # Most-recent ``limit`` rows (DESC), then re-ordered oldest-first.
+        subq = (
+            select(agent_session_messages)
+            .where(agent_session_messages.c.session_id == session_id)
+            .order_by(agent_session_messages.c.timestamp.desc())
+            .limit(limit)
+            .subquery()
+        )
+        stmt = select(subq).order_by(subq.c.timestamp.asc())
+        with get_engine().connect() as conn:
+            return [self._row_to_message(r) for r in conn.execute(stmt).mappings()]
 
     # ---- Claude session UUID cache ----------------------------------------
 
     def get_cached_claude_session_id(self, session_id: str) -> Optional[str]:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT cached_claude_session_id FROM agent_sessions WHERE id = ?",
-                (session_id,),
-            )
-            row = cursor.fetchone()
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                select(agent_sessions.c.cached_claude_session_id).where(
+                    agent_sessions.c.id == session_id
+                )
+            ).mappings().first()
             return row["cached_claude_session_id"] if row else None
 
     def update_cached_claude_session_id(
         self, session_id: str, claude_session_id: str
     ) -> bool:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_sessions
-                SET cached_claude_session_id = ?
-                WHERE id = ?
-            """, (claude_session_id, session_id))
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_sessions)
+                .where(agent_sessions.c.id == session_id)
+                .values(cached_claude_session_id=claude_session_id)
+            )
+            return result.rowcount > 0
 
     def clear_cached_claude_session_id(self, session_id: str) -> bool:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_sessions
-                SET cached_claude_session_id = NULL
-                WHERE id = ?
-            """, (session_id,))
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_sessions)
+                .where(agent_sessions.c.id == session_id)
+                .values(cached_claude_session_id=None)
+            )
+            return result.rowcount > 0
 
     # ---- resume health -----------------------------------------------------
 
     def mark_resume_failure(self, session_id: str) -> int:
         """Increment consecutive_resume_failures and return the new count."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_sessions
-                SET consecutive_resume_failures = consecutive_resume_failures + 1
-                WHERE id = ?
-            """, (session_id,))
-            cursor.execute(
-                "SELECT consecutive_resume_failures FROM agent_sessions WHERE id = ?",
-                (session_id,),
+        with get_engine().begin() as conn:
+            conn.execute(
+                update(agent_sessions)
+                .where(agent_sessions.c.id == session_id)
+                .values(
+                    consecutive_resume_failures=agent_sessions.c.consecutive_resume_failures
+                    + 1
+                )
             )
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(agent_sessions.c.consecutive_resume_failures).where(
+                    agent_sessions.c.id == session_id
+                )
+            ).mappings().first()
             return row["consecutive_resume_failures"] if row else 0
 
     def mark_resume_success(self, session_id: str) -> bool:
         """Reset failure counter and stamp last_resume_at."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_sessions
-                SET consecutive_resume_failures = 0,
-                    last_resume_at = ?
-                WHERE id = ?
-            """, (utc_now_iso(), session_id))
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_sessions)
+                .where(agent_sessions.c.id == session_id)
+                .values(
+                    consecutive_resume_failures=0,
+                    last_resume_at=utc_now_iso(),
+                )
+            )
+            return result.rowcount > 0
 
     # ---- cleanup support (Phase 4.2) --------------------------------------
 
@@ -283,12 +320,14 @@ class SessionOperations:
         row referencing it (deleted, reset, or post-fallback orphan) and is
         safe to delete after the age-guard window.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT cached_claude_session_id
-                FROM agent_sessions
-                WHERE agent_name = ?
-                  AND cached_claude_session_id IS NOT NULL
-            """, (agent_name,))
-            return [row["cached_claude_session_id"] for row in cursor.fetchall()]
+        stmt = select(agent_sessions.c.cached_claude_session_id).where(
+            and_(
+                agent_sessions.c.agent_name == agent_name,
+                agent_sessions.c.cached_claude_session_id.isnot(None),
+            )
+        )
+        with get_engine().connect() as conn:
+            return [
+                row["cached_claude_session_id"]
+                for row in conn.execute(stmt).mappings()
+            ]

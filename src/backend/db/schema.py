@@ -1471,3 +1471,120 @@ def init_schema(cursor, conn):
     create_all_indexes(cursor)
     create_all_triggers(cursor)
     conn.commit()
+
+
+# =============================================================================
+# PostgreSQL DDL (#300) — schema.py stays the single source of truth
+# =============================================================================
+#
+# Rather than maintain a second hand-written schema (a fresh source of drift —
+# see #655/#691/#721), we translate the SAME `TABLES`/`INDEXES` strings into
+# PostgreSQL DDL. The dialect deltas are small and mechanical:
+#   * INTEGER PRIMARY KEY AUTOINCREMENT  → SERIAL PRIMARY KEY
+#   * DEFAULT (datetime('now')) / CURRENT_TIMESTAMP on TEXT cols
+#                                        → a text-typed UTC timestamp expr
+#   * the two audit_log RAISE(ABORT) triggers → PL/pgSQL equivalents
+# Everything else (partial indexes, REAL, INTEGER-booleans, ON DELETE CASCADE,
+# IF NOT EXISTS) is valid on both backends as-is.
+#
+# A FRESH PostgreSQL database created from these strings is already at head, so
+# the sqlite-only PRAGMA-based migrations in db/migrations.py do NOT run on PG
+# (they exist solely to upgrade pre-existing sqlite files). PostgreSQL is an
+# experimental backend (#300) — start fresh.
+import re as _re
+
+# Applied in order to each CREATE TABLE string.
+#
+# FK stripping: the platform runs with foreign keys DISABLED on sqlite (PRAGMA
+# foreign_keys is never turned on — cascades are performed in application code,
+# e.g. the agent delete handler + rename_agent). Several FK declarations are
+# therefore aspirational AND have mismatched column types (e.g. TEXT
+# added_by → INTEGER users.id) that sqlite silently accepts but PostgreSQL
+# rejects at CREATE. We strip FK constraints for PG so runtime behavior is
+# identical (no enforcement on either backend). Table-level FKs are removed
+# first, then any remaining inline ``REFERENCES`` column qualifiers.
+_PG_TABLE_SUBS = [
+    (_re.compile(
+        r",\s*FOREIGN\s+KEY\s*\([^)]*\)\s*REFERENCES\s+\w+\s*\([^)]*\)"
+        r"(?:\s+ON\s+DELETE\s+\w+)?(?:\s+ON\s+UPDATE\s+\w+)?",
+        _re.IGNORECASE),
+     ""),
+    (_re.compile(
+        r"\s+REFERENCES\s+\w+\s*\([^)]*\)"
+        r"(?:\s+ON\s+DELETE\s+\w+)?(?:\s+ON\s+UPDATE\s+\w+)?",
+        _re.IGNORECASE),
+     ""),
+    (_re.compile(r"INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT", _re.IGNORECASE),
+     "SERIAL PRIMARY KEY"),
+    # TEXT timestamp columns whose sqlite default is datetime('now'); keep them
+    # text-typed on PG so the column type is unchanged (ISO-ish space format,
+    # matching sqlite's CURRENT_TIMESTAMP output).
+    (_re.compile(r"DEFAULT\s+\(datetime\('now'\)\)", _re.IGNORECASE),
+     "DEFAULT (to_char((now() at time zone 'utc'), 'YYYY-MM-DD HH24:MI:SS'))"),
+    (_re.compile(r"DEFAULT\s+CURRENT_TIMESTAMP", _re.IGNORECASE),
+     "DEFAULT (to_char((now() at time zone 'utc'), 'YYYY-MM-DD HH24:MI:SS'))"),
+]
+
+
+def to_postgres_table_ddl(create_sql: str) -> str:
+    """Translate one sqlite CREATE TABLE string to PostgreSQL."""
+    out = create_sql
+    for pattern, repl in _PG_TABLE_SUBS:
+        out = pattern.sub(repl, out)
+    return out
+
+
+# PostgreSQL equivalents of the audit_log append-only triggers (SEC-001).
+# CREATE OR REPLACE TRIGGER requires PostgreSQL 14+ (we target 16).
+POSTGRES_TRIGGERS = [
+    """
+    CREATE OR REPLACE FUNCTION audit_log_no_update_fn() RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION 'Audit log entries cannot be modified';
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    """
+    CREATE OR REPLACE TRIGGER audit_log_no_update
+    BEFORE UPDATE ON audit_log
+    FOR EACH ROW EXECUTE FUNCTION audit_log_no_update_fn()
+    """,
+    # audit_log.timestamp is ISO-Z text (utc_now_iso). Compare lexicographically
+    # against an identically-formatted cutoff — the same logic as the sqlite
+    # trigger's datetime('now','-365 days') guard (Invariant #16).
+    """
+    CREATE OR REPLACE FUNCTION audit_log_no_delete_fn() RETURNS trigger AS $$
+    BEGIN
+        IF OLD.timestamp > to_char(
+            (now() at time zone 'utc') - interval '365 days',
+            'YYYY-MM-DD"T"HH24:MI:SS"Z"'
+        ) THEN
+            RAISE EXCEPTION 'Audit log entries cannot be deleted within retention period';
+        END IF;
+        RETURN OLD;
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    """
+    CREATE OR REPLACE TRIGGER audit_log_no_delete
+    BEFORE DELETE ON audit_log
+    FOR EACH ROW EXECUTE FUNCTION audit_log_no_delete_fn()
+    """,
+]
+
+
+def init_schema_postgres(engine) -> None:
+    """Create the full schema on a PostgreSQL engine (#300, experimental).
+
+    Idempotent: tables/indexes use IF NOT EXISTS; triggers use CREATE OR
+    REPLACE. Mirrors ``init_schema`` for sqlite but emits PostgreSQL DDL.
+    """
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        for create_sql in TABLES.values():
+            conn.execute(text(to_postgres_table_ddl(create_sql)))
+        for index_sql in INDEXES:
+            conn.execute(text(index_sql))
+        for trigger_sql in POSTGRES_TRIGGERS:
+            conn.execute(text(trigger_sql))

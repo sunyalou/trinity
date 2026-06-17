@@ -6,10 +6,12 @@ NVM_API_KEY is encrypted using the same AES-256-GCM system as subscription token
 """
 
 import uuid
-from datetime import datetime
 from typing import Optional, List
 
-from .connection import get_db_connection
+from sqlalchemy import select, insert, update, delete
+
+from .engine import get_engine
+from .tables import nevermined_agent_config, nevermined_payment_log
 from db_models import NeverminedConfig, NeverminedPaymentLog
 from utils.helpers import utc_now_iso
 
@@ -79,65 +81,69 @@ class NeverminedOperations:
         encrypted = encryption_service.encrypt({"nvm_api_key": nvm_api_key})
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id FROM nevermined_agent_config WHERE agent_name = ?",
-                (agent_name,)
-            )
-            existing = cursor.fetchone()
+        with get_engine().begin() as conn:
+            existing = conn.execute(
+                select(nevermined_agent_config.c.id).where(
+                    nevermined_agent_config.c.agent_name == agent_name
+                )
+            ).mappings().first()
 
             if existing:
                 config_id = existing["id"]
-                cursor.execute("""
-                    UPDATE nevermined_agent_config
-                    SET encrypted_credentials = ?,
-                        nvm_environment = ?,
-                        nvm_agent_id = ?,
-                        nvm_plan_id = ?,
-                        credits_per_request = ?,
-                        updated_at = ?
-                    WHERE id = ?
-                """, (encrypted, nvm_environment, nvm_agent_id, nvm_plan_id,
-                      credits_per_request, now, config_id))
+                conn.execute(
+                    update(nevermined_agent_config)
+                    .where(nevermined_agent_config.c.id == config_id)
+                    .values(
+                        encrypted_credentials=encrypted,
+                        nvm_environment=nvm_environment,
+                        nvm_agent_id=nvm_agent_id,
+                        nvm_plan_id=nvm_plan_id,
+                        credits_per_request=credits_per_request,
+                        updated_at=now,
+                    )
+                )
             else:
                 config_id = str(uuid.uuid4())
-                cursor.execute("""
-                    INSERT INTO nevermined_agent_config
-                    (id, agent_name, encrypted_credentials, nvm_environment, nvm_agent_id,
-                     nvm_plan_id, credits_per_request, enabled, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-                """, (config_id, agent_name, encrypted, nvm_environment, nvm_agent_id,
-                      nvm_plan_id, credits_per_request, now, now))
+                conn.execute(
+                    insert(nevermined_agent_config).values(
+                        id=config_id,
+                        agent_name=agent_name,
+                        encrypted_credentials=encrypted,
+                        nvm_environment=nvm_environment,
+                        nvm_agent_id=nvm_agent_id,
+                        nvm_plan_id=nvm_plan_id,
+                        credits_per_request=credits_per_request,
+                        enabled=0,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
 
-            conn.commit()
-
-            cursor.execute(
-                "SELECT * FROM nevermined_agent_config WHERE id = ?",
-                (config_id,)
-            )
-            return self._row_to_config(cursor.fetchone())
+            row = conn.execute(
+                select(nevermined_agent_config).where(
+                    nevermined_agent_config.c.id == config_id
+                )
+            ).mappings().first()
+            return self._row_to_config(row)
 
     def get_config(self, agent_name: str) -> Optional[NeverminedConfig]:
         """Get Nevermined config for an agent (without decrypted key)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM nevermined_agent_config WHERE agent_name = ?",
-                (agent_name,)
-            )
-            row = cursor.fetchone()
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                select(nevermined_agent_config).where(
+                    nevermined_agent_config.c.agent_name == agent_name
+                )
+            ).mappings().first()
             return self._row_to_config(row) if row else None
 
     def get_config_with_key(self, agent_name: str) -> Optional[dict]:
         """Get config + decrypted NVM_API_KEY. Internal use only."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM nevermined_agent_config WHERE agent_name = ?",
-                (agent_name,)
-            )
-            row = cursor.fetchone()
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                select(nevermined_agent_config).where(
+                    nevermined_agent_config.c.agent_name == agent_name
+                )
+            ).mappings().first()
             if not row:
                 return None
 
@@ -153,37 +159,33 @@ class NeverminedOperations:
 
     def delete_config(self, agent_name: str) -> bool:
         """Delete Nevermined config for an agent."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM nevermined_agent_config WHERE agent_name = ?",
-                (agent_name,)
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                delete(nevermined_agent_config).where(
+                    nevermined_agent_config.c.agent_name == agent_name
+                )
             )
-            conn.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0
 
     def set_enabled(self, agent_name: str, enabled: bool) -> bool:
         """Enable or disable Nevermined payments for an agent."""
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE nevermined_agent_config
-                SET enabled = ?, updated_at = ?
-                WHERE agent_name = ?
-            """, (1 if enabled else 0, now, agent_name))
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(nevermined_agent_config)
+                .where(nevermined_agent_config.c.agent_name == agent_name)
+                .values(enabled=1 if enabled else 0, updated_at=now)
+            )
+            return result.rowcount > 0
 
     def is_nevermined_enabled(self, agent_name: str) -> bool:
         """Fast check if Nevermined is enabled for an agent."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT enabled FROM nevermined_agent_config WHERE agent_name = ?",
-                (agent_name,)
-            )
-            row = cursor.fetchone()
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                select(nevermined_agent_config.c.enabled).where(
+                    nevermined_agent_config.c.agent_name == agent_name
+                )
+            ).mappings().first()
             return bool(row["enabled"]) if row else False
 
     # =========================================================================
@@ -206,23 +208,29 @@ class NeverminedOperations:
         log_id = str(uuid.uuid4())
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO nevermined_payment_log
-                (id, agent_name, execution_id, action, subscriber_address,
-                 credits_amount, tx_hash, remaining_balance, success, error, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (log_id, agent_name, execution_id, action, subscriber_address,
-                  credits_amount, tx_hash, remaining_balance,
-                  1 if success else 0, error, now))
-            conn.commit()
-
-            cursor.execute(
-                "SELECT * FROM nevermined_payment_log WHERE id = ?",
-                (log_id,)
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(nevermined_payment_log).values(
+                    id=log_id,
+                    agent_name=agent_name,
+                    execution_id=execution_id,
+                    action=action,
+                    subscriber_address=subscriber_address,
+                    credits_amount=credits_amount,
+                    tx_hash=tx_hash,
+                    remaining_balance=remaining_balance,
+                    success=1 if success else 0,
+                    error=error,
+                    created_at=now,
+                )
             )
-            return self._row_to_payment_log(cursor.fetchone())
+
+            row = conn.execute(
+                select(nevermined_payment_log).where(
+                    nevermined_payment_log.c.id == log_id
+                )
+            ).mappings().first()
+            return self._row_to_payment_log(row)
 
     def get_payment_log(
         self,
@@ -230,35 +238,32 @@ class NeverminedOperations:
         limit: int = 50,
     ) -> List[NeverminedPaymentLog]:
         """Get payment log entries for an agent, newest first."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM nevermined_payment_log
-                WHERE agent_name = ?
-                ORDER BY created_at DESC
-                LIMIT ?
-            """, (agent_name, limit))
-            return [self._row_to_payment_log(row) for row in cursor.fetchall()]
+        with get_engine().connect() as conn:
+            rows = conn.execute(
+                select(nevermined_payment_log)
+                .where(nevermined_payment_log.c.agent_name == agent_name)
+                .order_by(nevermined_payment_log.c.created_at.desc())
+                .limit(limit)
+            ).mappings().all()
+            return [self._row_to_payment_log(row) for row in rows]
 
     def get_settlement_failures(self, limit: int = 50) -> List[NeverminedPaymentLog]:
         """Get all failed settlements across all agents (admin view)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM nevermined_payment_log
-                WHERE action = 'settle_failed'
-                ORDER BY created_at DESC
-                LIMIT ?
-            """, (limit,))
-            return [self._row_to_payment_log(row) for row in cursor.fetchall()]
+        with get_engine().connect() as conn:
+            rows = conn.execute(
+                select(nevermined_payment_log)
+                .where(nevermined_payment_log.c.action == "settle_failed")
+                .order_by(nevermined_payment_log.c.created_at.desc())
+                .limit(limit)
+            ).mappings().all()
+            return [self._row_to_payment_log(row) for row in rows]
 
     def get_payment_log_entry(self, log_id: str) -> Optional[NeverminedPaymentLog]:
         """Get a single payment log entry by ID."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM nevermined_payment_log WHERE id = ?",
-                (log_id,)
-            )
-            row = cursor.fetchone()
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                select(nevermined_payment_log).where(
+                    nevermined_payment_log.c.id == log_id
+                )
+            ).mappings().first()
             return self._row_to_payment_log(row) if row else None

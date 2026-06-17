@@ -7,7 +7,6 @@ Handles schedule CRUD, execution tracking, and Git configuration.
 import json
 import logging
 import secrets
-import sqlite3
 import statistics
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -15,8 +14,16 @@ from typing import Optional, List, Dict
 
 import pytz
 from croniter import croniter
+from sqlalchemy import select, insert, update, delete, and_, or_, func, text, case
+from sqlalchemy.exc import IntegrityError
 
-from .connection import get_db_connection
+from .engine import get_engine
+from .tables import (
+    agent_schedules,
+    schedule_executions,
+    agent_git_config,
+    agent_ownership,
+)
 from db_models import Schedule, ScheduleCreate, ScheduleExecution, AgentGitConfig
 from models import TaskExecutionStatus
 from utils.helpers import iso_cutoff, utc_now_iso, to_utc_iso, parse_iso_timestamp
@@ -268,93 +275,91 @@ class ScheduleOperations:
         if schedule_data.allowed_tools is not None:
             allowed_tools_json = json.dumps(schedule_data.allowed_tools)
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                # Clamp retry values to valid ranges (RETRY-001)
-                max_retries = max(0, min(5, schedule_data.max_retries))
-                retry_delay_seconds = max(30, min(600, schedule_data.retry_delay_seconds))
+        try:
+            # Clamp retry values to valid ranges (RETRY-001)
+            max_retries = max(0, min(5, schedule_data.max_retries))
+            retry_delay_seconds = max(30, min(600, schedule_data.retry_delay_seconds))
 
-                # Clamp validation timeout to valid range (VALIDATE-001)
-                validation_timeout_seconds = max(30, min(600, schedule_data.validation_timeout_seconds))
+            # Clamp validation timeout to valid range (VALIDATE-001)
+            validation_timeout_seconds = max(30, min(600, schedule_data.validation_timeout_seconds))
 
-                cursor.execute("""
-                    INSERT INTO agent_schedules (
-                        id, agent_name, name, cron_expression, message, enabled,
-                        timezone, description, owner_id, created_at, updated_at, next_run_at,
-                        timeout_seconds, allowed_tools, model, max_retries, retry_delay_seconds,
-                        validation_enabled, validation_prompt, validation_timeout_seconds
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    schedule_id,
-                    agent_name,
-                    schedule_data.name,
-                    schedule_data.cron_expression,
-                    schedule_data.message,
-                    1 if schedule_data.enabled else 0,
-                    schedule_data.timezone,
-                    schedule_data.description,
-                    user["id"],
-                    now,
-                    now,
-                    next_run_at_iso,
-                    schedule_data.timeout_seconds,
-                    allowed_tools_json,
-                    schedule_data.model,
-                    max_retries,
-                    retry_delay_seconds,
-                    1 if schedule_data.validation_enabled else 0,
-                    schedule_data.validation_prompt,
-                    validation_timeout_seconds
-                ))
-                conn.commit()
-
-                return Schedule(
-                    id=schedule_id,
-                    agent_name=agent_name,
-                    name=schedule_data.name,
-                    cron_expression=schedule_data.cron_expression,
-                    message=schedule_data.message,
-                    enabled=schedule_data.enabled,
-                    timezone=schedule_data.timezone,
-                    description=schedule_data.description,
-                    owner_id=user["id"],
-                    created_at=datetime.fromisoformat(now),
-                    updated_at=datetime.fromisoformat(now),
-                    next_run_at=next_run_at,
-                    timeout_seconds=schedule_data.timeout_seconds,
-                    allowed_tools=schedule_data.allowed_tools,
-                    model=schedule_data.model,
-                    max_retries=max_retries,
-                    retry_delay_seconds=retry_delay_seconds,
-                    validation_enabled=schedule_data.validation_enabled,
-                    validation_prompt=schedule_data.validation_prompt,
-                    validation_timeout_seconds=validation_timeout_seconds
+            with get_engine().begin() as conn:
+                conn.execute(
+                    insert(agent_schedules).values(
+                        id=schedule_id,
+                        agent_name=agent_name,
+                        name=schedule_data.name,
+                        cron_expression=schedule_data.cron_expression,
+                        message=schedule_data.message,
+                        enabled=1 if schedule_data.enabled else 0,
+                        timezone=schedule_data.timezone,
+                        description=schedule_data.description,
+                        owner_id=user["id"],
+                        created_at=now,
+                        updated_at=now,
+                        next_run_at=next_run_at_iso,
+                        timeout_seconds=schedule_data.timeout_seconds,
+                        allowed_tools=allowed_tools_json,
+                        model=schedule_data.model,
+                        max_retries=max_retries,
+                        retry_delay_seconds=retry_delay_seconds,
+                        validation_enabled=1 if schedule_data.validation_enabled else 0,
+                        validation_prompt=schedule_data.validation_prompt,
+                        validation_timeout_seconds=validation_timeout_seconds,
+                    )
                 )
-            except sqlite3.IntegrityError:
-                return None
+
+            return Schedule(
+                id=schedule_id,
+                agent_name=agent_name,
+                name=schedule_data.name,
+                cron_expression=schedule_data.cron_expression,
+                message=schedule_data.message,
+                enabled=schedule_data.enabled,
+                timezone=schedule_data.timezone,
+                description=schedule_data.description,
+                owner_id=user["id"],
+                created_at=datetime.fromisoformat(now),
+                updated_at=datetime.fromisoformat(now),
+                next_run_at=next_run_at,
+                timeout_seconds=schedule_data.timeout_seconds,
+                allowed_tools=schedule_data.allowed_tools,
+                model=schedule_data.model,
+                max_retries=max_retries,
+                retry_delay_seconds=retry_delay_seconds,
+                validation_enabled=schedule_data.validation_enabled,
+                validation_prompt=schedule_data.validation_prompt,
+                validation_timeout_seconds=validation_timeout_seconds
+            )
+        except IntegrityError:
+            return None
 
     def get_schedule(self, schedule_id: str) -> Optional[Schedule]:
         """Get a schedule by ID. Excludes soft-deleted schedules (#834)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM agent_schedules WHERE id = ? AND deleted_at IS NULL",
-                (schedule_id,),
+        stmt = select(agent_schedules).where(
+            and_(
+                agent_schedules.c.id == schedule_id,
+                agent_schedules.c.deleted_at.is_(None),
             )
-            row = cursor.fetchone()
-            return self._row_to_schedule(row) if row else None
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        return self._row_to_schedule(row) if row else None
 
     def list_agent_schedules(self, agent_name: str) -> List[Schedule]:
         """List all schedules for an agent. Excludes soft-deleted (#834)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM agent_schedules
-                WHERE agent_name = ? AND deleted_at IS NULL
-                ORDER BY created_at DESC
-            """, (agent_name,))
-            return [self._row_to_schedule(row) for row in cursor.fetchall()]
+        stmt = (
+            select(agent_schedules)
+            .where(
+                and_(
+                    agent_schedules.c.agent_name == agent_name,
+                    agent_schedules.c.deleted_at.is_(None),
+                )
+            )
+            .order_by(agent_schedules.c.created_at.desc())
+        )
+        with get_engine().connect() as conn:
+            return [self._row_to_schedule(row) for row in conn.execute(stmt).mappings()]
 
     def find_active_schedules_exceeding_timeout(
         self, agent_name: str, ceiling_seconds: int
@@ -365,19 +370,25 @@ class ScheduleOperations:
         the agent-cap-lowering error payload — the caller surfaces them
         so the operator knows which schedules need editing first.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, name, timeout_seconds
-                FROM agent_schedules
-                WHERE agent_name = ?
-                  AND deleted_at IS NULL
-                  AND timeout_seconds > ?
-                ORDER BY timeout_seconds DESC
-            """, (agent_name, ceiling_seconds))
+        stmt = (
+            select(
+                agent_schedules.c.id,
+                agent_schedules.c.name,
+                agent_schedules.c.timeout_seconds,
+            )
+            .where(
+                and_(
+                    agent_schedules.c.agent_name == agent_name,
+                    agent_schedules.c.deleted_at.is_(None),
+                    agent_schedules.c.timeout_seconds > ceiling_seconds,
+                )
+            )
+            .order_by(agent_schedules.c.timeout_seconds.desc())
+        )
+        with get_engine().connect() as conn:
             return [
                 {"id": row["id"], "name": row["name"], "timeout_seconds": row["timeout_seconds"]}
-                for row in cursor.fetchall()
+                for row in conn.execute(stmt).mappings()
             ]
 
     def list_all_enabled_schedules(self) -> List[Schedule]:
@@ -391,45 +402,56 @@ class ScheduleOperations:
         - #834 Phase 1b: skip *schedules* that are themselves
           soft-deleted (`agent_schedules.deleted_at`).
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT s.* FROM agent_schedules s
-                JOIN agent_ownership ao ON ao.agent_name = s.agent_name
-                WHERE s.enabled = 1
-                  AND s.deleted_at IS NULL
-                  AND ao.deleted_at IS NULL
-                ORDER BY s.agent_name, s.name
-            """)
-            return [self._row_to_schedule(row) for row in cursor.fetchall()]
+        stmt = (
+            select(agent_schedules)
+            .select_from(
+                agent_schedules.join(
+                    agent_ownership,
+                    agent_ownership.c.agent_name == agent_schedules.c.agent_name,
+                )
+            )
+            .where(
+                and_(
+                    agent_schedules.c.enabled == 1,
+                    agent_schedules.c.deleted_at.is_(None),
+                    agent_ownership.c.deleted_at.is_(None),
+                )
+            )
+            .order_by(agent_schedules.c.agent_name, agent_schedules.c.name)
+        )
+        with get_engine().connect() as conn:
+            return [self._row_to_schedule(row) for row in conn.execute(stmt).mappings()]
 
     def list_all_disabled_schedules(self) -> List[Schedule]:
         """List all disabled schedules (for resume operations).
 
         Excludes soft-deleted (#834).
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM agent_schedules
-                WHERE enabled = 0 AND deleted_at IS NULL
-                ORDER BY agent_name, name
-            """)
-            return [self._row_to_schedule(row) for row in cursor.fetchall()]
+        stmt = (
+            select(agent_schedules)
+            .where(
+                and_(
+                    agent_schedules.c.enabled == 0,
+                    agent_schedules.c.deleted_at.is_(None),
+                )
+            )
+            .order_by(agent_schedules.c.agent_name, agent_schedules.c.name)
+        )
+        with get_engine().connect() as conn:
+            return [self._row_to_schedule(row) for row in conn.execute(stmt).mappings()]
 
     def list_all_schedules(self) -> List[Schedule]:
         """List all schedules across all agents (for system agent overview).
 
         Excludes soft-deleted (#834).
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM agent_schedules
-                WHERE deleted_at IS NULL
-                ORDER BY agent_name, name
-            """)
-            return [self._row_to_schedule(row) for row in cursor.fetchall()]
+        stmt = (
+            select(agent_schedules)
+            .where(agent_schedules.c.deleted_at.is_(None))
+            .order_by(agent_schedules.c.agent_name, agent_schedules.c.name)
+        )
+        with get_engine().connect() as conn:
+            return [self._row_to_schedule(row) for row in conn.execute(stmt).mappings()]
 
     def update_schedule(self, schedule_id: str, username: str, updates: Dict) -> Optional[Schedule]:
         """Update a schedule."""
@@ -445,76 +467,69 @@ class ScheduleOperations:
         if user["role"] != "admin" and schedule.owner_id != user["id"]:
             return None
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        values: Dict = {}
+        allowed_fields = [
+            "name", "cron_expression", "message", "enabled", "timezone",
+            "description", "timeout_seconds", "allowed_tools", "model",
+            "max_retries", "retry_delay_seconds",  # RETRY-001
+            "validation_enabled", "validation_prompt", "validation_timeout_seconds"  # VALIDATE-001
+        ]
 
-            set_clauses = []
-            params = []
-            allowed_fields = [
-                "name", "cron_expression", "message", "enabled", "timezone",
-                "description", "timeout_seconds", "allowed_tools", "model",
-                "max_retries", "retry_delay_seconds",  # RETRY-001
-                "validation_enabled", "validation_prompt", "validation_timeout_seconds"  # VALIDATE-001
-            ]
+        for key, value in updates.items():
+            if key in allowed_fields:
+                if key == "enabled":
+                    value = 1 if value else 0
+                elif key == "allowed_tools":
+                    # Serialize allowed_tools to JSON
+                    value = json.dumps(value) if value is not None else None
+                elif key == "max_retries":
+                    # Clamp to valid range (RETRY-001)
+                    value = max(0, min(5, int(value)))
+                elif key == "retry_delay_seconds":
+                    # Clamp to valid range (RETRY-001)
+                    value = max(30, min(600, int(value)))
+                elif key == "validation_enabled":
+                    # Convert to integer for SQLite (VALIDATE-001)
+                    value = 1 if value else 0
+                elif key == "validation_timeout_seconds":
+                    # Clamp to valid range (VALIDATE-001)
+                    value = max(30, min(600, int(value)))
+                values[key] = value
 
-            for key, value in updates.items():
-                if key in allowed_fields:
-                    if key == "enabled":
-                        value = 1 if value else 0
-                    elif key == "allowed_tools":
-                        # Serialize allowed_tools to JSON
-                        value = json.dumps(value) if value is not None else None
-                    elif key == "max_retries":
-                        # Clamp to valid range (RETRY-001)
-                        value = max(0, min(5, int(value)))
-                    elif key == "retry_delay_seconds":
-                        # Clamp to valid range (RETRY-001)
-                        value = max(30, min(600, int(value)))
-                    elif key == "validation_enabled":
-                        # Convert to integer for SQLite (VALIDATE-001)
-                        value = 1 if value else 0
-                    elif key == "validation_timeout_seconds":
-                        # Clamp to valid range (VALIDATE-001)
-                        value = max(30, min(600, int(value)))
-                    set_clauses.append(f"{key} = ?")
-                    params.append(value)
+        if not values:
+            return schedule
 
-            if not set_clauses:
-                return schedule
+        # Check if we need to recalculate next_run_at
+        # Recalculate if cron_expression, timezone, or enabled status changed
+        needs_next_run_recalc = (
+            "cron_expression" in updates or
+            "timezone" in updates or
+            "enabled" in updates
+        )
 
-            # Check if we need to recalculate next_run_at
-            # Recalculate if cron_expression, timezone, or enabled status changed
-            needs_next_run_recalc = (
-                "cron_expression" in updates or
-                "timezone" in updates or
-                "enabled" in updates
+        if needs_next_run_recalc:
+            # Determine final values after update
+            new_cron = updates.get("cron_expression", schedule.cron_expression)
+            new_timezone = updates.get("timezone", schedule.timezone) or "UTC"
+            new_enabled = updates.get("enabled", schedule.enabled)
+
+            if new_enabled:
+                next_run_at = self._calculate_next_run_at(new_cron, new_timezone)
+                values["next_run_at"] = next_run_at.isoformat() if next_run_at else None
+            else:
+                # Clear next_run_at if schedule is disabled
+                values["next_run_at"] = None
+
+        values["updated_at"] = utc_now_iso()
+
+        with get_engine().begin() as conn:
+            conn.execute(
+                update(agent_schedules)
+                .where(agent_schedules.c.id == schedule_id)
+                .values(**values)
             )
 
-            if needs_next_run_recalc:
-                # Determine final values after update
-                new_cron = updates.get("cron_expression", schedule.cron_expression)
-                new_timezone = updates.get("timezone", schedule.timezone) or "UTC"
-                new_enabled = updates.get("enabled", schedule.enabled)
-
-                if new_enabled:
-                    next_run_at = self._calculate_next_run_at(new_cron, new_timezone)
-                    set_clauses.append("next_run_at = ?")
-                    params.append(next_run_at.isoformat() if next_run_at else None)
-                else:
-                    # Clear next_run_at if schedule is disabled
-                    set_clauses.append("next_run_at = ?")
-                    params.append(None)
-
-            set_clauses.append("updated_at = ?")
-            params.append(utc_now_iso())
-            params.append(schedule_id)
-
-            cursor.execute(f"""
-                UPDATE agent_schedules SET {", ".join(set_clauses)} WHERE id = ?
-            """, params)
-            conn.commit()
-
-            return self.get_schedule(schedule_id)
+        return self.get_schedule(schedule_id)
 
     def delete_schedule(self, schedule_id: str, username: str) -> bool:
         """Soft-delete a schedule (Issue #834 Phase 1b).
@@ -537,8 +552,7 @@ class ScheduleOperations:
         if not user:
             return False
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        with get_engine().begin() as conn:
             # Permission check must read the row *including* soft-deleted
             # ones. `get_schedule()` filters `deleted_at IS NULL` (#834
             # Phase 1b), so using it here made a retry on an
@@ -546,11 +560,12 @@ class ScheduleOperations:
             # False` → the router turned that into a misleading 403
             # "access denied" for the legitimate owner. Read owner_id
             # directly so re-delete is genuinely idempotent.
-            cursor.execute(
-                "SELECT owner_id, deleted_at FROM agent_schedules WHERE id = ?",
-                (schedule_id,),
-            )
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(
+                    agent_schedules.c.owner_id,
+                    agent_schedules.c.deleted_at,
+                ).where(agent_schedules.c.id == schedule_id)
+            ).mappings().first()
             if not row:
                 return False
 
@@ -562,13 +577,17 @@ class ScheduleOperations:
                 # idempotent success (router → 204).
                 return True
 
-            cursor.execute(
-                "UPDATE agent_schedules SET deleted_at = ? "
-                "WHERE id = ? AND deleted_at IS NULL",
-                (utc_now_iso(), schedule_id),
+            result = conn.execute(
+                update(agent_schedules)
+                .where(
+                    and_(
+                        agent_schedules.c.id == schedule_id,
+                        agent_schedules.c.deleted_at.is_(None),
+                    )
+                )
+                .values(deleted_at=utc_now_iso())
             )
-            conn.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0
 
     def purge_schedule(self, schedule_id: str) -> bool:
         """Hard-delete a soft-deleted schedule (#834 Phase 1b).
@@ -579,26 +598,24 @@ class ScheduleOperations:
         consistent with the previous hard-delete behavior and with
         what cascade_delete does at agent purge time.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT deleted_at FROM agent_schedules WHERE id = ?",
-                (schedule_id,),
-            )
-            row = cursor.fetchone()
+        with get_engine().begin() as conn:
+            row = conn.execute(
+                select(agent_schedules.c.deleted_at).where(
+                    agent_schedules.c.id == schedule_id
+                )
+            ).mappings().first()
             if not row or row["deleted_at"] is None:
                 return False
 
-            cursor.execute(
-                "DELETE FROM schedule_executions WHERE schedule_id = ?",
-                (schedule_id,),
+            conn.execute(
+                delete(schedule_executions).where(
+                    schedule_executions.c.schedule_id == schedule_id
+                )
             )
-            cursor.execute(
-                "DELETE FROM agent_schedules WHERE id = ?",
-                (schedule_id,),
+            result = conn.execute(
+                delete(agent_schedules).where(agent_schedules.c.id == schedule_id)
             )
-            conn.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0
 
     def recover_schedule(self, schedule_id: str) -> bool:
         """Recover a soft-deleted schedule by clearing `deleted_at` (#834).
@@ -609,17 +626,18 @@ class ScheduleOperations:
         firing list on the next poll cycle if it was enabled at the
         time of soft-delete.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE agent_schedules SET deleted_at = NULL "
-                "WHERE id = ? AND deleted_at IS NOT NULL",
-                (schedule_id,),
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_schedules)
+                .where(
+                    and_(
+                        agent_schedules.c.id == schedule_id,
+                        agent_schedules.c.deleted_at.isnot(None),
+                    )
+                )
+                .values(deleted_at=None)
             )
-            if cursor.rowcount > 0:
-                conn.commit()
-                return True
-            return False
+            return result.rowcount > 0
 
     def list_soft_deleted_schedules(
         self, agent_name: Optional[str] = None, limit: int = 200
@@ -631,29 +649,26 @@ class ScheduleOperations:
         soft-deleted). With `agent_name=None`, returns soft-deleted
         schedules across the fleet (admin-only).
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            if agent_name is None:
-                cursor.execute(
-                    "SELECT id, agent_name, name, cron_expression, message, "
-                    "       owner_id, enabled, deleted_at "
-                    "FROM agent_schedules "
-                    "WHERE deleted_at IS NOT NULL "
-                    "ORDER BY deleted_at DESC "
-                    "LIMIT ?",
-                    (limit,),
-                )
-            else:
-                cursor.execute(
-                    "SELECT id, agent_name, name, cron_expression, message, "
-                    "       owner_id, enabled, deleted_at "
-                    "FROM agent_schedules "
-                    "WHERE deleted_at IS NOT NULL AND agent_name = ? "
-                    "ORDER BY deleted_at DESC "
-                    "LIMIT ?",
-                    (agent_name, limit),
-                )
-            return [dict(row) for row in cursor.fetchall()]
+        conds = [agent_schedules.c.deleted_at.isnot(None)]
+        if agent_name is not None:
+            conds.append(agent_schedules.c.agent_name == agent_name)
+        stmt = (
+            select(
+                agent_schedules.c.id,
+                agent_schedules.c.agent_name,
+                agent_schedules.c.name,
+                agent_schedules.c.cron_expression,
+                agent_schedules.c.message,
+                agent_schedules.c.owner_id,
+                agent_schedules.c.enabled,
+                agent_schedules.c.deleted_at,
+            )
+            .where(and_(*conds))
+            .order_by(agent_schedules.c.deleted_at.desc())
+            .limit(limit)
+        )
+        with get_engine().connect() as conn:
+            return [dict(row) for row in conn.execute(stmt).mappings()]
 
     def find_soft_deleted_schedules_past_retention(
         self, retention_days: int, limit: int = 5000
@@ -669,15 +684,18 @@ class ScheduleOperations:
             return []
 
         cutoff = iso_cutoff(hours=retention_days * 24)
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id FROM agent_schedules "
-                "WHERE deleted_at IS NOT NULL AND deleted_at < ? "
-                "LIMIT ?",
-                (cutoff, limit),
+        stmt = (
+            select(agent_schedules.c.id)
+            .where(
+                and_(
+                    agent_schedules.c.deleted_at.isnot(None),
+                    agent_schedules.c.deleted_at < cutoff,
+                )
             )
-            return [row["id"] for row in cursor.fetchall()]
+            .limit(limit)
+        )
+        with get_engine().connect() as conn:
+            return [row["id"] for row in conn.execute(stmt).mappings()]
 
     def set_schedule_enabled(self, schedule_id: str, enabled: bool) -> bool:
         """Enable or disable a schedule.
@@ -698,13 +716,17 @@ class ScheduleOperations:
             if next_run_at:
                 next_run_at_iso = next_run_at.isoformat()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_schedules SET enabled = ?, updated_at = ?, next_run_at = ? WHERE id = ?
-            """, (1 if enabled else 0, utc_now_iso(), next_run_at_iso, schedule_id))
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_schedules)
+                .where(agent_schedules.c.id == schedule_id)
+                .values(
+                    enabled=1 if enabled else 0,
+                    updated_at=utc_now_iso(),
+                    next_run_at=next_run_at_iso,
+                )
+            )
+            return result.rowcount > 0
 
     def update_schedule_run_times(self, schedule_id: str, last_run_at: datetime = None, next_run_at: datetime = None) -> bool:
         """Update schedule run timestamps.
@@ -717,40 +739,47 @@ class ScheduleOperations:
         if last_run_at is None and next_run_at is None:
             return False
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            updates = []
-            params = []
+        values: Dict = {}
+        if last_run_at:
+            values["last_run_at"] = last_run_at.isoformat()
+        if next_run_at:
+            values["next_run_at"] = next_run_at.isoformat()
 
-            if last_run_at:
-                updates.append("last_run_at = ?")
-                params.append(last_run_at.isoformat())
-            if next_run_at:
-                updates.append("next_run_at = ?")
-                params.append(next_run_at.isoformat())
-
-            params.append(schedule_id)
-            cursor.execute(f"""
-                UPDATE agent_schedules SET {", ".join(updates)} WHERE id = ?
-            """, params)
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_schedules)
+                .where(agent_schedules.c.id == schedule_id)
+                .values(**values)
+            )
+            return result.rowcount > 0
 
     def delete_agent_schedules(self, agent_name: str) -> int:
         """Delete all schedules for an agent (when agent is deleted)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        with get_engine().begin() as conn:
             # Get schedule IDs first
-            cursor.execute("SELECT id FROM agent_schedules WHERE agent_name = ?", (agent_name,))
-            schedule_ids = [row["id"] for row in cursor.fetchall()]
+            schedule_ids = [
+                row["id"]
+                for row in conn.execute(
+                    select(agent_schedules.c.id).where(
+                        agent_schedules.c.agent_name == agent_name
+                    )
+                ).mappings()
+            ]
 
             # Delete executions for all schedules
             for sid in schedule_ids:
-                cursor.execute("DELETE FROM schedule_executions WHERE schedule_id = ?", (sid,))
+                conn.execute(
+                    delete(schedule_executions).where(
+                        schedule_executions.c.schedule_id == sid
+                    )
+                )
 
             # Delete schedules
-            cursor.execute("DELETE FROM agent_schedules WHERE agent_name = ?", (agent_name,))
-            conn.commit()
+            conn.execute(
+                delete(agent_schedules).where(
+                    agent_schedules.c.agent_name == agent_name
+                )
+            )
             return len(schedule_ids)
 
     # =========================================================================
@@ -765,76 +794,72 @@ class ScheduleOperations:
         """
         token = secrets.token_urlsafe(32)
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE agent_schedules
-                   SET webhook_token = ?, webhook_enabled = 1, updated_at = ?
-                 WHERE id = ?
-                """,
-                (token, now, schedule_id),
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_schedules)
+                .where(agent_schedules.c.id == schedule_id)
+                .values(webhook_token=token, webhook_enabled=1, updated_at=now)
             )
-            conn.commit()
-            if cursor.rowcount == 0:
+            if result.rowcount == 0:
                 return None
         return token
 
     def get_schedule_by_webhook_token(self, token: str) -> Optional[Schedule]:
         """Look up a schedule by its webhook token (O(1) via index)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM agent_schedules "
-                "WHERE webhook_token = ? AND deleted_at IS NULL",
-                (token,),
+        stmt = select(agent_schedules).where(
+            and_(
+                agent_schedules.c.webhook_token == token,
+                agent_schedules.c.deleted_at.is_(None),
             )
-            row = cursor.fetchone()
-            if not row:
-                return None
-            return self._row_to_schedule(row)
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if not row:
+            return None
+        return self._row_to_schedule(row)
 
     def set_webhook_enabled(self, schedule_id: str, enabled: bool) -> bool:
         """Enable or disable webhook triggering for a schedule."""
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE agent_schedules SET webhook_enabled = ?, updated_at = ? WHERE id = ?",
-                (1 if enabled else 0, now, schedule_id),
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_schedules)
+                .where(agent_schedules.c.id == schedule_id)
+                .values(webhook_enabled=1 if enabled else 0, updated_at=now)
             )
-            conn.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0
 
     def revoke_webhook_token(self, schedule_id: str) -> bool:
         """Revoke a webhook token, immediately invalidating the URL."""
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE agent_schedules SET webhook_token = NULL, webhook_enabled = 0, updated_at = ? WHERE id = ?",
-                (now, schedule_id),
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_schedules)
+                .where(agent_schedules.c.id == schedule_id)
+                .values(webhook_token=None, webhook_enabled=0, updated_at=now)
             )
-            conn.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0
 
     def get_webhook_status(self, schedule_id: str) -> Optional[Dict]:
         """Return webhook configuration for a schedule."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT webhook_token, webhook_enabled FROM agent_schedules "
-                "WHERE id = ? AND deleted_at IS NULL",
-                (schedule_id,),
+        stmt = select(
+            agent_schedules.c.webhook_token,
+            agent_schedules.c.webhook_enabled,
+        ).where(
+            and_(
+                agent_schedules.c.id == schedule_id,
+                agent_schedules.c.deleted_at.is_(None),
             )
-            row = cursor.fetchone()
-            if not row:
-                return None
-            return {
-                "webhook_token": row["webhook_token"],
-                "webhook_enabled": bool(row["webhook_enabled"]),
-                "has_token": row["webhook_token"] is not None,
-            }
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if not row:
+            return None
+        return {
+            "webhook_token": row["webhook_token"],
+            "webhook_enabled": bool(row["webhook_enabled"]),
+            "has_token": row["webhook_token"] is not None,
+        }
 
     # =========================================================================
     # Schedule Execution Management
@@ -874,36 +899,29 @@ class ScheduleOperations:
         execution_id = self._generate_id()
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO schedule_executions (
-                    id, schedule_id, agent_name, status, started_at, message, triggered_by,
-                    source_user_id, source_user_email, source_agent_name,
-                    source_mcp_key_id, source_mcp_key_name, model_used, fan_out_id,
-                    loop_id, subscription_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                execution_id,
-                "__manual__",  # Special marker for manual/API-triggered tasks
-                agent_name,
-                TaskExecutionStatus.RUNNING,
-                now,
-                message,
-                triggered_by,
-                source_user_id,
-                source_user_email,
-                source_agent_name,
-                source_mcp_key_id,
-                source_mcp_key_name,
-                model_used,
-                fan_out_id,
-                loop_id,
-                subscription_id,
-            ))
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(schedule_executions).values(
+                    id=execution_id,
+                    schedule_id="__manual__",  # Special marker for manual/API-triggered tasks
+                    agent_name=agent_name,
+                    status=TaskExecutionStatus.RUNNING,
+                    started_at=now,
+                    message=message,
+                    triggered_by=triggered_by,
+                    source_user_id=source_user_id,
+                    source_user_email=source_user_email,
+                    source_agent_name=source_agent_name,
+                    source_mcp_key_id=source_mcp_key_id,
+                    source_mcp_key_name=source_mcp_key_name,
+                    model_used=model_used,
+                    fan_out_id=fan_out_id,
+                    loop_id=loop_id,
+                    subscription_id=subscription_id,
+                )
+            )
 
-            return ScheduleExecution(
+        return ScheduleExecution(
                 id=execution_id,
                 schedule_id="__manual__",
                 agent_name=agent_name,
@@ -945,48 +963,42 @@ class ScheduleOperations:
         execution_id = self._generate_id()
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO schedule_executions (
-                    id, schedule_id, agent_name, status, started_at, message, triggered_by,
-                    source_user_id, source_user_email, source_agent_name,
-                    source_mcp_key_id, source_mcp_key_name, model_used, subscription_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                execution_id,
-                schedule_id,
-                agent_name,
-                TaskExecutionStatus.RUNNING,
-                now,
-                message,
-                triggered_by,
-                source_user_id,
-                source_user_email,
-                source_agent_name,
-                source_mcp_key_id,
-                source_mcp_key_name,
-                model_used,
-                subscription_id,
-            ))
-            conn.commit()
-
-            return ScheduleExecution(
-                id=execution_id,
-                schedule_id=schedule_id,
-                agent_name=agent_name,
-                status=TaskExecutionStatus.RUNNING,
-                started_at=datetime.fromisoformat(now),
-                message=message,
-                triggered_by=triggered_by,
-                source_user_id=source_user_id,
-                source_user_email=source_user_email,
-                source_agent_name=source_agent_name,
-                source_mcp_key_id=source_mcp_key_id,
-                source_mcp_key_name=source_mcp_key_name,
-                model_used=model_used,
-                subscription_id=subscription_id,
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(schedule_executions).values(
+                    id=execution_id,
+                    schedule_id=schedule_id,
+                    agent_name=agent_name,
+                    status=TaskExecutionStatus.RUNNING,
+                    started_at=now,
+                    message=message,
+                    triggered_by=triggered_by,
+                    source_user_id=source_user_id,
+                    source_user_email=source_user_email,
+                    source_agent_name=source_agent_name,
+                    source_mcp_key_id=source_mcp_key_id,
+                    source_mcp_key_name=source_mcp_key_name,
+                    model_used=model_used,
+                    subscription_id=subscription_id,
+                )
             )
+
+        return ScheduleExecution(
+            id=execution_id,
+            schedule_id=schedule_id,
+            agent_name=agent_name,
+            status=TaskExecutionStatus.RUNNING,
+            started_at=datetime.fromisoformat(now),
+            message=message,
+            triggered_by=triggered_by,
+            source_user_id=source_user_id,
+            source_user_email=source_user_email,
+            source_agent_name=source_agent_name,
+            source_mcp_key_id=source_mcp_key_id,
+            source_mcp_key_name=source_mcp_key_name,
+            model_used=model_used,
+            subscription_id=subscription_id,
+        )
 
     def mark_execution_dispatched(self, execution_id: str) -> bool:
         """Mark an execution as dispatched to the agent.
@@ -999,15 +1011,19 @@ class ScheduleOperations:
         Returns:
             True if execution was updated, False if not found.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE schedule_executions
-                SET claude_session_id = 'dispatched'
-                WHERE id = ? AND status = ? AND claude_session_id IS NULL
-            """, (execution_id, TaskExecutionStatus.RUNNING))
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(schedule_executions)
+                .where(
+                    and_(
+                        schedule_executions.c.id == execution_id,
+                        schedule_executions.c.status == TaskExecutionStatus.RUNNING,
+                        schedule_executions.c.claude_session_id.is_(None),
+                    )
+                )
+                .values(claude_session_id="dispatched")
+            )
+            return result.rowcount > 0
 
     # =========================================================================
     # Persistent Backlog (BACKLOG-001)
@@ -1030,27 +1046,19 @@ class ScheduleOperations:
         Returns:
             True if the row was updated, False if not found.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE schedule_executions
-                SET status = ?,
-                    queued_at = ?,
-                    backlog_metadata = ?,
-                    started_at = ?
-                WHERE id = ?
-                """,
-                (
-                    TaskExecutionStatus.QUEUED,
-                    queued_at,
-                    backlog_metadata,
-                    queued_at,  # reset started_at so drain records a clean run window
-                    execution_id,
-                ),
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(schedule_executions)
+                .where(schedule_executions.c.id == execution_id)
+                .values(
+                    status=TaskExecutionStatus.QUEUED,
+                    queued_at=queued_at,
+                    backlog_metadata=backlog_metadata,
+                    # reset started_at so drain records a clean run window
+                    started_at=queued_at,
+                )
             )
-            conn.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0
 
     def claim_next_queued(self, agent_name: str) -> Optional[Dict]:
         """Atomically claim the oldest QUEUED execution for an agent.
@@ -1065,29 +1073,42 @@ class ScheduleOperations:
             or None if the backlog is empty for this agent.
         """
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE schedule_executions
-                SET status = ?,
-                    started_at = ?,
-                    queued_at = NULL
-                WHERE id = (
-                    SELECT id FROM schedule_executions
-                    WHERE status = ? AND agent_name = ?
-                    ORDER BY queued_at ASC
-                    LIMIT 1
+        oldest_queued = (
+            select(schedule_executions.c.id)
+            .where(
+                and_(
+                    schedule_executions.c.status == TaskExecutionStatus.QUEUED,
+                    schedule_executions.c.agent_name == agent_name,
                 )
-                RETURNING id, agent_name, message, backlog_metadata,
-                          source_user_id, source_user_email, source_agent_name,
-                          source_mcp_key_id, source_mcp_key_name, subscription_id
-                """,
-                (TaskExecutionStatus.RUNNING, now, TaskExecutionStatus.QUEUED, agent_name),
             )
-            row = cursor.fetchone()
-            conn.commit()
-            return dict(row) if row else None
+            .order_by(schedule_executions.c.queued_at.asc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        stmt = (
+            update(schedule_executions)
+            .where(schedule_executions.c.id == oldest_queued)
+            .values(
+                status=TaskExecutionStatus.RUNNING,
+                started_at=now,
+                queued_at=None,
+            )
+            .returning(
+                schedule_executions.c.id,
+                schedule_executions.c.agent_name,
+                schedule_executions.c.message,
+                schedule_executions.c.backlog_metadata,
+                schedule_executions.c.source_user_id,
+                schedule_executions.c.source_user_email,
+                schedule_executions.c.source_agent_name,
+                schedule_executions.c.source_mcp_key_id,
+                schedule_executions.c.source_mcp_key_name,
+                schedule_executions.c.subscription_id,
+            )
+        )
+        with get_engine().begin() as conn:
+            row = conn.execute(stmt).mappings().first()
+        return dict(row) if row else None
 
     def release_claim_to_queued(self, execution_id: str) -> bool:
         """Release a claimed row back to QUEUED state.
@@ -1099,33 +1120,33 @@ class ScheduleOperations:
         Returns:
             True if the row transitioned back to queued, False otherwise.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE schedule_executions
-                SET status = ?,
-                    queued_at = started_at
-                WHERE id = ? AND status = ?
-                """,
-                (TaskExecutionStatus.QUEUED, execution_id, TaskExecutionStatus.RUNNING),
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(schedule_executions)
+                .where(
+                    and_(
+                        schedule_executions.c.id == execution_id,
+                        schedule_executions.c.status == TaskExecutionStatus.RUNNING,
+                    )
+                )
+                .values(
+                    status=TaskExecutionStatus.QUEUED,
+                    queued_at=schedule_executions.c.started_at,
+                )
             )
-            conn.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0
 
     def get_queued_count(self, agent_name: str) -> int:
         """Count queued backlog items for an agent."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT COUNT(*) as c FROM schedule_executions
-                WHERE agent_name = ? AND status = ?
-                """,
-                (agent_name, TaskExecutionStatus.QUEUED),
+        stmt = select(func.count().label("c")).where(
+            and_(
+                schedule_executions.c.agent_name == agent_name,
+                schedule_executions.c.status == TaskExecutionStatus.QUEUED,
             )
-            row = cursor.fetchone()
-            return int(row["c"]) if row else 0
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        return int(row["c"]) if row else 0
 
     def cancel_queued_execution(self, execution_id: str, reason: str = "cancelled") -> bool:
         """Cancel a single queued execution. No container interaction.
@@ -1134,26 +1155,22 @@ class ScheduleOperations:
             True if the row was still queued and is now cancelled, False otherwise.
         """
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE schedule_executions
-                SET status = ?,
-                    completed_at = ?,
-                    error = ?
-                WHERE id = ? AND status = ?
-                """,
-                (
-                    TaskExecutionStatus.CANCELLED,
-                    now,
-                    reason,
-                    execution_id,
-                    TaskExecutionStatus.QUEUED,
-                ),
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(schedule_executions)
+                .where(
+                    and_(
+                        schedule_executions.c.id == execution_id,
+                        schedule_executions.c.status == TaskExecutionStatus.QUEUED,
+                    )
+                )
+                .values(
+                    status=TaskExecutionStatus.CANCELLED,
+                    completed_at=now,
+                    error=reason,
+                )
             )
-            conn.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0
 
     def cancel_queued_for_agent(self, agent_name: str, reason: str = "agent_deleted") -> int:
         """Bulk-cancel all queued executions for an agent.
@@ -1164,26 +1181,22 @@ class ScheduleOperations:
             Count of rows moved from QUEUED to CANCELLED.
         """
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE schedule_executions
-                SET status = ?,
-                    completed_at = ?,
-                    error = ?
-                WHERE agent_name = ? AND status = ?
-                """,
-                (
-                    TaskExecutionStatus.CANCELLED,
-                    now,
-                    reason,
-                    agent_name,
-                    TaskExecutionStatus.QUEUED,
-                ),
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(schedule_executions)
+                .where(
+                    and_(
+                        schedule_executions.c.agent_name == agent_name,
+                        schedule_executions.c.status == TaskExecutionStatus.QUEUED,
+                    )
+                )
+                .values(
+                    status=TaskExecutionStatus.CANCELLED,
+                    completed_at=now,
+                    error=reason,
+                )
             )
-            conn.commit()
-            return cursor.rowcount
+            return result.rowcount
 
     def fail_queued_for_agent(self, agent_name: str, reason: str = "circuit_open") -> int:
         """Bulk-FAIL all queued executions for an agent (#526, RELIABILITY-007).
@@ -1202,26 +1215,22 @@ class ScheduleOperations:
             Count of rows moved from QUEUED to FAILED.
         """
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE schedule_executions
-                SET status = ?,
-                    completed_at = ?,
-                    error = ?
-                WHERE agent_name = ? AND status = ?
-                """,
-                (
-                    TaskExecutionStatus.FAILED,
-                    now,
-                    reason,
-                    agent_name,
-                    TaskExecutionStatus.QUEUED,
-                ),
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(schedule_executions)
+                .where(
+                    and_(
+                        schedule_executions.c.agent_name == agent_name,
+                        schedule_executions.c.status == TaskExecutionStatus.QUEUED,
+                    )
+                )
+                .values(
+                    status=TaskExecutionStatus.FAILED,
+                    completed_at=now,
+                    error=reason,
+                )
             )
-            conn.commit()
-            return cursor.rowcount
+            return result.rowcount
 
     def expire_stale_queued(self, max_age_hours: float = 24) -> int:
         """Mark queued executions older than max_age_hours as FAILED.
@@ -1236,26 +1245,24 @@ class ScheduleOperations:
         threshold = (
             datetime.now(timezone.utc) - timedelta(hours=float(max_age_hours))
         ).strftime('%Y-%m-%dT%H:%M:%S')
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE schedule_executions
-                SET status = ?,
-                    completed_at = ?,
-                    error = 'Backlog expired: queued longer than ' || ? || ' hours'
-                WHERE status = ? AND queued_at IS NOT NULL AND queued_at < ?
-                """,
-                (
-                    TaskExecutionStatus.FAILED,
-                    now,
-                    str(max_age_hours),
-                    TaskExecutionStatus.QUEUED,
-                    threshold,
-                ),
+        error_msg = f"Backlog expired: queued longer than {max_age_hours} hours"
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(schedule_executions)
+                .where(
+                    and_(
+                        schedule_executions.c.status == TaskExecutionStatus.QUEUED,
+                        schedule_executions.c.queued_at.isnot(None),
+                        schedule_executions.c.queued_at < threshold,
+                    )
+                )
+                .values(
+                    status=TaskExecutionStatus.FAILED,
+                    completed_at=now,
+                    error=error_msg,
+                )
             )
-            conn.commit()
-            return cursor.rowcount
+            return result.rowcount
 
     def list_agents_with_queued(self) -> List[str]:
         """Return the list of agent names that currently have queued backlog items.
@@ -1263,16 +1270,13 @@ class ScheduleOperations:
         Used by the 60s maintenance task to drain orphans after a restart
         (backend crashed between enqueue and drain, or drain callback was lost).
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT DISTINCT agent_name FROM schedule_executions
-                WHERE status = ?
-                """,
-                (TaskExecutionStatus.QUEUED,),
-            )
-            return [row["agent_name"] for row in cursor.fetchall()]
+        stmt = (
+            select(schedule_executions.c.agent_name)
+            .where(schedule_executions.c.status == TaskExecutionStatus.QUEUED)
+            .distinct()
+        )
+        with get_engine().connect() as conn:
+            return [row["agent_name"] for row in conn.execute(stmt).mappings()]
 
     def update_execution_status(
         self,
@@ -1315,14 +1319,12 @@ class ScheduleOperations:
             TaskExecutionStatus.SKIPPED,
         )
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
-            cursor.execute(
-                "SELECT started_at FROM schedule_executions WHERE id = ?",
-                (execution_id,),
-            )
-            row = cursor.fetchone()
+        with get_engine().begin() as conn:
+            row = conn.execute(
+                select(schedule_executions.c.started_at).where(
+                    schedule_executions.c.id == execution_id
+                )
+            ).mappings().first()
             if not row:
                 return False
 
@@ -1330,15 +1332,26 @@ class ScheduleOperations:
             completed_at = parse_iso_timestamp(utc_now_iso())
             duration_ms = int((completed_at - started_at).total_seconds() * 1000)
 
+            values = {
+                "status": status,
+                "completed_at": to_utc_iso(completed_at),
+                "duration_ms": duration_ms,
+                "response": response,
+                "error": error,
+                "context_used": context_used,
+                "context_max": context_max,
+                "cost": cost,
+                "tool_calls": tool_calls,
+                "execution_log": execution_log,
+                "claude_session_id": claude_session_id,
+                "compact_metadata": compact_metadata,
+            }
             # #678: optionally update retry_count alongside the terminal write.
-            # COALESCE preserves prior value when caller passes None so other
-            # update paths (cleanup, scheduler) don't accidentally zero it.
-            if retry_count is None:
-                retry_set_sql = ""
-                retry_params: tuple = ()
-            else:
-                retry_set_sql = ", retry_count = ?"
-                retry_params = (int(retry_count),)
+            # Leaving it out of the values dict preserves the prior value when
+            # the caller passes None so other update paths (cleanup, scheduler)
+            # don't accidentally zero it.
+            if retry_count is not None:
+                values["retry_count"] = int(retry_count)
 
             if status == TaskExecutionStatus.SUCCESS:
                 # Agent's own completion result wins over everything except a
@@ -1346,59 +1359,50 @@ class ScheduleOperations:
                 # after the operator pulled the plug must not flip the row to
                 # success — that hides incomplete deliverables and silently
                 # advances the schedule's next_run_at.
-                cursor.execute(f"""
-                    UPDATE schedule_executions
-                    SET status = ?, completed_at = ?, duration_ms = ?, response = ?, error = ?,
-                        context_used = ?, context_max = ?, cost = ?, tool_calls = ?,
-                        execution_log = ?, claude_session_id = ?, compact_metadata = ?{retry_set_sql}
-                    WHERE id = ? AND status != ?
-                """, (
-                    status, to_utc_iso(completed_at), duration_ms, response, error,
-                    context_used, context_max, cost, tool_calls, execution_log,
-                    claude_session_id, compact_metadata, *retry_params, execution_id,
-                    TaskExecutionStatus.CANCELLED,
-                ))
+                where_clause = and_(
+                    schedule_executions.c.id == execution_id,
+                    schedule_executions.c.status != TaskExecutionStatus.CANCELLED,
+                )
             else:
                 # Non-success terminal write: block if already terminal so cleanup
                 # paths cannot overwrite a real completion (RELIABILITY-005).
-                cursor.execute(f"""
-                    UPDATE schedule_executions
-                    SET status = ?, completed_at = ?, duration_ms = ?, response = ?, error = ?,
-                        context_used = ?, context_max = ?, cost = ?, tool_calls = ?,
-                        execution_log = ?, claude_session_id = ?, compact_metadata = ?{retry_set_sql}
-                    WHERE id = ? AND status NOT IN (?, ?, ?, ?)
-                """, (
-                    status, to_utc_iso(completed_at), duration_ms, response, error,
-                    context_used, context_max, cost, tool_calls, execution_log,
-                    claude_session_id, compact_metadata, *retry_params, execution_id, *_TERMINAL,
-                ))
+                where_clause = and_(
+                    schedule_executions.c.id == execution_id,
+                    schedule_executions.c.status.notin_(_TERMINAL),
+                )
 
-            conn.commit()
-            return cursor.rowcount > 0
+            result = conn.execute(
+                update(schedule_executions).where(where_clause).values(**values)
+            )
+            return result.rowcount > 0
 
     def get_schedule_executions(self, schedule_id: str, limit: int = 50) -> List[ScheduleExecution]:
         """Get execution history for a schedule."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM schedule_executions
-                WHERE schedule_id = ?
-                ORDER BY started_at DESC
-                LIMIT ?
-            """, (schedule_id, limit))
-            return [self._row_to_schedule_execution(row) for row in cursor.fetchall()]
+        stmt = (
+            select(schedule_executions)
+            .where(schedule_executions.c.schedule_id == schedule_id)
+            .order_by(schedule_executions.c.started_at.desc())
+            .limit(limit)
+        )
+        with get_engine().connect() as conn:
+            return [
+                self._row_to_schedule_execution(row)
+                for row in conn.execute(stmt).mappings()
+            ]
 
     def get_agent_executions(self, agent_name: str, limit: int = 50) -> List[ScheduleExecution]:
         """Get all executions for an agent across all schedules."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM schedule_executions
-                WHERE agent_name = ?
-                ORDER BY started_at DESC
-                LIMIT ?
-            """, (agent_name, limit))
-            return [self._row_to_schedule_execution(row) for row in cursor.fetchall()]
+        stmt = (
+            select(schedule_executions)
+            .where(schedule_executions.c.agent_name == agent_name)
+            .order_by(schedule_executions.c.started_at.desc())
+            .limit(limit)
+        )
+        with get_engine().connect() as conn:
+            return [
+                self._row_to_schedule_execution(row)
+                for row in conn.execute(stmt).mappings()
+            ]
 
     def get_agent_executions_summary(self, agent_name: str, limit: int = 50) -> List[Dict]:
         """Get execution summaries for list view - excludes large text fields.
@@ -1414,29 +1418,46 @@ class ScheduleOperations:
 
         PERF-001: Task List Performance Optimization
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT
-                    id, schedule_id, agent_name, status, started_at, completed_at,
-                    duration_ms, message, triggered_by, context_used, context_max, cost,
-                    source_user_id, source_user_email, source_agent_name,
-                    source_mcp_key_id, source_mcp_key_name, claude_session_id, model_used,
-                    fan_out_id, business_status, validation_execution_id
-                FROM schedule_executions
-                WHERE agent_name = ?
-                ORDER BY started_at DESC
-                LIMIT ?
-            """, (agent_name, limit))
-            return [dict(row) for row in cursor.fetchall()]
+        stmt = (
+            select(
+                schedule_executions.c.id,
+                schedule_executions.c.schedule_id,
+                schedule_executions.c.agent_name,
+                schedule_executions.c.status,
+                schedule_executions.c.started_at,
+                schedule_executions.c.completed_at,
+                schedule_executions.c.duration_ms,
+                schedule_executions.c.message,
+                schedule_executions.c.triggered_by,
+                schedule_executions.c.context_used,
+                schedule_executions.c.context_max,
+                schedule_executions.c.cost,
+                schedule_executions.c.source_user_id,
+                schedule_executions.c.source_user_email,
+                schedule_executions.c.source_agent_name,
+                schedule_executions.c.source_mcp_key_id,
+                schedule_executions.c.source_mcp_key_name,
+                schedule_executions.c.claude_session_id,
+                schedule_executions.c.model_used,
+                schedule_executions.c.fan_out_id,
+                schedule_executions.c.business_status,
+                schedule_executions.c.validation_execution_id,
+            )
+            .where(schedule_executions.c.agent_name == agent_name)
+            .order_by(schedule_executions.c.started_at.desc())
+            .limit(limit)
+        )
+        with get_engine().connect() as conn:
+            return [dict(row) for row in conn.execute(stmt).mappings()]
 
     def get_execution(self, execution_id: str) -> Optional[ScheduleExecution]:
         """Get a specific execution by ID."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM schedule_executions WHERE id = ?", (execution_id,))
-            row = cursor.fetchone()
-            return self._row_to_schedule_execution(row) if row else None
+        stmt = select(schedule_executions).where(
+            schedule_executions.c.id == execution_id
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        return self._row_to_schedule_execution(row) if row else None
 
     def get_agent_execution_stats(self, agent_name: str, hours: int = 24) -> Dict:
         """Get execution statistics for a single agent.
@@ -1451,9 +1472,9 @@ class ScheduleOperations:
             Dict with execution stats: task_count, success_count, failed_count,
             running_count, success_rate, total_cost, avg_duration_ms, last_execution_at
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                text("""
                 SELECT
                     COUNT(*) as task_count,
                     SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
@@ -1463,11 +1484,11 @@ class ScheduleOperations:
                     AVG(duration_ms) as avg_duration_ms,
                     MAX(started_at) as last_execution_at
                 FROM schedule_executions
-                WHERE agent_name = ?
-                AND started_at > ?
-            """, (agent_name, iso_cutoff(hours)))
-
-            row = cursor.fetchone()
+                WHERE agent_name = :agent_name
+                AND started_at > :cutoff
+                """),
+                {"agent_name": agent_name, "cutoff": iso_cutoff(hours)},
+            ).mappings().first()
             if not row or row["task_count"] == 0:
                 return {
                     "task_count": 0,
@@ -1506,9 +1527,9 @@ class ScheduleOperations:
         Returns:
             List of dicts with agent execution stats
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
+        with get_engine().connect() as conn:
+            rows = conn.execute(
+                text("""
                 SELECT
                     agent_name,
                     COUNT(*) as task_count,
@@ -1518,12 +1539,14 @@ class ScheduleOperations:
                     SUM(COALESCE(cost, 0)) as total_cost,
                     MAX(started_at) as last_execution_at
                 FROM schedule_executions
-                WHERE started_at > ?
+                WHERE started_at > :cutoff
                 GROUP BY agent_name
-            """, (iso_cutoff(hours),))
+                """),
+                {"cutoff": iso_cutoff(hours)},
+            ).mappings().all()
 
             results = []
-            for row in cursor.fetchall():
+            for row in rows:
                 task_count = row["task_count"]
                 success_count = row["success_count"]
                 success_rate = round((success_count / task_count * 100), 1) if task_count > 0 else 0
@@ -1549,19 +1572,19 @@ class ScheduleOperations:
         Returns:
             List of dicts with agent execution stats for both 24h and 7d windows.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cutoff_24h = iso_cutoff(24)
-            cutoff_7d = iso_cutoff(168)
-            cursor.execute("""
+        cutoff_24h = iso_cutoff(24)
+        cutoff_7d = iso_cutoff(168)
+        with get_engine().connect() as conn:
+            rows = conn.execute(
+                text("""
                 SELECT
                     agent_name,
-                    SUM(CASE WHEN started_at > ? THEN 1 ELSE 0 END) as task_count_24h,
-                    SUM(CASE WHEN started_at > ? AND status = 'success' THEN 1 ELSE 0 END) as success_count_24h,
-                    SUM(CASE WHEN started_at > ? AND status = 'failed' THEN 1 ELSE 0 END) as failed_count_24h,
-                    SUM(CASE WHEN started_at > ? AND status = 'running' THEN 1 ELSE 0 END) as running_count_24h,
-                    SUM(CASE WHEN started_at > ? THEN COALESCE(cost, 0) ELSE 0 END) as total_cost_24h,
-                    MAX(CASE WHEN started_at > ? THEN started_at ELSE NULL END) as last_execution_at_24h,
+                    SUM(CASE WHEN started_at > :c24 THEN 1 ELSE 0 END) as task_count_24h,
+                    SUM(CASE WHEN started_at > :c24 AND status = 'success' THEN 1 ELSE 0 END) as success_count_24h,
+                    SUM(CASE WHEN started_at > :c24 AND status = 'failed' THEN 1 ELSE 0 END) as failed_count_24h,
+                    SUM(CASE WHEN started_at > :c24 AND status = 'running' THEN 1 ELSE 0 END) as running_count_24h,
+                    SUM(CASE WHEN started_at > :c24 THEN COALESCE(cost, 0) ELSE 0 END) as total_cost_24h,
+                    MAX(CASE WHEN started_at > :c24 THEN started_at ELSE NULL END) as last_execution_at_24h,
                     COUNT(*) as task_count_7d,
                     SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count_7d,
                     SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_count_7d,
@@ -1569,12 +1592,14 @@ class ScheduleOperations:
                     SUM(COALESCE(cost, 0)) as total_cost_7d,
                     MAX(started_at) as last_execution_at_7d
                 FROM schedule_executions
-                WHERE started_at > ?
+                WHERE started_at > :c7d
                 GROUP BY agent_name
-            """, (cutoff_24h, cutoff_24h, cutoff_24h, cutoff_24h, cutoff_24h, cutoff_24h, cutoff_7d))
+                """),
+                {"c24": cutoff_24h, "c7d": cutoff_7d},
+            ).mappings().all()
 
             results = []
-            for row in cursor.fetchall():
+            for row in rows:
                 task_count_24h = row["task_count_24h"] or 0
                 success_count_24h = row["success_count_24h"] or 0
                 success_rate_24h = round((success_count_24h / task_count_24h * 100), 1) if task_count_24h > 0 else 0
@@ -1631,38 +1656,43 @@ class ScheduleOperations:
         cutoff = iso_cutoff(hours)
         cap = _PERCENTILE_ROWSET_CAP
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT
-                    substr(started_at, 1, 10) AS day,
-                    status,
-                    COUNT(*) AS n,
-                    SUM(COALESCE(cost, 0)) AS cost_sum
-                FROM schedule_executions
-                WHERE schedule_id = ? AND started_at > ?
-                GROUP BY day, status
-                """,
-                (schedule_id, cutoff),
-            )
-            agg_rows = cursor.fetchall()
+        # Converted to SQLAlchemy Core (#300) so it runs on SQLite + PostgreSQL.
+        # The SQL is dialect-portable (substr/COALESCE/GROUP BY-alias/LIMIT all
+        # valid on both); only the positional binds became named. `.mappings()`
+        # preserves the `row["col"]` access the aggregation below relies on.
+        with get_engine().connect() as conn:
+            agg_rows = conn.execute(
+                text(
+                    """
+                    SELECT
+                        substr(started_at, 1, 10) AS day,
+                        status,
+                        COUNT(*) AS n,
+                        SUM(COALESCE(cost, 0)) AS cost_sum
+                    FROM schedule_executions
+                    WHERE schedule_id = :sid AND started_at > :cutoff
+                    GROUP BY day, status
+                    """
+                ),
+                {"sid": schedule_id, "cutoff": cutoff},
+            ).mappings().all()
 
             # `cap + 1` so we can detect sampling without a separate COUNT.
-            cursor.execute(
-                """
-                SELECT duration_ms, tool_calls
-                FROM schedule_executions
-                WHERE schedule_id = ?
-                  AND started_at > ?
-                  AND status = 'success'
-                  AND duration_ms IS NOT NULL
-                ORDER BY started_at DESC
-                LIMIT ?
-                """,
-                (schedule_id, cutoff, cap + 1),
-            )
-            detail_rows = cursor.fetchall()
+            detail_rows = conn.execute(
+                text(
+                    """
+                    SELECT duration_ms, tool_calls
+                    FROM schedule_executions
+                    WHERE schedule_id = :sid
+                      AND started_at > :cutoff
+                      AND status = 'success'
+                      AND duration_ms IS NOT NULL
+                    ORDER BY started_at DESC
+                    LIMIT :lim
+                    """
+                ),
+                {"sid": schedule_id, "cutoff": cutoff, "lim": cap + 1},
+            ).mappings().all()
 
         counts: Dict[str, int] = defaultdict(int)
         cost_by_status: Dict[str, float] = defaultdict(float)
@@ -1811,68 +1841,60 @@ class ScheduleOperations:
         cap = _PERCENTILE_ROWSET_CAP
         FAILED_STATES = (TaskExecutionStatus.FAILED, "error")
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        # #300 rebase: ported to SQLAlchemy Core (this #852 analytics method
+        # landed on dev after the Step-C bulk conversion). substr/AVG/CASE/
+        # COUNT are dialect-agnostic; the p95 is computed in Python below.
+        day_col = func.substr(schedule_executions.c.started_at, 1, 10).label("day")
+        base_where = and_(
+            schedule_executions.c.agent_name == agent_name,
+            schedule_executions.c.started_at > cutoff,
+        )
+        dur_avg_expr = func.avg(
+            case((schedule_executions.c.status == "success", schedule_executions.c.duration_ms))
+        ).label("dur_avg")
+        ctx_avg_expr = func.avg(schedule_executions.c.context_used).label("ctx_avg")
 
-            # Q1: counts + per-day type stacks (full set).
-            cursor.execute(
-                """
-                SELECT substr(started_at, 1, 10) AS day,
-                       status,
-                       triggered_by,
-                       COUNT(*) AS n
-                FROM schedule_executions
-                WHERE agent_name = ? AND started_at > ?
-                GROUP BY day, status, triggered_by
-                """,
-                (agent_name, cutoff),
+        # Q1: counts + per-day type stacks (full set).
+        q1 = (
+            select(
+                day_col,
+                schedule_executions.c.status,
+                schedule_executions.c.triggered_by,
+                func.count().label("n"),
             )
-            count_rows = cursor.fetchall()
+            .where(base_where)
+            .group_by(day_col, schedule_executions.c.status, schedule_executions.c.triggered_by)
+        )
 
-            # Q2: per-day duration AVG (success only) + context AVG
-            # (NULL-skipped, all statuses). CASE→NULL means AVG skips
-            # non-success durations; AVG(context_used) skips unmeasured rows.
-            cursor.execute(
-                """
-                SELECT substr(started_at, 1, 10) AS day,
-                       AVG(CASE WHEN status = 'success' THEN duration_ms END) AS dur_avg,
-                       AVG(context_used) AS ctx_avg
-                FROM schedule_executions
-                WHERE agent_name = ? AND started_at > ?
-                GROUP BY day
-                """,
-                (agent_name, cutoff),
-            )
-            daily_metric_rows = cursor.fetchall()
+        # Q2: per-day duration AVG (success only) + context AVG
+        # (NULL-skipped, all statuses). CASE→NULL means AVG skips
+        # non-success durations; AVG(context_used) skips unmeasured rows.
+        q2 = select(day_col, dur_avg_expr, ctx_avg_expr).where(base_where).group_by(day_col)
 
-            # Q3: overall duration AVG + context AVG (full set, single row).
-            cursor.execute(
-                """
-                SELECT AVG(CASE WHEN status = 'success' THEN duration_ms END) AS dur_avg,
-                       AVG(context_used) AS ctx_avg
-                FROM schedule_executions
-                WHERE agent_name = ? AND started_at > ?
-                """,
-                (agent_name, cutoff),
-            )
-            overall = cursor.fetchone()
+        # Q3: overall duration AVG + context AVG (full set, single row).
+        q3 = select(dur_avg_expr, ctx_avg_expr).where(base_where)
 
-            # Q4: capped success-duration pool for the headline p95 only.
-            # `cap + 1` so we can detect sampling without a second COUNT.
-            cursor.execute(
-                """
-                SELECT duration_ms
-                FROM schedule_executions
-                WHERE agent_name = ?
-                  AND started_at > ?
-                  AND status = 'success'
-                  AND duration_ms IS NOT NULL
-                ORDER BY started_at DESC
-                LIMIT ?
-                """,
-                (agent_name, cutoff, cap + 1),
+        # Q4: capped success-duration pool for the headline p95 only.
+        # `cap + 1` so we can detect sampling without a second COUNT.
+        q4 = (
+            select(schedule_executions.c.duration_ms)
+            .where(
+                and_(
+                    schedule_executions.c.agent_name == agent_name,
+                    schedule_executions.c.started_at > cutoff,
+                    schedule_executions.c.status == "success",
+                    schedule_executions.c.duration_ms.isnot(None),
+                )
             )
-            dur_rows = cursor.fetchall()
+            .order_by(schedule_executions.c.started_at.desc())
+            .limit(cap + 1)
+        )
+
+        with get_engine().connect() as conn:
+            count_rows = conn.execute(q1).mappings().all()
+            daily_metric_rows = conn.execute(q2).mappings().all()
+            overall = conn.execute(q3).mappings().first()
+            dur_rows = conn.execute(q4).mappings().all()
 
         # --- counts, per-day stacks, per-bucket window totals ---
         success_count = 0
@@ -2008,9 +2030,9 @@ class ScheduleOperations:
         Returns:
             Dict mapping agent_name to {"total": X, "enabled": Y}
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
+        with get_engine().connect() as conn:
+            rows = conn.execute(
+                text("""
                 SELECT
                     agent_name,
                     COUNT(*) as total,
@@ -2018,10 +2040,11 @@ class ScheduleOperations:
                 FROM agent_schedules
                 WHERE deleted_at IS NULL
                 GROUP BY agent_name
-            """)
+                """)
+            ).mappings().all()
 
             results = {}
-            for row in cursor.fetchall():
+            for row in rows:
                 results[row["agent_name"]] = {
                     "total": row["total"],
                     "enabled": row["enabled"]
@@ -2058,96 +2081,97 @@ class ScheduleOperations:
         now = utc_now_iso()
         sync_paths_json = json.dumps(sync_paths) if sync_paths else json.dumps(["memory/", "outputs/", "CLAUDE.md", ".claude/"])
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    INSERT INTO agent_git_config (
-                        id, agent_name, github_repo, working_branch, instance_id,
-                        source_branch, source_mode, created_at, sync_enabled, sync_paths
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-                """, (config_id, agent_name, github_repo, working_branch, instance_id,
-                      source_branch, 1 if source_mode else 0, now, sync_paths_json))
-                conn.commit()
-
-                return AgentGitConfig(
-                    id=config_id,
-                    agent_name=agent_name,
-                    github_repo=github_repo,
-                    working_branch=working_branch,
-                    instance_id=instance_id,
-                    source_branch=source_branch,
-                    source_mode=source_mode,
-                    created_at=datetime.fromisoformat(now),
-                    sync_enabled=True,
-                    sync_paths=sync_paths_json
+        try:
+            with get_engine().begin() as conn:
+                conn.execute(
+                    insert(agent_git_config).values(
+                        id=config_id,
+                        agent_name=agent_name,
+                        github_repo=github_repo,
+                        working_branch=working_branch,
+                        instance_id=instance_id,
+                        source_branch=source_branch,
+                        source_mode=1 if source_mode else 0,
+                        created_at=now,
+                        sync_enabled=1,
+                        sync_paths=sync_paths_json,
+                    )
                 )
-            except sqlite3.IntegrityError:
-                # Already exists
-                return None
+
+            return AgentGitConfig(
+                id=config_id,
+                agent_name=agent_name,
+                github_repo=github_repo,
+                working_branch=working_branch,
+                instance_id=instance_id,
+                source_branch=source_branch,
+                source_mode=source_mode,
+                created_at=datetime.fromisoformat(now),
+                sync_enabled=True,
+                sync_paths=sync_paths_json
+            )
+        except IntegrityError:
+            # Already exists
+            return None
 
     def get_git_config(self, agent_name: str) -> Optional[AgentGitConfig]:
         """Get git configuration for an agent."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM agent_git_config WHERE agent_name = ?", (agent_name,))
-            row = cursor.fetchone()
-            return self._row_to_git_config(row) if row else None
+        stmt = select(agent_git_config).where(
+            agent_git_config.c.agent_name == agent_name
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        return self._row_to_git_config(row) if row else None
 
     def update_git_sync(self, agent_name: str, commit_sha: str) -> bool:
         """Update git sync timestamp and commit SHA after successful sync."""
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_git_config
-                SET last_sync_at = ?, last_commit_sha = ?
-                WHERE agent_name = ?
-            """, (now, commit_sha, agent_name))
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_git_config)
+                .where(agent_git_config.c.agent_name == agent_name)
+                .values(last_sync_at=now, last_commit_sha=commit_sha)
+            )
+            return result.rowcount > 0
 
     def set_git_sync_enabled(self, agent_name: str, enabled: bool) -> bool:
         """Enable or disable git sync for an agent."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_git_config SET sync_enabled = ? WHERE agent_name = ?
-            """, (1 if enabled else 0, agent_name))
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_git_config)
+                .where(agent_git_config.c.agent_name == agent_name)
+                .values(sync_enabled=1 if enabled else 0)
+            )
+            return result.rowcount > 0
 
     def set_git_auto_sync_enabled(self, agent_name: str, enabled: bool) -> bool:
         """#389: toggle the 15-min auto-sync heartbeat for an agent."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE agent_git_config SET auto_sync_enabled = ? WHERE agent_name = ?",
-                (1 if enabled else 0, agent_name),
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_git_config)
+                .where(agent_git_config.c.agent_name == agent_name)
+                .values(auto_sync_enabled=1 if enabled else 0)
             )
-            conn.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0
 
     def set_freeze_schedules_if_sync_failing(self, agent_name: str, enabled: bool) -> bool:
         """#389: toggle scheduler freeze-on-failure opt-in."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE agent_git_config "
-                "SET freeze_schedules_if_sync_failing = ? WHERE agent_name = ?",
-                (1 if enabled else 0, agent_name),
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_git_config)
+                .where(agent_git_config.c.agent_name == agent_name)
+                .values(freeze_schedules_if_sync_failing=1 if enabled else 0)
             )
-            conn.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0
 
     def get_git_auto_sync_enabled(self, agent_name: str) -> bool:
         """#389: read the auto-sync flag. False if config missing."""
-        with get_db_connection() as conn:
-            row = conn.execute(
-                "SELECT auto_sync_enabled FROM agent_git_config WHERE agent_name = ?",
-                (agent_name,),
-            ).fetchone()
-            return bool(row[0]) if row else False
+        stmt = select(agent_git_config.c.auto_sync_enabled).where(
+            agent_git_config.c.agent_name == agent_name
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
+        return bool(row[0]) if row else False
 
     def get_all_git_auto_sync_enabled(
         self, agent_names: Optional[set] = None
@@ -2165,35 +2189,37 @@ class ScheduleOperations:
         """
         if agent_names is not None and not agent_names:
             return {}
-        with get_db_connection() as conn:
+        with get_engine().connect() as conn:
             if agent_names is None:
                 rows = conn.execute(
-                    "SELECT agent_name, auto_sync_enabled FROM agent_git_config"
-                ).fetchall()
+                    select(
+                        agent_git_config.c.agent_name,
+                        agent_git_config.c.auto_sync_enabled,
+                    )
+                ).all()
                 return {row[0]: bool(row[1]) for row in rows}
 
             result: Dict[str, bool] = {}
             names = list(agent_names)
             for start in range(0, len(names), _SQLITE_MAX_IN_VARS):
                 chunk = names[start:start + _SQLITE_MAX_IN_VARS]
-                placeholders = ",".join("?" for _ in chunk)
                 rows = conn.execute(
-                    f"SELECT agent_name, auto_sync_enabled FROM agent_git_config "
-                    f"WHERE agent_name IN ({placeholders})",
-                    chunk,
-                ).fetchall()
+                    select(
+                        agent_git_config.c.agent_name,
+                        agent_git_config.c.auto_sync_enabled,
+                    ).where(agent_git_config.c.agent_name.in_(chunk))
+                ).all()
                 result.update({row[0]: bool(row[1]) for row in rows})
             return result
 
     def get_freeze_schedules_if_sync_failing(self, agent_name: str) -> bool:
         """#389: read the freeze-schedules flag. False if config missing."""
-        with get_db_connection() as conn:
-            row = conn.execute(
-                "SELECT freeze_schedules_if_sync_failing "
-                "FROM agent_git_config WHERE agent_name = ?",
-                (agent_name,),
-            ).fetchone()
-            return bool(row[0]) if row else False
+        stmt = select(agent_git_config.c.freeze_schedules_if_sync_failing).where(
+            agent_git_config.c.agent_name == agent_name
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
+        return bool(row[0]) if row else False
 
     def find_duplicate_bindings(self) -> set:
         """#390 S6: return the set of agent_names whose (github_repo, working_branch)
@@ -2203,7 +2229,9 @@ class ScheduleOperations:
         siblings track `main`) and are excluded by the partial filter, mirroring
         the spec's §P5 query verbatim.
         """
-        query = """
+        # Row-value tuple IN-subquery — kept as text(); valid on both SQLite
+        # and PostgreSQL. No bind params, no sqlite-only constructs.
+        query = text("""
             SELECT agent_name FROM agent_git_config
             WHERE source_mode = 0
               AND (github_repo, working_branch) IN (
@@ -2213,18 +2241,20 @@ class ScheduleOperations:
                   GROUP BY github_repo, working_branch
                   HAVING COUNT(*) > 1
               )
-        """
-        with get_db_connection() as conn:
-            rows = conn.execute(query).fetchall()
+        """)
+        with get_engine().connect() as conn:
+            rows = conn.execute(query).all()
             return {row[0] for row in rows}
 
     def delete_git_config(self, agent_name: str) -> bool:
         """Delete git configuration for an agent (when agent is deleted)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM agent_git_config WHERE agent_name = ?", (agent_name,))
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                delete(agent_git_config).where(
+                    agent_git_config.c.agent_name == agent_name
+                )
+            )
+            return result.rowcount > 0
 
     def get_running_executions(self) -> list:
         """Get all schedule executions currently in 'running' status.
@@ -2234,14 +2264,14 @@ class ScheduleOperations:
         Returns:
             List of dicts with id, agent_name, started_at, schedule_id.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, agent_name, started_at, schedule_id
-                FROM schedule_executions
-                WHERE status = ?
-            """, (TaskExecutionStatus.RUNNING,))
-            return [dict(row) for row in cursor.fetchall()]
+        stmt = select(
+            schedule_executions.c.id,
+            schedule_executions.c.agent_name,
+            schedule_executions.c.started_at,
+            schedule_executions.c.schedule_id,
+        ).where(schedule_executions.c.status == TaskExecutionStatus.RUNNING)
+        with get_engine().connect() as conn:
+            return [dict(row) for row in conn.execute(stmt).mappings()]
 
     def mark_stale_executions_failed(self, timeout_minutes: int = 30) -> int:
         """Mark running executions older than timeout as failed.
@@ -2258,16 +2288,20 @@ class ScheduleOperations:
         # Compute threshold in ISO 8601 format to match stored started_at
         # (SQLite's datetime() returns space-separated format which breaks string comparison)
         threshold = (datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)).strftime('%Y-%m-%dT%H:%M:%S')
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        error_msg = f"Marked as failed by cleanup: exceeded {timeout_minutes}-minute timeout"
+        with get_engine().begin() as conn:
             # Find stale executions for duration calculation
-            cursor.execute("""
-                SELECT id, started_at FROM schedule_executions
-                WHERE status = ?
-                AND started_at < ?
-            """, (TaskExecutionStatus.RUNNING, threshold))
-            stale_rows = cursor.fetchall()
+            stale_rows = conn.execute(
+                select(
+                    schedule_executions.c.id,
+                    schedule_executions.c.started_at,
+                ).where(
+                    and_(
+                        schedule_executions.c.status == TaskExecutionStatus.RUNNING,
+                        schedule_executions.c.started_at < threshold,
+                    )
+                )
+            ).mappings().all()
 
             if not stale_rows:
                 return 0
@@ -2276,20 +2310,24 @@ class ScheduleOperations:
             for row in stale_rows:
                 started_at = parse_iso_timestamp(row["started_at"])
                 duration_ms = int((completed_at - started_at).total_seconds() * 1000)
-                # SQL literal matches TaskExecutionStatus.FAILED
                 # RELIABILITY-005: guard the UPDATE so a SUCCESS that arrived
                 # between the SELECT and this UPDATE is never overwritten.
-                cursor.execute("""
-                    UPDATE schedule_executions
-                    SET status = ?,
-                        completed_at = ?,
-                        duration_ms = ?,
-                        error = 'Marked as failed by cleanup: exceeded ' || ? || '-minute timeout'
-                    WHERE id = ? AND status = ?
-                """, (TaskExecutionStatus.FAILED, now, duration_ms, str(timeout_minutes),
-                      row["id"], TaskExecutionStatus.RUNNING))
+                conn.execute(
+                    update(schedule_executions)
+                    .where(
+                        and_(
+                            schedule_executions.c.id == row["id"],
+                            schedule_executions.c.status == TaskExecutionStatus.RUNNING,
+                        )
+                    )
+                    .values(
+                        status=TaskExecutionStatus.FAILED,
+                        completed_at=now,
+                        duration_ms=duration_ms,
+                        error=error_msg,
+                    )
+                )
 
-            conn.commit()
             return len(stale_rows)
 
     def mark_no_session_executions_failed(self, timeout_seconds: int = 60) -> int:
@@ -2310,16 +2348,23 @@ class ScheduleOperations:
         # Compute threshold in ISO 8601 format to match stored started_at
         # (SQLite's datetime() returns space-separated format which breaks string comparison)
         threshold = (datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)).strftime('%Y-%m-%dT%H:%M:%S')
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
-            cursor.execute("""
-                SELECT id, started_at FROM schedule_executions
-                WHERE status = ?
-                AND (claude_session_id IS NULL OR claude_session_id = '')
-                AND started_at < ?
-            """, (TaskExecutionStatus.RUNNING, threshold))
-            no_session_rows = cursor.fetchall()
+        error_msg = f"Silent launch failure: no Claude session created within {timeout_seconds} seconds"
+        with get_engine().begin() as conn:
+            no_session_rows = conn.execute(
+                select(
+                    schedule_executions.c.id,
+                    schedule_executions.c.started_at,
+                ).where(
+                    and_(
+                        schedule_executions.c.status == TaskExecutionStatus.RUNNING,
+                        or_(
+                            schedule_executions.c.claude_session_id.is_(None),
+                            schedule_executions.c.claude_session_id == "",
+                        ),
+                        schedule_executions.c.started_at < threshold,
+                    )
+                )
+            ).mappings().all()
 
             if not no_session_rows:
                 return 0
@@ -2330,17 +2375,22 @@ class ScheduleOperations:
                 duration_ms = int((completed_at - started_at).total_seconds() * 1000)
                 # RELIABILITY-005: guard the UPDATE so a SUCCESS that arrived
                 # between the SELECT and this UPDATE is never overwritten.
-                cursor.execute("""
-                    UPDATE schedule_executions
-                    SET status = ?,
-                        completed_at = ?,
-                        duration_ms = ?,
-                        error = 'Silent launch failure: no Claude session created within ' || ? || ' seconds'
-                    WHERE id = ? AND status = ?
-                """, (TaskExecutionStatus.FAILED, now, duration_ms, str(timeout_seconds),
-                      row["id"], TaskExecutionStatus.RUNNING))
+                conn.execute(
+                    update(schedule_executions)
+                    .where(
+                        and_(
+                            schedule_executions.c.id == row["id"],
+                            schedule_executions.c.status == TaskExecutionStatus.RUNNING,
+                        )
+                    )
+                    .values(
+                        status=TaskExecutionStatus.FAILED,
+                        completed_at=now,
+                        duration_ms=duration_ms,
+                        error=error_msg,
+                    )
+                )
 
-            conn.commit()
             return len(no_session_rows)
 
     def fail_stale_slot_execution(self, execution_id: str, error: str) -> bool:
@@ -2359,14 +2409,15 @@ class ScheduleOperations:
             or was no longer in 'running' status.
         """
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
-            cursor.execute(
-                "SELECT started_at FROM schedule_executions WHERE id = ? AND status = ?",
-                (execution_id, TaskExecutionStatus.RUNNING),
-            )
-            row = cursor.fetchone()
+        with get_engine().begin() as conn:
+            row = conn.execute(
+                select(schedule_executions.c.started_at).where(
+                    and_(
+                        schedule_executions.c.id == execution_id,
+                        schedule_executions.c.status == TaskExecutionStatus.RUNNING,
+                    )
+                )
+            ).mappings().first()
             if not row:
                 return False
 
@@ -2374,18 +2425,22 @@ class ScheduleOperations:
             started_at = parse_iso_timestamp(row["started_at"])
             duration_ms = int((completed_at - started_at).total_seconds() * 1000)
 
-            cursor.execute("""
-                UPDATE schedule_executions
-                SET status = ?,
-                    completed_at = ?,
-                    duration_ms = ?,
-                    error = ?
-                WHERE id = ? AND status = ?
-            """, (TaskExecutionStatus.FAILED, now, duration_ms, error,
-                  execution_id, TaskExecutionStatus.RUNNING))
-
-            conn.commit()
-            return cursor.rowcount > 0
+            result = conn.execute(
+                update(schedule_executions)
+                .where(
+                    and_(
+                        schedule_executions.c.id == execution_id,
+                        schedule_executions.c.status == TaskExecutionStatus.RUNNING,
+                    )
+                )
+                .values(
+                    status=TaskExecutionStatus.FAILED,
+                    completed_at=now,
+                    duration_ms=duration_ms,
+                    error=error,
+                )
+            )
+            return result.rowcount > 0
 
     def finalize_orphaned_skipped_executions(self) -> int:
         """Finalize skipped executions that are missing completed_at.
@@ -2397,21 +2452,23 @@ class ScheduleOperations:
             Number of executions finalized.
         """
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
-            cursor.execute("""
-                UPDATE schedule_executions
-                SET status = ?,
-                    completed_at = COALESCE(started_at, ?),
-                    duration_ms = 0,
-                    error = 'Finalized by cleanup: skipped execution'
-                WHERE status = ?
-                AND completed_at IS NULL
-            """, (TaskExecutionStatus.FAILED, now, TaskExecutionStatus.SKIPPED))
-
-            conn.commit()
-            return cursor.rowcount
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(schedule_executions)
+                .where(
+                    and_(
+                        schedule_executions.c.status == TaskExecutionStatus.SKIPPED,
+                        schedule_executions.c.completed_at.is_(None),
+                    )
+                )
+                .values(
+                    status=TaskExecutionStatus.FAILED,
+                    completed_at=func.coalesce(schedule_executions.c.started_at, now),
+                    duration_ms=0,
+                    error="Finalized by cleanup: skipped execution",
+                )
+            )
+            return result.rowcount
 
     def prune_execution_logs(self, retention_days: int, chunk_size: int = 500) -> int:
         """Null `execution_log` on terminal executions older than retention_days.
@@ -2434,36 +2491,39 @@ class ScheduleOperations:
 
         cutoff = iso_cutoff(hours=retention_days * 24)
         total = 0
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            while True:
-                # SELECT-then-UPDATE-by-id keeps the WHERE predicate aligned
-                # with idx_executions_completed_terminal (#772) and avoids
-                # depending on SQLITE_ENABLE_UPDATE_DELETE_LIMIT.
-                cursor.execute(
-                    """
-                    SELECT id FROM schedule_executions
-                    WHERE status IN ('success', 'failed', 'cancelled', 'skipped')
-                      AND completed_at IS NOT NULL
-                      AND completed_at < ?
-                      AND execution_log IS NOT NULL
-                    LIMIT ?
-                    """,
-                    (cutoff, chunk_size),
-                )
-                ids = [row["id"] for row in cursor.fetchall()]
+        _terminal = ("success", "failed", "cancelled", "skipped")
+        engine = get_engine()
+        while True:
+            # SELECT-then-UPDATE-by-id keeps the WHERE predicate aligned
+            # with idx_executions_completed_terminal (#772) and avoids
+            # depending on SQLITE_ENABLE_UPDATE_DELETE_LIMIT. Each chunk is
+            # its own transaction so the write lock stays short.
+            with engine.begin() as conn:
+                ids = [
+                    row["id"]
+                    for row in conn.execute(
+                        select(schedule_executions.c.id)
+                        .where(
+                            and_(
+                                schedule_executions.c.status.in_(_terminal),
+                                schedule_executions.c.completed_at.isnot(None),
+                                schedule_executions.c.completed_at < cutoff,
+                                schedule_executions.c.execution_log.isnot(None),
+                            )
+                        )
+                        .limit(chunk_size)
+                    ).mappings()
+                ]
                 if not ids:
                     break
-                placeholders = ",".join("?" * len(ids))
-                cursor.execute(
-                    f"UPDATE schedule_executions SET execution_log = NULL "
-                    f"WHERE id IN ({placeholders})",
-                    ids,
+                result = conn.execute(
+                    update(schedule_executions)
+                    .where(schedule_executions.c.id.in_(ids))
+                    .values(execution_log=None)
                 )
-                conn.commit()
-                total += cursor.rowcount
-                if len(ids) < chunk_size:
-                    break
+                total += result.rowcount
+            if len(ids) < chunk_size:
+                break
         return total
 
     def prune_execution_rows(self, retention_days: int, chunk_size: int = 500) -> int:
@@ -2484,31 +2544,34 @@ class ScheduleOperations:
 
         cutoff = iso_cutoff(hours=retention_days * 24)
         total = 0
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            while True:
-                cursor.execute(
-                    """
-                    SELECT id FROM schedule_executions
-                    WHERE status IN ('success', 'failed', 'cancelled', 'skipped')
-                      AND completed_at IS NOT NULL
-                      AND completed_at < ?
-                    LIMIT ?
-                    """,
-                    (cutoff, chunk_size),
-                )
-                ids = [row["id"] for row in cursor.fetchall()]
+        _terminal = ("success", "failed", "cancelled", "skipped")
+        engine = get_engine()
+        while True:
+            with engine.begin() as conn:
+                ids = [
+                    row["id"]
+                    for row in conn.execute(
+                        select(schedule_executions.c.id)
+                        .where(
+                            and_(
+                                schedule_executions.c.status.in_(_terminal),
+                                schedule_executions.c.completed_at.isnot(None),
+                                schedule_executions.c.completed_at < cutoff,
+                            )
+                        )
+                        .limit(chunk_size)
+                    ).mappings()
+                ]
                 if not ids:
                     break
-                placeholders = ",".join("?" * len(ids))
-                cursor.execute(
-                    f"DELETE FROM schedule_executions WHERE id IN ({placeholders})",
-                    ids,
+                result = conn.execute(
+                    delete(schedule_executions).where(
+                        schedule_executions.c.id.in_(ids)
+                    )
                 )
-                conn.commit()
-                total += cursor.rowcount
-                if len(ids) < chunk_size:
-                    break
+                total += result.rowcount
+            if len(ids) < chunk_size:
+                break
         return total
 
     def get_running_executions_with_agent_info(self) -> List[Dict]:
@@ -2524,17 +2587,18 @@ class ScheduleOperations:
             List of dicts with id, schedule_id, agent_name, started_at,
             and timeout_seconds.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
+        with get_engine().connect() as conn:
+            rows = conn.execute(
+                text("""
                 SELECT e.id, e.schedule_id, e.agent_name, e.started_at,
                        COALESCE(s.timeout_seconds, ao.execution_timeout_seconds, 3600) as timeout_seconds
                 FROM schedule_executions e
                 LEFT JOIN agent_schedules s ON e.schedule_id = s.id
                 LEFT JOIN agent_ownership ao ON e.agent_name = ao.agent_name
-                WHERE e.status = ?
-            """, (TaskExecutionStatus.RUNNING,))
-            rows = cursor.fetchall()
+                WHERE e.status = :status
+                """),
+                {"status": TaskExecutionStatus.RUNNING},
+            ).mappings().all()
             return [dict(row) for row in rows]
 
     def mark_execution_failed_by_watchdog(self, execution_id: str, error_message: str) -> bool:
@@ -2552,15 +2616,13 @@ class ScheduleOperations:
             False if it had already transitioned to another status.
         """
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Get started_at for duration calculation
-            cursor.execute(
-                "SELECT started_at FROM schedule_executions WHERE id = ?",
-                (execution_id,)
-            )
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(schedule_executions.c.started_at).where(
+                    schedule_executions.c.id == execution_id
+                )
+            ).mappings().first()
             if not row:
                 return False
 
@@ -2568,34 +2630,34 @@ class ScheduleOperations:
             started_at = parse_iso_timestamp(row["started_at"])
             duration_ms = int((completed_at - started_at).total_seconds() * 1000)
 
-            cursor.execute("""
-                UPDATE schedule_executions
-                SET status = ?,
-                    completed_at = ?,
-                    duration_ms = ?,
-                    error = ?
-                WHERE id = ? AND status = ?
-            """, (
-                TaskExecutionStatus.FAILED,
-                now,
-                duration_ms,
-                error_message,
-                execution_id,
-                TaskExecutionStatus.RUNNING,
-            ))
-
-            conn.commit()
-            return cursor.rowcount > 0
+            result = conn.execute(
+                update(schedule_executions)
+                .where(
+                    and_(
+                        schedule_executions.c.id == execution_id,
+                        schedule_executions.c.status == TaskExecutionStatus.RUNNING,
+                    )
+                )
+                .values(
+                    status=TaskExecutionStatus.FAILED,
+                    completed_at=now,
+                    duration_ms=duration_ms,
+                    error=error_message,
+                )
+            )
+            return result.rowcount > 0
 
     def list_git_enabled_agents(self) -> List[AgentGitConfig]:
         """List all agents with git sync enabled."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM agent_git_config WHERE sync_enabled = 1
-                ORDER BY agent_name
-            """)
-            return [self._row_to_git_config(row) for row in cursor.fetchall()]
+        stmt = (
+            select(agent_git_config)
+            .where(agent_git_config.c.sync_enabled == 1)
+            .order_by(agent_git_config.c.agent_name)
+        )
+        with get_engine().connect() as conn:
+            return [
+                self._row_to_git_config(row) for row in conn.execute(stmt).mappings()
+            ]
 
     # =========================================================================
     # Business Validation (VALIDATE-001)
@@ -2624,35 +2686,30 @@ class ScheduleOperations:
         execution_id = self._generate_id()
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO schedule_executions (
-                    id, schedule_id, agent_name, status, started_at, message, triggered_by,
-                    validates_execution_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                execution_id,
-                schedule_id,
-                agent_name,
-                TaskExecutionStatus.RUNNING,
-                now,
-                message,
-                "validation",  # New trigger type for validation
-                validates_execution_id,
-            ))
-            conn.commit()
-
-            return ScheduleExecution(
-                id=execution_id,
-                schedule_id=schedule_id,
-                agent_name=agent_name,
-                status=TaskExecutionStatus.RUNNING,
-                started_at=datetime.fromisoformat(now),
-                message=message,
-                triggered_by="validation",
-                validates_execution_id=validates_execution_id,
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(schedule_executions).values(
+                    id=execution_id,
+                    schedule_id=schedule_id,
+                    agent_name=agent_name,
+                    status=TaskExecutionStatus.RUNNING,
+                    started_at=now,
+                    message=message,
+                    triggered_by="validation",  # New trigger type for validation
+                    validates_execution_id=validates_execution_id,
+                )
             )
+
+        return ScheduleExecution(
+            id=execution_id,
+            schedule_id=schedule_id,
+            agent_name=agent_name,
+            status=TaskExecutionStatus.RUNNING,
+            started_at=datetime.fromisoformat(now),
+            message=message,
+            triggered_by="validation",
+            validates_execution_id=validates_execution_id,
+        )
 
     def update_business_status(
         self,
@@ -2672,24 +2729,17 @@ class ScheduleOperations:
         """
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        values = {"business_status": business_status, "validated_at": now}
+        if validation_execution_id:
+            values["validation_execution_id"] = validation_execution_id
 
-            if validation_execution_id:
-                cursor.execute("""
-                    UPDATE schedule_executions
-                    SET business_status = ?, validated_at = ?, validation_execution_id = ?
-                    WHERE id = ?
-                """, (business_status, now, validation_execution_id, execution_id))
-            else:
-                cursor.execute("""
-                    UPDATE schedule_executions
-                    SET business_status = ?, validated_at = ?
-                    WHERE id = ?
-                """, (business_status, now, execution_id))
-
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(schedule_executions)
+                .where(schedule_executions.c.id == execution_id)
+                .values(**values)
+            )
+            return result.rowcount > 0
 
     def get_executions_pending_validation(self, agent_name: str = None) -> List[ScheduleExecution]:
         """Get executions that are pending validation.
@@ -2702,23 +2752,19 @@ class ScheduleOperations:
         Returns:
             List of executions with business_status = 'pending_validation'.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
-            if agent_name:
-                cursor.execute("""
-                    SELECT * FROM schedule_executions
-                    WHERE business_status = 'pending_validation' AND agent_name = ?
-                    ORDER BY started_at ASC
-                """, (agent_name,))
-            else:
-                cursor.execute("""
-                    SELECT * FROM schedule_executions
-                    WHERE business_status = 'pending_validation'
-                    ORDER BY started_at ASC
-                """)
-
-            return [self._row_to_schedule_execution(row) for row in cursor.fetchall()]
+        conds = [schedule_executions.c.business_status == "pending_validation"]
+        if agent_name:
+            conds.append(schedule_executions.c.agent_name == agent_name)
+        stmt = (
+            select(schedule_executions)
+            .where(and_(*conds))
+            .order_by(schedule_executions.c.started_at.asc())
+        )
+        with get_engine().connect() as conn:
+            return [
+                self._row_to_schedule_execution(row)
+                for row in conn.execute(stmt).mappings()
+            ]
 
     def get_validation_execution(self, validates_execution_id: str) -> Optional[ScheduleExecution]:
         """Get the validation execution record for a given original execution.
@@ -2729,16 +2775,15 @@ class ScheduleOperations:
         Returns:
             The validation execution record, or None if not found.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM schedule_executions
-                WHERE validates_execution_id = ?
-                ORDER BY started_at DESC
-                LIMIT 1
-            """, (validates_execution_id,))
-            row = cursor.fetchone()
-            return self._row_to_schedule_execution(row) if row else None
+        stmt = (
+            select(schedule_executions)
+            .where(schedule_executions.c.validates_execution_id == validates_execution_id)
+            .order_by(schedule_executions.c.started_at.desc())
+            .limit(1)
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        return self._row_to_schedule_execution(row) if row else None
 
     def get_agent_token_stats(self, agent_name: str) -> Dict:
         """Get token usage statistics for an agent: lifetime, 24h, 7d, and 7-day daily breakdown.
@@ -2747,30 +2792,29 @@ class ScheduleOperations:
         """
         from datetime import datetime, timezone, timedelta
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        cutoff_24h = iso_cutoff(24)
+        cutoff_7d = iso_cutoff(168)
 
-            cutoff_24h = iso_cutoff(24)
-            cutoff_7d = iso_cutoff(168)
-
+        with get_engine().connect() as conn:
             # Lifetime + 24h + 7d in one pass
-            cursor.execute("""
+            row = conn.execute(
+                text("""
                 SELECT
                     COUNT(*) as lifetime_executions,
                     SUM(COALESCE(cost, 0)) as lifetime_cost,
                     SUM(COALESCE(context_used, 0)) as lifetime_context_tokens,
-                    SUM(CASE WHEN started_at > ? THEN COALESCE(cost, 0) ELSE 0 END) as cost_24h,
-                    SUM(CASE WHEN started_at > ? THEN COALESCE(context_used, 0) ELSE 0 END) as context_tokens_24h,
-                    SUM(CASE WHEN started_at > ? THEN 1 ELSE 0 END) as executions_24h,
-                    SUM(CASE WHEN started_at > ? THEN COALESCE(cost, 0) ELSE 0 END) as cost_7d,
-                    SUM(CASE WHEN started_at > ? THEN COALESCE(context_used, 0) ELSE 0 END) as context_tokens_7d,
-                    SUM(CASE WHEN started_at > ? THEN 1 ELSE 0 END) as executions_7d
+                    SUM(CASE WHEN started_at > :c24 THEN COALESCE(cost, 0) ELSE 0 END) as cost_24h,
+                    SUM(CASE WHEN started_at > :c24 THEN COALESCE(context_used, 0) ELSE 0 END) as context_tokens_24h,
+                    SUM(CASE WHEN started_at > :c24 THEN 1 ELSE 0 END) as executions_24h,
+                    SUM(CASE WHEN started_at > :c7d THEN COALESCE(cost, 0) ELSE 0 END) as cost_7d,
+                    SUM(CASE WHEN started_at > :c7d THEN COALESCE(context_used, 0) ELSE 0 END) as context_tokens_7d,
+                    SUM(CASE WHEN started_at > :c7d THEN 1 ELSE 0 END) as executions_7d
                 FROM schedule_executions
-                WHERE agent_name = ?
+                WHERE agent_name = :agent_name
                   AND status IN ('success', 'failed')
-            """, (cutoff_24h, cutoff_24h, cutoff_24h, cutoff_7d, cutoff_7d, cutoff_7d, agent_name))
-
-            row = cursor.fetchone()
+                """),
+                {"c24": cutoff_24h, "c7d": cutoff_7d, "agent_name": agent_name},
+            ).mappings().first()
 
             lifetime_cost = round(row["lifetime_cost"] or 0, 6)
             lifetime_context_tokens = row["lifetime_context_tokens"] or 0
@@ -2783,21 +2827,24 @@ class ScheduleOperations:
             executions_7d = row["executions_7d"] or 0
 
             # Per-day breakdown for last 7 days
-            cursor.execute("""
+            day_rows = conn.execute(
+                text("""
                 SELECT
                     DATE(started_at) as day,
                     SUM(COALESCE(cost, 0)) as day_cost,
                     SUM(COALESCE(context_used, 0)) as day_context_tokens,
                     COUNT(*) as day_executions
                 FROM schedule_executions
-                WHERE agent_name = ?
-                  AND started_at > ?
+                WHERE agent_name = :agent_name
+                  AND started_at > :c7d
                   AND status IN ('success', 'failed')
                 GROUP BY DATE(started_at)
                 ORDER BY day ASC
-            """, (agent_name, cutoff_7d))
+                """),
+                {"agent_name": agent_name, "c7d": cutoff_7d},
+            ).mappings().all()
 
-            raw_days = {row["day"]: row for row in cursor.fetchall()}
+            raw_days = {row["day"]: row for row in day_rows}
 
             # Build complete 7-day series (fill gaps with zero)
             now_utc = datetime.now(timezone.utc)
@@ -2866,36 +2913,39 @@ class ScheduleOperations:
             return []
 
         conditions = []
-        params: List = []
+        bind: Dict = {}
 
         if agent_names is not None:
-            placeholders = ",".join("?" * len(agent_names))
-            conditions.append(f"agent_name IN ({placeholders})")
-            params.extend(agent_names)
+            keys = [f"an{i}" for i in range(len(agent_names))]
+            conditions.append("agent_name IN (%s)" % ",".join(f":{k}" for k in keys))
+            bind.update(dict(zip(keys, agent_names)))
 
         if status:
-            conditions.append("status = ?")
-            params.append(status)
+            conditions.append("status = :status")
+            bind["status"] = status
 
         if triggered_by:
-            conditions.append("triggered_by = ?")
-            params.append(triggered_by)
+            conditions.append("triggered_by = :triggered_by")
+            bind["triggered_by"] = triggered_by
 
         if hours:
-            conditions.append("started_at > ?")
-            params.append(iso_cutoff(hours))
+            conditions.append("started_at > :cutoff")
+            bind["cutoff"] = iso_cutoff(hours)
 
         if search:
-            conditions.append("message LIKE ?")
-            params.append(f"%{search}%")
+            conditions.append("message LIKE :search")
+            bind["search"] = f"%{search}%"
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
-        params.extend([limit, offset])
+        bind["lim"] = limit
+        bind["off"] = offset
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"""
+        # Core (#300): named binds; SELECT body is dialect-portable (the only
+        # SQLite-ism, SUBSTR, exists on PostgreSQL too). `.mappings()` keeps the
+        # dict-row shape the router expects.
+        with get_engine().connect() as conn:
+            rows = conn.execute(text(f"""
                 SELECT
                     id, schedule_id, agent_name, status, started_at, completed_at,
                     duration_ms, message, triggered_by,
@@ -2910,9 +2960,9 @@ class ScheduleOperations:
                 FROM schedule_executions
                 {where}
                 ORDER BY started_at DESC
-                LIMIT ? OFFSET ?
-            """, params)
-            return [dict(row) for row in cursor.fetchall()]
+                LIMIT :lim OFFSET :off
+            """), bind).mappings().all()
+            return [dict(row) for row in rows]
 
     def get_fleet_execution_stats(
         self,
@@ -2932,26 +2982,27 @@ class ScheduleOperations:
                 "running_count": 0, "queued_count": 0, "hours": hours,
             }
 
-        agent_params: List = []
+        bind: Dict = {}
         agent_where = ""
         if agent_names is not None:
-            placeholders = ",".join("?" * len(agent_names))
-            agent_where = f"WHERE agent_name IN ({placeholders})"
-            agent_params = list(agent_names)
+            keys = [f"an{i}" for i in range(len(agent_names))]
+            agent_where = "WHERE agent_name IN (%s)" % ",".join(f":{k}" for k in keys)
+            bind.update(dict(zip(keys, agent_names)))
 
         # Single-pass query: windowed totals via conditional aggregation +
         # live running/queued counts without a time filter, all in one scan.
-        # time_cond = "1" when hours=0 (all-time) so CASE expressions are unconditional.
+        # time_cond = "1=1" when hours=0 (all-time) so CASE stays unconditional.
+        # ("1=1", not "1": PostgreSQL requires a boolean in CASE WHEN — a bare
+        # integer raises; SQLite tolerated it. #300.) The named :cutoff bind is
+        # reused across all four CASE expressions.
         if hours:
-            time_cond = "started_at > ?"
-            time_params: List = [iso_cutoff(hours)] * 4  # used in 4 CASE expressions
+            time_cond = "started_at > :cutoff"
+            bind["cutoff"] = iso_cutoff(hours)
         else:
-            time_cond = "1"
-            time_params = []
+            time_cond = "1=1"
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"""
+        with get_engine().connect() as conn:
+            row = conn.execute(text(f"""
                 SELECT
                     SUM(CASE WHEN {time_cond} THEN 1 ELSE 0 END) AS total,
                     SUM(CASE WHEN {time_cond} AND status = 'success' THEN 1 ELSE 0 END) AS success_count,
@@ -2961,8 +3012,7 @@ class ScheduleOperations:
                     SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued_count
                 FROM schedule_executions
                 {agent_where}
-            """, time_params + agent_params)
-            row = cursor.fetchone()
+            """), bind).mappings().first()
             total = row["total"] or 0
             success_count = row["success_count"] or 0
             failed_count = row["failed_count"] or 0

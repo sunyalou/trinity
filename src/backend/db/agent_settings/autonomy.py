@@ -6,7 +6,10 @@ Handles autonomy mode (scheduled task auto-execution) and platform API key toggl
 
 from typing import Dict
 
-from db.connection import get_db_connection
+from sqlalchemy import select, update, func
+
+from ..engine import get_engine
+from ..tables import agent_ownership
 
 
 class AutonomyMixin:
@@ -18,27 +21,30 @@ class AutonomyMixin:
 
     def get_use_platform_api_key(self, agent_name: str) -> bool:
         """Check if agent should use platform API key (default: True)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT COALESCE(use_platform_api_key, 1) as use_platform_api_key
-                FROM agent_ownership WHERE agent_name = ? AND deleted_at IS NULL
-            """, (agent_name,))
-            row = cursor.fetchone()
-            if row:
-                return bool(row["use_platform_api_key"])
-            return True  # Default to using platform key
+        stmt = select(
+            func.coalesce(agent_ownership.c.use_platform_api_key, 1).label(
+                "use_platform_api_key"
+            )
+        ).where(
+            (agent_ownership.c.agent_name == agent_name)
+            & (agent_ownership.c.deleted_at.is_(None))
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if row:
+            return bool(row["use_platform_api_key"])
+        return True  # Default to using platform key
 
     def set_use_platform_api_key(self, agent_name: str, use_platform_key: bool) -> bool:
         """Set whether agent should use platform API key."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_ownership SET use_platform_api_key = ?
-                WHERE agent_name = ?
-            """, (1 if use_platform_key else 0, agent_name))
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = (
+            update(agent_ownership)
+            .where(agent_ownership.c.agent_name == agent_name)
+            .values(use_platform_api_key=1 if use_platform_key else 0)
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     # =========================================================================
     # Autonomy Mode
@@ -46,35 +52,39 @@ class AutonomyMixin:
 
     def get_autonomy_enabled(self, agent_name: str) -> bool:
         """Check if autonomy mode is enabled for agent (scheduled tasks run automatically)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT COALESCE(autonomy_enabled, 0) as autonomy_enabled
-                FROM agent_ownership WHERE agent_name = ? AND deleted_at IS NULL
-            """, (agent_name,))
-            row = cursor.fetchone()
-            if row:
-                return bool(row["autonomy_enabled"])
-            return False  # Default to disabled
+        stmt = select(
+            func.coalesce(agent_ownership.c.autonomy_enabled, 0).label(
+                "autonomy_enabled"
+            )
+        ).where(
+            (agent_ownership.c.agent_name == agent_name)
+            & (agent_ownership.c.deleted_at.is_(None))
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if row:
+            return bool(row["autonomy_enabled"])
+        return False  # Default to disabled
 
     def set_autonomy_enabled(self, agent_name: str, enabled: bool) -> bool:
         """Set whether autonomy mode is enabled for agent."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_ownership SET autonomy_enabled = ?
-                WHERE agent_name = ?
-            """, (1 if enabled else 0, agent_name))
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = (
+            update(agent_ownership)
+            .where(agent_ownership.c.agent_name == agent_name)
+            .values(autonomy_enabled=1 if enabled else 0)
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     def get_all_agents_autonomy_status(self) -> Dict[str, bool]:
         """Get autonomy status for all agents (for dashboard display)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT agent_name, COALESCE(autonomy_enabled, 0) as autonomy_enabled
-                FROM agent_ownership
-                WHERE deleted_at IS NULL
-            """)
-            return {row["agent_name"]: bool(row["autonomy_enabled"]) for row in cursor.fetchall()}
+        stmt = select(
+            agent_ownership.c.agent_name,
+            func.coalesce(agent_ownership.c.autonomy_enabled, 0).label(
+                "autonomy_enabled"
+            ),
+        ).where(agent_ownership.c.deleted_at.is_(None))
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return {row["agent_name"]: bool(row["autonomy_enabled"]) for row in rows}

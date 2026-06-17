@@ -231,6 +231,34 @@ async def dismiss_all_notifications(
     return {"dismissed": dismissed}
 
 
+@router.get("/notifications/count")
+async def count_notifications(
+    status: str = Query("pending", description="Filter by status: pending, acknowledged, dismissed"),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Return the true total notification count for the caller's accessible
+    agents — NOT page-capped like the `count` field on the list endpoint
+    (#1143). Backs the polled NavBar badge.
+    """
+    if status not in {"pending", "acknowledged", "dismissed"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid status. Must be: pending, acknowledged, or dismissed"
+        )
+
+    # Only "pending" is currently counted at the DB layer (the badge case).
+    if status != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail="Only status=pending is supported for counting"
+        )
+
+    accessible_agent_names = [a['name'] for a in get_accessible_agents(current_user)]
+    count = db.count_pending_notifications(agent_names=accessible_agent_names)
+    return {"status": status, "count": count}
+
+
 @router.get("/notifications/{notification_id}", response_model=Notification)
 async def get_notification(
     notification_id: str,

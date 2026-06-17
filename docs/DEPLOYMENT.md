@@ -33,6 +33,11 @@ cp .env.example .env
 
 ## Configuration
 
+> **Database backend:** Trinity uses **SQLite by default** (zero-config). To run
+> a new instance on **PostgreSQL** instead, see
+> [POSTGRESQL_SETUP.md](POSTGRESQL_SETUP.md) — it is opt-in via the
+> `DATABASE_URL` env var and does not affect the SQLite default (#300).
+
 ### Required Environment Variables
 
 Edit `.env` with these required settings:

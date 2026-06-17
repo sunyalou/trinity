@@ -8,7 +8,10 @@ PAT is encrypted at rest using AES-256-GCM via CredentialEncryptionService.
 import logging
 from typing import Optional
 
-from db.connection import get_db_connection
+from sqlalchemy import select, update
+
+from ..engine import get_engine
+from ..tables import agent_git_config
 
 logger = logging.getLogger(__name__)
 
@@ -54,18 +57,16 @@ class GitPATMixin:
         Returns:
             Decrypted PAT string, or None if not configured or decryption fails
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT github_pat_encrypted
-                FROM agent_git_config WHERE agent_name = ?
-            """, (agent_name,))
-            row = cursor.fetchone()
+        stmt = select(agent_git_config.c.github_pat_encrypted).where(
+            agent_git_config.c.agent_name == agent_name
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
 
-            if not row or not row["github_pat_encrypted"]:
-                return None
+        if not row or not row["github_pat_encrypted"]:
+            return None
 
-            return self._decrypt_github_pat(row["github_pat_encrypted"])
+        return self._decrypt_github_pat(row["github_pat_encrypted"])
 
     def set_agent_github_pat(self, agent_name: str, pat: str) -> bool:
         """
@@ -80,14 +81,14 @@ class GitPATMixin:
         """
         encrypted = self._encrypt_github_pat(pat)
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_git_config SET github_pat_encrypted = ?
-                WHERE agent_name = ?
-            """, (encrypted, agent_name))
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = (
+            update(agent_git_config)
+            .where(agent_git_config.c.agent_name == agent_name)
+            .values(github_pat_encrypted=encrypted)
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     def clear_agent_github_pat(self, agent_name: str) -> bool:
         """
@@ -99,14 +100,14 @@ class GitPATMixin:
         Returns:
             True if update succeeded, False if agent has no git config
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_git_config SET github_pat_encrypted = NULL
-                WHERE agent_name = ?
-            """, (agent_name,))
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = (
+            update(agent_git_config)
+            .where(agent_git_config.c.agent_name == agent_name)
+            .values(github_pat_encrypted=None)
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     def has_agent_github_pat(self, agent_name: str) -> bool:
         """
@@ -118,11 +119,9 @@ class GitPATMixin:
         Returns:
             True if agent has a custom PAT, False otherwise
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT github_pat_encrypted IS NOT NULL as has_pat
-                FROM agent_git_config WHERE agent_name = ?
-            """, (agent_name,))
-            row = cursor.fetchone()
-            return bool(row and row["has_pat"])
+        stmt = select(
+            agent_git_config.c.github_pat_encrypted.isnot(None).label("has_pat")
+        ).where(agent_git_config.c.agent_name == agent_name)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        return bool(row and row["has_pat"])

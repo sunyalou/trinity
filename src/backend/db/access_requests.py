@@ -5,14 +5,21 @@ When a user tries to talk to an agent across any channel without being
 owner / admin / shared / and the agent is not open-access, we record a
 pending request. Owners can approve (which inserts into agent_sharing)
 or deny.
+
+Converted from raw sqlite3 to SQLAlchemy Core for the configurable database
+backend (#300): runs unchanged on both SQLite and PostgreSQL. Queries are built
+from the ``access_requests`` table in ``db/tables.py`` (no ``?`` placeholders,
+no dialect-specific SQL), and the engine is resolved via ``db/engine.py``. The
+public API of ``AccessRequestOperations`` is unchanged.
 """
 
 import secrets
-import sqlite3
-from datetime import datetime
 from typing import List, Optional
 
-from .connection import get_db_connection
+from sqlalchemy import select, update, delete, func
+
+from .engine import get_engine, make_insert
+from .tables import access_requests
 from utils.helpers import utc_now_iso
 
 
@@ -47,39 +54,36 @@ class AccessRequestOperations:
         now = utc_now_iso()
         rid = secrets.token_urlsafe(16)
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute(
-                    """
-                    INSERT INTO access_requests
-                    (id, agent_name, email, channel, requested_at, status)
-                    VALUES (?, ?, ?, ?, ?, 'pending')
-                    """,
-                    (rid, agent_name, email, channel, now),
-                )
-                conn.commit()
-            except sqlite3.IntegrityError:
-                # Already exists — refresh status to pending and update timestamp
-                cursor.execute(
-                    """
-                    UPDATE access_requests
-                    SET status = 'pending',
-                        requested_at = ?,
-                        channel = COALESCE(?, channel),
-                        decided_by = NULL,
-                        decided_at = NULL
-                    WHERE agent_name = ? AND email = ?
-                    """,
-                    (now, channel, agent_name, email),
-                )
-                conn.commit()
+        ins = make_insert(access_requests).values(
+            id=rid,
+            agent_name=agent_name,
+            email=email,
+            channel=channel,
+            requested_at=now,
+            status="pending",
+        )
+        # On conflict with the existing (agent_name, email) row: refresh status
+        # to pending, bump the timestamp, keep the existing channel when no new
+        # channel is supplied, and clear any prior decision.
+        stmt = ins.on_conflict_do_update(
+            index_elements=["agent_name", "email"],
+            set_={
+                "status": "pending",
+                "requested_at": now,
+                "channel": func.coalesce(ins.excluded.channel, access_requests.c.channel),
+                "decided_by": None,
+                "decided_at": None,
+            },
+        )
 
-            cursor.execute(
-                "SELECT * FROM access_requests WHERE agent_name = ? AND email = ?",
-                (agent_name, email),
-            )
-            row = cursor.fetchone()
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
+            row = conn.execute(
+                select(access_requests).where(
+                    (access_requests.c.agent_name == agent_name)
+                    & (access_requests.c.email == email)
+                )
+            ).mappings().first()
         return self._row_to_dict(row) if row else None
 
     def list_for_agent(
@@ -88,34 +92,18 @@ class AccessRequestOperations:
         status: Optional[str] = "pending",
     ) -> List[dict]:
         """List access requests for an agent, optionally filtered by status."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            if status:
-                cursor.execute(
-                    """
-                    SELECT * FROM access_requests
-                    WHERE agent_name = ? AND status = ?
-                    ORDER BY requested_at DESC
-                    """,
-                    (agent_name, status),
-                )
-            else:
-                cursor.execute(
-                    """
-                    SELECT * FROM access_requests
-                    WHERE agent_name = ?
-                    ORDER BY requested_at DESC
-                    """,
-                    (agent_name,),
-                )
-            rows = cursor.fetchall()
+        stmt = select(access_requests).where(access_requests.c.agent_name == agent_name)
+        if status:
+            stmt = stmt.where(access_requests.c.status == status)
+        stmt = stmt.order_by(access_requests.c.requested_at.desc())
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
         return [self._row_to_dict(r) for r in rows]
 
     def get(self, request_id: str) -> Optional[dict]:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM access_requests WHERE id = ?", (request_id,))
-            row = cursor.fetchone()
+        stmt = select(access_requests).where(access_requests.c.id == request_id)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
         return self._row_to_dict(row) if row else None
 
     def decide(
@@ -127,25 +115,21 @@ class AccessRequestOperations:
         """Mark a request approved or denied. Returns updated row."""
         now = utc_now_iso()
         new_status = "approved" if approve else "denied"
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE access_requests
-                SET status = ?, decided_by = ?, decided_at = ?
-                WHERE id = ?
-                """,
-                (new_status, decided_by_user_id, now, request_id),
+        with get_engine().begin() as conn:
+            conn.execute(
+                update(access_requests)
+                .where(access_requests.c.id == request_id)
+                .values(status=new_status, decided_by=decided_by_user_id, decided_at=now)
             )
-            conn.commit()
-            cursor.execute("SELECT * FROM access_requests WHERE id = ?", (request_id,))
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(access_requests).where(access_requests.c.id == request_id)
+            ).mappings().first()
         return self._row_to_dict(row) if row else None
 
     def delete_for_agent(self, agent_name: str) -> int:
         """Delete all access requests for an agent (on agent deletion)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM access_requests WHERE agent_name = ?", (agent_name,))
-            conn.commit()
-            return cursor.rowcount
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                delete(access_requests).where(access_requests.c.agent_name == agent_name)
+            )
+            return result.rowcount

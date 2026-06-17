@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 
 from database import db
-from db.connection import get_db_connection
+from db_harness import db_backend  # noqa: E402
 
 _PREFIX = "t73sync-"
 _ON = f"{_PREFIX}on"
@@ -27,22 +27,16 @@ _NOCONFIG = f"{_PREFIX}noconfig"
 _INACCESSIBLE = f"{_PREFIX}inaccessible"
 
 
-def _cleanup():
-    with get_db_connection() as conn:
-        conn.execute(
-            "DELETE FROM agent_git_config WHERE agent_name LIKE ?", (f"{_PREFIX}%",)
-        )
-        conn.commit()
-
-
 @pytest.fixture
-def fixture_agents():
-    """Create git-config rows for the test agents, then tear them down."""
-    _cleanup()
-    # _ON and _OFF and _INACCESSIBLE get config rows; _NOCONFIG deliberately
-    # has none. Each agent gets a DISTINCT github_repo — agent_git_config has a
-    # partial UNIQUE index on (github_repo, working_branch), so reusing one repo
-    # would collide on the 2nd insert.
+def fixture_agents(db_backend):
+    """Active backend with a fresh full schema (db_harness, #300); seeds git-
+    config rows via the real db API. Runs on SQLite and, when TEST_POSTGRES_URL
+    is set, PostgreSQL.
+
+    Each agent gets a DISTINCT github_repo — agent_git_config has a partial
+    UNIQUE index on (github_repo, working_branch), so reusing one repo would
+    collide on the 2nd insert. _NOCONFIG deliberately gets no row.
+    """
     for name in (_ON, _OFF, _INACCESSIBLE):
         created = db.create_git_config(
             agent_name=name,
@@ -55,7 +49,6 @@ def fixture_agents():
     db.set_git_auto_sync_enabled(_OFF, False)
     db.set_git_auto_sync_enabled(_INACCESSIBLE, True)
     yield
-    _cleanup()
 
 
 @pytest.mark.unit

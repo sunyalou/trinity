@@ -12,11 +12,14 @@ to focused mixin classes in db/agent_settings/:
 - GitPATMixin: Per-agent GitHub PAT management (#347)
 """
 
-import sqlite3
 from datetime import datetime
 from typing import Optional, List, Dict
 
-from .connection import get_db_connection
+from sqlalchemy import select, insert, update, delete, func
+from sqlalchemy.exc import IntegrityError
+
+from .engine import get_engine
+from .tables import agent_ownership, users
 from .agent_settings import (
     SharingMixin,
     ResourcesMixin,
@@ -82,34 +85,40 @@ class AgentOperations(
         if not user:
             return False
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                # #665: explicitly pass execution_timeout_seconds = 3600.
-                # SQLite stores the column's DEFAULT at column-creation
-                # time and doesn't honour later DDL changes — so on
-                # existing DBs the column's baked-in default is still
-                # 900 even after the new schema.py landed. Passing the
-                # value explicitly here keeps new-agent timeouts at
-                # 60min on both fresh installs (where the schema.py
-                # default already lands as 3600) and existing instances.
-                # #1129: same reasoning for require_email — pass it
-                # explicitly so the secure-by-default seed lands on existing
-                # DBs whose baked-in column default is 0.
-                cursor.execute("""
-                    INSERT INTO agent_ownership (agent_name, owner_id, created_at, is_system, execution_timeout_seconds, require_email)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (agent_name, user["id"], utc_now_iso(), 1 if is_system else 0, 3600, 1 if require_email else 0))
-                conn.commit()
-                return True
-            except sqlite3.IntegrityError:
-                # Agent already registered - update is_system flag if needed
-                if is_system:
-                    cursor.execute("""
-                        UPDATE agent_ownership SET is_system = 1 WHERE agent_name = ?
-                    """, (agent_name,))
-                    conn.commit()
-                return False
+        try:
+            # #665: explicitly pass execution_timeout_seconds = 3600.
+            # SQLite stores the column's DEFAULT at column-creation
+            # time and doesn't honour later DDL changes — so on
+            # existing DBs the column's baked-in default is still
+            # 900 even after the new schema.py landed. Passing the
+            # value explicitly here keeps new-agent timeouts at
+            # 60min on both fresh installs (where the schema.py
+            # default already lands as 3600) and existing instances.
+            # #1129: same reasoning for require_email — pass it
+            # explicitly so the secure-by-default seed lands on existing
+            # DBs whose baked-in column default is 0.
+            with get_engine().begin() as conn:
+                conn.execute(
+                    insert(agent_ownership).values(
+                        agent_name=agent_name,
+                        owner_id=user["id"],
+                        created_at=utc_now_iso(),
+                        is_system=1 if is_system else 0,
+                        execution_timeout_seconds=3600,
+                        require_email=1 if require_email else 0,
+                    )
+                )
+            return True
+        except IntegrityError:
+            # Agent already registered - update is_system flag if needed
+            if is_system:
+                with get_engine().begin() as conn:
+                    conn.execute(
+                        update(agent_ownership)
+                        .where(agent_ownership.c.agent_name == agent_name)
+                        .values(is_system=1)
+                    )
+            return False
 
     def is_agent_name_reserved(self, agent_name: str) -> bool:
         """True if `agent_name` is present in agent_ownership, including
@@ -122,13 +131,13 @@ class AgentOperations(
         error (and worse: leaks side effects like a created container
         before the failure).
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT 1 FROM agent_ownership WHERE agent_name = ?",
-                (agent_name,),
-            )
-            return cursor.fetchone() is not None
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                select(agent_ownership.c.agent_name).where(
+                    agent_ownership.c.agent_name == agent_name
+                )
+            ).first()
+            return row is not None
 
     def get_agent_owner(self, agent_name: str) -> Optional[Dict]:
         """Get the owner of an agent, including is_system flag.
@@ -137,16 +146,25 @@ class AgentOperations(
         gate user-facing access; soft-deleted agents should look like
         they don't exist.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT ao.id, ao.agent_name, ao.owner_id, u.username as owner_username,
-                       ao.created_at, COALESCE(ao.is_system, 0) as is_system
-                FROM agent_ownership ao
-                JOIN users u ON ao.owner_id = u.id
-                WHERE ao.agent_name = ? AND ao.deleted_at IS NULL
-            """, (agent_name,))
-            row = cursor.fetchone()
+        stmt = (
+            select(
+                agent_ownership.c.id,
+                agent_ownership.c.agent_name,
+                agent_ownership.c.owner_id,
+                users.c.username.label("owner_username"),
+                agent_ownership.c.created_at,
+                func.coalesce(agent_ownership.c.is_system, 0).label("is_system"),
+            )
+            .select_from(
+                agent_ownership.join(users, agent_ownership.c.owner_id == users.c.id)
+            )
+            .where(
+                agent_ownership.c.agent_name == agent_name,
+                agent_ownership.c.deleted_at.is_(None),
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
             if row:
                 result = dict(row)
                 result["is_system"] = bool(result.get("is_system", 0))
@@ -159,13 +177,12 @@ class AgentOperations(
         if not user:
             return []
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT agent_name FROM agent_ownership
-                WHERE owner_id = ? AND deleted_at IS NULL
-            """, (user["id"],))
-            return [row["agent_name"] for row in cursor.fetchall()]
+        stmt = select(agent_ownership.c.agent_name).where(
+            agent_ownership.c.owner_id == user["id"],
+            agent_ownership.c.deleted_at.is_(None),
+        )
+        with get_engine().connect() as conn:
+            return [row["agent_name"] for row in conn.execute(stmt).mappings()]
 
     def delete_agent_ownership(self, agent_name: str) -> bool:
         """Soft-delete the agent ownership row (Issue #834 Phase 1a).
@@ -182,23 +199,24 @@ class AgentOperations(
         """
         from utils.helpers import utc_now_iso
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE agent_ownership "
-                "SET deleted_at = ? "
-                "WHERE agent_name = ? AND deleted_at IS NULL",
-                (utc_now_iso(), agent_name),
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_ownership)
+                .where(
+                    agent_ownership.c.agent_name == agent_name,
+                    agent_ownership.c.deleted_at.is_(None),
+                )
+                .values(deleted_at=utc_now_iso())
             )
-            if cursor.rowcount > 0:
-                conn.commit()
+            if result.rowcount > 0:
                 return True
             # rowcount==0 — either already soft-deleted or doesn't exist
-            cursor.execute(
-                "SELECT 1 FROM agent_ownership WHERE agent_name = ?",
-                (agent_name,),
-            )
-            return cursor.fetchone() is not None
+            row = conn.execute(
+                select(agent_ownership.c.agent_name).where(
+                    agent_ownership.c.agent_name == agent_name
+                )
+            ).first()
+            return row is not None
 
     def find_soft_deleted_agents_past_retention(
         self, retention_days: int, limit: int = 5000
@@ -215,15 +233,16 @@ class AgentOperations(
             return []
 
         cutoff = iso_cutoff(hours=retention_days * 24)
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT agent_name FROM agent_ownership "
-                "WHERE deleted_at IS NOT NULL AND deleted_at < ? "
-                "LIMIT ?",
-                (cutoff, limit),
+        stmt = (
+            select(agent_ownership.c.agent_name)
+            .where(
+                agent_ownership.c.deleted_at.is_not(None),
+                agent_ownership.c.deleted_at < cutoff,
             )
-            return [row["agent_name"] for row in cursor.fetchall()]
+            .limit(limit)
+        )
+        with get_engine().connect() as conn:
+            return [row["agent_name"] for row in conn.execute(stmt).mappings()]
 
     def recover_agent_ownership(self, agent_name: str) -> bool:
         """Recover a soft-deleted agent by clearing `deleted_at` (#834).
@@ -239,17 +258,16 @@ class AgentOperations(
         NOT recreated — that's a separate operation (operator must
         re-start the agent if they want a running container).
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE agent_ownership SET deleted_at = NULL "
-                "WHERE agent_name = ? AND deleted_at IS NOT NULL",
-                (agent_name,),
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_ownership)
+                .where(
+                    agent_ownership.c.agent_name == agent_name,
+                    agent_ownership.c.deleted_at.is_not(None),
+                )
+                .values(deleted_at=None)
             )
-            if cursor.rowcount > 0:
-                conn.commit()
-                return True
-            return False
+            return result.rowcount > 0
 
     def list_soft_deleted_agents(self, limit: int = 200) -> List[Dict]:
         """List currently-soft-deleted agents with their `deleted_at`.
@@ -259,17 +277,19 @@ class AgentOperations(
         the agent was soft-deleted. The purge ETA is computed at the
         router layer using `agent_soft_delete_retention_days`.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT agent_name, owner_id, deleted_at, created_at "
-                "FROM agent_ownership "
-                "WHERE deleted_at IS NOT NULL "
-                "ORDER BY deleted_at DESC "
-                "LIMIT ?",
-                (limit,),
+        stmt = (
+            select(
+                agent_ownership.c.agent_name,
+                agent_ownership.c.owner_id,
+                agent_ownership.c.deleted_at,
+                agent_ownership.c.created_at,
             )
-            return [dict(row) for row in cursor.fetchall()]
+            .where(agent_ownership.c.deleted_at.is_not(None))
+            .order_by(agent_ownership.c.deleted_at.desc())
+            .limit(limit)
+        )
+        with get_engine().connect() as conn:
+            return [dict(row) for row in conn.execute(stmt).mappings()]
 
     def purge_agent_ownership(self, agent_name: str) -> bool:
         """Hard-delete a soft-deleted agent (#834): runs #816 cascade_delete
@@ -281,26 +301,27 @@ class AgentOperations(
         """
         from db.agent_cleanup import cascade_delete
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT deleted_at FROM agent_ownership WHERE agent_name = ?",
-                (agent_name,),
-            )
-            row = cursor.fetchone()
+        with get_engine().begin() as conn:
+            row = conn.execute(
+                select(agent_ownership.c.deleted_at).where(
+                    agent_ownership.c.agent_name == agent_name
+                )
+            ).mappings().first()
             if not row:
                 return False
             if row["deleted_at"] is None:
                 # Refuse to purge a live agent — explicit safety guard.
                 return False
 
+            # cascade_delete() runs SQLAlchemy Core deletes; hand it this
+            # Connection so its deletes run inside this same transaction (#300).
             cascade_delete(conn, agent_name)
-            cursor.execute(
-                "DELETE FROM agent_ownership WHERE agent_name = ?",
-                (agent_name,),
+            result = conn.execute(
+                delete(agent_ownership).where(
+                    agent_ownership.c.agent_name == agent_name
+                )
             )
-            conn.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0
 
     def can_user_access_agent(self, username: str, agent_name: str) -> bool:
         """Check if a user can access an agent (owner, shared, or admin)."""
@@ -359,23 +380,20 @@ class AgentOperations(
 
     def get_voice_system_prompt(self, agent_name: str) -> Optional[str]:
         """Get the voice system prompt for an agent."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT voice_system_prompt FROM agent_ownership "
-                "WHERE agent_name = ? AND deleted_at IS NULL",
-                (agent_name,),
-            )
-            row = cursor.fetchone()
+        stmt = select(agent_ownership.c.voice_system_prompt).where(
+            agent_ownership.c.agent_name == agent_name,
+            agent_ownership.c.deleted_at.is_(None),
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
             return row["voice_system_prompt"] if row and row["voice_system_prompt"] else None
 
     def set_voice_system_prompt(self, agent_name: str, prompt: Optional[str]) -> bool:
         """Set the voice system prompt for an agent."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE agent_ownership SET voice_system_prompt = ? WHERE agent_name = ?",
-                (prompt or None, agent_name),
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_ownership)
+                .where(agent_ownership.c.agent_name == agent_name)
+                .values(voice_system_prompt=prompt or None)
             )
-            conn.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0

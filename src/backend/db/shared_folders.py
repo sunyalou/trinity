@@ -5,11 +5,13 @@ Phase 9.11: Agent Shared Folders - enables agents to expose and consume
 shared folders for file-based collaboration.
 """
 
-import sqlite3
 from datetime import datetime
 from typing import Optional, List
 
-from .connection import get_db_connection
+from sqlalchemy import select, insert, update, delete
+
+from .engine import get_engine
+from .tables import agent_shared_folder_config
 from db_models import SharedFolderConfig
 from utils.helpers import utc_now_iso
 
@@ -42,17 +44,18 @@ class SharedFolderOperations:
 
         Returns None if no configuration exists (defaults apply).
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT agent_name, expose_enabled, consume_enabled, created_at, updated_at
-                FROM agent_shared_folder_config
-                WHERE agent_name = ?
-            """, (agent_name,))
-            row = cursor.fetchone()
-            if row:
-                return self._row_to_config(row)
-            return None
+        stmt = select(
+            agent_shared_folder_config.c.agent_name,
+            agent_shared_folder_config.c.expose_enabled,
+            agent_shared_folder_config.c.consume_enabled,
+            agent_shared_folder_config.c.created_at,
+            agent_shared_folder_config.c.updated_at,
+        ).where(agent_shared_folder_config.c.agent_name == agent_name)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if row:
+            return self._row_to_config(row)
+        return None
 
     def upsert_shared_folder_config(
         self,
@@ -68,28 +71,28 @@ class SharedFolderOperations:
         """
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Check if config exists
-            cursor.execute("""
-                SELECT agent_name, expose_enabled, consume_enabled, created_at, updated_at
-                FROM agent_shared_folder_config
-                WHERE agent_name = ?
-            """, (agent_name,))
-            existing = cursor.fetchone()
+            existing = conn.execute(
+                select(
+                    agent_shared_folder_config.c.agent_name,
+                    agent_shared_folder_config.c.expose_enabled,
+                    agent_shared_folder_config.c.consume_enabled,
+                    agent_shared_folder_config.c.created_at,
+                    agent_shared_folder_config.c.updated_at,
+                ).where(agent_shared_folder_config.c.agent_name == agent_name)
+            ).mappings().first()
 
             if existing:
                 # Update existing config
                 new_expose = expose_enabled if expose_enabled is not None else bool(existing["expose_enabled"])
                 new_consume = consume_enabled if consume_enabled is not None else bool(existing["consume_enabled"])
 
-                cursor.execute("""
-                    UPDATE agent_shared_folder_config
-                    SET expose_enabled = ?, consume_enabled = ?, updated_at = ?
-                    WHERE agent_name = ?
-                """, (new_expose, new_consume, now, agent_name))
-                conn.commit()
+                conn.execute(
+                    update(agent_shared_folder_config)
+                    .where(agent_shared_folder_config.c.agent_name == agent_name)
+                    .values(expose_enabled=new_expose, consume_enabled=new_consume, updated_at=now)
+                )
 
                 return SharedFolderConfig(
                     agent_name=agent_name,
@@ -103,12 +106,15 @@ class SharedFolderOperations:
                 new_expose = expose_enabled if expose_enabled is not None else False
                 new_consume = consume_enabled if consume_enabled is not None else False
 
-                cursor.execute("""
-                    INSERT INTO agent_shared_folder_config
-                    (agent_name, expose_enabled, consume_enabled, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (agent_name, new_expose, new_consume, now, now))
-                conn.commit()
+                conn.execute(
+                    insert(agent_shared_folder_config).values(
+                        agent_name=agent_name,
+                        expose_enabled=new_expose,
+                        consume_enabled=new_consume,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
 
                 return SharedFolderConfig(
                     agent_name=agent_name,
@@ -124,14 +130,12 @@ class SharedFolderOperations:
 
         Returns True if a config was deleted.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM agent_shared_folder_config
-                WHERE agent_name = ?
-            """, (agent_name,))
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                delete(agent_shared_folder_config)
+                .where(agent_shared_folder_config.c.agent_name == agent_name)
+            )
+            return result.rowcount > 0
 
     # =========================================================================
     # Shared Folder Discovery Operations
@@ -143,14 +147,13 @@ class SharedFolderOperations:
 
         Returns list of agent names.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT agent_name FROM agent_shared_folder_config
-                WHERE expose_enabled = 1
-                ORDER BY agent_name
-            """)
-            return [row["agent_name"] for row in cursor.fetchall()]
+        stmt = (
+            select(agent_shared_folder_config.c.agent_name)
+            .where(agent_shared_folder_config.c.expose_enabled == 1)
+            .order_by(agent_shared_folder_config.c.agent_name)
+        )
+        with get_engine().connect() as conn:
+            return [row["agent_name"] for row in conn.execute(stmt).mappings()]
 
     def get_available_shared_folders(self, requesting_agent: str) -> List[str]:
         """
@@ -186,14 +189,16 @@ class SharedFolderOperations:
 
         Returns list of agent names.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT agent_name FROM agent_shared_folder_config
-                WHERE consume_enabled = 1 AND agent_name != ?
-                ORDER BY agent_name
-            """, (source_agent,))
-            consuming_agents = [row["agent_name"] for row in cursor.fetchall()]
+        stmt = (
+            select(agent_shared_folder_config.c.agent_name)
+            .where(
+                agent_shared_folder_config.c.consume_enabled == 1,
+                agent_shared_folder_config.c.agent_name != source_agent,
+            )
+            .order_by(agent_shared_folder_config.c.agent_name)
+        )
+        with get_engine().connect() as conn:
+            consuming_agents = [row["agent_name"] for row in conn.execute(stmt).mappings()]
 
         # Filter by permission (target agent must have permission to call source)
         available = []

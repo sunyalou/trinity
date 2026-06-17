@@ -11,39 +11,38 @@ Covers the DB-side toggle + static helpers:
 
 from __future__ import annotations
 
-import importlib.util
 import sqlite3
 import sys
 from pathlib import Path
 
 import pytest
 
-# Load db/connection.py and db/agent_settings/file_sharing.py directly.
-# The regular package import path triggers pydantic via db/__init__.py;
-# we route around that the same way the Step 1 migration test does.
+# The mixin under test was migrated off the raw-sqlite `get_db_connection`
+# seam to the SQLAlchemy engine seam (#300): it now uses `get_engine()`,
+# which reads `DATABASE_URL`. We import it through the real `db` package and
+# route both the seeding sqlite3 connection AND the engine at the same temp
+# file via `DATABASE_URL` + `dispose_engines()` (engine cache is keyed by URL).
 _BACKEND = Path(__file__).resolve().parent.parent.parent / "src" / "backend"
-
-
-def _load(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-# db.connection reads TRINITY_DB_PATH at import time; we'll point it at a
-# temp DB per test via monkeypatch + re-import. Load it lazily below.
+_BACKEND_STR = str(_BACKEND)
+while _BACKEND_STR in sys.path:
+    sys.path.remove(_BACKEND_STR)
+sys.path.insert(0, _BACKEND_STR)
 
 
 @pytest.fixture
 def tmp_db_conn(tmp_path, monkeypatch):
     """Provision an empty DB with just agent_ownership and the new column.
 
-    Returns a sqlite3 connection the test can seed with rows.
+    Returns a sqlite3 connection the test can seed with rows. The same file
+    is wired to the SQLAlchemy engine via DATABASE_URL so the mixin's
+    `get_engine()` ops hit this exact database.
     """
     db_path = tmp_path / "trinity.db"
+    # Legacy seam (harmless; not-yet-converted modules still read it) +
+    # the engine seam (#300). dispose_engines after setting DATABASE_URL so
+    # the temp file's engine is the one the cache returns.
     monkeypatch.setenv("TRINITY_DB_PATH", str(db_path))
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -61,54 +60,29 @@ def tmp_db_conn(tmp_path, monkeypatch):
         """
     )
     conn.commit()
+
+    import db.engine as engine_mod
+    engine_mod.dispose_engines()
     yield conn
+    engine_mod.dispose_engines()
     conn.close()
 
 
 @pytest.fixture
 def mixin(tmp_db_conn):
-    """Load the mixin bound to the tmp DB.
+    """The real FileSharingMixin, routed to the tmp DB via DATABASE_URL.
 
-    db/connection.py reads TRINITY_DB_PATH at import time, so we force a
-    fresh load after the env var is set.
+    Skips if the backend package can't be imported (no venv).
     """
-    # Ensure the env-dependent module is reloaded per test
-    sys.modules.pop("_ams_db_connection", None)
-    _load("_ams_db_connection", _BACKEND / "db" / "connection.py")
-    # The mixin does `from db.connection import get_db_connection`. We register
-    # a `db` package pointing at the real src/backend/db directory so that
-    # (a) this test's `from db.connection import ...` finds our stub, and
-    # (b) later tests that do `from db.X import Y` can still resolve X from
-    # the real directory. Without __path__, sys.modules['db'] becomes a
-    # non-package and breaks sibling tests.
-    original_db = sys.modules.get("db")
-    original_db_connection = sys.modules.get("db.connection")
-    db_pkg = type(sys)("db")
-    db_pkg.__path__ = [str(_BACKEND / "db")]
-    sys.modules["db"] = db_pkg
-    sys.modules["db.connection"] = sys.modules["_ams_db_connection"]
-    fs_mod = _load(
-        "_ams_file_sharing",
-        _BACKEND / "db" / "agent_settings" / "file_sharing.py",
-    )
+    try:
+        from db.agent_settings.file_sharing import FileSharingMixin
+    except ImportError:
+        pytest.skip("backend venv required (no `db.agent_settings` import)")
 
-    class _Wrapper(fs_mod.FileSharingMixin):
+    class _Wrapper(FileSharingMixin):
         pass
 
-    wrapper = _Wrapper()
-
-    yield wrapper
-
-    # Restore sys.modules to avoid leaking our stub into later tests that
-    # import the real db package.
-    if original_db is not None:
-        sys.modules["db"] = original_db
-    else:
-        sys.modules.pop("db", None)
-    if original_db_connection is not None:
-        sys.modules["db.connection"] = original_db_connection
-    else:
-        sys.modules.pop("db.connection", None)
+    return _Wrapper()
 
 
 def _insert_agent(conn, name, enabled=None):

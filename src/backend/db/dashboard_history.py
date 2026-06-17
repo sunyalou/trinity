@@ -12,7 +12,10 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
-from .connection import get_db_connection
+from sqlalchemy import select, insert, delete
+
+from .engine import get_engine, make_insert
+from .tables import agent_dashboard_values, agent_dashboard_cache
 from utils.helpers import iso_cutoff, utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -51,9 +54,7 @@ class DashboardHistoryOperations:
         captured_at = utc_now_iso()
         captured_count = 0
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             for section_idx, section in enumerate(config.get("sections", [])):
                 for widget_idx, widget in enumerate(section.get("widgets", [])):
                     widget_type = widget.get("type")
@@ -89,18 +90,18 @@ class DashboardHistoryOperations:
                         continue
 
                     record_id = self._generate_id()
-                    cursor.execute("""
-                        INSERT INTO agent_dashboard_values (
-                            id, agent_name, widget_key, widget_label, widget_type,
-                            value_numeric, value_text, dashboard_mtime, captured_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        record_id, agent_name, widget_key, widget_label, widget_type,
-                        value_numeric, value_text, dashboard_mtime, captured_at
+                    conn.execute(insert(agent_dashboard_values).values(
+                        id=record_id,
+                        agent_name=agent_name,
+                        widget_key=widget_key,
+                        widget_label=widget_label,
+                        widget_type=widget_type,
+                        value_numeric=value_numeric,
+                        value_text=value_text,
+                        dashboard_mtime=dashboard_mtime,
+                        captured_at=captured_at,
                     ))
                     captured_count += 1
-
-            conn.commit()
 
         if captured_count > 0:
             logger.debug(f"Captured {captured_count} dashboard values for agent {agent_name}")
@@ -125,19 +126,25 @@ class DashboardHistoryOperations:
         Returns:
             List of dicts with 't' (ISO timestamp) and 'v' (numeric value)
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT captured_at, value_numeric, value_text
-                FROM agent_dashboard_values
-                WHERE agent_name = ? AND widget_key = ?
-                AND captured_at > ?
-                ORDER BY captured_at ASC
-                LIMIT ?
-            """, (agent_name, widget_key, iso_cutoff(hours), limit))
+        stmt = (
+            select(
+                agent_dashboard_values.c.captured_at,
+                agent_dashboard_values.c.value_numeric,
+                agent_dashboard_values.c.value_text,
+            )
+            .where(
+                agent_dashboard_values.c.agent_name == agent_name,
+                agent_dashboard_values.c.widget_key == widget_key,
+                agent_dashboard_values.c.captured_at > iso_cutoff(hours),
+            )
+            .order_by(agent_dashboard_values.c.captured_at.asc())
+            .limit(limit)
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
 
             results = []
-            for row in cursor.fetchall():
+            for row in rows:
                 value = row["value_numeric"]
                 if value is None and row["value_text"]:
                     # Use text value if no numeric
@@ -163,18 +170,27 @@ class DashboardHistoryOperations:
         Returns:
             Dict mapping widget_key to list of {t, v} values
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT widget_key, captured_at, value_numeric, value_text
-                FROM agent_dashboard_values
-                WHERE agent_name = ?
-                AND captured_at > ?
-                ORDER BY widget_key, captured_at ASC
-            """, (agent_name, iso_cutoff(hours)))
+        stmt = (
+            select(
+                agent_dashboard_values.c.widget_key,
+                agent_dashboard_values.c.captured_at,
+                agent_dashboard_values.c.value_numeric,
+                agent_dashboard_values.c.value_text,
+            )
+            .where(
+                agent_dashboard_values.c.agent_name == agent_name,
+                agent_dashboard_values.c.captured_at > iso_cutoff(hours),
+            )
+            .order_by(
+                agent_dashboard_values.c.widget_key.asc(),
+                agent_dashboard_values.c.captured_at.asc(),
+            )
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
 
             results: Dict[str, List[Dict[str, Any]]] = {}
-            for row in cursor.fetchall():
+            for row in rows:
                 widget_key = row["widget_key"]
                 if widget_key not in results:
                     results[widget_key] = []
@@ -263,15 +279,14 @@ class DashboardHistoryOperations:
         Returns:
             Last captured dashboard_mtime or None if no history
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT dashboard_mtime FROM agent_dashboard_values
-                WHERE agent_name = ?
-                ORDER BY captured_at DESC
-                LIMIT 1
-            """, (agent_name,))
-            row = cursor.fetchone()
+        stmt = (
+            select(agent_dashboard_values.c.dashboard_mtime)
+            .where(agent_dashboard_values.c.agent_name == agent_name)
+            .order_by(agent_dashboard_values.c.captured_at.desc())
+            .limit(1)
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
             return row["dashboard_mtime"] if row else None
 
     def cleanup_old_snapshots(self, days: int = 30) -> int:
@@ -283,14 +298,12 @@ class DashboardHistoryOperations:
         Returns:
             Number of records deleted
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM agent_dashboard_values
-                WHERE captured_at < ?
-            """, (iso_cutoff(days * 24),))
-            conn.commit()
-            deleted = cursor.rowcount
+        stmt = delete(agent_dashboard_values).where(
+            agent_dashboard_values.c.captured_at < iso_cutoff(days * 24)
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            deleted = result.rowcount
             if deleted > 0:
                 logger.info(f"Cleaned up {deleted} old dashboard value records")
             return deleted
@@ -311,17 +324,23 @@ class DashboardHistoryOperations:
         Replaces in-memory _last_valid_dashboard dict.
         """
         import json
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO agent_dashboard_cache (agent_name, config_json, last_modified, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(agent_name) DO UPDATE SET
-                    config_json = excluded.config_json,
-                    last_modified = excluded.last_modified,
-                    updated_at = excluded.updated_at
-            """, (agent_name, json.dumps(config), last_modified, utc_now_iso()))
-            conn.commit()
+        now = utc_now_iso()
+        stmt = make_insert(agent_dashboard_cache).values(
+            agent_name=agent_name,
+            config_json=json.dumps(config),
+            last_modified=last_modified,
+            updated_at=now,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[agent_dashboard_cache.c.agent_name],
+            set_={
+                "config_json": stmt.excluded.config_json,
+                "last_modified": stmt.excluded.last_modified,
+                "updated_at": stmt.excluded.updated_at,
+            },
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
     def get_cached_dashboard(self, agent_name: str) -> Optional[Dict[str, Any]]:
         """Get the last valid dashboard config from cache.
@@ -329,14 +348,13 @@ class DashboardHistoryOperations:
         Returns None if no cached dashboard exists.
         """
         import json
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT config_json, last_modified, updated_at
-                FROM agent_dashboard_cache
-                WHERE agent_name = ?
-            """, (agent_name,))
-            row = cursor.fetchone()
+        stmt = select(
+            agent_dashboard_cache.c.config_json,
+            agent_dashboard_cache.c.last_modified,
+            agent_dashboard_cache.c.updated_at,
+        ).where(agent_dashboard_cache.c.agent_name == agent_name)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
             if not row:
                 return None
             return {
@@ -348,23 +366,21 @@ class DashboardHistoryOperations:
 
     def delete_cached_dashboard(self, agent_name: str) -> None:
         """Delete cached dashboard for an agent."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM agent_dashboard_cache WHERE agent_name = ?",
-                (agent_name,)
-            )
-            conn.commit()
+        stmt = delete(agent_dashboard_cache).where(
+            agent_dashboard_cache.c.agent_name == agent_name
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
     def has_cached_dashboard(self, agent_name: str) -> bool:
         """Check if an agent has ever had a valid dashboard (for tab visibility)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT 1 FROM agent_dashboard_cache WHERE agent_name = ? LIMIT 1",
-                (agent_name,)
-            )
-            return cursor.fetchone() is not None
+        stmt = (
+            select(agent_dashboard_cache.c.agent_name)
+            .where(agent_dashboard_cache.c.agent_name == agent_name)
+            .limit(1)
+        )
+        with get_engine().connect() as conn:
+            return conn.execute(stmt).first() is not None
 
     def delete_agent_dashboard_history(self, agent_name: str) -> int:
         """Delete all dashboard history for an agent (when agent is deleted).
@@ -375,15 +391,18 @@ class DashboardHistoryOperations:
         Returns:
             Number of records deleted
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM agent_dashboard_values WHERE agent_name = ?
-            """, (agent_name,))
-            # Also delete cached dashboard config
-            cursor.execute(
-                "DELETE FROM agent_dashboard_cache WHERE agent_name = ?",
-                (agent_name,)
+        with get_engine().begin() as conn:
+            conn.execute(
+                delete(agent_dashboard_values).where(
+                    agent_dashboard_values.c.agent_name == agent_name
+                )
             )
-            conn.commit()
-            return cursor.rowcount
+            # Also delete cached dashboard config
+            result = conn.execute(
+                delete(agent_dashboard_cache).where(
+                    agent_dashboard_cache.c.agent_name == agent_name
+                )
+            )
+            # Preserve original behavior: cursor.rowcount reflected the LAST
+            # executed statement (the cache delete), not the values delete.
+            return result.rowcount

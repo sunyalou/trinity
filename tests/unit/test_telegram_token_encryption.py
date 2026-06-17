@@ -33,6 +33,7 @@ import pytest
 _BACKEND = Path(__file__).resolve().parent.parent.parent / "src" / "backend"
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
+from db_harness import db_backend, engine_conn  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -52,45 +53,14 @@ def encryption_key(monkeypatch):
 
 
 @pytest.fixture
-def telegram_ops_with_temp_db(tmp_path, monkeypatch):
-    """Build a TelegramChannelOperations bound to a temp SQLite DB with
-    just the schema needed for the binding tests.
-
-    Patches `get_db_connection` at the module level so every operation
-    in the test runs against this temp DB.
-    """
-    from db import telegram_channels as tg_db
-
-    db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("""
-        CREATE TABLE telegram_bindings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_name TEXT NOT NULL UNIQUE,
-            bot_token_encrypted TEXT NOT NULL,
-            bot_username TEXT,
-            bot_id TEXT UNIQUE,
-            webhook_secret TEXT NOT NULL,
-            webhook_url TEXT,
-            telegram_secret_token TEXT,
-            last_update_id INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT
-        )
-    """)
-    conn.commit()
-
-    class _ConnCtx:
-        def __enter__(self):
-            return conn
-        def __exit__(self, *args):
-            return False
-
-    monkeypatch.setattr(tg_db, "get_db_connection", lambda: _ConnCtx())
-
-    ops = tg_db.TelegramChannelOperations()
-    yield ops, conn, db_path
-    conn.close()
+def telegram_ops_with_temp_db(db_backend):
+    """Ops + an engine-backed conn shim on the active backend
+    (db_harness, #300). Runs on SQLite and, when TEST_POSTGRES_URL is
+    set, PostgreSQL. db_backend builds the full schema; the shim mimics
+    a sqlite3 connection for the tests' on-disk envelope reads + legacy
+    plaintext seeding."""
+    from db import telegram_channels as tg_db  # noqa: F401
+    yield tg_db.TelegramChannelOperations(), engine_conn(), None
 
 
 # ---------------------------------------------------------------------------

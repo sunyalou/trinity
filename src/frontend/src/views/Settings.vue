@@ -1090,7 +1090,7 @@ Example:
               <dl v-else-if="buildInfo.info.value" class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
                 <div>
                   <dt class="text-gray-500 dark:text-gray-400">Version</dt>
-                  <dd class="font-mono text-gray-900 dark:text-white">{{ buildInfo.info.value.version }}</dd>
+                  <dd class="font-mono text-gray-900 dark:text-white">{{ buildInfo.displayVersion.value }}</dd>
                 </div>
                 <div>
                   <dt class="text-gray-500 dark:text-gray-400">Branch</dt>

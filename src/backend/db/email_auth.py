@@ -5,12 +5,22 @@ Handles:
 - Email whitelist management
 - Login code generation and verification
 - User creation from email
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL. Queries are built from the ``email_whitelist``,
+``email_login_codes``, and ``users`` tables in ``db/tables.py``
+(dialect-agnostic expressions, no ``?`` placeholders, no SQLite-only time
+functions), and the engine is resolved via ``db/engine.py``.
 """
 
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional, List
-from db.connection import get_db_connection
+
+from sqlalchemy import select, insert, update, delete, func, and_, cast, Text
+
+from .engine import get_engine
+from .tables import email_whitelist, email_login_codes, users
 from utils.helpers import utc_now_iso
 
 # Valid role values for new users. Kept local to avoid a circular import with
@@ -32,13 +42,11 @@ class EmailAuthOperations:
 
     def is_email_whitelisted(self, email: str) -> bool:
         """Check if an email is in the whitelist."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id FROM email_whitelist WHERE LOWER(email) = ?",
-                (email.lower(),)
-            )
-            return cursor.fetchone() is not None
+        stmt = select(email_whitelist.c.id).where(
+            func.lower(email_whitelist.c.email) == email.lower()
+        )
+        with get_engine().connect() as conn:
+            return conn.execute(stmt).mappings().first() is not None
 
     def add_to_whitelist(
         self,
@@ -70,38 +78,36 @@ class EmailAuthOperations:
                 f"Must be one of {sorted(_VALID_DEFAULT_ROLES)}"
             )
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        # Check if already exists
+        if self.is_email_whitelisted(email):
+            return False
 
-            # Check if already exists
-            if self.is_email_whitelisted(email):
-                return False
+        # Get user ID
+        user = self._user_ops.get_user_by_username(added_by)
+        if not user:
+            raise ValueError(f"User not found: {added_by}")
 
-            # Get user ID
-            user = self._user_ops.get_user_by_username(added_by)
-            if not user:
-                raise ValueError(f"User not found: {added_by}")
-
-            cursor.execute("""
-                INSERT INTO email_whitelist (email, added_by, added_at, source, default_role)
-                VALUES (?, ?, ?, ?, ?)
-            """, (email.lower(), user["id"], utc_now_iso(), source, default_role))
-
-            conn.commit()
-            return True
+        stmt = insert(email_whitelist).values(
+            email=email.lower(),
+            added_by=user["id"],
+            added_at=utc_now_iso(),
+            source=source,
+            default_role=default_role,
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
+        return True
 
     def get_whitelist_default_role(self, email: str) -> Optional[str]:
         """Return the default_role for a whitelisted email, or None if not found."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT default_role FROM email_whitelist WHERE LOWER(email) = ?",
-                (email.lower(),),
-            )
-            row = cursor.fetchone()
-            if not row:
-                return None
-            return row["default_role"] if row["default_role"] else None
+        stmt = select(email_whitelist.c.default_role).where(
+            func.lower(email_whitelist.c.email) == email.lower()
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if not row:
+            return None
+        return row["default_role"] if row["default_role"] else None
 
     def remove_from_whitelist(self, email: str) -> bool:
         """
@@ -110,36 +116,37 @@ class EmailAuthOperations:
         Returns:
             True if removed, False if not found
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM email_whitelist WHERE LOWER(email) = ?",
-                (email.lower(),)
-            )
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = delete(email_whitelist).where(
+            func.lower(email_whitelist.c.email) == email.lower()
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+        return result.rowcount > 0
 
     def list_whitelist(self, limit: int = 100) -> List[dict]:
         """Get all whitelisted emails with metadata."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT
-                    w.id,
-                    w.email,
-                    w.added_by,
-                    u.username as added_by_username,
-                    w.added_at,
-                    w.source,
-                    w.default_role
-                FROM email_whitelist w
-                LEFT JOIN users u ON w.added_by = u.id
-                ORDER BY w.added_at DESC
-                LIMIT ?
-            """, (limit,))
-
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+        stmt = (
+            select(
+                email_whitelist.c.id,
+                email_whitelist.c.email,
+                email_whitelist.c.added_by,
+                users.c.username.label("added_by_username"),
+                email_whitelist.c.added_at,
+                email_whitelist.c.source,
+                email_whitelist.c.default_role,
+            )
+            .select_from(
+                # added_by is TEXT (stringified user id) but users.id is INTEGER;
+                # cast so the JOIN works on PostgreSQL too (#300, text=integer).
+                email_whitelist.outerjoin(
+                    users, email_whitelist.c.added_by == cast(users.c.id, Text)
+                )
+            )
+            .order_by(email_whitelist.c.added_at.desc())
+            .limit(limit)
+        )
+        with get_engine().connect() as conn:
+            return [dict(row) for row in conn.execute(stmt).mappings()]
 
     # =========================================================================
     # Login Code Operations
@@ -152,35 +159,30 @@ class EmailAuthOperations:
         Returns:
             dict with code_id, code, expires_at
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        # Generate 6-digit code
+        code = f"{secrets.randbelow(1000000):06d}"
+        code_id = secrets.token_urlsafe(16)
+        created_at = datetime.utcnow()
+        expires_at = created_at + timedelta(minutes=expiry_minutes)
 
-            # Generate 6-digit code
-            code = f"{secrets.randbelow(1000000):06d}"
-            code_id = secrets.token_urlsafe(16)
-            created_at = datetime.utcnow()
-            expires_at = created_at + timedelta(minutes=expiry_minutes)
+        stmt = insert(email_login_codes).values(
+            id=code_id,
+            email=email.lower(),
+            code=code,
+            created_at=created_at.isoformat(),
+            expires_at=expires_at.isoformat(),
+            verified=0,
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
-            cursor.execute("""
-                INSERT INTO email_login_codes (id, email, code, created_at, expires_at, verified)
-                VALUES (?, ?, ?, ?, ?, 0)
-            """, (
-                code_id,
-                email.lower(),
-                code,
-                created_at.isoformat(),
-                expires_at.isoformat()
-            ))
-
-            conn.commit()
-
-            return {
-                "code_id": code_id,
-                "code": code,
-                "created_at": created_at.isoformat(),
-                "expires_at": expires_at.isoformat(),
-                "expires_in_seconds": expiry_minutes * 60
-            }
+        return {
+            "code_id": code_id,
+            "code": code,
+            "created_at": created_at.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "expires_in_seconds": expiry_minutes * 60
+        }
 
     def verify_login_code(self, email: str, code: str) -> Optional[dict]:
         """
@@ -189,19 +191,27 @@ class EmailAuthOperations:
         Returns:
             dict with code verification result, or None if invalid
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Find unused code for this email
-            cursor.execute("""
-                SELECT id, code, expires_at, verified
-                FROM email_login_codes
-                WHERE LOWER(email) = ? AND code = ? AND verified = 0
-                ORDER BY created_at DESC
-                LIMIT 1
-            """, (email.lower(), code))
+            select_stmt = (
+                select(
+                    email_login_codes.c.id,
+                    email_login_codes.c.code,
+                    email_login_codes.c.expires_at,
+                    email_login_codes.c.verified,
+                )
+                .where(
+                    and_(
+                        func.lower(email_login_codes.c.email) == email.lower(),
+                        email_login_codes.c.code == code,
+                        email_login_codes.c.verified == 0,
+                    )
+                )
+                .order_by(email_login_codes.c.created_at.desc())
+                .limit(1)
+            )
 
-            row = cursor.fetchone()
+            row = conn.execute(select_stmt).mappings().first()
             if not row:
                 return None
 
@@ -213,13 +223,11 @@ class EmailAuthOperations:
                 return None
 
             # Mark as verified
-            cursor.execute("""
-                UPDATE email_login_codes
-                SET verified = 1, used_at = ?
-                WHERE id = ?
-            """, (utc_now_iso(), code_record["id"]))
-
-            conn.commit()
+            conn.execute(
+                update(email_login_codes)
+                .where(email_login_codes.c.id == code_record["id"])
+                .values(verified=1, used_at=utc_now_iso())
+            )
 
             return {
                 "code_id": code_record["id"],
@@ -229,33 +237,26 @@ class EmailAuthOperations:
 
     def count_recent_code_requests(self, email: str, minutes: int = 10) -> int:
         """Count how many code requests were made for this email recently."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cutoff = (datetime.utcnow() - timedelta(minutes=minutes)).isoformat()
-
-            cursor.execute("""
-                SELECT COUNT(*) as count
-                FROM email_login_codes
-                WHERE LOWER(email) = ? AND created_at > ?
-            """, (email.lower(), cutoff))
-
-            result = cursor.fetchone()
-            return result["count"] if result else 0
+        cutoff = (datetime.utcnow() - timedelta(minutes=minutes)).isoformat()
+        stmt = select(func.count().label("count")).where(
+            and_(
+                func.lower(email_login_codes.c.email) == email.lower(),
+                email_login_codes.c.created_at > cutoff,
+            )
+        )
+        with get_engine().connect() as conn:
+            result = conn.execute(stmt).mappings().first()
+        return result["count"] if result else 0
 
     def cleanup_old_codes(self, days: int = 1):
         """Delete old verification codes."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-
-            cursor.execute("""
-                DELETE FROM email_login_codes
-                WHERE created_at < ?
-            """, (cutoff,))
-
-            deleted = cursor.rowcount
-            conn.commit()
-            return deleted
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        stmt = delete(email_login_codes).where(
+            email_login_codes.c.created_at < cutoff
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+        return result.rowcount
 
     # =========================================================================
     # User Management for Email Auth
@@ -284,18 +285,18 @@ class EmailAuthOperations:
 
         # Create new user
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        # Username = email (lowercase)
+        username = email.lower()
 
-            # Username = email (lowercase)
-            username = email.lower()
+        stmt = insert(users).values(
+            username=username,
+            email=email.lower(),
+            role=role,
+            created_at=now,
+            updated_at=now,
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
-            cursor.execute("""
-                INSERT INTO users (username, email, role, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (username, email.lower(), role, now, now))
-
-            conn.commit()
-
-            # Return the created user
-            return self._user_ops.get_user_by_email(email)
+        # Return the created user
+        return self._user_ops.get_user_by_email(email)

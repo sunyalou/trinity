@@ -30,6 +30,16 @@ if _backend_path not in sys.path:
     sys.path.insert(0, _backend_path)
 
 
+@pytest.fixture(autouse=True)
+def cleanup_after_test():
+    """Override the parent conftest's autouse ``cleanup_after_test``, which
+    depends on the session-scoped ``api_client`` fixture and therefore needs a
+    live backend (``POST /api/token``). These are pure-unit tests against the
+    SQLAlchemy engine seam — no backend, no Docker — so the parent's resource
+    cleanup is a no-op here. Mirrors ``tests/unit/conftest.py``."""
+    yield
+
+
 @pytest.fixture
 def sharing_mixin(monkeypatch):
     """Isolate SharingMixin with an in-memory agent_sharing table."""
@@ -64,9 +74,35 @@ def sharing_mixin(monkeypatch):
         def __exit__(self, *a):
             self.c.close()
 
+    # Lightweight parent-package stubs so the real db.engine / db.tables and
+    # sharing.py's relative imports resolve WITHOUT executing the heavy
+    # db/__init__.py. They carry only __path__/__package__. Registered before
+    # `import db.engine` so that import doesn't trigger the real package init.
+    db_pkg = sys.modules.get("db")
+    if db_pkg is None or not hasattr(db_pkg, "__path__"):
+        db_pkg = types.ModuleType("db")
+        db_pkg.__path__ = [os.path.join(_backend_path, "db")]
+        db_pkg.__package__ = "db"
+        monkeypatch.setitem(sys.modules, "db", db_pkg)
+    ags_pkg = types.ModuleType("db.agent_settings")
+    ags_pkg.__path__ = [os.path.join(_backend_path, "db", "agent_settings")]
+    ags_pkg.__package__ = "db.agent_settings"
+    monkeypatch.setitem(sys.modules, "db.agent_settings", ags_pkg)
+
+    # Legacy raw-sqlite seam: still stubbed for any not-yet-converted module
+    # that imports `db.connection`. SharingMixin itself is converted to the
+    # SQLAlchemy engine seam (#300), so the real routing happens below.
     fake_conn_mod = types.ModuleType("db.connection")
     fake_conn_mod.get_db_connection = lambda: _Ctx()
     monkeypatch.setitem(sys.modules, "db.connection", fake_conn_mod)
+
+    # SQLAlchemy engine seam (#300): SharingMixin now calls get_engine(), which
+    # resolves DATABASE_URL. Point it at the SAME temp file the schema was built
+    # on and dispose the per-URL engine cache so the temp file's engine is the
+    # one created (and disposed again at teardown).
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    import db.engine as engine_mod
+    engine_mod.dispose_engines()
 
     # Stub db_models with permissive getattr — sharing.py and any transitive
     # db/*.py imports will resolve symbols to MagicMock classes.
@@ -77,11 +113,14 @@ def sharing_mixin(monkeypatch):
     fake_models_mod = _PermissiveModule("db_models")
     monkeypatch.setitem(sys.modules, "db_models", fake_models_mod)
 
-    # Direct file-load to bypass db/__init__.py (which imports many heavy modules).
+    # Direct file-load (bypassing db/__init__.py) under the real dotted name so
+    # sharing.py's relative imports (`from ..engine`, `from ..tables`) resolve
+    # against the package stubs registered above.
     import importlib.util
     sharing_path = os.path.join(_backend_path, "db", "agent_settings", "sharing.py")
-    spec = importlib.util.spec_from_file_location("db_agent_settings_sharing", sharing_path)
+    spec = importlib.util.spec_from_file_location("db.agent_settings.sharing", sharing_path)
     mod = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "db.agent_settings.sharing", mod)
     spec.loader.exec_module(mod)
     SharingMixin = mod.SharingMixin
 
@@ -96,6 +135,7 @@ def sharing_mixin(monkeypatch):
             return self._owner
 
     yield _SharingOps(), db_path
+    engine_mod.dispose_engines()
     os.unlink(db_path)
 
 

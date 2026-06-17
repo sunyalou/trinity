@@ -7,7 +7,10 @@ Stores per-agent channel access policy:
 - group_auth_mode: auth mode for group chats ('none', 'any_verified')
 """
 
-from db.connection import get_db_connection
+from sqlalchemy import select, update, and_, func
+
+from ..engine import get_engine
+from ..tables import agent_ownership
 
 
 class AccessPolicyMixin:
@@ -23,19 +26,18 @@ class AccessPolicyMixin:
                 'group_auth_mode': str  # 'none' or 'any_verified'
             }
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT COALESCE(require_email, 0) AS require_email,
-                       COALESCE(open_access, 0) AS open_access,
-                       COALESCE(group_auth_mode, 'none') AS group_auth_mode
-                FROM agent_ownership
-                WHERE agent_name = ? AND deleted_at IS NULL
-                """,
-                (agent_name,),
+        stmt = select(
+            func.coalesce(agent_ownership.c.require_email, 0).label("require_email"),
+            func.coalesce(agent_ownership.c.open_access, 0).label("open_access"),
+            func.coalesce(agent_ownership.c.group_auth_mode, "none").label("group_auth_mode"),
+        ).where(
+            and_(
+                agent_ownership.c.agent_name == agent_name,
+                agent_ownership.c.deleted_at.is_(None),
             )
-            row = cursor.fetchone()
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
         if not row:
             return {"require_email": False, "open_access": False, "group_auth_mode": "none"}
         return {
@@ -61,15 +63,15 @@ class AccessPolicyMixin:
         """
         if group_auth_mode not in ("none", "any_verified"):
             group_auth_mode = "none"
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE agent_ownership
-                SET require_email = ?, open_access = ?, group_auth_mode = ?
-                WHERE agent_name = ?
-                """,
-                (1 if require_email else 0, 1 if open_access else 0, group_auth_mode, agent_name),
+        stmt = (
+            update(agent_ownership)
+            .where(agent_ownership.c.agent_name == agent_name)
+            .values(
+                require_email=1 if require_email else 0,
+                open_access=1 if open_access else 0,
+                group_auth_mode=group_auth_mode,
             )
-            conn.commit()
-            return cursor.rowcount > 0
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0

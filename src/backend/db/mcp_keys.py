@@ -3,6 +3,12 @@ MCP API key management database operations.
 
 Handles creation, validation, and revocation of MCP API keys.
 Supports both user-scoped and agent-scoped keys for agent-to-agent collaboration.
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL. Queries are built from the ``mcp_api_keys`` and
+``users`` tables in ``db/tables.py`` (dialect-agnostic, no placeholders), and
+the engine is resolved via ``db/engine.py``. The public API of
+``McpKeyOperations`` is unchanged.
 """
 
 import secrets
@@ -10,9 +16,32 @@ import hashlib
 from datetime import datetime
 from typing import Optional, List, Dict
 
-from .connection import get_db_connection
+from sqlalchemy import select, insert, update, delete
+
+from .engine import get_engine
+from .tables import mcp_api_keys, users
 from db_models import McpApiKey, McpApiKeyCreate, McpApiKeyWithSecret
 from utils.helpers import utc_now_iso
+
+
+# Columns selected for the JOIN read paths: every mcp_api_keys column (the old
+# ``k.*``) plus username/email from the joined users row.
+_KEY_JOIN_COLUMNS = (
+    mcp_api_keys.c.id,
+    mcp_api_keys.c.name,
+    mcp_api_keys.c.description,
+    mcp_api_keys.c.key_prefix,
+    mcp_api_keys.c.key_hash,
+    mcp_api_keys.c.created_at,
+    mcp_api_keys.c.last_used_at,
+    mcp_api_keys.c.usage_count,
+    mcp_api_keys.c.is_active,
+    mcp_api_keys.c.user_id,
+    mcp_api_keys.c.agent_name,
+    mcp_api_keys.c.scope,
+    users.c.username,
+    users.c.email,
+)
 
 
 class McpKeyOperations:
@@ -72,21 +101,20 @@ class McpKeyOperations:
         key_hash = self._hash_api_key(api_key)
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO mcp_api_keys (id, name, description, key_prefix, key_hash, created_at, user_id, agent_name, scope)
-                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'user')
-            """, (
-                key_id,
-                key_data.name,
-                key_data.description,
-                api_key[:20],
-                key_hash,
-                now,
-                user["id"]
-            ))
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(mcp_api_keys).values(
+                    id=key_id,
+                    name=key_data.name,
+                    description=key_data.description,
+                    key_prefix=api_key[:20],
+                    key_hash=key_hash,
+                    created_at=now,
+                    user_id=user["id"],
+                    agent_name=None,
+                    scope="user",
+                )
+            )
 
         return McpApiKeyWithSecret(
             id=key_id,
@@ -127,22 +155,20 @@ class McpKeyOperations:
         now = utc_now_iso()
         key_name = f"agent-{agent_name}-key"
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO mcp_api_keys (id, name, description, key_prefix, key_hash, created_at, user_id, agent_name, scope)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'agent')
-            """, (
-                key_id,
-                key_name,
-                description or f"Auto-generated key for agent {agent_name}",
-                api_key[:20],
-                key_hash,
-                now,
-                user["id"],
-                agent_name
-            ))
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(mcp_api_keys).values(
+                    id=key_id,
+                    name=key_name,
+                    description=description or f"Auto-generated key for agent {agent_name}",
+                    key_prefix=api_key[:20],
+                    key_hash=key_hash,
+                    created_at=now,
+                    user_id=user["id"],
+                    agent_name=agent_name,
+                    scope="agent",
+                )
+            )
 
         return McpApiKeyWithSecret(
             id=key_id,
@@ -163,30 +189,30 @@ class McpKeyOperations:
 
     def get_agent_mcp_api_key(self, agent_name: str) -> Optional[McpApiKey]:
         """Get the MCP API key for an agent (does not return the secret)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT k.*, u.username, u.email
-                FROM mcp_api_keys k
-                JOIN users u ON k.user_id = u.id
-                WHERE k.agent_name = ? AND k.scope = 'agent' AND k.is_active = 1
-                ORDER BY k.created_at DESC
-                LIMIT 1
-            """, (agent_name,))
-            row = cursor.fetchone()
+        stmt = (
+            select(*_KEY_JOIN_COLUMNS)
+            .select_from(mcp_api_keys.join(users, mcp_api_keys.c.user_id == users.c.id))
+            .where(
+                mcp_api_keys.c.agent_name == agent_name,
+                mcp_api_keys.c.scope == "agent",
+                mcp_api_keys.c.is_active == 1,
+            )
+            .order_by(mcp_api_keys.c.created_at.desc())
+            .limit(1)
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
             return self._row_to_mcp_api_key(row) if row else None
 
     def delete_agent_mcp_api_key(self, agent_name: str) -> bool:
         """Delete all MCP API keys for an agent (called when agent is deleted)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM mcp_api_keys
-                WHERE agent_name = ? AND scope = 'agent'
-            """, (agent_name,))
-            deleted = cursor.rowcount > 0
-            conn.commit()
-            return deleted
+        stmt = delete(mcp_api_keys).where(
+            mcp_api_keys.c.agent_name == agent_name,
+            mcp_api_keys.c.scope == "agent",
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     def validate_mcp_api_key(
         self, api_key: str, *, track_usage: bool = True
@@ -209,16 +235,23 @@ class McpKeyOperations:
         """
         key_hash = self._hash_api_key(api_key)
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT k.id, k.name, k.user_id, k.is_active, k.agent_name, k.scope,
-                       u.username, u.email
-                FROM mcp_api_keys k
-                JOIN users u ON k.user_id = u.id
-                WHERE k.key_hash = ?
-            """, (key_hash,))
-            row = cursor.fetchone()
+        select_stmt = (
+            select(
+                mcp_api_keys.c.id,
+                mcp_api_keys.c.name,
+                mcp_api_keys.c.user_id,
+                mcp_api_keys.c.is_active,
+                mcp_api_keys.c.agent_name,
+                mcp_api_keys.c.scope,
+                users.c.username,
+                users.c.email,
+            )
+            .select_from(mcp_api_keys.join(users, mcp_api_keys.c.user_id == users.c.id))
+            .where(mcp_api_keys.c.key_hash == key_hash)
+        )
+
+        with get_engine().begin() as conn:
+            row = conn.execute(select_stmt).mappings().first()
 
             if not row:
                 return None
@@ -228,15 +261,17 @@ class McpKeyOperations:
 
             # Update usage statistics. Skipped for high-frequency, low-value
             # callers (heartbeat — #307) so a 5s beat doesn't amplify the
-            # counter or write to SQLite ~12x/min/agent.
+            # counter or write to the DB ~12x/min/agent.
             if track_usage:
                 now = utc_now_iso()
-                cursor.execute("""
-                    UPDATE mcp_api_keys
-                    SET last_used_at = ?, usage_count = usage_count + 1
-                    WHERE id = ?
-                """, (now, row["id"]))
-                conn.commit()
+                conn.execute(
+                    update(mcp_api_keys)
+                    .where(mcp_api_keys.c.id == row["id"])
+                    .values(
+                        last_used_at=now,
+                        usage_count=mcp_api_keys.c.usage_count + 1,
+                    )
+                )
 
             # Include agent collaboration fields
             return {
@@ -254,15 +289,16 @@ class McpKeyOperations:
         if not user:
             return None
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT k.*, u.username, u.email
-                FROM mcp_api_keys k
-                JOIN users u ON k.user_id = u.id
-                WHERE k.id = ? AND k.user_id = ?
-            """, (key_id, user["id"]))
-            row = cursor.fetchone()
+        stmt = (
+            select(*_KEY_JOIN_COLUMNS)
+            .select_from(mcp_api_keys.join(users, mcp_api_keys.c.user_id == users.c.id))
+            .where(
+                mcp_api_keys.c.id == key_id,
+                mcp_api_keys.c.user_id == user["id"],
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
             return self._row_to_mcp_api_key(row) if row else None
 
     def list_mcp_api_keys(self, username: str) -> List[McpApiKey]:
@@ -271,28 +307,24 @@ class McpKeyOperations:
         if not user:
             return []
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT k.*, u.username, u.email
-                FROM mcp_api_keys k
-                JOIN users u ON k.user_id = u.id
-                WHERE k.user_id = ?
-                ORDER BY k.created_at DESC
-            """, (user["id"],))
-            return [self._row_to_mcp_api_key(row) for row in cursor.fetchall()]
+        stmt = (
+            select(*_KEY_JOIN_COLUMNS)
+            .select_from(mcp_api_keys.join(users, mcp_api_keys.c.user_id == users.c.id))
+            .where(mcp_api_keys.c.user_id == user["id"])
+            .order_by(mcp_api_keys.c.created_at.desc())
+        )
+        with get_engine().connect() as conn:
+            return [self._row_to_mcp_api_key(row) for row in conn.execute(stmt).mappings()]
 
     def list_all_mcp_api_keys(self) -> List[McpApiKey]:
         """List all MCP API keys (admin only)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT k.*, u.username, u.email
-                FROM mcp_api_keys k
-                JOIN users u ON k.user_id = u.id
-                ORDER BY k.created_at DESC
-            """)
-            return [self._row_to_mcp_api_key(row) for row in cursor.fetchall()]
+        stmt = (
+            select(*_KEY_JOIN_COLUMNS)
+            .select_from(mcp_api_keys.join(users, mcp_api_keys.c.user_id == users.c.id))
+            .order_by(mcp_api_keys.c.created_at.desc())
+        )
+        with get_engine().connect() as conn:
+            return [self._row_to_mcp_api_key(row) for row in conn.execute(stmt).mappings()]
 
     def revoke_mcp_api_key(self, key_id: str, username: str) -> bool:
         """Revoke (deactivate) an MCP API key."""
@@ -300,19 +332,21 @@ class McpKeyOperations:
         if not user:
             return False
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Check ownership (unless admin)
             if user["role"] != "admin":
-                cursor.execute("SELECT user_id FROM mcp_api_keys WHERE id = ?", (key_id,))
-                row = cursor.fetchone()
+                row = conn.execute(
+                    select(mcp_api_keys.c.user_id).where(mcp_api_keys.c.id == key_id)
+                ).mappings().first()
                 if not row or row["user_id"] != user["id"]:
                     return False
 
-            cursor.execute("UPDATE mcp_api_keys SET is_active = 0 WHERE id = ?", (key_id,))
-            conn.commit()
-            return cursor.rowcount > 0
+            result = conn.execute(
+                update(mcp_api_keys)
+                .where(mcp_api_keys.c.id == key_id)
+                .values(is_active=0)
+            )
+            return result.rowcount > 0
 
     def delete_mcp_api_key(self, key_id: str, username: str) -> bool:
         """Permanently delete an MCP API key."""
@@ -320,16 +354,16 @@ class McpKeyOperations:
         if not user:
             return False
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Check ownership (unless admin)
             if user["role"] != "admin":
-                cursor.execute("SELECT user_id FROM mcp_api_keys WHERE id = ?", (key_id,))
-                row = cursor.fetchone()
+                row = conn.execute(
+                    select(mcp_api_keys.c.user_id).where(mcp_api_keys.c.id == key_id)
+                ).mappings().first()
                 if not row or row["user_id"] != user["id"]:
                     return False
 
-            cursor.execute("DELETE FROM mcp_api_keys WHERE id = ?", (key_id,))
-            conn.commit()
-            return cursor.rowcount > 0
+            result = conn.execute(
+                delete(mcp_api_keys).where(mcp_api_keys.c.id == key_id)
+            )
+            return result.rowcount > 0

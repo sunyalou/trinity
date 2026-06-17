@@ -22,8 +22,6 @@ Bug #862 regression coverage (appended at the bottom):
 
 from __future__ import annotations
 
-import importlib.util
-import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,14 +31,12 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _BACKEND = Path(__file__).resolve().parent.parent.parent / "src" / "backend"
+_BACKEND_STR = str(_BACKEND)
+while _BACKEND_STR in sys.path:
+    sys.path.remove(_BACKEND_STR)
+sys.path.insert(0, _BACKEND_STR)
 
-
-def _load(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+from db_harness import db_backend, run as _hrun, scalar as _hscalar  # noqa: E402
 
 
 _SCHEDULE_EXECUTIONS_DDL = """
@@ -101,57 +97,23 @@ CREATE TABLE agent_health_checks (
 
 
 @pytest.fixture
-def db_setup(tmp_path, monkeypatch):
-    """Build a tmp DB with both tables + the #772 partial index.
+def db_setup(db_backend):
+    """Active backend with a fresh full schema (db_harness, #300).
 
-    Returns (db_path, schedule_ops, monitoring_ops). The connection module
-    is reloaded under a unique name so each test gets a fresh path.
+    Returns (backend_marker, schedule_ops, monitoring_ops). The marker is the
+    leading positional arg the engine-based helpers accept (and ignore).
+    Pops any sibling-stubbed db modules so imports re-resolve fresh.
     """
-    db_path = tmp_path / "trinity.db"
-    monkeypatch.setenv("TRINITY_DB_PATH", str(db_path))
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(_SCHEDULE_EXECUTIONS_DDL)
-    conn.executescript(_AGENT_HEALTH_CHECKS_DDL)
-    # Mirror the partial index from schema.py / migration #772 (fixed in #862).
-    conn.execute(
-        "CREATE INDEX idx_executions_completed_terminal "
-        "ON schedule_executions(completed_at) "
-        "WHERE status IN ('success', 'failed', 'cancelled', 'skipped')"
-    )
-    conn.commit()
-    conn.close()
-
-    # Reload db/connection.py against the new TRINITY_DB_PATH.
-    sys.modules.pop("_erp_db_connection", None)
-    _load("_erp_db_connection", _BACKEND / "db" / "connection.py")
-
-    db_pkg = type(sys)("db")
-    db_pkg.__path__ = [str(_BACKEND / "db")]
-    monkeypatch.setitem(sys.modules, "db", db_pkg)
-    monkeypatch.setitem(sys.modules, "db.connection", sys.modules["_erp_db_connection"])
-
-    # Load db.schedules + db.monitoring under the `db.*` namespace so their
-    # `from .connection import get_db_connection` resolves to our tmp DB.
-    sched_spec = importlib.util.spec_from_file_location(
-        "db.schedules", str(_BACKEND / "db" / "schedules.py")
-    )
-    sched_mod = importlib.util.module_from_spec(sched_spec)
-    sys.modules["db.schedules"] = sched_mod
-    sched_spec.loader.exec_module(sched_mod)
-
-    mon_spec = importlib.util.spec_from_file_location(
-        "db.monitoring", str(_BACKEND / "db" / "monitoring.py")
-    )
-    mon_mod = importlib.util.module_from_spec(mon_spec)
-    sys.modules["db.monitoring"] = mon_mod
-    mon_spec.loader.exec_module(mon_mod)
+    for mod in ("db.connection", "db.schedules", "db.monitoring"):
+        sys.modules.pop(mod, None)
+    from db.schedules import ScheduleOperations
+    from db.monitoring import MonitoringOperations
 
     # ScheduleOperations needs user_ops + agent_ops in __init__, but the
     # prune methods don't touch them. Pass None placeholders.
-    schedule_ops = sched_mod.ScheduleOperations(None, None)
-    monitoring_ops = mon_mod.MonitoringOperations()
-    return db_path, schedule_ops, monitoring_ops
+    schedule_ops = ScheduleOperations(None, None)
+    monitoring_ops = MonitoringOperations()
+    yield db_backend, schedule_ops, monitoring_ops
 
 
 def _iso(days_ago: float) -> str:
@@ -161,8 +123,16 @@ def _iso(days_ago: float) -> str:
     ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def _rows(sql: str, **binds):
+    from db.engine import get_engine
+    from sqlalchemy import text
+
+    with get_engine().connect() as conn:
+        return conn.execute(text(sql), binds).fetchall()
+
+
 def _insert_execution(
-    db_path: Path,
+    _db,
     *,
     id_: str,
     status: str,
@@ -171,54 +141,35 @@ def _insert_execution(
 ) -> None:
     started = _iso(completed_days_ago or 0.1)
     completed = _iso(completed_days_ago) if completed_days_ago is not None else None
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO schedule_executions
-            (id, schedule_id, agent_name, status,
-             started_at, completed_at, message, triggered_by, execution_log)
-        VALUES (?, 'sched-x', 'agent-x', ?, ?, ?, 'msg', 'user', ?)
-        """,
-        (id_, status, started, completed, execution_log),
+    _hrun(
+        "INSERT INTO schedule_executions "
+        "(id, schedule_id, agent_name, status, started_at, completed_at, "
+        " message, triggered_by, execution_log) "
+        "VALUES (:id, 'sched-x', 'agent-x', :st, :sa, :ca, 'msg', 'user', :log)",
+        id=id_, st=status, sa=started, ca=completed, log=execution_log,
     )
-    conn.commit()
-    conn.close()
 
 
-def _insert_health_check(db_path: Path, *, id_: str, days_ago: float) -> None:
+def _insert_health_check(_db, *, id_: str, days_ago: float) -> None:
     checked = _iso(days_ago)
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO agent_health_checks
-            (id, agent_name, check_type, status, checked_at, created_at)
-        VALUES (?, 'agent-x', 'aggregate', 'ok', ?, ?)
-        """,
-        (id_, checked, checked),
+    _hrun(
+        "INSERT INTO agent_health_checks "
+        "(id, agent_name, check_type, status, checked_at, created_at) "
+        "VALUES (:id, 'agent-x', 'aggregate', 'ok', :c, :c)",
+        id=id_, c=checked,
     )
-    conn.commit()
-    conn.close()
 
 
-def _execution_logs(db_path: Path) -> dict[str, str | None]:
-    conn = sqlite3.connect(str(db_path))
-    rows = conn.execute("SELECT id, execution_log FROM schedule_executions").fetchall()
-    conn.close()
-    return {r[0]: r[1] for r in rows}
+def _execution_logs(_db) -> dict[str, str | None]:
+    return {r[0]: r[1] for r in _rows("SELECT id, execution_log FROM schedule_executions")}
 
 
-def _execution_ids(db_path: Path) -> set[str]:
-    conn = sqlite3.connect(str(db_path))
-    ids = {r[0] for r in conn.execute("SELECT id FROM schedule_executions").fetchall()}
-    conn.close()
-    return ids
+def _execution_ids(_db) -> set[str]:
+    return {r[0] for r in _rows("SELECT id FROM schedule_executions")}
 
 
-def _health_ids(db_path: Path) -> set[str]:
-    conn = sqlite3.connect(str(db_path))
-    ids = {r[0] for r in conn.execute("SELECT id FROM agent_health_checks").fetchall()}
-    conn.close()
-    return ids
+def _health_ids(_db) -> set[str]:
+    return {r[0] for r in _rows("SELECT id FROM agent_health_checks")}
 
 
 # ---------------------------------------------------------------------------

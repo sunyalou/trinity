@@ -3,12 +3,18 @@ Agent security settings database operations.
 
 Handles full capabilities (container security), read-only mode, and
 guardrails configuration (GUARD-001).
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL.
 """
 
 import json
 from typing import Optional
 
-from db.connection import get_db_connection
+from sqlalchemy import select, update, and_, func
+
+from ..engine import get_engine
+from ..tables import agent_ownership
 
 
 class SecurityMixin:
@@ -30,13 +36,14 @@ class SecurityMixin:
         Returns:
             True if full capabilities enabled, False otherwise
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT full_capabilities FROM agent_ownership
-                WHERE agent_name = ? AND deleted_at IS NULL
-            """, (agent_name,))
-            row = cursor.fetchone()
+        stmt = select(agent_ownership.c.full_capabilities).where(
+            and_(
+                agent_ownership.c.agent_name == agent_name,
+                agent_ownership.c.deleted_at.is_(None),
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
             if row and row[0] is not None:
                 return bool(row[0])
             return False
@@ -53,14 +60,14 @@ class SecurityMixin:
         Returns:
             True if update succeeded, False otherwise
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_ownership SET full_capabilities = ?
-                WHERE agent_name = ?
-            """, (1 if enabled else 0, agent_name))
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = (
+            update(agent_ownership)
+            .where(agent_ownership.c.agent_name == agent_name)
+            .values(full_capabilities=1 if enabled else 0)
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     # =========================================================================
     # Read-Only Mode
@@ -73,16 +80,18 @@ class SecurityMixin:
         Returns:
             dict with 'enabled' (bool) and 'config' (dict or None)
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT COALESCE(read_only_mode, 0) as read_only_mode, read_only_config
-                FROM agent_ownership
-                WHERE agent_name = ? AND deleted_at IS NULL
-            """, (agent_name,))
-            row = cursor.fetchone()
+        stmt = select(
+            func.coalesce(agent_ownership.c.read_only_mode, 0).label("read_only_mode"),
+            agent_ownership.c.read_only_config,
+        ).where(
+            and_(
+                agent_ownership.c.agent_name == agent_name,
+                agent_ownership.c.deleted_at.is_(None),
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
             if row:
-                import json
                 config = None
                 if row["read_only_config"]:
                     try:
@@ -107,15 +116,15 @@ class SecurityMixin:
         Returns:
             True if update succeeded
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            config_json = json.dumps(config) if config else None
-            cursor.execute("""
-                UPDATE agent_ownership SET read_only_mode = ?, read_only_config = ?
-                WHERE agent_name = ?
-            """, (1 if enabled else 0, config_json, agent_name))
-            conn.commit()
-            return cursor.rowcount > 0
+        config_json = json.dumps(config) if config else None
+        stmt = (
+            update(agent_ownership)
+            .where(agent_ownership.c.agent_name == agent_name)
+            .values(read_only_mode=1 if enabled else 0, read_only_config=config_json)
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     # =========================================================================
     # Guardrails (GUARD-001)
@@ -123,14 +132,14 @@ class SecurityMixin:
 
     def get_guardrails_config(self, agent_name: str) -> dict:
         """Return per-agent guardrails overrides, or {} if none set."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT guardrails_config FROM agent_ownership "
-                "WHERE agent_name = ? AND deleted_at IS NULL",
-                (agent_name,),
+        stmt = select(agent_ownership.c.guardrails_config).where(
+            and_(
+                agent_ownership.c.agent_name == agent_name,
+                agent_ownership.c.deleted_at.is_(None),
             )
-            row = cursor.fetchone()
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
             if row and row["guardrails_config"]:
                 try:
                     return json.loads(row["guardrails_config"])
@@ -140,12 +149,12 @@ class SecurityMixin:
 
     def set_guardrails_config(self, agent_name: str, config: Optional[dict]) -> bool:
         """Store per-agent guardrails overrides as a JSON blob. None clears."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            payload = json.dumps(config) if config else None
-            cursor.execute(
-                "UPDATE agent_ownership SET guardrails_config = ? WHERE agent_name = ?",
-                (payload, agent_name),
-            )
-            conn.commit()
-            return cursor.rowcount > 0
+        payload = json.dumps(config) if config else None
+        stmt = (
+            update(agent_ownership)
+            .where(agent_ownership.c.agent_name == agent_name)
+            .values(guardrails_config=payload)
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
