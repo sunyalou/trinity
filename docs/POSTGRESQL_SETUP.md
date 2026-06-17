@@ -99,10 +99,17 @@ script reads `.env` and the profile must still be supplied
 ### 3.3 What happens on first (cold) start
 
 On an **empty** Postgres database, the backend bootstraps everything
-automatically (`init_database()` → `init_schema_postgres()`):
+automatically (`init_database()` → `db/alembic_runner.upgrade_to_head()`,
+i.e. `alembic upgrade head`, #1183):
 
-1. **All tables are created** from the schema (~61 tables) plus the PL/pgSQL
-   append-only audit-log triggers.
+1. **All tables are created** by the Alembic `0001_baseline` revision (~61
+   tables) plus the PL/pgSQL append-only audit-log triggers. The baseline
+   reuses the exact head DDL the legacy `init_schema_postgres` emitted, so the
+   result is identical; subsequent schema changes ship as new Alembic
+   revisions (an existing PG DB is migrated in place rather than rebuilt). A
+   database that predates Alembic is stamped at the baseline on first start,
+   not rebuilt. *(SQLite keeps its separate bespoke `db/migrations.py` runner —
+   the two coexist during the Postgres transition.)*
 2. **The admin user is seeded** with the password from `ADMIN_PASSWORD`.
 3. The instance is in **first-run setup** state (`setup_completed=false`) —
    exactly like a fresh SQLite instance. You complete the normal first-launch
@@ -189,9 +196,9 @@ For PostgreSQL the engine uses a real connection pool with `pool_pre_ping`
   end-to-end (a cron-fired schedule produced a `success` row with the agent's
   real response).
 - **`/health` differences.** On SQLite, `/health` includes a
-  `schema_migrations` gate; on PostgreSQL that gate is skipped (migrations are
-  an SQLite-only mechanism — Postgres uses full-schema bootstrap). Both return
-  `{"status":"healthy"}` when up.
+  `schema_migrations` gate (the SQLite-only bespoke runner). On PostgreSQL that
+  gate is skipped — Postgres schema is owned by Alembic, whose state lives in
+  the `alembic_version` table (#1183). Both return `{"status":"healthy"}` when up.
 - **Backups.** SQLite = copy `~/trinity-data/trinity.db` (see
   `scripts/deploy/backup-database.sh`). PostgreSQL = `pg_dump`:
   ```bash

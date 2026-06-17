@@ -107,6 +107,8 @@ As a **platform administrator**, I want **scheduled tasks to execute exactly onc
 | `SCHEDULE_RELOAD_INTERVAL` | `60` | Seconds between schedule sync checks |
 | `AGENT_TIMEOUT` | `900` | Default agent request timeout (15 min) |
 | `POLL_INTERVAL` | `10` | Seconds between DB polls for async task completion (SCHED-ASYNC-001) |
+| `DISPATCH_TIMEOUT` | `30` | HTTP deadline for the scheduler→backend `POST /api/internal/execute-task` round-trip (dispatch only; the async endpoint returns ~instantly). Reaching it means the backend did not respond — outcome is **UNKNOWN**, not "rejected" (#1022) |
+| `PRE_CHECK_TIMEOUT` | `70` | HTTP deadline for the scheduler→backend pre-check call (agent-side hook is 60s; 10s headroom). Fail-open (#1022) |
 | `MISFIRE_GRACE_TIME` | `3600` | Seconds after a missed trigger that APScheduler will still execute (Issue #145) |
 | `BACKEND_URL` | `http://backend:8000` | Backend API URL for process executions and task delegation |
 | `INTERNAL_API_SECRET` | _(empty)_ | Shared secret for backend internal API auth (C-003) |
@@ -293,12 +295,14 @@ async def _execute_schedule_with_lock(self, schedule_id: str, triggered_by: str 
             self.db.update_execution_status(execution_id=execution.id, status=ExecutionStatus.FAILED, ...)
 ```
 
-**Backend Task Delegation** (`service.py:760-833`):
+**Backend Task Delegation** (`_call_backend_execute_task`):
 
 Uses async fire-and-forget dispatch (SCHED-ASYNC-001):
-1. `POST /api/internal/execute-task` with `async_mode=True` and 30s HTTP timeout
+1. `POST /api/internal/execute-task` with `async_mode=True` and the configured dispatch deadline (`config.dispatch_timeout`, env `DISPATCH_TIMEOUT`, default 30s — was a literal before #1022)
 2. If backend accepts (`{"status": "accepted", "async_mode": true}`), poll DB
 3. Backward compatible: if backend returns sync result, use directly
+
+A dispatch `httpx.TimeoutException` is re-raised as a **named, non-blank** error (`"dispatch to /api/internal/execute-task timed out after {N}s ({TimeoutType}) — outcome unknown"`) *before* it can reach the generic `except` handler. The outcome is genuinely unknown: the backend spawns the background task before replying (`internal.py`), so a dispatch timeout may mean the task is already running and will surface as an orphan recovered by the cleanup service. This closes the #1022 silent-failure — bare `httpx` timeouts stringify to `''`, which previously persisted as a blank `error`. Defense-in-depth: `_describe_exception()` normalizes any other blank-stringifying exception (falls back to the type name) across every execution, retry, and process-schedule error path.
 
 **DB Polling** (`service.py:835-887`):
 ```python
@@ -954,7 +958,7 @@ typing-extensions>=4.9.0
 | `test_locking.py` | Distributed locks | Redis lock acquire/release |
 | `test_agent_client.py` | HTTP client | Agent communication |
 | `test_service.py` | Scheduler service | Full integration tests |
-| `test_async_dispatch.py` | Async dispatch + polling | SCHED-ASYNC-001 (11 tests) |
+| `test_async_dispatch.py` | Async dispatch + polling | SCHED-ASYNC-001 + dispatch-timeout error persistence (#1022): `_describe_exception()` branches, descriptive-raise on `ReadTimeout('')`, config-driven deadline, non-empty-error regression for both the main dispatch and the retry path (22 tests) |
 | `conftest.py` | Fixtures | Mock database, Redis, models |
 
 ### Running Tests
@@ -985,6 +989,8 @@ docker compose -f docker/scheduler/docker-compose.test.yml up
 | Agent timeout | Update status=failed (with overwrite guard), publish event | Error recorded |
 | Auth failure detected | Log auth-specific error, publish event | Error recorded with auth context |
 | **TCP disconnect (SCHED-ASYNC-001)** | **Check DB before overwriting -- if backend already finalized, preserve status** | **No false failures** |
+| **Dispatch timeout (#1022)** | Re-raised as a named non-blank error *before* the generic handler; outcome UNKNOWN (task may already be running → orphan) | Descriptive `error` persisted (never blank); cleanup service recovers any orphan |
+| **Blank-stringifying exception (e.g. httpx timeout)** | `_describe_exception()` falls back to the exception type name | `error` never persisted blank (#1022) |
 | **Polling deadline exceeded** | Raise exception, overwrite guard checks DB status | Error recorded (if genuinely stale) |
 | Process backend HTTP error | Update process execution as failed, publish event | Error recorded |
 | Process backend timeout | Update process execution as failed, publish event | Error recorded |
@@ -1078,6 +1084,7 @@ The embedded scheduler (`src/backend/services/scheduler_service.py`) has been co
 
 | Date | Change |
 |------|--------|
+| 2026-06-14 | **Descriptive error on dispatch timeout (#1022)**: a dispatch `httpx.TimeoutException` is re-raised with a named, non-blank message (`"dispatch ... timed out after {N}s — outcome unknown"`) so the silent blank `error` (bare httpx timeouts `str()` to `''`) no longer lands. New `_describe_exception()` helper normalizes blank exceptions across all execution / retry / process-schedule error paths. Dispatch + pre-check HTTP deadlines lifted from literals to config: `DISPATCH_TIMEOUT` (default 30s) and `PRE_CHECK_TIMEOUT` (default 70s). Outcome of a dispatch timeout is UNKNOWN (backend may have already started the bg task → orphan recovered by cleanup). |
 | 2026-05-09 | **MCP update_agent_schedule fixes (aaad4f6, #741/#742)**: (1) `src/mcp-server/src/tools/schedules.ts` — added explicit warning to `enabled` field description in `update_agent_schedule` so AI models do not inadvertently re-enable a disabled schedule when updating unrelated fields (e.g. cron expression). (2) `src/backend/routers/schedules.py` — added `max_retries` and `retry_delay_seconds` to `ScheduleUpdateRequest`; both were missing, so `exclude_unset=True` silently dropped them before they reached `db.update_schedule()`, making retry config uneditable via MCP. |
 | 2026-04-23 | **Retry Default Flipped (#476)**: `max_retries` default `1 → 0`. Both new and existing schedules are opt-in now. Scheduled agents typically catch up on next tick; retries amplified load during multi-hour outages. |
 | 2026-04-14 | **Automatic Retry (RETRY-001)**: Added Flow 10 documenting configurable retry mechanism for failed executions. New fields: max_retries, retry_delay_seconds, attempt_number, retry_of_execution_id, retry_scheduled_at. New status: pending_retry. |

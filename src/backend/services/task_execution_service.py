@@ -68,6 +68,7 @@ class TaskExecutionErrorCode(str, Enum):
     AGENT_ERROR = "agent_error"     # Agent returned non-zero exit code
     NETWORK = "network"             # HTTP/connection error to agent container
     CIRCUIT_OPEN = "circuit_open"   # Circuit breaker open — agent known unhealthy (#767)
+    RECONCILED = "reconciled"       # Terminal write lost the CAS; row reflects another writer's terminal (#671/H4)
 
 
 @dataclass
@@ -438,6 +439,55 @@ async def _record_dispatch_terminal(
         _spawn_bg(_audit_circuit_transition(agent_name, "closed"))
 
 
+async def _write_terminal_and_gate(
+    execution_id: Optional[str],
+    activity_id: Optional[str],
+    *,
+    status: str,
+    activity_status: str,
+    error: Optional[str] = None,
+    cost: Optional[float] = None,
+    context_used: Optional[int] = None,
+    context_max: Optional[int] = None,
+    retry_count: Optional[int] = None,
+) -> bool:
+    """Write a non-success terminal through the CAS and gate the activity
+    completion on winning it (#671/H4).
+
+    ``db.update_execution_status`` is an atomic compare-and-set: a non-success
+    terminal write loses to any already-terminal row (SUCCESS/FAILED/CANCELLED/
+    SKIPPED). The activity is completed ONLY when this writer won — a writer
+    that lost (e.g. to a user cancel) must not also complete the activity,
+    mirroring the SUCCESS-path reconcile. Returns the CAS winner so the caller
+    can gate any further side effects (e.g. the dispatch breaker).
+
+    When ``execution_id`` is falsy there is no row to contend for, so the write
+    is skipped and the activity completion still runs (``won=True``), preserving
+    the prior no-record behaviour. Replaces the old check-then-act guard
+    (``get_execution() → status != CANCELLED``), which both raced and only
+    blocked CANCELLED — the CAS additionally blocks an already-SUCCESS/FAILED
+    row and closes the TOCTOU window.
+    """
+    won = True
+    if execution_id:
+        won = db.update_execution_status(
+            execution_id=execution_id,
+            status=status,
+            error=error,
+            cost=cost,
+            context_used=context_used,
+            context_max=context_max,
+            retry_count=retry_count,
+        )
+    if won and activity_id:
+        await activity_service.complete_activity(
+            activity_id=activity_id,
+            status=activity_status,
+            error=error,
+        )
+    return won
+
+
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
@@ -655,20 +705,16 @@ class TaskExecutionService:
             if transport_open or dispatch_open:
                 error_msg = "Agent circuit breaker open — agent is unhealthy"
                 logger.warning(f"[TaskExecService] CB open, fast-failing execution {execution_id} for {agent_name}")
-                if execution_id:
-                    existing = db.get_execution(execution_id)
-                    if not existing or existing.status != TaskExecutionStatus.CANCELLED:
-                        db.update_execution_status(
-                            execution_id=execution_id,
-                            status=TaskExecutionStatus.FAILED,
-                            error=error_msg,
-                        )
-                if activity_id:
-                    await activity_service.complete_activity(
-                        activity_id=activity_id,
-                        status=ActivityState.FAILED,
-                        error=error_msg,
-                    )
+                # #671/H4: route the terminal write through the CAS — the
+                # activity is completed only if this writer won (a lost CAS to a
+                # cancel/already-terminal row must not also complete it).
+                await _write_terminal_and_gate(
+                    execution_id,
+                    activity_id,
+                    status=TaskExecutionStatus.FAILED,
+                    activity_status=ActivityState.FAILED,
+                    error=error_msg,
+                )
                 return TaskExecutionResult(
                     execution_id=execution_id or "",
                     status=TaskExecutionStatus.FAILED,
@@ -892,8 +938,14 @@ class TaskExecutionService:
                 total_cost = retry_cost
 
             # ---- 6. Update execution record ------------------------------
+            # #671/H4: consume the CAS winner. A SUCCESS write loses the CAS
+            # ONLY to a CANCELLED row (user/operator cancel, watchdog). On a
+            # lost CAS the agent's late "done" must NOT be reported as a
+            # billable success, must NOT complete the activity as COMPLETED,
+            # and must NOT reset the dispatch breaker — reconcile to the
+            # persisted terminal instead (never bless a cancelled turn's work).
             if execution_id:
-                db.update_execution_status(
+                won = db.update_execution_status(
                     execution_id=execution_id,
                     status=TaskExecutionStatus.SUCCESS,
                     response=sanitized_resp,
@@ -906,6 +958,29 @@ class TaskExecutionService:
                     compact_metadata=compact_metadata_json,
                     retry_count=retry_count or None,
                 )
+                if not won:
+                    reconciled = db.get_execution(execution_id)
+                    reconciled_status = (
+                        reconciled.status if reconciled else TaskExecutionStatus.FAILED
+                    )
+                    logger.warning(
+                        "[TaskExecService] SUCCESS write lost CAS for %s — row is "
+                        "%s; reconciling, not reporting success",
+                        execution_id,
+                        reconciled_status,
+                    )
+                    if activity_id:
+                        await activity_service.complete_activity(
+                            activity_id=activity_id,
+                            status=ActivityState.FAILED,
+                            error=f"superseded by {reconciled_status}",
+                        )
+                    return TaskExecutionResult(
+                        execution_id=execution_id,
+                        status=reconciled_status,
+                        response="",
+                        error_code=TaskExecutionErrorCode.RECONCILED,
+                    )
 
             # ---- 7. Complete activity ------------------------------------
             if activity_id:
@@ -948,21 +1023,15 @@ class TaskExecutionService:
             # Claude processes from accumulating. Best-effort — watchdog is safety net.
             await terminate_execution_on_agent(agent_name, execution_id)
 
-            # Don't overwrite cancelled executions
-            if execution_id:
-                existing = db.get_execution(execution_id)
-                if not existing or existing.status != TaskExecutionStatus.CANCELLED:
-                    db.update_execution_status(
-                        execution_id=execution_id,
-                        status=TaskExecutionStatus.FAILED,
-                        error=error_msg,
-                    )
-            if activity_id:
-                await activity_service.complete_activity(
-                    activity_id=activity_id,
-                    status=ActivityState.FAILED,
-                    error=error_msg,
-                )
+            # #671/H4: CAS-gate the terminal write (replaces the CANCELLED-only
+            # check-then-act guard); complete the activity only if we won.
+            await _write_terminal_and_gate(
+                execution_id,
+                activity_id,
+                status=TaskExecutionStatus.FAILED,
+                activity_status=ActivityState.FAILED,
+                error=error_msg,
+            )
             return TaskExecutionResult(
                 execution_id=execution_id or "",
                 status=TaskExecutionStatus.FAILED,
@@ -984,20 +1053,15 @@ class TaskExecutionService:
                 f"[TaskExecService] Rejecting task on {agent_name} — backend "
                 f"call budget exhausted: {error_msg}"
             )
-            if execution_id:
-                existing = db.get_execution(execution_id)
-                if not existing or existing.status != TaskExecutionStatus.CANCELLED:
-                    db.update_execution_status(
-                        execution_id=execution_id,
-                        status=TaskExecutionStatus.FAILED,
-                        error=error_msg,
-                    )
-            if activity_id:
-                await activity_service.complete_activity(
-                    activity_id=activity_id,
-                    status=ActivityState.FAILED,
-                    error=error_msg,
-                )
+            # #671/H4: CAS-gate the terminal write; complete the activity only
+            # if we won.
+            await _write_terminal_and_gate(
+                execution_id,
+                activity_id,
+                status=TaskExecutionStatus.FAILED,
+                activity_status=ActivityState.FAILED,
+                error=error_msg,
+            )
             return TaskExecutionResult(
                 execution_id=execution_id or "",
                 status=TaskExecutionStatus.FAILED,
@@ -1085,30 +1149,26 @@ class TaskExecutionService:
             else:
                 salvage_cost = salvage_cost_raw
 
-            if execution_id:
-                existing = db.get_execution(execution_id)
-                if not existing or existing.status != TaskExecutionStatus.CANCELLED:
-                    db.update_execution_status(
-                        execution_id=execution_id,
-                        status=TaskExecutionStatus.FAILED,
-                        error=error_msg,
-                        cost=salvage_cost,
-                        context_used=salvage_context,
-                        context_max=salvage_context_max,
-                        retry_count=retry_count or None,
-                    )
-            if activity_id:
-                await activity_service.complete_activity(
-                    activity_id=activity_id,
-                    status=ActivityState.FAILED,
-                    error=error_msg,
-                )
+            # #671/H4: CAS-gate the terminal write; the activity completion and
+            # the AUTH breaker outcome both fire only if this writer won (a turn
+            # superseded by a cancel must not also count toward the breaker).
+            won = await _write_terminal_and_gate(
+                execution_id,
+                activity_id,
+                status=TaskExecutionStatus.FAILED,
+                activity_status=ActivityState.FAILED,
+                error=error_msg,
+                cost=salvage_cost,
+                context_used=salvage_context,
+                context_max=salvage_context_max,
+                retry_count=retry_count or None,
+            )
             # #526 D10: AUTH-only counting. Gate on error_code == AUTH so a
             # non-auth HTTP failure (error_code is None) is NEVER passed to
             # record_outcome — which would read None as a success and reset the
             # counter. On the →open transition this backgrounds the backlog
             # drain + audit.
-            if error_code == TaskExecutionErrorCode.AUTH:
+            if won and error_code == TaskExecutionErrorCode.AUTH:
                 await _record_dispatch_terminal(agent_name, breaker_enabled, error_code)
             return TaskExecutionResult(
                 execution_id=execution_id or "",
@@ -1124,20 +1184,15 @@ class TaskExecutionService:
         except Exception as e:
             error_msg = str(e)
             logger.error(f"[TaskExecService] Unexpected error executing task on {agent_name}: {error_msg}")
-            if execution_id:
-                existing = db.get_execution(execution_id)
-                if not existing or existing.status != TaskExecutionStatus.CANCELLED:
-                    db.update_execution_status(
-                        execution_id=execution_id,
-                        status=TaskExecutionStatus.FAILED,
-                        error=error_msg,
-                    )
-            if activity_id:
-                await activity_service.complete_activity(
-                    activity_id=activity_id,
-                    status=ActivityState.FAILED,
-                    error=error_msg,
-                )
+            # #671/H4: CAS-gate the terminal write; complete the activity only
+            # if we won.
+            await _write_terminal_and_gate(
+                execution_id,
+                activity_id,
+                status=TaskExecutionStatus.FAILED,
+                activity_status=ActivityState.FAILED,
+                error=error_msg,
+            )
             return TaskExecutionResult(
                 execution_id=execution_id or "",
                 status=TaskExecutionStatus.FAILED,

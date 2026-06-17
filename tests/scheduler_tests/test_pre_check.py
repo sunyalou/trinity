@@ -22,6 +22,7 @@ if _src_path not in sys.path:
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from scheduler.models import ExecutionStatus
@@ -130,6 +131,40 @@ class TestRunPreCheckTranslation:
         with patch(
             "scheduler.service.httpx.AsyncClient", return_value=client_ctx
         ):
+            decision = await svc._run_pre_check("test-agent")
+        assert decision is None
+
+
+class TestRunPreCheckTimeout:
+    """#1022: the pre-check POST deadline is config-driven (was a 70.0 literal),
+    and a blank-stringifying timeout — the exact #1022 trigger — still fails
+    open instead of raising. (TestRunPreCheckTranslation already covers the
+    fail-open path with a *non-blank* exception; this pins the blank case.)"""
+
+    @pytest.mark.asyncio
+    async def test_post_uses_configured_pre_check_timeout(self, db_with_data):
+        """The POST timeout comes from config.pre_check_timeout, not a literal."""
+        svc = _build_svc(db_with_data)
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json = MagicMock(return_value={"hook_present": False})
+        post = AsyncMock(return_value=response)
+        client_ctx = AsyncMock()
+        client_ctx.__aenter__.return_value.post = post
+
+        with patch("scheduler.service.httpx.AsyncClient", return_value=client_ctx), \
+             patch("scheduler.service.config.pre_check_timeout", 42.0):
+            await svc._run_pre_check("test-agent")
+
+        assert post.call_args.kwargs["timeout"] == 42.0
+
+    @pytest.mark.asyncio
+    async def test_blank_stringifying_timeout_fails_open(self, db_with_data):
+        """A blank httpx timeout (str()=='') must fail open (return None),
+        never propagate — fail-open is structural for the pre-check gate."""
+        svc = _build_svc(db_with_data)
+        with _mock_httpx_post(raise_exc=httpx.ReadTimeout("")):
             decision = await svc._run_pre_check("test-agent")
         assert decision is None
 

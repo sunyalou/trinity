@@ -4,7 +4,7 @@ Thank you for your interest in contributing to Trinity! This document provides g
 
 ## License
 
-By contributing to Trinity, you agree that your contributions will be licensed under the [Polyform Noncommercial License 1.0.0](LICENSE).
+Trinity is licensed under the [Apache License 2.0](LICENSE). Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in Trinity by you shall be licensed under the Apache License 2.0, without any additional terms or conditions (per Section 5 of the license).
 
 ## Code of Conduct
 
@@ -13,6 +13,12 @@ By contributing to Trinity, you agree that your contributions will be licensed u
 - Help others learn and grow
 
 ## How to Contribute
+
+> **Where things are tracked.** Trinity is open-core. The public issue tracker
+> ([abilityai/trinity](https://github.com/abilityai/trinity/issues)) is for
+> **bugs and core maintenance**. Feature ideas and roadmap discussion happen in
+> [Discussions](https://github.com/abilityai/trinity/discussions) — maintainers
+> triage accepted proposals into the product roadmap.
 
 ### Reporting Bugs
 
@@ -26,10 +32,11 @@ By contributing to Trinity, you agree that your contributions will be licensed u
 
 ### Suggesting Features
 
-1. Open an issue with the `enhancement` label
-2. Describe the use case and problem you're solving
-3. Propose a solution (optional)
-4. Be open to discussion and alternatives
+Feature ideas go in **Discussions**, not Issues — the public tracker stays focused on bugs, and maintainers curate the roadmap from accepted proposals.
+
+1. Open a [Discussion](https://github.com/abilityai/trinity/discussions) describing the use case and the problem you're solving
+2. Propose a solution (optional) and be open to alternatives
+3. Accepted ideas are picked up by maintainers and tracked on the roadmap
 
 ### Pull Requests
 
