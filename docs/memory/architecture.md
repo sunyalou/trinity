@@ -331,6 +331,8 @@ Canonical home for each multi-component feature. Endpoint signatures live in [AP
 
 `run_maintenance()` every 60s: expires stale queued tasks (>24h), drains orphans after restart, runs the #526 breaker-aware backstop (below), and on each successful sweep writes a unix-timestamp heartbeat to Redis `canary:drain_tick_at` (read by canary B-02 to distinguish stuck drains from "drain just hasn't run yet"; written at sweep END so a mid-sweep crash leaves the cursor stale and trips the check).
 
+**Status-as-projection (#1082):** `schedule_executions.status` is a CAS-guarded *projection* of an execution's terminal event — the agent process registry is the runtime authority for "is running"; no backend reader treats `status='running'` as the standalone authority (cleanup-watchdog readers use it only as a candidate filter, then confirm against the agent registry / Redis before any destructive write). Every `update(schedule_executions)` that writes `status` carries a status precondition in its `WHERE`, including `update_execution_to_queued` (the overflow re-queue), whose `AND status == RUNNING` guard (#1082) closes the one gap where a stale re-queue could resurrect a terminal row into `queued` (E-02 phantom-reversal class). A static + behavioural regression guard in `tests/unit/test_schedule_status_observability.py` keeps the invariant. See [status-as-projection.md](feature-flows/status-as-projection.md).
+
 ### Circuit Breakers (transport + dispatch, #526)
 
 Two independent per-agent breakers, separate Redis namespaces and separate Lua, so they never contaminate each other's counters. Both reuse the `CircuitState` Lua pattern and the shared `redis_breaker_util.py` plumbing; both fail open on Redis down.
@@ -433,7 +435,7 @@ Lookup keys: S-01/E-02/L-03 shipped via #653; S-02/E-01/E-05/B-01 (Phase 2) and 
 
 | ID | Tier | Severity | Invariant (bug class guarded) |
 |----|------|----------|-------------------------------|
-| S-01 | A | critical | Slot–row bijection: per agent, execution_ids in `agent:slots:{name}` (drain sentinels filtered) ≡ execution_ids of `running` rows (PR #378/#403 class) |
+| S-01 | A | major | Slot–row bijection: per agent, execution_ids in `agent:slots:{name}` (drain sentinels filtered) ≡ execution_ids of `running` rows (PR #378/#403 class). Severity `critical`→`major` (#1082): redundant under #1082 single-owner status — the slot ZSET is no longer a competing authority — and retires with the slot ZSET in #1081 Phase 5 |
 | S-02 | A | critical | No overbooking: `ZCARD(agent:slots:{name})` ≤ `max_parallel_tasks` — distinct from S-01 because Redis and SQL can agree on N+1 (`acquire_slot` concurrency bypass) |
 | S-03 | A | critical | Slot TTL floor: every `agent:slot:{name}:{eid}` HASH created with ≥ `execution_timeout_seconds + 300s` TTL. Kinds: `missing` (-2, HASH expired ahead of ZSET — #226 class), `no_expiry` (-1), `below_floor`. Decay-invariant (#913): reconstructs *initial* TTL as `ttl + age` (age = snapshot − ZSET score, the ZADD epoch) vs `floor − 1` (1s wire-rounding tolerance), so natural decay never fires but a real below-floor set still does |
 | E-01 | B | critical | Terminal-state closure: no `running` row older than `execution_timeout_seconds + 300s` (matches `SLOT_TTL_BUFFER`, so it fires after cleanup's window) |

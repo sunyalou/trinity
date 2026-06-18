@@ -1044,12 +1044,25 @@ class ScheduleOperations:
             queued_at: ISO timestamp (used as the FIFO ordering key).
 
         Returns:
-            True if the row was updated, False if not found.
+            True if the row was moved to QUEUED, False if it is missing or no
+            longer RUNNING. The ``status == RUNNING`` precondition makes this a
+            CAS-guarded projection write (#1082): a stale or duplicate re-queue
+            against an already-terminal row is rejected, so a terminal row can
+            never be resurrected into QUEUED (the E-02 phantom-reversal class).
         """
         with get_engine().begin() as conn:
             result = conn.execute(
                 update(schedule_executions)
-                .where(schedule_executions.c.id == execution_id)
+                .where(
+                    and_(
+                        schedule_executions.c.id == execution_id,
+                        # Only a currently-running row (the state set by
+                        # create_task_execution before the slot acquire failed)
+                        # may spill into the backlog — mirrors the sibling
+                        # release_claim_to_queued guard (#1082).
+                        schedule_executions.c.status == TaskExecutionStatus.RUNNING,
+                    )
+                )
                 .values(
                     status=TaskExecutionStatus.QUEUED,
                     queued_at=queued_at,

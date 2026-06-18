@@ -635,6 +635,11 @@ class CleanupService:
           partial-outage conditions. The race guard preserves any
           SUCCESS that arrived between slot reclaim and this write.
         """
+        # #1082 status-as-projection: the reclaimed slots are only *candidates*.
+        # Authority for "is running" is the agent registry — every FAILED write
+        # below goes through a just-in-time re-verify and the race-guarded
+        # `fail_stale_slot_execution` (WHERE status='running'); status is never
+        # the standalone authority for a destructive write.
         if not reclaimed:
             return
 
@@ -782,6 +787,11 @@ class CleanupService:
             where confirmed_running_ids is the set of execution IDs verified as still
             running on their agents (used by slot cleanup to avoid false failures, #226).
         """
+        # #1082 status-as-projection: status='running' is a *candidate filter*
+        # only — the runtime authority for "is running" is the agent process
+        # registry (queried below via _get_agent_running_ids). We never fail a
+        # row on its status alone; a destructive write requires the agent to
+        # confirm the execution is absent.
         running_executions = db.get_running_executions_with_agent_info()
         if not running_executions:
             return (0, 0, set())
@@ -1404,6 +1414,11 @@ async def _reconcile_orphaned_slots() -> Dict[str, int]:
                         # whose SQL row hasn't been written yet.
                         continue
 
+                    # #1082 status-as-projection: the Redis slot member is the
+                    # candidate; SQL status only *protects* a slot here (a
+                    # non-terminal row is left alone). A slot is reclaimed solely
+                    # when its row is terminal or missing — status is never read
+                    # as authority to fail a running execution.
                     row = db.get_execution(execution_id)
                     if row is not None and row.status not in _TERMINAL_EXECUTION_STATUSES:
                         # Still active — leave the slot alone.
