@@ -381,6 +381,17 @@ async def create_agent_internal(
     # agent container crash-loop on boot when get_runtime() can't resolve it.
     validate_runtime(config.runtime)
 
+    # #1187: normalize the stored runtime to lowercase so the AGENT_RUNTIME env
+    # var and the `trinity.agent-runtime` label agree with the exact-case checks
+    # downstream — startup.sh's `[ "${AGENT_RUNTIME}" = "codex" ]` Codex setup
+    # block and the Gemini key-injection branch below (`config.runtime ==
+    # 'gemini-cli'`). validate_runtime() accepts mixed case (it lowercases only
+    # for the membership test) but does not normalize the stored value, so a
+    # template `runtime: Codex` would pass validation yet silently skip Codex's
+    # startup setup (AGENTS.md mirror / CODEX_HOME) or Gemini's credential inject.
+    if config.runtime:
+        config.runtime = config.runtime.lower()
+
     if config.port is None:
         config.port = get_next_available_port()
 
