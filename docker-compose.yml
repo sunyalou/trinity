@@ -122,6 +122,12 @@ services:
       # forever — accepts deadlock risk for zero false 503s).
       - BACKEND_AGENT_CALL_LIMIT=${BACKEND_AGENT_CALL_LIMIT:-8}
       - BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S=${BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S:-3600}
+      # Fire-and-forget dispatch (#1083). When true, eligible autonomous turns
+      # ({schedule, webhook}) are dispatched 202 + finalized via callback so a
+      # wedged turn holds zero backend coroutine/slot beyond its lease. Default
+      # false; safe to flip early (non-202 agent responses fall back to sync).
+      # Backend-only — the scheduler doesn't dispatch to agents.
+      - DISPATCH_ASYNC=${DISPATCH_ASYNC:-false}
       # Issue #874: uvicorn --reload writes __pycache__/ next to source files
       # in the ./src/backend bind mount. On Linux dev hosts the host dir is
       # owned by the developer UID, not container UID 1000, so the writes

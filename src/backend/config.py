@@ -112,6 +112,20 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", 
 # for the breaker to engage — a true opt-in canary (D7/D11).
 DISPATCH_BREAKER_ENABLED = os.getenv("DISPATCH_BREAKER_ENABLED", "false").lower() == "true"
 
+# Fire-and-Forget Dispatch — global master switch (#1083).
+# When ON, eligible autonomous turns are dispatched to the agent with a 202
+# accept and finalized via the result-callback endpoint, so a wedged turn
+# holds zero backend coroutine/slot beyond its lease. Default OFF; flipping
+# early is safe because a non-202 agent response (old image / non-Claude
+# runtime) falls back to today's synchronous handling.
+DISPATCH_ASYNC = os.getenv("DISPATCH_ASYNC", "false").lower() == "true"
+
+# Triggers eligible for async dispatch (#1083 v1). ONLY {schedule, webhook}:
+# these reach execute_task through the scheduler's async-poll path with no
+# synchronous result consumer. `loop`/`fan_out` consume result.response and
+# MUST stay sync; `event` POSTs the agent directly (bypassing execute_task).
+ASYNC_DISPATCH_ELIGIBLE_TRIGGERS = frozenset({"schedule", "webhook"})
+
 # Voice Chat Configuration (VOICE-001)
 VOICE_ENABLED = os.getenv("VOICE_ENABLED", "true").lower() == "true"
 # Coalesce empty → default (#1076): os.getenv(name, default) returns the

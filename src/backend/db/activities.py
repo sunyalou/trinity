@@ -17,7 +17,7 @@ from sqlalchemy import select, insert, update, and_
 
 from .engine import get_engine
 from .tables import agent_activities
-from models import ActivityState
+from models import ActivityState, ActivityType
 from utils.helpers import utc_now_iso, to_utc_iso, parse_iso_timestamp
 
 
@@ -140,6 +140,41 @@ class ActivityOperations:
             if not row:
                 return None
             return self._row_to_activity(row)
+
+    def get_open_activity_id_for_execution(self, execution_id: str) -> Optional[str]:
+        """Return the id of the still-open dispatch activity for an execution (#1083).
+
+        Used by the result-callback endpoint and the lease reaper to close the
+        activity that the (now-absent) ``execute_task`` coroutine ``finally``
+        would have closed under fire-and-forget dispatch.
+
+        Filtered (Codex #8): ``related_execution_id`` AND
+        ``activity_type IN (chat_start, schedule_start)`` AND
+        ``activity_state = 'started'``. An execution id can be referenced by
+        several activity rows (a collaboration/self-task tool row shares it);
+        an unfiltered lookup would close the wrong one. We restrict to the
+        *dispatch* activity types that ``track_activity`` opens at execution
+        start and to the open (``started``) state, then pick the most recent.
+        Uses ``idx_activities_execution``. Returns None when none is open
+        (already closed, or never tracked).
+        """
+        stmt = (
+            select(agent_activities.c.id)
+            .where(
+                and_(
+                    agent_activities.c.related_execution_id == execution_id,
+                    agent_activities.c.activity_type.in_(
+                        (ActivityType.CHAT_START.value, ActivityType.SCHEDULE_START.value)
+                    ),
+                    agent_activities.c.activity_state == ActivityState.STARTED.value,
+                )
+            )
+            .order_by(agent_activities.c.created_at.desc())
+            .limit(1)
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
+        return row[0] if row else None
 
     def get_agent_activities(self, agent_name: str, activity_type: Optional[str] = None,
                             activity_state: Optional[str] = None, limit: int = 100) -> List[Dict]:

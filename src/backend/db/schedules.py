@@ -1000,7 +1000,9 @@ class ScheduleOperations:
             subscription_id=subscription_id,
         )
 
-    def mark_execution_dispatched(self, execution_id: str) -> bool:
+    def mark_execution_dispatched(
+        self, execution_id: str, async_dispatch: bool = False
+    ) -> bool:
         """Mark an execution as dispatched to the agent.
 
         Sets claude_session_id to 'dispatched' so the no-session cleanup
@@ -1008,9 +1010,19 @@ class ScheduleOperations:
         Only executions that never reach dispatch (e.g. backend crash before
         agent call) will have NULL claude_session_id and be caught by cleanup.
 
+        #1083 fire-and-forget: when ``async_dispatch`` is True the sentinel is
+        ``'dispatched_async'`` instead. This is the **durable async marker** the
+        result-callback endpoint gates on (fail-closed): the callback may only
+        finalize a RUNNING row carrying ``'dispatched_async'``, so it can never
+        terminal-write a sync/interactive execution the backend is mid-await on
+        (Codex #3 / decision 2). Both sentinels are non-NULL/non-empty, so the
+        no-session sweep (``mark_no_session_executions_failed``) and the #106 /
+        E-05 "running row has a session" canary treat them identically.
+
         Returns:
             True if execution was updated, False if not found.
         """
+        sentinel = "dispatched_async" if async_dispatch else "dispatched"
         with get_engine().begin() as conn:
             result = conn.execute(
                 update(schedule_executions)
@@ -1021,7 +1033,7 @@ class ScheduleOperations:
                         schedule_executions.c.claude_session_id.is_(None),
                     )
                 )
-                .values(claude_session_id="dispatched")
+                .values(claude_session_id=sentinel)
             )
             return result.rowcount > 0
 

@@ -119,6 +119,13 @@ services:
       - DATABASE_URL=${DATABASE_URL:-}
       - DB_POOL_SIZE=${DB_POOL_SIZE:-10}
       - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW:-20}
+      # Fire-and-forget dispatch (#1083). When true, eligible autonomous turns
+      # ({schedule, webhook}) are dispatched 202 + finalized via callback so a
+      # wedged turn holds zero backend coroutine/slot beyond its lease. Mirrors
+      # docker-compose.yml; without this line the .env lever is inert in prod
+      # (the #1039 packaging-gap class). Default false; safe to flip early
+      # (non-202 agent responses fall back to sync). Backend-only.
+      - DISPATCH_ASYNC=${DISPATCH_ASYNC:-false}
       # Host telemetry (/api/telemetry) — container-stats cache freshness (s) and
       # max concurrent Docker stat fetches per refresh. Mirrors docker-compose.yml;
       # without these lines the .env knobs are inert in prod (the #1039

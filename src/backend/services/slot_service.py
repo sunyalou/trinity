@@ -184,7 +184,15 @@ class SlotService:
         # BACKLOG-001: Notify registered drain listeners. Fire-and-forget via
         # create_task so release_slot stays cheap. Wrap in a guard so a crash
         # in one callback doesn't cancel the others.
-        if self._on_release_callbacks:
+        #
+        # #1083 (Codex #12): gate the drain on `removed`. A release for an
+        # execution_id that no longer holds the slot (a replayed/late
+        # fire-and-forget callback, a double-release) frees NO capacity, so
+        # firing the drain would admit a backlog row past max_parallel_tasks.
+        # Every legitimate drain trigger removes a present member (the backlog
+        # sentinel swap and capacity.release both release an id they just held),
+        # so this only suppresses the spurious replay drain.
+        if removed and self._on_release_callbacks:
             for cb in self._on_release_callbacks:
                 try:
                     asyncio.create_task(self._safe_invoke(cb, agent_name))

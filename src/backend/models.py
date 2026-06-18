@@ -550,6 +550,31 @@ class CircuitBreakerConfigUpdate(BaseModel):
     enabled: bool
 
 
+class ExecutionResultEnvelope(BaseModel):
+    """Body for POST /api/agents/{name}/executions/{id}/result (#1083).
+
+    The typed terminal an agent POSTs back after a fire-and-forget turn. The
+    backend does NOT re-classify — ``status``/``error_code`` are authoritative
+    and flow straight into ``TaskExecutionService.apply_result``. ``metadata``
+    carries the same shape the synchronous ``/api/task`` response does (cost_usd,
+    context_window, token counts, compact_events, session_id).
+
+    Field caps bound abuse from a buggy/compromised agent while staying well
+    above a legitimate large transcript (the sync path already accepts these):
+    enforced in the router after parse so the failure is a clean 413, not a
+    Pydantic 422 (the agent's retry logic special-cases status codes).
+    """
+    status: str = Field(..., description="'success' or 'failed'")
+    response: Optional[str] = None
+    error: Optional[str] = None
+    error_code: Optional[str] = None
+    terminal_reason: Optional[str] = None  # completed|max_duration|stall_no_output|auth|empty_result
+    metadata: Optional[Dict] = None
+    execution_log: Optional[List] = None
+    session_id: Optional[str] = None
+    execution_time_ms: Optional[int] = None
+
+
 # =============================================================================
 # Soft-Delete Admin Recovery (#834 Phase 1c)
 # =============================================================================
