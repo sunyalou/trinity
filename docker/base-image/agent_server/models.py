@@ -227,6 +227,11 @@ class ParallelTaskRequest(BaseModel):
     resume_session_id: Optional[str] = None  # Claude Code session ID for --resume (EXEC-023)
     persist_session: Optional[bool] = False  # Session tab: write the JSONL so future --resume works
     images: Optional[List[Dict[str, str]]] = None  # Vision images: [{"media_type": "image/jpeg", "data": "<base64>"}]
+    # #1083 fire-and-forget: when true AND this agent runs the Claude runtime,
+    # accept the turn with 202 and report the terminal via the backend's
+    # result-callback endpoint. Ignored by non-Claude runtimes / old images
+    # (they run synchronously and return 200 — the backend's non-202 fallback).
+    async_result: Optional[bool] = False
 
 
 class ParallelTaskResponse(BaseModel):
