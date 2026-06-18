@@ -69,6 +69,7 @@ class TaskExecutionErrorCode(str, Enum):
     NETWORK = "network"             # HTTP/connection error to agent container
     CIRCUIT_OPEN = "circuit_open"   # Circuit breaker open — agent known unhealthy (#767)
     RECONCILED = "reconciled"       # Terminal write lost the CAS; row reflects another writer's terminal (#671/H4)
+    LEASE_EXPIRED = "lease_expired" # Fire-and-forget lease expired — no callback before slot TTL (#1083)
 
 
 @dataclass
@@ -639,6 +640,18 @@ class TaskExecutionService:
         # terminals. Best-effort read; defaults off so disabled agents pay nothing.
         breaker_enabled = dispatch_breaker_active(agent_name)
 
+        # Fire-and-forget dispatch (#1083): eligible triggers ({schedule, webhook})
+        # request a 202 ACK + result callback so a wedged turn holds zero backend
+        # coroutine/slot beyond its lease. The RUNTIME gate is enforced agent-side
+        # (decision 5): a non-Claude / old-image agent ignores `async_result` and
+        # returns 200, which falls through to the synchronous handling below. When
+        # the agent ACKs 202 we hand the slot lease to the callback and skip the
+        # `finally` release. Best-effort read; defaults off.
+        async_dispatch = dispatch_async_eligible(triggered_by)
+        # Set True once a 202 ACK hands the slot lease to the result callback, so
+        # the `finally` does NOT release it (the callback/reaper owns it now).
+        async_handoff = False
+
         # ---- 1. Create execution record (if not provided) ----------------
         if not execution_id:
             # Snapshot subscription at record time (best-effort) for usage tracking (SUB-004)
@@ -798,9 +811,16 @@ class TaskExecutionService:
             # the no-session cleanup doesn't falsely mark long-running executions
             # as "Silent launch failure". Only truly orphaned executions (where
             # the backend died before reaching this point) will be caught.
+            #
+            # #1083: for an async-eligible dispatch write the DURABLE async marker
+            # ('dispatched_async') instead — the result-callback endpoint finalizes
+            # ONLY rows carrying it (fail-closed cross-path guard). Both sentinels
+            # are non-NULL so the no-session sweep treats them identically. If the
+            # agent then returns non-202 (non-Claude / old image) the sync terminal
+            # write overwrites/ignores the marker — harmless, no callback arrives.
             if execution_id:
                 try:
-                    db.mark_execution_dispatched(execution_id)
+                    db.mark_execution_dispatched(execution_id, async_dispatch=async_dispatch)
                 except Exception as e:
                     logger.warning(f"[TaskExecService] Failed to mark execution dispatched: {e}")
 
@@ -847,6 +867,10 @@ class TaskExecutionService:
                 "resume_session_id": resume_session_id,
                 "persist_session": persist_session,
                 "images": images or None,
+                # #1083: request a 202 ACK + result callback. Honored ONLY by a
+                # Claude-runtime agent on a new base image; everyone else ignores
+                # it and runs synchronously (200 → sync fallback below).
+                "async_result": async_dispatch,
             }
 
             effective_timeout = float(timeout_seconds or 600) + 10
@@ -959,6 +983,28 @@ class TaskExecutionService:
                             f"http_timeout={retry_http_timeout}s, "
                             f"agent_timeout={retry_agent_timeout}s)"
                         )
+
+            # ---- #1083: fire-and-forget ACK --------------------------------
+            # A Claude-runtime agent on a new base image accepts an async turn
+            # with 202 and runs it in the background, POSTing the terminal to the
+            # result-callback endpoint when done. Hand the slot lease to the
+            # callback (skip the `finally` release) and return RUNNING now — no
+            # terminal write here; the callback (or the lease reaper) finalizes
+            # the row. Any other status (200 success, errors) falls through to
+            # today's synchronous handling — the non-202 fallback that keeps mixed
+            # image versions and non-Claude runtimes working.
+            if async_dispatch and response.status_code == 202:
+                async_handoff = True
+                logger.info(
+                    f"[TaskExecService] Agent {agent_name} ACK'd async dispatch (202) "
+                    f"for execution {execution_id}; handing slot lease to result callback"
+                )
+                return TaskExecutionResult(
+                    execution_id=execution_id or "",
+                    status=TaskExecutionStatus.RUNNING,
+                    response="",
+                    dispatched_async=True,
+                )
 
             response.raise_for_status()
 
@@ -1167,7 +1213,10 @@ class TaskExecutionService:
 
         finally:
             # ---- 8. Release slot (only if acquired) ----------------------
-            if slot_acquired:
+            # #1083: on an async 202 handoff the slot lease belongs to the result
+            # callback (or the lease reaper) — do NOT release it here, or the turn
+            # would run with no capacity reserved and overbook the agent.
+            if slot_acquired and not async_handoff:
                 await capacity.release(
                     agent_name,
                     execution_id or f"temp-{datetime.utcnow().timestamp()}",

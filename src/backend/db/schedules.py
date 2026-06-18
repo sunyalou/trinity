@@ -2285,46 +2285,91 @@ class ScheduleOperations:
         with get_engine().connect() as conn:
             return [dict(row) for row in conn.execute(stmt).mappings()]
 
-    def mark_stale_executions_failed(self, timeout_minutes: int = 30) -> int:
-        """Mark running executions older than timeout as failed.
+    def mark_stale_executions_failed(
+        self,
+        timeout_minutes: int = 30,
+        agent_timeouts: Optional[Dict[str, int]] = None,
+        buffer_seconds: int = 0,
+    ) -> int:
+        """Mark running executions older than their stale window as failed.
 
         Uses TaskExecutionStatus.RUNNING / .FAILED for status values.
 
+        #1083 Finding 1: when ``agent_timeouts`` is provided the stale window is
+        **per agent** — ``agent_timeout + buffer_seconds`` — instead of a single
+        flat ``timeout_minutes``. The old flat 120-min window equalled the MAX
+        agent timeout with NO ``SLOT_TTL_BUFFER``, so this no-CAS/no-registry
+        sweep failed a legitimately-running max-timeout async turn ~5 min before
+        the slot reaper + canary E-01 (which use ``timeout + 300``). Matching the
+        reaper's window closes that early-fail. When ``agent_timeouts`` is None
+        the prior flat behaviour is reproduced exactly.
+
         Args:
-            timeout_minutes: Executions running longer than this are considered stale.
+            timeout_minutes: Flat fallback window (also the default for any agent
+                absent from ``agent_timeouts``).
+            agent_timeouts: ``{agent_name: execution_timeout_seconds}`` (e.g.
+                ``db.get_all_execution_timeouts()``). None → flat behaviour.
+            buffer_seconds: Added to each per-agent timeout (pass ``SLOT_TTL_BUFFER``
+                to match the slot reaper / E-01 window).
 
         Returns:
             Number of executions marked as failed.
         """
         now = utc_now_iso()
-        # Compute threshold in ISO 8601 format to match stored started_at
-        # (SQLite's datetime() returns space-separated format which breaks string comparison)
-        threshold = (datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)).strftime('%Y-%m-%dT%H:%M:%S')
-        error_msg = f"Marked as failed by cleanup: exceeded {timeout_minutes}-minute timeout"
+        completed_at = parse_iso_timestamp(now)
+        default_threshold_s = timeout_minutes * 60
+
+        # SQL pre-filter uses the SMALLEST per-agent window so no stale row is
+        # missed; Python then applies each row's precise per-agent window. ISO
+        # 8601 format matches stored started_at (SQLite's datetime() differs).
+        if agent_timeouts:
+            min_threshold_s = min(
+                [default_threshold_s] + [t + buffer_seconds for t in agent_timeouts.values()]
+            )
+        else:
+            min_threshold_s = default_threshold_s
+        prefilter = (
+            datetime.now(timezone.utc) - timedelta(seconds=min_threshold_s)
+        ).strftime('%Y-%m-%dT%H:%M:%S')
+
         with get_engine().begin() as conn:
-            # Find stale executions for duration calculation
-            stale_rows = conn.execute(
+            candidate_rows = conn.execute(
                 select(
                     schedule_executions.c.id,
                     schedule_executions.c.started_at,
+                    schedule_executions.c.agent_name,
                 ).where(
                     and_(
                         schedule_executions.c.status == TaskExecutionStatus.RUNNING,
-                        schedule_executions.c.started_at < threshold,
+                        schedule_executions.c.started_at < prefilter,
                     )
                 )
             ).mappings().all()
 
-            if not stale_rows:
+            if not candidate_rows:
                 return 0
 
-            completed_at = parse_iso_timestamp(now)
-            for row in stale_rows:
+            failed = 0
+            for row in candidate_rows:
                 started_at = parse_iso_timestamp(row["started_at"])
-                duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+                age_s = (completed_at - started_at).total_seconds()
+                if agent_timeouts is not None:
+                    at = agent_timeouts.get(row["agent_name"])
+                    effective_s = (at + buffer_seconds) if at is not None else default_threshold_s
+                else:
+                    effective_s = default_threshold_s
+                # Decay-safe boundary: a row exactly AT its window survives; only
+                # strictly past it is swept (mirrors the canary E-01 tolerance).
+                if age_s <= effective_s:
+                    continue
+                duration_ms = int(age_s * 1000)
+                error_msg = (
+                    f"Marked as failed by cleanup: exceeded {int(effective_s)}s "
+                    f"stale timeout"
+                )
                 # RELIABILITY-005: guard the UPDATE so a SUCCESS that arrived
                 # between the SELECT and this UPDATE is never overwritten.
-                conn.execute(
+                result = conn.execute(
                     update(schedule_executions)
                     .where(
                         and_(
@@ -2339,8 +2384,10 @@ class ScheduleOperations:
                         error=error_msg,
                     )
                 )
+                if result.rowcount:
+                    failed += 1
 
-            return len(stale_rows)
+            return failed
 
     def mark_no_session_executions_failed(self, timeout_seconds: int = 60) -> int:
         """Mark running executions with no claude_session_id as failed.
