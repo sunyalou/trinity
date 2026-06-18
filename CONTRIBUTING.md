@@ -40,22 +40,27 @@ Feature ideas go in **Discussions**, not Issues — the public tracker stays foc
 
 ### Pull Requests
 
-The project follows a 4-stage SDLC: Todo → In Progress → In Dev → Done, tracked via GitHub Issues labels (`status-in-progress`, `status-in-dev`).
+Contributions land as pull requests against `dev`. Trinity follows a 4-stage SDLC — **Todo → In Progress → In Dev → Done** — tracked entirely through GitHub Issues labels (`status-in-progress`, `status-in-dev`) and open/closed state.
 
 1. **Fork and clone** the repository
-2. **Find or create an issue** — every PR must link to an issue
+2. **Find or create an issue** — every PR must link to an issue:
+   - **Bugs**: open or find one in [Issues](https://github.com/abilityai/trinity/issues).
+   - **Features**: start in [Discussions](https://github.com/abilityai/trinity/discussions) — features aren't tracked in the public issue queue. Once a maintainer accepts the idea, they create the tracking issue your PR references.
 3. **Create a feature branch** from `dev`:
    ```bash
    git checkout dev && git pull origin dev
-   git checkout -b feature/<issue-number>-your-feature-name
+   git checkout -b feature/<issue-number>-<short-slug>
    ```
 4. **Make your changes** following our coding standards
-5. **Test your changes** locally
-6. **Commit with clear messages**:
+5. **Test your changes** locally (see [Running Tests](#running-tests))
+6. **Commit with clear messages** using [conventional commits](#commit-message-format):
    ```bash
-   git commit -m "feat: Add support for custom metrics"
+   git commit -m "feat: add support for custom metrics"
    ```
-7. **Push and create a PR** against `dev` — include `Fixes #N` in the description. `main` is reserved for release cuts.
+7. **Push and open a PR against `dev`** — include `Fixes #N` in the description. `main` is reserved for release cuts; never target it directly.
+8. **Pass review and CI** — maintainers run a code review and PR validation, and the required status checks (CodeQL, schema parity, container security) must be green. Address requested changes and keep the diff scoped to its issue.
+
+On squash-merge to `dev`, automation moves the linked issue to `status-in-dev`; it ships — and the issue closes — when the next release cuts `dev → main`.
 
 ### Commit Message Format
 
@@ -165,6 +170,8 @@ trinity/
 Look for issues labeled `good first issue` - these are suitable for newcomers.
 
 ### Feature Development
+
+Features are roadmap-curated — float the idea in [Discussions](https://github.com/abilityai/trinity/discussions) first so a maintainer can create the tracking issue your PR will reference (see [Pull Requests](#pull-requests)).
 
 - Agent template improvements
 - UI/UX enhancements
