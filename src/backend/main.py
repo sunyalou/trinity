@@ -1127,23 +1127,32 @@ async def health_check():
     if not is_sqlite():
         return {"status": "healthy", "timestamp": utc_now_iso()}
 
+    from db.migrations import migration_health
+
     expected = len(MIGRATIONS)
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM schema_migrations")
-            applied = cursor.fetchone()[0]
+            applied, expected, first_pending = migration_health(conn.cursor())
     except Exception as e:
         logger.warning("health_check: could not query schema_migrations: %s", e)
+        # Can't read the tracking table — treat as incomplete and name the first
+        # registered migration as the suspect.
         applied = 0
+        first_pending = MIGRATIONS[0][0] if MIGRATIONS else None
 
     if applied < expected:
+        # first_pending names the stuck/pending migration so a 503 is actionable,
+        # not just a count (#1160).
         return JSONResponse(
             status_code=503,
             content={
                 "status": "unhealthy",
                 "timestamp": utc_now_iso(),
-                "migrations": {"applied": applied, "expected": expected},
+                "migrations": {
+                    "applied": applied,
+                    "expected": expected,
+                    "first_pending": first_pending,
+                },
             },
         )
     return {"status": "healthy", "timestamp": datetime.now()}

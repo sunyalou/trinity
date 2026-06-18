@@ -165,24 +165,29 @@ def init_database():
     db_path = Path(DB_PATH)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
+    # Hold the cross-process lock across BOTH migration passes AND init_schema
+    # (#1160): init_schema's CREATE TABLE IF NOT EXISTS could otherwise race a
+    # concurrent worker mid-rebuild and recreate an empty table over its data.
+    from db.migration_lock import migration_lock
+    with migration_lock(DB_PATH):
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
 
-        # Run migrations first (upgrade existing DB; skips if tables don't exist yet)
-        run_all_migrations(cursor, conn)
+            # Run migrations first (upgrade existing DB; skips if tables don't exist yet)
+            run_all_migrations(cursor, conn)
 
-        # Create schema (tables and indexes)
-        init_schema(cursor, conn)
+            # Create schema (tables and indexes)
+            init_schema(cursor, conn)
 
-        # Second pass: record any migrations skipped on fresh install. On first
-        # startup the target tables don't exist yet so those migrations are
-        # skipped-but-not-recorded. init_schema has now created them with the
-        # correct current schema, so re-running is a no-op — but it records
-        # them, keeping the health check accurate.
-        run_all_migrations(cursor, conn)
+            # Second pass: record any migrations skipped on fresh install. On first
+            # startup the target tables don't exist yet so those migrations are
+            # skipped-but-not-recorded. init_schema has now created them with the
+            # correct current schema, so re-running is a no-op — but it records
+            # them, keeping the health check accurate.
+            run_all_migrations(cursor, conn)
 
-        # Create default admin user if not exists
-        _ensure_admin_user(cursor, conn)
+            # Create default admin user if not exists
+            _ensure_admin_user(cursor, conn)
 
 
 def _ensure_admin_user_engine():

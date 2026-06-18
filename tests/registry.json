@@ -665,6 +665,19 @@
         "setup"
       ],
       "description": "First-time setup token delivery (#858), both layers: Dockerfile parity guard (backend declares ENV PYTHONUNBUFFERED=1 matching scheduler, parsed as a real ENV instruction) + AST checks on main.py lifespan (token emitted via logger.warning after setup_logging() and before event_bus.start(); no print() calls anywhere in the lifespan)."
+    },
+    {
+      "file": "unit/test_1160_migration_atomicity.py",
+      "feature": "#1160",
+      "added": "2026-06-18",
+      "categories": [
+        "backend",
+        "unit",
+        "database",
+        "migrations",
+        "reliability"
+      ],
+      "description": "Migration runner atomicity + cross-process lock (#1160). _atomic_rebuild rename-swap inside an explicit transaction closes the DROP-rebuild data-loss window (crash mid-rebuild rolls back with no data loss; verified for agent_sharing + agent_skills incl. lowercase/NULL-email behavior preservation and index recreation); replay-after-partial-apply completes cleanly; a failed migration is named on its traceback via add_note (original exception type preserved). Cross-process flock (db/migration_lock.py) serialises concurrent boots — multiprocessing tests prove mutual exclusion and a safe concurrent rebuild."
     }
   ]
 }
