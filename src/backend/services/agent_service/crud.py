@@ -35,7 +35,7 @@ from services.github_service import GitHubService, GitHubError
 from utils.helpers import sanitize_agent_name, utc_now_iso
 from .helpers import validate_base_image, is_claude_runtime, validate_runtime
 from .lifecycle import RESTRICTED_CAPABILITIES, FULL_CAPABILITIES
-from .capabilities import AGENT_TMPFS_MOUNT, AGENT_DEFAULT_TMPDIR
+from .capabilities import AGENT_TMPFS_MOUNT, AGENT_DEFAULT_TMPDIR, normalize_cpu, normalize_memory
 
 logger = logging.getLogger(__name__)
 
@@ -469,6 +469,25 @@ async def create_agent_internal(
         if generated_files:
             cred_files_volume = {str(cred_files_dir): {'bind': '/generated-creds', 'mode': 'ro'}}
 
+    # #1197: validate/normalize template resource fields against the allowed
+    # set BEFORE any side effects (MCP key, subscription, container). A
+    # Kubernetes-style `cpu: "0.5"` / `memory: "512Mi"` from a source repo's
+    # template.yaml used to reach the raw `int(cpu)` at container-create and
+    # abort with an opaque ValueError — leaving an orphaned mcp_api_keys row.
+    # Fail fast here with an actionable 400 instead, and write the canonical
+    # values back so the container labels + limits use them.
+    if config.resources is None:
+        config.resources = {}
+    try:
+        config.resources['cpu'] = normalize_cpu(
+            config.resources.get('cpu'), _get_default_resource('cpu')
+        )
+        config.resources['memory'] = normalize_memory(
+            config.resources.get('memory'), _get_default_resource('memory')
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     # Phase: Agent-to-Agent Collaboration
     # Generate agent-scoped MCP API key for Trinity MCP access
     agent_mcp_key = None
@@ -762,11 +781,13 @@ async def create_agent_internal(
                 # is redirected off this tiny tmpfs via the TMPDIR env var).
                 tmpfs=AGENT_TMPFS_MOUNT,
                 network='trinity-agent-network',
-                mem_limit=config.resources.get('memory') or _get_default_resource('memory'),
+                # #1197: cpu/memory normalized + validated above (raises 400 on
+                # a bad template value), so these are guaranteed Docker-valid.
+                mem_limit=config.resources['memory'],
                 # #1126: nano_cpus (Linux CFS quota), NOT cpu_count — the latter
                 # is Windows-only in docker-py and left NanoCpus=0, so newly
                 # created agents never got a CPU limit on Linux.
-                nano_cpus=int(config.resources.get('cpu') or _get_default_resource('cpu')) * 1_000_000_000,
+                nano_cpus=int(config.resources['cpu']) * 1_000_000_000,
             )
 
             agent_status = get_agent_status_from_container(container)
@@ -866,6 +887,19 @@ async def create_agent_internal(
                     logger.warning(
                         "Failed to roll back agent_git_config for %s after "
                         "creation failure: %s",
+                        config.name,
+                        cleanup_exc,
+                    )
+            # #1197: the agent-scoped MCP key is minted before container
+            # creation, so a failure here would otherwise leave an orphaned
+            # mcp_api_keys row (one per failed attempt). Roll it back too.
+            if agent_mcp_key:
+                try:
+                    db.delete_agent_mcp_api_key(config.name)
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "Failed to roll back MCP key for %s after creation "
+                        "failure: %s",
                         config.name,
                         cleanup_exc,
                     )
