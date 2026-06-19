@@ -21,8 +21,9 @@ from typing import Optional, Dict, List
 import httpx
 
 from database import db
-from models import TaskExecutionStatus
+from models import ActivityState, TaskExecutionStatus
 from services.capacity_manager import get_capacity_manager
+from services.slot_service import SLOT_TTL_BUFFER
 from utils.helpers import utc_now, utc_now_iso, parse_iso_timestamp
 from utils.credential_sanitizer import sanitize_text
 
@@ -31,6 +32,12 @@ logger = logging.getLogger(__name__)
 # Configuration
 CLEANUP_INTERVAL_SECONDS = 300  # 5 minutes
 EXECUTION_STALE_TIMEOUT_MINUTES = 120  # SCHED-ASYNC-001: increased from 30 to support long-running tasks
+# #1083: prefix tagged onto the slot-reclaim FAILED message so a fire-and-forget
+# lease expiry (no result callback before the slot TTL) is identifiable. Mirrors
+# TaskExecutionErrorCode.LEASE_EXPIRED.value; kept as a literal to avoid importing
+# the execution service into the cleanup background loop. The existing descriptive
+# text is preserved after the prefix (substring assertions stay green).
+_LEASE_EXPIRED_TAG = "lease_expired"
 ACTIVITY_STALE_TIMEOUT_MINUTES = 120  # SCHED-ASYNC-001: increased from 30 to support long-running tasks
 NO_SESSION_TIMEOUT_SECONDS = 60  # Issue #106: fast-fail executions that never got a Claude session
 WATCHDOG_HTTP_TIMEOUT = 15.0  # Timeout for agent HTTP calls during reconciliation (#869: increased from 5s to handle agents under load)
@@ -311,9 +318,21 @@ class CleanupService:
             return set()
 
     def _sweep_stale_executions(self, report: CleanupReport) -> None:
-        """1. Mark stale executions failed (agent-unreachable safety net)."""
+        """1. Mark stale executions failed (agent-unreachable safety net).
+
+        #1083 Finding 1: use the per-agent ``timeout + SLOT_TTL_BUFFER`` window
+        (same as the slot reaper / E-01) instead of the flat 120-min default, so
+        a legitimately-running max-timeout async turn isn't failed ~5 min early.
+        ``EXECUTION_STALE_TIMEOUT_MINUTES`` stays the fallback for any agent
+        absent from the timeout map (e.g. soft-deleted).
+        """
         try:
-            count = db.mark_stale_executions_failed(EXECUTION_STALE_TIMEOUT_MINUTES)
+            agent_timeouts = db.get_all_execution_timeouts()
+            count = db.mark_stale_executions_failed(
+                EXECUTION_STALE_TIMEOUT_MINUTES,
+                agent_timeouts=agent_timeouts,
+                buffer_seconds=SLOT_TTL_BUFFER,
+            )
             report.stale_executions = count
             if count > 0:
                 logger.info(f"[Cleanup] Marked {count} stale executions as failed")
@@ -607,6 +626,32 @@ class CleanupService:
             except Exception as e:
                 logger.warning(f"[Cleanup] WAL checkpoint failed: {e}")
 
+    async def _close_stale_slot_activity(self, execution_id: str) -> None:
+        """Close the open dispatch activity for a reclaimed-slot execution (#1083).
+
+        Under fire-and-forget dispatch the ``execute_task`` coroutine returns at
+        the 202 ACK, so its ``finally`` never runs to complete the activity. When
+        the lease reaper FAILs the row we close the activity here instead — using
+        the filtered ``get_open_activity_id_for_execution`` so a shared-eid
+        tool_call row is never cross-closed (Codex #8). Best-effort: a failure
+        here never blocks the reaper.
+        """
+        try:
+            activity_id = db.get_open_activity_id_for_execution(execution_id)
+            if not activity_id:
+                return
+            from services.activity_service import activity_service
+            await activity_service.complete_activity(
+                activity_id=activity_id,
+                status=ActivityState.FAILED,
+                error=f"{_LEASE_EXPIRED_TAG}: slot lease expired (no result callback)",
+            )
+        except Exception as e:  # pragma: no cover - best-effort
+            logger.debug(
+                f"[Cleanup] Could not close activity for stale-slot execution "
+                f"{execution_id}: {e}"
+            )
+
     async def _process_stale_slot_reclaims(
         self,
         reclaimed: Dict[str, List[str]],
@@ -635,6 +680,11 @@ class CleanupService:
           partial-outage conditions. The race guard preserves any
           SUCCESS that arrived between slot reclaim and this write.
         """
+        # #1082 status-as-projection: the reclaimed slots are only *candidates*.
+        # Authority for "is running" is the agent registry — every FAILED write
+        # below goes through a just-in-time re-verify and the race-guarded
+        # `fail_stale_slot_execution` (WHERE status='running'); status is never
+        # the standalone authority for a destructive write.
         if not reclaimed:
             return
 
@@ -696,9 +746,9 @@ class CleanupService:
                             updated = db.fail_stale_slot_execution(
                                 execution_id=execution_id,
                                 error=(
-                                    f"Stale execution — agent '{agent_name}' "
-                                    f"unresponsive during cleanup re-verify, "
-                                    f"slot TTL expired (#497)"
+                                    f"{_LEASE_EXPIRED_TAG}: Stale execution — agent "
+                                    f"'{agent_name}' unresponsive during cleanup "
+                                    f"re-verify, slot TTL expired (#497)"
                                 ),
                             )
                             if updated:
@@ -708,6 +758,9 @@ class CleanupService:
                                     f"agent '{agent_name}' "
                                     f"(slot reclaimed, agent unreachable during re-verify)"
                                 )
+                                # #1083: close the dispatch activity the (now-absent)
+                                # fire-and-forget coroutine `finally` would have closed.
+                                await self._close_stale_slot_activity(execution_id)
                             else:
                                 # Race-guard refused — a real terminal write
                                 # arrived first. Expected and benign.
@@ -748,7 +801,7 @@ class CleanupService:
 
                         updated = db.fail_stale_slot_execution(
                             execution_id=execution_id,
-                            error=f"Stale execution — slot TTL expired for agent '{agent_name}', cleaned by cleanup service",
+                            error=f"{_LEASE_EXPIRED_TAG}: Stale execution — slot TTL expired for agent '{agent_name}', cleaned by cleanup service",
                         )
                         if updated:
                             report.stale_slot_executions += 1
@@ -756,6 +809,9 @@ class CleanupService:
                                 f"[Cleanup] Failed execution {execution_id} for agent "
                                 f"'{agent_name}' (slot reclaimed)"
                             )
+                            # #1083: close the dispatch activity the (now-absent)
+                            # fire-and-forget coroutine `finally` would have closed.
+                            await self._close_stale_slot_activity(execution_id)
                     except Exception as e:
                         logger.error(
                             f"[Cleanup] Error failing {execution_id} after slot reclaim: {e}"
@@ -782,6 +838,11 @@ class CleanupService:
             where confirmed_running_ids is the set of execution IDs verified as still
             running on their agents (used by slot cleanup to avoid false failures, #226).
         """
+        # #1082 status-as-projection: status='running' is a *candidate filter*
+        # only — the runtime authority for "is running" is the agent process
+        # registry (queried below via _get_agent_running_ids). We never fail a
+        # row on its status alone; a destructive write requires the agent to
+        # confirm the execution is absent.
         running_executions = db.get_running_executions_with_agent_info()
         if not running_executions:
             return (0, 0, set())
@@ -1404,6 +1465,11 @@ async def _reconcile_orphaned_slots() -> Dict[str, int]:
                         # whose SQL row hasn't been written yet.
                         continue
 
+                    # #1082 status-as-projection: the Redis slot member is the
+                    # candidate; SQL status only *protects* a slot here (a
+                    # non-terminal row is left alone). A slot is reclaimed solely
+                    # when its row is terminal or missing — status is never read
+                    # as authority to fail a running execution.
                     row = db.get_execution(execution_id)
                     if row is not None and row.status not in _TERMINAL_EXECUTION_STATUSES:
                         # Still active — leave the slot alone.
