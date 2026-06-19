@@ -25,7 +25,7 @@ from services.docker_utils import (
 from services.agent_service.helpers import validate_base_image
 from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities, get_agent_default_resources
 from services.skill_service import skill_service
-from .helpers import check_shared_folder_mounts_match, check_api_key_env_matches, check_github_pat_env_matches, check_resource_limits_match, check_full_capabilities_match, check_guardrails_env_matches, needs_per_agent_pat_injection
+from .helpers import check_shared_folder_mounts_match, check_api_key_env_matches, check_github_pat_env_matches, check_resource_limits_match, check_full_capabilities_match, check_guardrails_env_matches
 from .file_sharing import check_public_folder_mount_matches
 from .read_only import inject_read_only_hooks, remove_read_only_hooks
 
@@ -382,15 +382,17 @@ async def recreate_container_with_updated_config(agent_name: str, old_container,
         env_vars.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
 
     # Update GITHUB_PAT using per-agent PAT first, then platform PAT.
-    if env_vars.get('GITHUB_PAT') or needs_per_agent_pat_injection(agent_name):
+    _per_agent_pat = bool(db.get_agent_github_pat(agent_name)) and bool(db.get_git_config(agent_name))
+    if env_vars.get('GITHUB_PAT') or _per_agent_pat:
         from routers.git import get_github_pat_for_agent
         current_pat = get_github_pat_for_agent(agent_name)
         if current_pat:
-            # #1264: refresh an existing token, or newly inject when a PER-AGENT
-            # PAT is set (needs_per_agent_pat_injection — same gate the recreate
-            # matcher uses, so they converge). A global-only PAT is NOT injected
-            # into a previously-tokenless container (that stays #211's opt-in path).
             env_vars['GITHUB_PAT'] = current_pat
+    # NB: gated on db.get_agent_github_pat (NOT the global fallback) so a global-
+    # only PAT is never injected into a previously-tokenless container (#211's
+    # opt-in path); kept in sync with the recreate matcher so the two converge.
+    # Inlined via db rather than importing the helper, so a test stubbing
+    # services.agent_service.helpers can't break this module's import (#1271 CI).
 
     # GUARD-001: re-serialise guardrails overrides into env so startup.sh
     # can render the runtime config with the latest values.

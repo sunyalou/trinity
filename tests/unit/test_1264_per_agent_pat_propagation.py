@@ -93,49 +93,33 @@ def test_propagate_single_agent_missing_container_short_circuits(monkeypatch):
 
 
 def test_propagate_single_agent_running_injects_and_retemplates(monkeypatch):
+    # Patch at the seams the function owns, robust to sibling sys.modules
+    # pollution: get_agent_container + git_service.update_remote_pat via the LIVE
+    # module (string target, resolved at call time), and _apply_pat_to_env / db on
+    # the bound svc module (the function closes over svc's own globals). Mocking
+    # _apply_pat_to_env avoids a fragile httpx client double.
     _patch_get_agent_container(monkeypatch, lambda n: _Container("running"))
 
-    # Fake the agent-server .env read/inject HTTP round-trip.
-    class _Resp:
-        def __init__(self, payload=None):
-            self._p = payload or {}
-        def raise_for_status(self):
-            return None
-        def json(self):
-            return self._p
+    apply_calls = {}
+    async def _fake_apply(client, base_url, pat, *, add_if_missing):
+        apply_calls.update(pat=pat, add_if_missing=add_if_missing)
+        return "updated"
+    monkeypatch.setattr(svc, "_apply_pat_to_env", _fake_apply)
 
-    injected = {}
-
-    class _Client:
-        def __init__(self, *a, **k):
-            pass
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
-            return False
-        async def get(self, url, params=None, timeout=None):
-            return _Resp({"files": {".env": "FOO=bar\n"}})
-        async def post(self, url, json=None, timeout=None):
-            injected["env"] = json["files"][".env"]
-            return _Resp()
-
-    monkeypatch.setattr(svc.httpx, "AsyncClient", _Client)
-
-    # git config present → remote re-template attempted; stub it.
     monkeypatch.setattr(svc.db, "get_git_config",
                         lambda n: type("G", (), {"github_repo": "org/repo"})())
     called = {}
     async def _fake_update(agent_name, pat, repo):
         called.update(agent=agent_name, pat=pat, repo=repo)
         return True
-    monkeypatch.setattr(git_service, "update_remote_pat", _fake_update)
+    monkeypatch.setattr("services.git_service.update_remote_pat", _fake_update, raising=False)
 
     res = asyncio.run(svc.propagate_pat_to_single_agent("a1", "ghp_tok"))
 
     assert res["applied"] is True
     assert res["env_updated"] is True
     assert res["remote_updated"] is True
-    assert 'GITHUB_PAT="ghp_tok"' in injected["env"]      # added to the tokenless .env
+    assert apply_calls == {"pat": "ghp_tok", "add_if_missing": True}
     assert called == {"agent": "a1", "pat": "ghp_tok", "repo": "org/repo"}
 
 
