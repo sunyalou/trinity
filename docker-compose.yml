@@ -83,12 +83,26 @@ services:
       # Public access / OAuth callbacks
       - PUBLIC_CHAT_URL=${PUBLIC_CHAT_URL:-}
       - FRONTEND_URL=${FRONTEND_URL:-}
+      # Backend's own public origin — used to build OAuth redirect URIs
+      # ({BACKEND_URL}/api/oauth/{provider}/callback, read by config.py). Without
+      # this line the .env value is inert (the #1039 packaging-gap class) and
+      # callbacks fall back to the localhost default. The scheduler reads BACKEND_URL
+      # too but keeps its own internal default (http://backend:8000); intentionally
+      # not wired here so it still reaches the backend over the Docker network.
+      - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
       # CORS (comma-separated extra origins)
       - EXTRA_CORS_ORIGINS=${EXTRA_CORS_ORIGINS:-}
       # Slack channel adapter
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
+      # Socket Mode concurrent WebSocket count (#244); clamped to [1,10], default 2
+      - SLACK_SOCKET_CONNECTION_COUNT=${SLACK_SOCKET_CONNECTION_COUNT:-2}
       # SSH access host override
       - SSH_HOST=${SSH_HOST:-}
+      # Host telemetry (/api/telemetry) — container-stats cache freshness (s) and
+      # max concurrent Docker stat fetches per refresh. Without these lines the
+      # .env knobs are inert (the #1039 packaging-gap class).
+      - TELEMETRY_CONTAINER_STATS_TTL=${TELEMETRY_CONTAINER_STATS_TTL:-10}
+      - TELEMETRY_DOCKER_POOL_SIZE=${TELEMETRY_DOCKER_POOL_SIZE:-16}
       # Canary invariant harness (CANARY-001 / Issue #411).
       # When 1, services/canary_service.py runs the 5-min watcher loop on
       # staging/dev. Default 0 — production users see no canary activity.
@@ -108,6 +122,12 @@ services:
       # forever — accepts deadlock risk for zero false 503s).
       - BACKEND_AGENT_CALL_LIMIT=${BACKEND_AGENT_CALL_LIMIT:-8}
       - BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S=${BACKEND_AGENT_CALL_QUEUE_TIMEOUT_S:-3600}
+      # Fire-and-forget dispatch (#1083). When true, eligible autonomous turns
+      # ({schedule, webhook}) are dispatched 202 + finalized via callback so a
+      # wedged turn holds zero backend coroutine/slot beyond its lease. Default
+      # false; safe to flip early (non-202 agent responses fall back to sync).
+      # Backend-only — the scheduler doesn't dispatch to agents.
+      - DISPATCH_ASYNC=${DISPATCH_ASYNC:-false}
       # Issue #874: uvicorn --reload writes __pycache__/ next to source files
       # in the ./src/backend bind mount. On Linux dev hosts the host dir is
       # owned by the developer UID, not container UID 1000, so the writes
@@ -328,6 +348,9 @@ services:
       - LOG_LEVEL=${SCHEDULER_LOG_LEVEL:-INFO}
       - LOCK_TIMEOUT=600
       - AGENT_TIMEOUT=900
+      # #1022: scheduler→backend dispatch + pre-check deadlines (operator-tunable).
+      - DISPATCH_TIMEOUT=${DISPATCH_TIMEOUT:-30}
+      - PRE_CHECK_TIMEOUT=${PRE_CHECK_TIMEOUT:-70}
       - MISFIRE_GRACE_TIME=3600
       - PUBLISH_EVENTS=true
       - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:-}

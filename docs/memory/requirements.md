@@ -2876,6 +2876,59 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
 
 ---
 
+## 40. Multi-Runtime Harnesses — OpenAI Codex (#1187)
+
+### 40.1 Codex CLI Execution Engine (#1187 — MVP)
+
+Trinity agents may run on the **OpenAI Codex CLI** as a third execution runtime
+("harness == runtime") alongside Claude Code and Gemini. A template selects it
+via `runtime: { type: codex, model: gpt-5.1-codex }`; the container is created
+with `AGENT_RUNTIME=codex` and `codex_runtime.py` implements the `AgentRuntime`
+ABC. Follow-up to spike #854.
+
+**Functional requirements:**
+- **FR-1 — Execution:** `/api/chat` and `/api/task` run via `codex exec --json`;
+  the `-o/--output-last-message` file is the authoritative response (read-then-delete);
+  JSONL `agent_message` is the fallback. Tokens/cost from `turn.completed.usage`
+  (estimated cost — Codex has no native cost; `reasoning_output_tokens` is a subset
+  of `output_tokens`, never double-counted).
+- **FR-2 — Chat continuity:** `codex exec resume <thread_id>` continues the Chat-tab
+  conversation. The Session tab's cached-UUID `--resume` model is NOT supported in
+  the MVP (gated off for codex; chat continuity lives in the Chat tab).
+- **FR-3 — Safety parity (blocking):** the platform system prompt reaches Codex
+  (prepended per-turn; `CLAUDE.md`→`AGENTS.md` mirrored at startup for identity);
+  read-only mode maps to `--sandbox read-only`; guardrails are honored where they
+  map to Codex's control surface and surfaced (logged) where they don't; Codex
+  output + logs pass through the credential sanitizer.
+- **FR-4 — Sandbox + network:** normal (writable) agents run `--sandbox danger-full-access`,
+  which DISABLES Codex's own bubblewrap sandbox — `workspace-write`/`read-only` both invoke
+  `bwrap` to create a user namespace, which the hardened Trinity container forbids
+  (`bwrap: No permissions to create a new namespace`), blocking every shell tool. The Trinity
+  container is already the boundary (`cap_drop ALL` + AppArmor + `no-new-privileges`), the same
+  posture Claude/Gemini run under, so dropping the redundant inner sandbox weakens nothing.
+  Read-only agents keep `--sandbox read-only` (sandbox-native write protection) as the interim
+  enforcement — a fail-closed read-only enforcement story for Codex is a fast-follow.
+- **FR-5 — Credentials:** `OPENAI_API_KEY` from the agent's `.env` (CRED-002),
+  loaded into the subprocess env; Codex agents are NOT assigned a Claude subscription.
+- **FR-6 — MCP:** Trinity HTTP MCP + template MCP servers wired via `$CODEX_HOME/config.toml`;
+  the bearer token is referenced by env var, never persisted as a literal.
+- **FR-7 — Capabilities:** each runtime declares `RuntimeCapabilities`
+  (`chat_continuity`, `session_tab_resume`, `mcp_support`, `cost_reporting`);
+  `get_runtime()` validates `AGENT_RUNTIME` and fails loudly on unknown values.
+
+**Non-functional:** concurrency-safe orphan cleanup (must not kill sibling
+executions); `CODEX_HOME` relocated off the git-tracked workspace; error→HTTP
+mapping keeps non-auth failures at 500 (never 503) so the dispatch breaker's
+AUTH-only counting and the SUB-003 auth switch stay inert for Codex.
+
+**Out of scope (fast-follow):** shared subprocess-helper DRY extraction; Session-tab
+cached-UUID resume for Codex; backend reading `ExecutionMetadata.error_code`
+directly; Codex SSE streaming; vision/images; a post-creation runtime-switch
+endpoint. See the [Harness Authoring Guide](harness-authoring-guide.md) for adding
+a fourth runtime.
+
+---
+
 ## Out of Scope
 
 - Multi-tenant deployment (single org only)

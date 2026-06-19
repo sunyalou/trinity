@@ -44,6 +44,9 @@ sys.modules["services"] = _fake_services_pkg
 
 _fake_docker_service = types.ModuleType("services.docker_service")
 _fake_docker_service.list_all_agents_fast = MagicMock(return_value=[])
+# #1264: github_pat_propagation_service now imports get_agent_container at module
+# top, so the stub must expose it for the fresh module load to succeed.
+_fake_docker_service.get_agent_container = MagicMock(return_value=None)
 sys.modules["services.docker_service"] = _fake_docker_service
 
 

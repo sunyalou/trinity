@@ -102,7 +102,7 @@ Once `status='cancelled'`, no service writes a different terminal state (see `ta
 
 ## 2. Slots ↔ executions (`slot_service.py` / Redis ZSET)
 
-**S-01** Slot–row bijection *(Tier A, 🔴)* — THE core orchestration invariant.
+**S-01** Slot–row bijection *(Tier A, 🟠 — downgraded 🔴→🟠 major by #1082: redundant under single-owner status, retires with the slot ZSET in #1081 Phase 5)* — THE core orchestration invariant.
 For every agent A: `ZMEMBERS(agent:slots:A)` = `{row.id for row in schedule_executions where agent_name=A and status='running'}` ∪ `{sentinel drain tokens < ~5s old}`.
 Signal: symmetric diff of both sets. Drift here = the #219/#226/#378 class of bugs.
 

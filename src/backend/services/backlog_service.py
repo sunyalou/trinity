@@ -118,9 +118,14 @@ class BacklogService:
             execution_id, json.dumps(metadata), queued_at
         )
         if not ok:
+            # update_execution_to_queued is CAS-guarded on status == RUNNING
+            # (#1082), so a False here means the row is gone or already terminal
+            # (a stale/duplicate enqueue). Do not re-queue — there is no slot
+            # held on this path (the slot acquire failed upstream), so returning
+            # False is the clean rejection.
             logger.warning(
                 f"[Backlog] Failed to transition execution {execution_id} "
-                f"to queued for agent '{agent_name}' — row missing?"
+                f"to queued for agent '{agent_name}' — row missing or already terminal"
             )
             return False
 

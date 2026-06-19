@@ -28,6 +28,24 @@ def get_agent_container(name: str):
         return None
 
 
+def get_agent_runtime(name: str) -> str:
+    """Best-effort resolve an agent's execution runtime from its Docker label.
+
+    Reads the ``trinity.agent-runtime`` label (written at create time by
+    ``crud.py``). Used to make the platform system prompt runtime-aware (#1187
+    F-MCP). Never raises and never blocks dispatch — any failure (no Docker
+    client, container gone, missing label) falls back to ``"claude-code"``, which
+    preserves the historical Claude/Gemini prompt naming.
+    """
+    container = get_agent_container(name)
+    if container is None:
+        return "claude-code"
+    try:
+        return container.labels.get("trinity.agent-runtime", "claude-code") or "claude-code"
+    except Exception:
+        return "claude-code"
+
+
 def get_agent_status_from_container(container) -> AgentStatus:
     """Convert a Docker container to AgentStatus using container labels."""
     labels = container.labels
@@ -151,7 +169,11 @@ def list_all_agents_fast() -> List[AgentStatus]:
                 },
                 container_id=container.id,
                 template=labels.get("trinity.template", None) or None,
-                runtime=labels.get("trinity.runtime", "claude-code"),  # From label instead of env vars
+                # Label written at create time is `trinity.agent-runtime` (crud.py);
+                # `trinity.runtime` is never written, so reading it always reported
+                # claude-code and broke the RuntimeBadge for Codex/Gemini agents
+                # in every fast-path view (#1187 review I6).
+                runtime=labels.get("trinity.agent-runtime", "claude-code"),
                 base_image_version=labels.get("trinity.base-image-version"),  # Label only, no image lookup
             )
             agents.append(agent)

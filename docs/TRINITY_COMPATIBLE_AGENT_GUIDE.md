@@ -156,6 +156,7 @@ credentials.json
 .npm/
 .ssh/
 .trinity/
+.tmp/
 
 # Large generated content - DO NOT COMMIT
 content/
