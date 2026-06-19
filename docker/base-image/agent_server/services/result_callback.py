@@ -86,19 +86,19 @@ def _is_safe_execution_id(execution_id: Any) -> bool:
 def _pending_path(execution_id: str) -> Path:
     """Resolve the on-disk pending-result path, guaranteeing containment.
 
-    ``os.path.basename`` strips any directory components from the id before it is
-    joined onto _PENDING_DIR — the CWE-022 barrier that confines a hostile
-    execution_id to the pending dir even if a caller forgets the
-    _is_safe_execution_id belt. resolve() + is_relative_to() is the suspenders:
-    it raises ValueError on a (now unreachable) escape, which the best-effort
-    _persist/_delete callers catch and log.
+    Path-containment guard (the #950 CWE-022 pattern CodeQL recognizes):
+    os.path.normpath collapses any ``..`` in the joined path, an inline
+    startswith prefix-check confirms the result is under _PENDING_DIR, and the
+    *normalized* value is flowed downstream so the path reaching write/replace/
+    unlink is provably contained. Raises ValueError on escape — the best-effort
+    _persist/_delete callers catch and log it; the regex guard in
+    try_spawn_async remains the belt that rejects such ids before they get here.
     """
-    safe_name = f"{os.path.basename(execution_id)}.json"
-    root = _PENDING_DIR.resolve()
-    candidate = (root / safe_name).resolve()
-    if not candidate.is_relative_to(root):
-        raise ValueError(f"pending-result path escapes {root}: {execution_id!r}")
-    return candidate
+    base = os.path.normpath(str(_PENDING_DIR))
+    candidate = os.path.normpath(os.path.join(base, f"{execution_id}.json"))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        raise ValueError(f"pending-result path escapes {base}: {execution_id!r}")
+    return Path(candidate)
 
 
 def _persist(execution_id: str, record: Dict) -> None:
