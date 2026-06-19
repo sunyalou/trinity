@@ -25,7 +25,7 @@ from services.docker_utils import (
 from services.agent_service.helpers import validate_base_image
 from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities, get_agent_default_resources
 from services.skill_service import skill_service
-from .helpers import check_shared_folder_mounts_match, check_api_key_env_matches, check_github_pat_env_matches, check_resource_limits_match, check_full_capabilities_match, check_guardrails_env_matches
+from .helpers import check_shared_folder_mounts_match, check_api_key_env_matches, check_github_pat_env_matches, check_resource_limits_match, check_full_capabilities_match, check_guardrails_env_matches, needs_per_agent_pat_injection
 from .file_sharing import check_public_folder_mount_matches
 from .read_only import inject_read_only_hooks, remove_read_only_hooks
 
@@ -382,13 +382,14 @@ async def recreate_container_with_updated_config(agent_name: str, old_container,
         env_vars.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
 
     # Update GITHUB_PAT using per-agent PAT first, then platform PAT.
-    if db.get_git_config(agent_name):  # #1264: gate on git config, not GITHUB_PAT presence
+    if env_vars.get('GITHUB_PAT') or needs_per_agent_pat_injection(agent_name):
         from routers.git import get_github_pat_for_agent
         current_pat = get_github_pat_for_agent(agent_name)
         if current_pat:
-            # #1264: a tokenless container (PAT configured after creation) now
-            # receives the effective per-agent PAT on restart; startup.sh then
-            # re-templates the remote so fetch/push authenticate.
+            # #1264: refresh an existing token, or newly inject when a PER-AGENT
+            # PAT is set (needs_per_agent_pat_injection — same gate the recreate
+            # matcher uses, so they converge). A global-only PAT is NOT injected
+            # into a previously-tokenless container (that stays #211's opt-in path).
             env_vars['GITHUB_PAT'] = current_pat
 
     # GUARD-001: re-serialise guardrails overrides into env so startup.sh

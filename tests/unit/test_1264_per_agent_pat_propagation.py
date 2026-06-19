@@ -26,11 +26,9 @@ while _BACKEND_STR in sys.path:
     sys.path.remove(_BACKEND_STR)
 sys.path.insert(0, _BACKEND_STR)
 
-# Bind the REAL modules/callables at import time. This file collects before the
-# siblings that replace services.agent_service.* with MagicMocks in sys.modules
-# (test_start_agent_skip_inject, test_inject_assigned_credentials), so these
-# references stay valid even after that pollution. Use these bound names in the
-# tests rather than re-importing (which would pick up the mocks at run time).
+# Bind the real modules/callables at import time and use these bound names in the
+# tests rather than re-importing (which could pick up a sibling's sys.modules stub
+# at run time). Imported at module top so they resolve before any per-test state.
 import services.agent_service.helpers as helpers_mod          # noqa: E402
 import services.github_pat_propagation_service as svc          # noqa: E402
 import routers.git as gitmod                                   # noqa: E402
@@ -40,6 +38,17 @@ check_github_pat_env_matches = helpers_mod.check_github_pat_env_matches
 _patch_env_github_pat = svc._patch_env_github_pat
 _env_has_github_pat = svc._env_has_github_pat
 propagate_pat_to_single_agent = svc.propagate_pat_to_single_agent
+
+
+def _patch_get_agent_container(monkeypatch, fn):
+    """Patch get_agent_container on the LIVE services.docker_service module.
+
+    The function under test resolves `from services.docker_service import
+    get_agent_container` at call time; a sibling test may have swapped
+    services.docker_service for a MagicMock in sys.modules, so we must patch the
+    current module object (string target), not a collection-time reference.
+    """
+    monkeypatch.setattr("services.docker_service.get_agent_container", fn, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -66,22 +75,25 @@ def test_patch_replaces_existing_github_pat_line():
 # propagate_pat_to_single_agent
 # ---------------------------------------------------------------------------
 
-def test_propagate_single_agent_stopped_short_circuits(monkeypatch):
-    class _A:
-        def __init__(self, name, status):
-            self.name, self.status = name, status
+class _Container:
+    def __init__(self, status):
+        self.status = status
 
-    monkeypatch.setattr(svc, "list_all_agents_fast", lambda: [_A("a1", "stopped")])
+
+def test_propagate_single_agent_stopped_short_circuits(monkeypatch):
+    _patch_get_agent_container(monkeypatch, lambda n: _Container("exited"))
+    res = asyncio.run(svc.propagate_pat_to_single_agent("a1", "ghp_x"))
+    assert res == {"applied": False, "reason": "agent_not_running"}
+
+
+def test_propagate_single_agent_missing_container_short_circuits(monkeypatch):
+    _patch_get_agent_container(monkeypatch, lambda n: None)
     res = asyncio.run(svc.propagate_pat_to_single_agent("a1", "ghp_x"))
     assert res == {"applied": False, "reason": "agent_not_running"}
 
 
 def test_propagate_single_agent_running_injects_and_retemplates(monkeypatch):
-    class _A:
-        def __init__(self, name, status):
-            self.name, self.status = name, status
-
-    monkeypatch.setattr(svc, "list_all_agents_fast", lambda: [_A("a1", "running")])
+    _patch_get_agent_container(monkeypatch, lambda n: _Container("running"))
 
     # Fake the agent-server .env read/inject HTTP round-trip.
     class _Resp:
@@ -101,9 +113,9 @@ def test_propagate_single_agent_running_injects_and_retemplates(monkeypatch):
             return self
         async def __aexit__(self, *a):
             return False
-        async def get(self, url, params=None):
+        async def get(self, url, params=None, timeout=None):
             return _Resp({"files": {".env": "FOO=bar\n"}})
-        async def post(self, url, json=None):
+        async def post(self, url, json=None, timeout=None):
             injected["env"] = json["files"][".env"]
             return _Resp()
 
@@ -137,22 +149,23 @@ def _fake_container(env_lines):
     return _C()
 
 
-def test_tokenless_container_with_pat_and_git_needs_recreate(monkeypatch):
-    monkeypatch.setattr(gitmod, "get_github_pat_for_agent", lambda n: "ghp_xyz")
+def test_tokenless_container_with_per_agent_pat_and_git_needs_recreate(monkeypatch):
+    # #1264 review: tokenless recreate keys on the PER-AGENT PAT, not the global fallback.
+    monkeypatch.setattr(helpers_mod.db, "get_agent_github_pat", lambda n: "ghp_peragent")
     monkeypatch.setattr(helpers_mod.db, "get_git_config", lambda n: object())  # git configured
-    # container has no GITHUB_PAT in env
     assert check_github_pat_env_matches(_fake_container(["FOO=bar"]), "a1") is False
 
 
-def test_tokenless_container_without_git_no_recreate(monkeypatch):
-    monkeypatch.setattr(gitmod, "get_github_pat_for_agent", lambda n: "ghp_xyz")
-    monkeypatch.setattr(helpers_mod.db, "get_git_config", lambda n: None)  # no git sync
+def test_tokenless_container_global_pat_only_no_recreate(monkeypatch):
+    # No per-agent PAT (only a global one would resolve) → must NOT force a recreate.
+    monkeypatch.setattr(helpers_mod.db, "get_agent_github_pat", lambda n: None)
+    monkeypatch.setattr(helpers_mod.db, "get_git_config", lambda n: object())
     assert check_github_pat_env_matches(_fake_container(["FOO=bar"]), "a1") is True
 
 
-def test_tokenless_container_no_pat_anywhere_no_recreate(monkeypatch):
-    monkeypatch.setattr(gitmod, "get_github_pat_for_agent", lambda n: "")
-    monkeypatch.setattr(helpers_mod.db, "get_git_config", lambda n: object())
+def test_tokenless_container_without_git_no_recreate(monkeypatch):
+    monkeypatch.setattr(helpers_mod.db, "get_agent_github_pat", lambda n: "ghp_peragent")
+    monkeypatch.setattr(helpers_mod.db, "get_git_config", lambda n: None)  # no git sync
     assert check_github_pat_env_matches(_fake_container(["FOO=bar"]), "a1") is True
 
 
@@ -164,3 +177,17 @@ def test_existing_pat_match_and_mismatch_preserved(monkeypatch):
     # stale → False (recreate)
     assert check_github_pat_env_matches(
         _fake_container(["GITHUB_PAT=ghp_old"]), "a1") is False
+
+
+def test_needs_per_agent_pat_injection_predicate(monkeypatch):
+    # The shared gate matcher and lifecycle both use — per-agent PAT AND git config.
+    monkeypatch.setattr(helpers_mod.db, "get_agent_github_pat", lambda n: "ghp_p")
+    monkeypatch.setattr(helpers_mod.db, "get_git_config", lambda n: object())
+    assert helpers_mod.needs_per_agent_pat_injection("a1") is True
+
+    monkeypatch.setattr(helpers_mod.db, "get_agent_github_pat", lambda n: None)
+    assert helpers_mod.needs_per_agent_pat_injection("a1") is False
+
+    monkeypatch.setattr(helpers_mod.db, "get_agent_github_pat", lambda n: "ghp_p")
+    monkeypatch.setattr(helpers_mod.db, "get_git_config", lambda n: None)
+    assert helpers_mod.needs_per_agent_pat_injection("a1") is False

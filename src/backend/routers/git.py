@@ -599,8 +599,13 @@ async def set_agent_github_pat(
     from services.github_pat_propagation_service import propagate_pat_to_single_agent
     propagation = await propagate_pat_to_single_agent(agent_name, pat)
 
-    if propagation.get("applied"):
+    # #1264 review: the live git process authenticates from the remote URL, so
+    # only `remote_updated` means git ops work *immediately*. An env-only update
+    # (or a stopped agent) takes effect on the next restart.
+    if propagation.get("remote_updated"):
         note = "PAT applied to the running agent — git operations will use it immediately."
+    elif propagation.get("env_updated"):
+        note = "PAT saved to the agent; it will take effect on the next restart."
     elif propagation.get("reason") == "agent_not_running":
         note = "PAT saved. Start the agent for it to take effect in git operations."
     else:
