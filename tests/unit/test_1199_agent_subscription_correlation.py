@@ -44,6 +44,40 @@ from db_harness import db_backend, run as _hrun  # noqa: E402
 pytestmark = pytest.mark.unit
 
 
+# Modules this test mutates in sys.modules — the import-time shadow cleanup
+# above and the per-test ``tmp_db`` fixture both pop cached ``database`` /
+# ``db.*`` (and shadow ``utils*``) modules so production code re-resolves
+# against the test engine. They are snapshotted and restored after each test so
+# the mutation can't leak into unrelated test files in the same pytest session
+# (#762 lint pattern; precedent: tests/unit/test_telegram_webhook_backfill.py).
+_STUBBED_MODULE_NAMES = [
+    "database",
+    "utils",
+    "utils.api_client",
+    "utils.assertions",
+    "utils.cleanup",
+]
+
+
+def _is_managed_module(name: str) -> bool:
+    return name in _STUBBED_MODULE_NAMES or name == "db" or name.startswith("db.")
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_modules():
+    """Snapshot the db/utils sys.modules entries before each test and restore
+    them after, so popped modules don't leak across the session."""
+    saved = {name: mod for name, mod in sys.modules.items() if _is_managed_module(name)}
+    try:
+        yield
+    finally:
+        for name in [n for n in sys.modules if _is_managed_module(n)]:
+            if name not in saved:
+                sys.modules.pop(name, None)
+        for name, mod in saved.items():
+            sys.modules[name] = mod
+
+
 @pytest.fixture
 def tmp_db(db_backend):
     """Active backend with a fresh full schema (db_harness, #300). Pops cached

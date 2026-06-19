@@ -149,38 +149,45 @@ def init_database():
     3. Creates schema (tables and indexes)
     4. Ensures admin user exists
     """
-    # PostgreSQL path (#300, experimental): a fresh PG database is built
-    # directly from schema.py at head, so the sqlite-only PRAGMA migrations are
-    # skipped. SQLite remains the default and keeps the original path below.
+    # PostgreSQL path (#300/#1183): schema is owned by Alembic — a fresh DB is
+    # built by `alembic upgrade head` (the baseline revision reuses the same
+    # head DDL that init_schema_postgres emitted), and an existing DB is
+    # migrated in place. The sqlite-only PRAGMA migrations below are skipped;
+    # SQLite keeps the legacy bespoke path (the two coexist during the Postgres
+    # transition).
     from db.engine import is_sqlite
     if not is_sqlite():
-        from db.engine import get_engine
-        from db.schema import init_schema_postgres
-        init_schema_postgres(get_engine())
+        from db.alembic_runner import upgrade_to_head
+        upgrade_to_head()
         _ensure_admin_user_engine()
         return
 
     db_path = Path(DB_PATH)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
+    # Hold the cross-process lock across BOTH migration passes AND init_schema
+    # (#1160): init_schema's CREATE TABLE IF NOT EXISTS could otherwise race a
+    # concurrent worker mid-rebuild and recreate an empty table over its data.
+    from db.migration_lock import migration_lock
+    with migration_lock(DB_PATH):
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
 
-        # Run migrations first (upgrade existing DB; skips if tables don't exist yet)
-        run_all_migrations(cursor, conn)
+            # Run migrations first (upgrade existing DB; skips if tables don't exist yet)
+            run_all_migrations(cursor, conn)
 
-        # Create schema (tables and indexes)
-        init_schema(cursor, conn)
+            # Create schema (tables and indexes)
+            init_schema(cursor, conn)
 
-        # Second pass: record any migrations skipped on fresh install. On first
-        # startup the target tables don't exist yet so those migrations are
-        # skipped-but-not-recorded. init_schema has now created them with the
-        # correct current schema, so re-running is a no-op — but it records
-        # them, keeping the health check accurate.
-        run_all_migrations(cursor, conn)
+            # Second pass: record any migrations skipped on fresh install. On first
+            # startup the target tables don't exist yet so those migrations are
+            # skipped-but-not-recorded. init_schema has now created them with the
+            # correct current schema, so re-running is a no-op — but it records
+            # them, keeping the health check accurate.
+            run_all_migrations(cursor, conn)
 
-        # Create default admin user if not exists
-        _ensure_admin_user(cursor, conn)
+            # Create default admin user if not exists
+            _ensure_admin_user(cursor, conn)
 
 
 def _ensure_admin_user_engine():
@@ -897,11 +904,14 @@ class DatabaseManager:
                                                           context_used, context_max, cost, tool_calls, execution_log, claude_session_id,
                                                           compact_metadata, retry_count)
 
-    def mark_execution_dispatched(self, execution_id: str) -> bool:
-        return self._schedule_ops.mark_execution_dispatched(execution_id)
+    def mark_execution_dispatched(self, execution_id: str, async_dispatch: bool = False) -> bool:
+        return self._schedule_ops.mark_execution_dispatched(execution_id, async_dispatch)
 
     def get_schedule_executions(self, schedule_id: str, limit: int = 50):
         return self._schedule_ops.get_schedule_executions(schedule_id, limit)
+
+    def get_latest_execution_per_schedule(self, schedule_ids: list):
+        return self._schedule_ops.get_latest_execution_per_schedule(schedule_ids)
 
     def get_agent_executions(self, agent_name: str, limit: int = 50):
         return self._schedule_ops.get_agent_executions(agent_name, limit)
@@ -1099,11 +1109,17 @@ class DatabaseManager:
     def get_activity(self, activity_id: str):
         return self._activity_ops.get_activity(activity_id)
 
+    def get_open_activity_id_for_execution(self, execution_id: str):
+        return self._activity_ops.get_open_activity_id_for_execution(execution_id)
+
     def get_agent_activities(self, agent_name: str, activity_type: str = None, activity_state: str = None, limit: int = 100):
         return self._activity_ops.get_agent_activities(agent_name, activity_type, activity_state, limit)
 
-    def get_activities_in_range(self, start_time: str = None, end_time: str = None, activity_types: list = None, limit: int = 100):
-        return self._activity_ops.get_activities_in_range(start_time, end_time, activity_types, limit)
+    def get_activities_in_range(self, start_time: str = None, end_time: str = None, activity_types: list = None, limit: int = 100, agent_names: list = None):
+        return self._activity_ops.get_activities_in_range(start_time, end_time, activity_types, limit, agent_names)
+
+    def get_latest_activity_for_agents(self, agent_names: list):
+        return self._activity_ops.get_latest_activity_for_agents(agent_names)
 
     def get_current_activities(self, agent_name: str):
         return self._activity_ops.get_current_activities(agent_name)
@@ -1116,9 +1132,11 @@ class DatabaseManager:
         """Get all schedule executions currently in 'running' status."""
         return self._schedule_ops.get_running_executions()
 
-    def mark_stale_executions_failed(self, timeout_minutes: int = 30):
+    def mark_stale_executions_failed(self, timeout_minutes: int = 30, agent_timeouts=None, buffer_seconds: int = 0):
         """Mark executions stuck in 'running' past threshold as failed."""
-        return self._schedule_ops.mark_stale_executions_failed(timeout_minutes)
+        return self._schedule_ops.mark_stale_executions_failed(
+            timeout_minutes, agent_timeouts=agent_timeouts, buffer_seconds=buffer_seconds
+        )
 
     def mark_no_session_executions_failed(self, timeout_seconds: int = 60):
         """Mark running executions with no claude_session_id as failed (Issue #106)."""

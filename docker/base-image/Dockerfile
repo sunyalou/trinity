@@ -50,6 +50,13 @@ RUN npm install -g @anthropic-ai/claude-code@latest
 # Install Gemini CLI for multi-runtime support
 RUN npm install -g @google/gemini-cli
 
+# Install OpenAI Codex CLI for multi-runtime support (#1187).
+# Pinned (not @latest) so base-image rebuilds are reproducible and a
+# breaking Codex release can't silently change the agent runtime. The npm
+# package resolves the platform-specific Rust binary via optional deps;
+# the linux-x64 build lands here. Bump deliberately after testing.
+RUN npm install -g @openai/codex@0.139.0
+
 RUN useradd -m -s /bin/bash -u 1000 developer && \
     echo "developer:developer" | chpasswd && \
     usermod -aG sudo developer && \

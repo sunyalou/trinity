@@ -18,6 +18,7 @@ from sqlalchemy import select, insert, update, delete, and_, or_, func, text, ca
 from sqlalchemy.exc import IntegrityError
 
 from .engine import get_engine
+from .query_helpers import latest_per_group
 from .tables import (
     agent_schedules,
     schedule_executions,
@@ -1000,7 +1001,9 @@ class ScheduleOperations:
             subscription_id=subscription_id,
         )
 
-    def mark_execution_dispatched(self, execution_id: str) -> bool:
+    def mark_execution_dispatched(
+        self, execution_id: str, async_dispatch: bool = False
+    ) -> bool:
         """Mark an execution as dispatched to the agent.
 
         Sets claude_session_id to 'dispatched' so the no-session cleanup
@@ -1008,9 +1011,19 @@ class ScheduleOperations:
         Only executions that never reach dispatch (e.g. backend crash before
         agent call) will have NULL claude_session_id and be caught by cleanup.
 
+        #1083 fire-and-forget: when ``async_dispatch`` is True the sentinel is
+        ``'dispatched_async'`` instead. This is the **durable async marker** the
+        result-callback endpoint gates on (fail-closed): the callback may only
+        finalize a RUNNING row carrying ``'dispatched_async'``, so it can never
+        terminal-write a sync/interactive execution the backend is mid-await on
+        (Codex #3 / decision 2). Both sentinels are non-NULL/non-empty, so the
+        no-session sweep (``mark_no_session_executions_failed``) and the #106 /
+        E-05 "running row has a session" canary treat them identically.
+
         Returns:
             True if execution was updated, False if not found.
         """
+        sentinel = "dispatched_async" if async_dispatch else "dispatched"
         with get_engine().begin() as conn:
             result = conn.execute(
                 update(schedule_executions)
@@ -1021,7 +1034,7 @@ class ScheduleOperations:
                         schedule_executions.c.claude_session_id.is_(None),
                     )
                 )
-                .values(claude_session_id="dispatched")
+                .values(claude_session_id=sentinel)
             )
             return result.rowcount > 0
 
@@ -1044,12 +1057,25 @@ class ScheduleOperations:
             queued_at: ISO timestamp (used as the FIFO ordering key).
 
         Returns:
-            True if the row was updated, False if not found.
+            True if the row was moved to QUEUED, False if it is missing or no
+            longer RUNNING. The ``status == RUNNING`` precondition makes this a
+            CAS-guarded projection write (#1082): a stale or duplicate re-queue
+            against an already-terminal row is rejected, so a terminal row can
+            never be resurrected into QUEUED (the E-02 phantom-reversal class).
         """
         with get_engine().begin() as conn:
             result = conn.execute(
                 update(schedule_executions)
-                .where(schedule_executions.c.id == execution_id)
+                .where(
+                    and_(
+                        schedule_executions.c.id == execution_id,
+                        # Only a currently-running row (the state set by
+                        # create_task_execution before the slot acquire failed)
+                        # may spill into the backlog — mirrors the sibling
+                        # release_claim_to_queued guard (#1082).
+                        schedule_executions.c.status == TaskExecutionStatus.RUNNING,
+                    )
+                )
                 .values(
                     status=TaskExecutionStatus.QUEUED,
                     queued_at=queued_at,
@@ -1389,6 +1415,56 @@ class ScheduleOperations:
                 self._row_to_schedule_execution(row)
                 for row in conn.execute(stmt).mappings()
             ]
+
+    def get_latest_execution_per_schedule(self, schedule_ids: List[str]) -> Dict[str, Dict]:
+        """Return the most-recent execution per schedule, in one query.
+
+        #1265: replaces the per-schedule ``get_schedule_executions(id, limit=5)``
+        fan-out on the /api/ops/schedules dashboard endpoint (one query per
+        schedule -> N+1 that grows with total schedule count). Uses the shared
+        ``latest_per_group`` window helper (partition by schedule_id, order by
+        started_at DESC).
+
+        Projects ONLY the columns the dashboard's ``last_execution`` block needs
+        — never the large TEXT blobs (``response``, ``execution_log``,
+        ``tool_calls``, ``message``) — so the single bulk query stays light even
+        with hundreds of schedules. Returns ``{schedule_id: {id, status,
+        started_at, completed_at, duration_ms, error}}``; ``started_at`` /
+        ``completed_at`` are normalised to ISO strings (matching the prior
+        ``.isoformat()`` API output). Schedules with no executions are absent.
+        """
+        cols = (
+            schedule_executions.c.schedule_id,
+            schedule_executions.c.id,
+            schedule_executions.c.status,
+            schedule_executions.c.started_at,
+            schedule_executions.c.completed_at,
+            schedule_executions.c.duration_ms,
+            schedule_executions.c.error,
+        )
+        rows = latest_per_group(
+            cols,
+            schedule_executions.c.schedule_id,   # partition
+            schedule_executions.c.started_at,    # order (DESC)
+            schedule_executions.c.schedule_id,   # filter IN
+            schedule_ids,
+        )
+
+        def _iso(v):
+            ts = parse_iso_timestamp(v) if v else None
+            return ts.isoformat() if ts else None
+
+        return {
+            row["schedule_id"]: {
+                "id": row["id"],
+                "status": row["status"],
+                "started_at": _iso(row["started_at"]),
+                "completed_at": _iso(row["completed_at"]),
+                "duration_ms": row["duration_ms"],
+                "error": row["error"],
+            }
+            for row in rows
+        }
 
     def get_agent_executions(self, agent_name: str, limit: int = 50) -> List[ScheduleExecution]:
         """Get all executions for an agent across all schedules."""
@@ -2273,46 +2349,91 @@ class ScheduleOperations:
         with get_engine().connect() as conn:
             return [dict(row) for row in conn.execute(stmt).mappings()]
 
-    def mark_stale_executions_failed(self, timeout_minutes: int = 30) -> int:
-        """Mark running executions older than timeout as failed.
+    def mark_stale_executions_failed(
+        self,
+        timeout_minutes: int = 30,
+        agent_timeouts: Optional[Dict[str, int]] = None,
+        buffer_seconds: int = 0,
+    ) -> int:
+        """Mark running executions older than their stale window as failed.
 
         Uses TaskExecutionStatus.RUNNING / .FAILED for status values.
 
+        #1083 Finding 1: when ``agent_timeouts`` is provided the stale window is
+        **per agent** — ``agent_timeout + buffer_seconds`` — instead of a single
+        flat ``timeout_minutes``. The old flat 120-min window equalled the MAX
+        agent timeout with NO ``SLOT_TTL_BUFFER``, so this no-CAS/no-registry
+        sweep failed a legitimately-running max-timeout async turn ~5 min before
+        the slot reaper + canary E-01 (which use ``timeout + 300``). Matching the
+        reaper's window closes that early-fail. When ``agent_timeouts`` is None
+        the prior flat behaviour is reproduced exactly.
+
         Args:
-            timeout_minutes: Executions running longer than this are considered stale.
+            timeout_minutes: Flat fallback window (also the default for any agent
+                absent from ``agent_timeouts``).
+            agent_timeouts: ``{agent_name: execution_timeout_seconds}`` (e.g.
+                ``db.get_all_execution_timeouts()``). None → flat behaviour.
+            buffer_seconds: Added to each per-agent timeout (pass ``SLOT_TTL_BUFFER``
+                to match the slot reaper / E-01 window).
 
         Returns:
             Number of executions marked as failed.
         """
         now = utc_now_iso()
-        # Compute threshold in ISO 8601 format to match stored started_at
-        # (SQLite's datetime() returns space-separated format which breaks string comparison)
-        threshold = (datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)).strftime('%Y-%m-%dT%H:%M:%S')
-        error_msg = f"Marked as failed by cleanup: exceeded {timeout_minutes}-minute timeout"
+        completed_at = parse_iso_timestamp(now)
+        default_threshold_s = timeout_minutes * 60
+
+        # SQL pre-filter uses the SMALLEST per-agent window so no stale row is
+        # missed; Python then applies each row's precise per-agent window. ISO
+        # 8601 format matches stored started_at (SQLite's datetime() differs).
+        if agent_timeouts:
+            min_threshold_s = min(
+                [default_threshold_s] + [t + buffer_seconds for t in agent_timeouts.values()]
+            )
+        else:
+            min_threshold_s = default_threshold_s
+        prefilter = (
+            datetime.now(timezone.utc) - timedelta(seconds=min_threshold_s)
+        ).strftime('%Y-%m-%dT%H:%M:%S')
+
         with get_engine().begin() as conn:
-            # Find stale executions for duration calculation
-            stale_rows = conn.execute(
+            candidate_rows = conn.execute(
                 select(
                     schedule_executions.c.id,
                     schedule_executions.c.started_at,
+                    schedule_executions.c.agent_name,
                 ).where(
                     and_(
                         schedule_executions.c.status == TaskExecutionStatus.RUNNING,
-                        schedule_executions.c.started_at < threshold,
+                        schedule_executions.c.started_at < prefilter,
                     )
                 )
             ).mappings().all()
 
-            if not stale_rows:
+            if not candidate_rows:
                 return 0
 
-            completed_at = parse_iso_timestamp(now)
-            for row in stale_rows:
+            failed = 0
+            for row in candidate_rows:
                 started_at = parse_iso_timestamp(row["started_at"])
-                duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+                age_s = (completed_at - started_at).total_seconds()
+                if agent_timeouts is not None:
+                    at = agent_timeouts.get(row["agent_name"])
+                    effective_s = (at + buffer_seconds) if at is not None else default_threshold_s
+                else:
+                    effective_s = default_threshold_s
+                # Decay-safe boundary: a row exactly AT its window survives; only
+                # strictly past it is swept (mirrors the canary E-01 tolerance).
+                if age_s <= effective_s:
+                    continue
+                duration_ms = int(age_s * 1000)
+                error_msg = (
+                    f"Marked as failed by cleanup: exceeded {int(effective_s)}s "
+                    f"stale timeout"
+                )
                 # RELIABILITY-005: guard the UPDATE so a SUCCESS that arrived
                 # between the SELECT and this UPDATE is never overwritten.
-                conn.execute(
+                result = conn.execute(
                     update(schedule_executions)
                     .where(
                         and_(
@@ -2327,8 +2448,10 @@ class ScheduleOperations:
                         error=error_msg,
                     )
                 )
+                if result.rowcount:
+                    failed += 1
 
-            return len(stale_rows)
+            return failed
 
     def mark_no_session_executions_failed(self, timeout_seconds: int = 60) -> int:
         """Mark running executions with no claude_session_id as failed.

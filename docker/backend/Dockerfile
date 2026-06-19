@@ -2,6 +2,11 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
+# Unbuffered stdout/stderr — otherwise Python block-buffers print()/log output
+# to the Docker pipe (~8KB) and lifespan output (notably the first-time setup
+# token in main.py) never reaches `docker logs`. Matches docker/scheduler/Dockerfile.
+ENV PYTHONUNBUFFERED=1
+
 # Install curl for healthcheck, git for GitHub cloning, libmagic for file type detection
 RUN apt-get update && apt-get install -y --no-install-recommends curl git libmagic1 && rm -rf /var/lib/apt/lists/*
 
@@ -44,6 +49,7 @@ RUN pip install --no-cache-dir \
     httpx==0.28.1 \
     pyyaml==6.0.2 \
     sqlalchemy==2.0.36 \
+    alembic==1.18.4 \
     psycopg2-binary==2.9.10 \
     docker==7.1.0 \
     aiofiles==24.1.0 \
@@ -65,6 +71,7 @@ RUN pip install --no-cache-dir \
     opentelemetry-instrumentation-httpx==0.50b0 \
     opentelemetry-instrumentation-redis==0.50b0 \
     python-magic==0.4.27 \
+    pyotp==2.9.0 \
     twilio==9.10.5 \
     "audioop-lts; python_version >= '3.13'"
 
@@ -83,6 +90,16 @@ COPY ../../src/backend/utils /app/utils/
 COPY ../../src/backend/db /app/db/
 COPY ../../src/backend/canary /app/canary/
 
+# Alembic migration scripts (#1183). db/alembic_runner.py points Alembic's
+# script_location at /app/migrations at runtime, so the directory MUST ship in
+# the image — the COPY *.py glob above only catches top-level modules, not this
+# subdir (same #1033 packaging-gap class). Without it, a PostgreSQL deploy
+# crash-loops in init_database() -> upgrade_to_head() (no script directory).
+# alembic.ini is for CLI/autogenerate use (the runner builds its Config
+# programmatically); copied so `alembic` works inside the container for ops.
+COPY ../../src/backend/migrations /app/migrations/
+COPY ../../src/backend/alembic.ini /app/alembic.ini
+
 # Copy configuration files (documentation, templates)
 COPY ../../config/process-docs /app/config/process-docs/
 COPY ../../config/process-templates /app/config/process-templates/
@@ -93,9 +110,9 @@ COPY ../../config/process-templates /app/config/process-templates/
 COPY ../../VERSION /app/VERSION
 
 # Ensure all files are readable
-RUN chmod -R 644 /app/*.py && \
-    chmod -R 755 /app/routers /app/services /app/adapters /app/utils /app/db /app/canary && \
-    find /app/routers /app/services /app/adapters /app/utils /app/db /app/canary -name "*.py" -exec chmod 644 {} \;
+RUN chmod -R 644 /app/*.py /app/alembic.ini && \
+    chmod -R 755 /app/routers /app/services /app/adapters /app/utils /app/db /app/canary /app/migrations && \
+    find /app/routers /app/services /app/adapters /app/utils /app/db /app/canary /app/migrations -name "*.py" -exec chmod 644 {} \;
 
 # Run as non-root (CSO hardening, issue #874). UID 1000 must match scheduler
 # because both services share /data (SQLite trinity.db). /agent-configs is

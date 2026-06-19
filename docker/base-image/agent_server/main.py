@@ -29,6 +29,7 @@ from .state import agent_state
 from .services.trinity_mcp import inject_trinity_mcp_if_configured
 from .auto_sync import schedule_auto_sync_if_enabled
 from .heartbeat import schedule_heartbeat
+from .services.result_callback import schedule_pending_result_resend
 from .services.orphan_sweeper import schedule_orphan_sweeper
 
 # Configure logging
@@ -69,6 +70,11 @@ schedule_auto_sync_if_enabled(app)
 # RELIABILITY-004 / #307: liveness heartbeat loop. Gated on TRINITY_BACKEND_URL
 # + TRINITY_MCP_API_KEY both present, so old-image agents simply never beat.
 schedule_heartbeat(app)
+
+# #1083 fire-and-forget: on startup re-send any result-callback envelope left on
+# disk by a crash/restart mid-callback, so completed work isn't lost to a phantom
+# LEASE_EXPIRED. Gated on the same callback creds as the heartbeat.
+schedule_pending_result_resend(app)
 
 # #817 follow-up: periodic cgroup orphan sweep. Catches orphans that
 # escape the per-task cleanup path — specifically Eugene's production

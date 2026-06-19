@@ -40,6 +40,10 @@ services:
       - SLACK_CLIENT_ID=${SLACK_CLIENT_ID}
       - SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET}
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
+      # Socket Mode concurrent WebSocket count (#244); clamped to [1,10], default 2.
+      # Mirrors docker-compose.yml — without this line the .env knob is inert in
+      # prod (the #1039 packaging-gap class).
+      - SLACK_SOCKET_CONNECTION_COUNT=${SLACK_SOCKET_CONNECTION_COUNT:-2}
       - CREDENTIAL_ENCRYPTION_KEY=${CREDENTIAL_ENCRYPTION_KEY:-}
       - EMAIL_PROVIDER=${EMAIL_PROVIDER:-resend}
       - RESEND_API_KEY=${RESEND_API_KEY:-}
@@ -93,6 +97,18 @@ services:
       - PUBLIC_CHAT_URL=${PUBLIC_CHAT_URL:-}
       # Frontend URL for post-OAuth redirects
       - FRONTEND_URL=${FRONTEND_URL:-}
+      # CORS — comma-separated extra allowed origins (read by config.py via
+      # EXTRA_CORS_ORIGINS). Mirrors docker-compose.yml; without this line the
+      # .env value is inert in prod (the #1039 packaging-gap class).
+      - EXTRA_CORS_ORIGINS=${EXTRA_CORS_ORIGINS:-}
+      # Backend's own public origin — used to build OAuth redirect URIs
+      # ({BACKEND_URL}/api/oauth/{provider}/callback, read by config.py). Mirrors
+      # docker-compose.yml; without this line the .env value is inert in prod (the
+      # #1039 packaging-gap class) and OAuth callbacks fall back to localhost — set
+      # this to your public backend URL. The scheduler reads BACKEND_URL too but
+      # keeps its own internal default (http://backend:8000); intentionally not
+      # wired here so it still reaches the backend over the Docker network.
+      - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
       # Internal API shared secret (C-003) - for scheduler/agent communication
       - INTERNAL_API_SECRET=${INTERNAL_API_SECRET}
       # Configurable database backend (#300, experimental) — mirrors
@@ -103,6 +119,31 @@ services:
       - DATABASE_URL=${DATABASE_URL:-}
       - DB_POOL_SIZE=${DB_POOL_SIZE:-10}
       - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW:-20}
+      # Fire-and-forget dispatch (#1083). When true, eligible autonomous turns
+      # ({schedule, webhook}) are dispatched 202 + finalized via callback so a
+      # wedged turn holds zero backend coroutine/slot beyond its lease. Mirrors
+      # docker-compose.yml; without this line the .env lever is inert in prod
+      # (the #1039 packaging-gap class). Default false; safe to flip early
+      # (non-202 agent responses fall back to sync). Backend-only.
+      - DISPATCH_ASYNC=${DISPATCH_ASYNC:-false}
+      # Host telemetry (/api/telemetry) — container-stats cache freshness (s) and
+      # max concurrent Docker stat fetches per refresh. Mirrors docker-compose.yml;
+      # without these lines the .env knobs are inert in prod (the #1039
+      # packaging-gap class).
+      - TELEMETRY_CONTAINER_STATS_TTL=${TELEMETRY_CONTAINER_STATS_TTL:-10}
+      - TELEMETRY_DOCKER_POOL_SIZE=${TELEMETRY_DOCKER_POOL_SIZE:-16}
+      # SSH access host override (read by services/ssh_service.py). Mirrors
+      # docker-compose.yml; without this line the .env value is inert in prod (the
+      # #1039 packaging-gap class) and SSH host detection falls back to localhost.
+      - SSH_HOST=${SSH_HOST:-}
+      # Log retention & archival (services/log_archive_service.py). Mirrors
+      # docker-compose.yml; without these lines the .env knobs are inert in prod
+      # (the #1039 packaging-gap class). LOG_ARCHIVE_PATH is intentionally omitted:
+      # the code default (/data/archives) already lands in the TRINITY_DATA_PATH
+      # bind mount (/data), so no new volume is needed.
+      - LOG_ARCHIVE_ENABLED=${LOG_ARCHIVE_ENABLED:-true}
+      - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-90}
+      - LOG_CLEANUP_HOUR=${LOG_CLEANUP_HOUR:-3}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./config/agent-templates:/agent-configs/templates:ro
@@ -110,6 +151,10 @@ services:
       - ./config/process-docs:/app/config/process-docs:ro
       - agent-configs:/agent-configs
       - ${TRINITY_DATA_PATH:-./trinity-data}:/data
+      # Read-only access to Vector's logs so log_archive_service.py (reads
+      # /data/logs) can run in prod. Mirrors docker-compose.yml; without it the
+      # forwarded LOG_* knobs are inert (LOG_DIR not found) — the #1039 class.
+      - trinity-logs:/data/logs:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -279,6 +324,9 @@ services:
       - LOG_LEVEL=${SCHEDULER_LOG_LEVEL:-INFO}
       - LOCK_TIMEOUT=600
       - AGENT_TIMEOUT=900
+      # #1022: scheduler→backend dispatch + pre-check deadlines (operator-tunable).
+      - DISPATCH_TIMEOUT=${DISPATCH_TIMEOUT:-30}
+      - PRE_CHECK_TIMEOUT=${PRE_CHECK_TIMEOUT:-70}
       - MISFIRE_GRACE_TIME=3600
       - PUBLISH_EVENTS=true
       - INTERNAL_API_SECRET=${INTERNAL_API_SECRET}
@@ -343,6 +391,12 @@ services:
       # Fail-loud at compose render rather than silently use a well-known fallback (issue #692).
       - "TRINITY_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set in .env}"
       - MCP_REQUIRE_API_KEY=${MCP_REQUIRE_API_KEY:-true}
+      # INTERNAL_API_SECRET (SEC-001) — shared secret for POST /api/internal/audit
+      # so MCP tool-call audit reaches the backend. Mirrors docker-compose.yml;
+      # without it audit.ts (postAudit) early-returns and ALL MCP tool-call audit
+      # is silently dropped in prod (the #1039 packaging-gap class). No default —
+      # matches the backend/scheduler prod style.
+      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET}
       # No REDIS_URL: src/mcp-server/ (TypeScript) has zero Redis imports.
       # Don't hand a credential to a process that has no use for it.
     depends_on:

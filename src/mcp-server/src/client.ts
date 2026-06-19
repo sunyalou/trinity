@@ -1200,6 +1200,23 @@ export class TrinityClient {
     );
   }
 
+  /**
+   * Respond to (resolve) a pending operator-queue item (OPS-001, #1104).
+   * Proxies POST /api/operator-queue/{id}/respond. The backend 400s if the
+   * item is not in a respondable (`pending`) state — surfaced as a thrown
+   * Error the tool layer catches and returns as a structured `{ error }`.
+   */
+  async respondToOperatorQueueItem(
+    itemId: string,
+    body: { response: string; response_text?: string },
+  ): Promise<OperatorQueueItem> {
+    return this.request<OperatorQueueItem>(
+      "POST",
+      `/api/operator-queue/${encodeURIComponent(itemId)}/respond`,
+      body,
+    );
+  }
+
   // ============================================================================
   // Outbound File Sharing (FILES-001)
   // ============================================================================

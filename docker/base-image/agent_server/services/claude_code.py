@@ -40,7 +40,7 @@ from .error_classifier import (
 )
 from .headless_executor import _attempt_empty_result_recovery, execute_headless_task
 from .process_registry import get_process_registry
-from .runtime_adapter import AgentRuntime
+from .runtime_adapter import AgentRuntime, RuntimeCapabilities
 from .stream_parser import process_stream_line
 from .subprocess_lifecycle import (
     _capture_pgid,
@@ -72,6 +72,18 @@ _execution_lock = asyncio.Lock()
 
 class ClaudeCodeRuntime(AgentRuntime):
     """Claude Code implementation of AgentRuntime interface."""
+
+    @classmethod
+    def capabilities(cls) -> RuntimeCapabilities:
+        # Claude is the reference runtime: full continuity (--continue), the
+        # Session tab's cached-UUID --resume machinery, MCP, and native cost
+        # reporting (Claude Code emits total_cost_usd directly). (#1187)
+        return RuntimeCapabilities(
+            chat_continuity=True,
+            session_tab_resume=True,
+            mcp_support=True,
+            cost_reporting="native",
+        )
 
     def is_available(self) -> bool:
         """Check if Claude Code CLI is installed."""

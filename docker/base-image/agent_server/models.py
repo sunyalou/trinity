@@ -109,6 +109,12 @@ class ExecutionMetadata(BaseModel):
     compact_events: List[CompactEvent] = []  # Auto-compact events observed mid-turn
     recovered_from_jsonl: bool = False  # Stdout race + JSONL fallback fired (response from disk, not stream)
     model_name: Optional[str] = None  # Actual model id from assistant.message.model (e.g., "claude-sonnet-4-5") — #678
+    # #1187: typed terminal-result seed (the #945 taxonomy). Populated by
+    # newer runtimes (Codex) and currently UNUSED by the backend in the MVP —
+    # the backend still infers AUTH from the HTTP status. A fast-follow makes
+    # the backend read error_code directly and retire status-inference.
+    status: Optional[str] = None  # "success" | "error"
+    error_code: Optional[str] = None  # "AUTH" | "RATE_LIMIT" | "TIMEOUT" | "AGENT_ERROR" | "RUNTIME_UNAVAILABLE"
 
 
 # ============================================================================
@@ -227,6 +233,11 @@ class ParallelTaskRequest(BaseModel):
     resume_session_id: Optional[str] = None  # Claude Code session ID for --resume (EXEC-023)
     persist_session: Optional[bool] = False  # Session tab: write the JSONL so future --resume works
     images: Optional[List[Dict[str, str]]] = None  # Vision images: [{"media_type": "image/jpeg", "data": "<base64>"}]
+    # #1083 fire-and-forget: when true AND this agent runs the Claude runtime,
+    # accept the turn with 202 and report the terminal via the backend's
+    # result-callback endpoint. Ignored by non-Claude runtimes / old images
+    # (they run synchronously and return 200 — the backend's non-202 fallback).
+    async_result: Optional[bool] = False
 
 
 class ParallelTaskResponse(BaseModel):
