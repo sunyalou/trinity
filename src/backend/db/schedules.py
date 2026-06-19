@@ -1390,6 +1390,37 @@ class ScheduleOperations:
                 for row in conn.execute(stmt).mappings()
             ]
 
+    def get_latest_execution_per_schedule(self, schedule_ids: List[str]) -> Dict[str, ScheduleExecution]:
+        """Return the most-recent execution per schedule, in one query.
+
+        #1265: replaces the per-schedule ``get_schedule_executions(id, limit=5)``
+        fan-out on the /api/ops/schedules dashboard endpoint (one query per
+        schedule -> N+1 that grows with total schedule count). Uses a
+        ``ROW_NUMBER() OVER (PARTITION BY schedule_id ORDER BY started_at DESC)``
+        window. Returns ``{schedule_id: ScheduleExecution}``; schedules with no
+        executions are absent from the map.
+        """
+        if not schedule_ids:
+            return {}
+
+        rn = func.row_number().over(
+            partition_by=schedule_executions.c.schedule_id,
+            order_by=schedule_executions.c.started_at.desc(),
+        ).label("rn")
+        subq = (
+            select(schedule_executions, rn)
+            .where(schedule_executions.c.schedule_id.in_(list(schedule_ids)))
+            .subquery()
+        )
+        stmt = select(subq).where(subq.c.rn == 1)
+
+        result: Dict[str, ScheduleExecution] = {}
+        with get_engine().connect() as conn:
+            for row in conn.execute(stmt).mappings():
+                ex = self._row_to_schedule_execution(row)
+                result[ex.schedule_id] = ex
+        return result
+
     def get_agent_executions(self, agent_name: str, limit: int = 50) -> List[ScheduleExecution]:
         """Get all executions for an agent across all schedules."""
         stmt = (

@@ -904,6 +904,9 @@ class DatabaseManager:
     def get_schedule_executions(self, schedule_id: str, limit: int = 50):
         return self._schedule_ops.get_schedule_executions(schedule_id, limit)
 
+    def get_latest_execution_per_schedule(self, schedule_ids: list):
+        return self._schedule_ops.get_latest_execution_per_schedule(schedule_ids)
+
     def get_agent_executions(self, agent_name: str, limit: int = 50):
         return self._schedule_ops.get_agent_executions(agent_name, limit)
 
@@ -1103,8 +1106,11 @@ class DatabaseManager:
     def get_agent_activities(self, agent_name: str, activity_type: str = None, activity_state: str = None, limit: int = 100):
         return self._activity_ops.get_agent_activities(agent_name, activity_type, activity_state, limit)
 
-    def get_activities_in_range(self, start_time: str = None, end_time: str = None, activity_types: list = None, limit: int = 100):
-        return self._activity_ops.get_activities_in_range(start_time, end_time, activity_types, limit)
+    def get_activities_in_range(self, start_time: str = None, end_time: str = None, activity_types: list = None, limit: int = 100, agent_names: list = None):
+        return self._activity_ops.get_activities_in_range(start_time, end_time, activity_types, limit, agent_names)
+
+    def get_latest_activity_for_agents(self, agent_names: list):
+        return self._activity_ops.get_latest_activity_for_agents(agent_names)
 
     def get_current_activities(self, agent_name: str):
         return self._activity_ops.get_current_activities(agent_name)

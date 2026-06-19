@@ -2425,6 +2425,21 @@ def _migrate_users_suspended_at(cursor, conn):
     conn.commit()
 
 
+def _migrate_activities_created_index(cursor, conn):
+    """Issue #1265: standalone index on agent_activities(created_at DESC).
+
+    The cross-agent timeline (/api/activities/timeline) sorts by created_at DESC
+    with no agent_name predicate, which the composite idx_activities_agent
+    (agent_name, created_at DESC) cannot serve as a sort — it degraded to a
+    full scan + sort as activity volume grew with fleet size. Idempotent.
+    """
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_activities_created "
+        "ON agent_activities(created_at DESC)"
+    )
+    conn.commit()
+
+
 def _migrate_operator_queue_cleared_at(cursor, conn):
     """#1017 — Clear All on the Operations Resolved tab.
 
@@ -2517,4 +2532,5 @@ MIGRATIONS = [
     ("agent_ownership_circuit_breaker", _migrate_agent_ownership_circuit_breaker),
     ("voip_tables", _migrate_voip_tables),
     ("operator_queue_cleared_at", _migrate_operator_queue_cleared_at),
+    ("activities_created_index", _migrate_activities_created_index),
 ]

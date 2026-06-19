@@ -450,12 +450,15 @@ async def list_all_schedules(
     if enabled_only:
         schedules = [s for s in schedules if s.enabled]
 
+    # #1265: one bulk query for the latest execution of every schedule, instead
+    # of a get_schedule_executions() call per schedule (N+1 that grew with the
+    # total schedule count across the fleet).
+    latest_by_schedule = db.get_latest_execution_per_schedule([s.id for s in schedules])
+
     # Build response with schedule details
     schedule_list = []
     for schedule in schedules:
-        # Get recent executions for this schedule
-        recent_executions = db.get_schedule_executions(schedule.id, limit=5)
-        last_execution = recent_executions[0] if recent_executions else None
+        last_execution = latest_by_schedule.get(schedule.id)
 
         schedule_data = {
             "id": schedule.id,

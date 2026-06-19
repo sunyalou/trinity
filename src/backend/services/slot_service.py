@@ -266,17 +266,25 @@ class SlotService:
         Returns:
             Dict mapping agent_name to {"max": N, "active": M}
         """
-        result = {}
+        if not agent_capacities:
+            return {}
 
-        for agent_name, max_tasks in agent_capacities.items():
-            slots_key = self._slots_key(agent_name)
-            active_count = self.redis.zcard(slots_key)
-            result[agent_name] = {
-                "max": max_tasks,
-                "active": active_count
-            }
+        # #1265: one pipelined round-trip instead of an N+1 ZCARD per agent
+        # (Dashboard polls this for the whole fleet every few seconds).
+        agent_names = list(agent_capacities.keys())
+        try:
+            pipe = self.redis.pipeline(transaction=False)
+            for agent_name in agent_names:
+                pipe.zcard(self._slots_key(agent_name))
+            counts = pipe.execute()
+        except Exception:  # noqa: BLE001 — fail open to zero active (slot meter is advisory here)
+            logger.debug("slots: bulk zcard pipeline failed", exc_info=True)
+            counts = [0] * len(agent_names)
 
-        return result
+        return {
+            agent_name: {"max": agent_capacities[agent_name], "active": counts[idx] or 0}
+            for idx, agent_name in enumerate(agent_names)
+        }
 
     async def _cleanup_stale_slots_for_agent(
         self, agent_name: str, default_slot_ttl: int = None

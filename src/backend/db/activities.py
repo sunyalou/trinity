@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict
 
-from sqlalchemy import select, insert, update, and_
+from sqlalchemy import select, insert, update, and_, func
 
 from .engine import get_engine
 from .tables import agent_activities
@@ -164,13 +164,52 @@ class ActivityOperations:
         with get_engine().connect() as conn:
             return [self._row_to_activity(row) for row in conn.execute(stmt).all()]
 
+    def get_latest_activity_for_agents(self, agent_names: List[str]) -> Dict[str, Dict]:
+        """Return the single most-recent activity per agent, in one query.
+
+        #1265: replaces a per-agent ``get_agent_activities(name, limit=1)``
+        fan-out (one query per running agent) on the Dashboard context-stats
+        path. Uses a ``ROW_NUMBER() OVER (PARTITION BY agent_name ORDER BY
+        created_at DESC)`` window served by ``idx_activities_agent``.
+
+        Returns ``{agent_name: activity_dict}``; agents with no activity are
+        simply absent from the map.
+        """
+        if not agent_names:
+            return {}
+
+        rn = func.row_number().over(
+            partition_by=agent_activities.c.agent_name,
+            order_by=agent_activities.c.created_at.desc(),
+        ).label("rn")
+        subq = (
+            select(*_ACTIVITY_COLUMNS, rn)
+            .where(agent_activities.c.agent_name.in_(list(agent_names)))
+            .subquery()
+        )
+        # Select only the activity columns (drop the rn helper) so positional
+        # row access in _row_to_activity stays aligned [0]..[14].
+        stmt = select(*subq.c[: len(_ACTIVITY_COLUMNS)]).where(subq.c.rn == 1)
+
+        result: Dict[str, Dict] = {}
+        with get_engine().connect() as conn:
+            for row in conn.execute(stmt).all():
+                activity = self._row_to_activity(row)
+                result[activity["agent_name"]] = activity
+        return result
+
     def get_activities_in_range(self, start_time: Optional[str] = None,
                                 end_time: Optional[str] = None,
                                 activity_types: Optional[List[str]] = None,
-                                limit: int = 100) -> List[Dict]:
+                                limit: int = 100,
+                                agent_names: Optional[List[str]] = None) -> List[Dict]:
         """
         Get activities across all agents in a time range.
-        Optionally filter by activity types.
+        Optionally filter by activity types and by an access-control allow-list.
+
+        #1265: ``agent_names`` pushes the per-user access filter into SQL so the
+        timeline no longer over-fetches ``limit*2`` rows and filters in Python.
+        ``None`` means no agent filter (admin); an empty list returns nothing.
         """
         conditions = []
 
@@ -182,6 +221,11 @@ class ActivityOperations:
 
         if activity_types:
             conditions.append(agent_activities.c.activity_type.in_(activity_types))
+
+        if agent_names is not None:
+            if not agent_names:
+                return []
+            conditions.append(agent_activities.c.agent_name.in_(agent_names))
 
         stmt = select(*_ACTIVITY_COLUMNS)
         if conditions:
