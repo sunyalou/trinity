@@ -18,6 +18,7 @@ from sqlalchemy import select, insert, update, delete, and_, or_, func, text, ca
 from sqlalchemy.exc import IntegrityError
 
 from .engine import get_engine
+from .query_helpers import latest_per_group
 from .tables import (
     agent_schedules,
     schedule_executions,
@@ -1390,36 +1391,55 @@ class ScheduleOperations:
                 for row in conn.execute(stmt).mappings()
             ]
 
-    def get_latest_execution_per_schedule(self, schedule_ids: List[str]) -> Dict[str, ScheduleExecution]:
+    def get_latest_execution_per_schedule(self, schedule_ids: List[str]) -> Dict[str, Dict]:
         """Return the most-recent execution per schedule, in one query.
 
         #1265: replaces the per-schedule ``get_schedule_executions(id, limit=5)``
         fan-out on the /api/ops/schedules dashboard endpoint (one query per
-        schedule -> N+1 that grows with total schedule count). Uses a
-        ``ROW_NUMBER() OVER (PARTITION BY schedule_id ORDER BY started_at DESC)``
-        window. Returns ``{schedule_id: ScheduleExecution}``; schedules with no
-        executions are absent from the map.
+        schedule -> N+1 that grows with total schedule count). Uses the shared
+        ``latest_per_group`` window helper (partition by schedule_id, order by
+        started_at DESC).
+
+        Projects ONLY the columns the dashboard's ``last_execution`` block needs
+        — never the large TEXT blobs (``response``, ``execution_log``,
+        ``tool_calls``, ``message``) — so the single bulk query stays light even
+        with hundreds of schedules. Returns ``{schedule_id: {id, status,
+        started_at, completed_at, duration_ms, error}}``; ``started_at`` /
+        ``completed_at`` are normalised to ISO strings (matching the prior
+        ``.isoformat()`` API output). Schedules with no executions are absent.
         """
-        if not schedule_ids:
-            return {}
-
-        rn = func.row_number().over(
-            partition_by=schedule_executions.c.schedule_id,
-            order_by=schedule_executions.c.started_at.desc(),
-        ).label("rn")
-        subq = (
-            select(schedule_executions, rn)
-            .where(schedule_executions.c.schedule_id.in_(list(schedule_ids)))
-            .subquery()
+        cols = (
+            schedule_executions.c.schedule_id,
+            schedule_executions.c.id,
+            schedule_executions.c.status,
+            schedule_executions.c.started_at,
+            schedule_executions.c.completed_at,
+            schedule_executions.c.duration_ms,
+            schedule_executions.c.error,
         )
-        stmt = select(subq).where(subq.c.rn == 1)
+        rows = latest_per_group(
+            cols,
+            schedule_executions.c.schedule_id,   # partition
+            schedule_executions.c.started_at,    # order (DESC)
+            schedule_executions.c.schedule_id,   # filter IN
+            schedule_ids,
+        )
 
-        result: Dict[str, ScheduleExecution] = {}
-        with get_engine().connect() as conn:
-            for row in conn.execute(stmt).mappings():
-                ex = self._row_to_schedule_execution(row)
-                result[ex.schedule_id] = ex
-        return result
+        def _iso(v):
+            ts = parse_iso_timestamp(v) if v else None
+            return ts.isoformat() if ts else None
+
+        return {
+            row["schedule_id"]: {
+                "id": row["id"],
+                "status": row["status"],
+                "started_at": _iso(row["started_at"]),
+                "completed_at": _iso(row["completed_at"]),
+                "duration_ms": row["duration_ms"],
+                "error": row["error"],
+            }
+            for row in rows
+        }
 
     def get_agent_executions(self, agent_name: str, limit: int = 50) -> List[ScheduleExecution]:
         """Get all executions for an agent across all schedules."""

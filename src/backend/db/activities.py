@@ -13,9 +13,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict
 
-from sqlalchemy import select, insert, update, and_, func
+from sqlalchemy import select, insert, update, and_
 
 from .engine import get_engine
+from .query_helpers import latest_per_group
 from .tables import agent_activities
 from models import ActivityState
 from utils.helpers import utc_now_iso, to_utc_iso, parse_iso_timestamp
@@ -63,6 +64,33 @@ class ActivityOperations:
             "details": json.loads(row[12]) if row[12] else None,
             "error": row[13],
             "created_at": row[14]
+        }
+
+    @staticmethod
+    def _mapping_to_activity(row) -> Dict:
+        """Convert a name-accessible mapping row to an activity dict.
+
+        Used by ``get_latest_activity_for_agents`` (which projects the curated
+        ``_ACTIVITY_COLUMNS`` via the shared window helper). Name-based access —
+        unlike the positional ``_row_to_activity`` — so reordering a column in
+        ``_ACTIVITY_COLUMNS`` can never silently misalign the fields.
+        """
+        return {
+            "id": row["id"],
+            "agent_name": row["agent_name"],
+            "activity_type": row["activity_type"],
+            "activity_state": row["activity_state"],
+            "parent_activity_id": row["parent_activity_id"],
+            "started_at": row["started_at"],
+            "completed_at": row["completed_at"],
+            "duration_ms": row["duration_ms"],
+            "user_id": row["user_id"],
+            "triggered_by": row["triggered_by"],
+            "related_chat_message_id": row["related_chat_message_id"],
+            "related_execution_id": row["related_execution_id"],
+            "details": json.loads(row["details"]) if row["details"] else None,
+            "error": row["error"],
+            "created_at": row["created_at"],
         }
 
     def create_activity(self, activity: 'ActivityCreate') -> str:
@@ -169,34 +197,20 @@ class ActivityOperations:
 
         #1265: replaces a per-agent ``get_agent_activities(name, limit=1)``
         fan-out (one query per running agent) on the Dashboard context-stats
-        path. Uses a ``ROW_NUMBER() OVER (PARTITION BY agent_name ORDER BY
-        created_at DESC)`` window served by ``idx_activities_agent``.
+        path. Uses the shared ``latest_per_group`` window helper (partition by
+        agent_name, order by created_at DESC) — served by ``idx_activities_agent``.
 
         Returns ``{agent_name: activity_dict}``; agents with no activity are
         simply absent from the map.
         """
-        if not agent_names:
-            return {}
-
-        rn = func.row_number().over(
-            partition_by=agent_activities.c.agent_name,
-            order_by=agent_activities.c.created_at.desc(),
-        ).label("rn")
-        subq = (
-            select(*_ACTIVITY_COLUMNS, rn)
-            .where(agent_activities.c.agent_name.in_(list(agent_names)))
-            .subquery()
+        rows = latest_per_group(
+            _ACTIVITY_COLUMNS,
+            agent_activities.c.agent_name,   # partition
+            agent_activities.c.created_at,   # order (DESC)
+            agent_activities.c.agent_name,   # filter IN
+            agent_names,
         )
-        # Select only the activity columns (drop the rn helper) so positional
-        # row access in _row_to_activity stays aligned [0]..[14].
-        stmt = select(*subq.c[: len(_ACTIVITY_COLUMNS)]).where(subq.c.rn == 1)
-
-        result: Dict[str, Dict] = {}
-        with get_engine().connect() as conn:
-            for row in conn.execute(stmt).all():
-                activity = self._row_to_activity(row)
-                result[activity["agent_name"]] = activity
-        return result
+        return {row["agent_name"]: self._mapping_to_activity(row) for row in rows}
 
     def get_activities_in_range(self, start_time: Optional[str] = None,
                                 end_time: Optional[str] = None,

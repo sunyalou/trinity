@@ -33,6 +33,13 @@ async def get_activity_timeline(
     # #1265: push the per-user access filter into SQL (None = admin, no filter)
     # so we fetch exactly `limit` rows instead of over-fetching limit*2 and
     # filtering in Python.
+    #
+    # Admin scope note: `accessible_agent_names` returns None for admins, so the
+    # admin timeline is unfiltered and surfaces the full audit history — including
+    # activity rows of agents whose containers were since deleted. This is
+    # intentional (admins should see complete history). The prior code filtered
+    # admins to Docker-present agents only via get_accessible_agents(); that
+    # incidental narrowing is dropped on purpose, not by accident.
     from services.agent_service.helpers import accessible_agent_names
     allowed = accessible_agent_names(current_user)
 

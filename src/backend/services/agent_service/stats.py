@@ -252,7 +252,13 @@ async def get_agents_context_stats_logic(
         running_names = [a["name"] for a in running_agents]
         latest_activity = db.get_latest_activity_for_agents(running_names)
         active_cutoff = iso_cutoff(minutes=1)
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        # #1265: we deliberately no longer do a per-agent Docker lookup to pre-check
+        # liveness (that blocking call was the bottleneck). To keep a stale-`running`
+        # agent (container died between the status snapshot and now) from eating the
+        # full read timeout, cap the CONNECT timeout tightly — a dead in-network host
+        # fails connect fast — while still allowing a slow-but-alive agent 2s to reply.
+        timeout = httpx.Timeout(2.0, connect=0.5)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             tasks = [
                 _fetch_single_agent_context(
                     agent, client, latest_activity.get(agent["name"]), active_cutoff

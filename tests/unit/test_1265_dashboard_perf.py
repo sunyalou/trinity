@@ -104,9 +104,11 @@ def test_latest_execution_picks_newest_per_schedule(sched_ops):
     out = sched_ops.get_latest_execution_per_schedule(["s1", "s2"])
 
     assert set(out.keys()) == {"s1", "s2"}
-    assert out["s1"].id == "s1-new"          # newest started_at wins
-    assert out["s1"].status == "failed"
-    assert out["s2"].id == "s2-only"
+    assert out["s1"]["id"] == "s1-new"          # newest started_at wins
+    assert out["s1"]["status"] == "failed"
+    assert out["s2"]["id"] == "s2-only"
+    # slim projection: only dashboard fields, no large TEXT blobs (#1265 review fix)
+    assert set(out["s1"]) == {"id", "status", "started_at", "completed_at", "duration_ms", "error"}
 
 
 def test_latest_execution_empty_input_returns_empty(sched_ops):
