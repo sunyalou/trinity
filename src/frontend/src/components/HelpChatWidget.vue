@@ -70,7 +70,7 @@
           role="tab"
           :aria-selected="mode === tab.id"
           @click="mode = tab.id"
-          class="flex-1 px-3 py-2 text-sm font-medium transition-colors border-b-2 -mb-px"
+          class="flex-1 px-2 py-2 text-xs font-medium whitespace-nowrap transition-colors border-b-2 -mb-px"
           :class="mode === tab.id
             ? 'border-action-primary-600 text-action-primary-700 dark:text-action-primary-300'
             : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'"
@@ -166,29 +166,25 @@
         <div class="flex-1 overflow-y-auto p-4 space-y-3 text-sm">
           <!-- Stage: form -->
           <template v-if="bugStage === 'form'">
-            <p class="text-xs text-gray-500 dark:text-gray-400">
-              {{ mode === 'feature'
-                ? "Have an idea? Describe the feature you'd like. We'll attach diagnostics you can review before anything is sent."
-                : "Found something broken? Describe it below. We'll attach diagnostics you can review before anything is sent." }}
-            </p>
+            <p class="text-xs text-gray-500 dark:text-gray-400">{{ reportCopy.intro }}</p>
             <div>
               <label class="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Title</label>
               <input
                 v-model="bugTitle"
                 type="text"
                 :maxlength="MAX_TITLE"
-                :placeholder="mode === 'feature' ? 'Short summary of your idea' : 'Short summary of the problem'"
+                :placeholder="reportCopy.titlePh"
                 class="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-action-primary-500 focus:border-transparent text-sm"
               />
               <div class="text-right text-[11px] text-gray-400 mt-0.5">{{ bugTitle.length }}/{{ MAX_TITLE }}</div>
             </div>
             <div>
-              <label class="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">{{ mode === 'feature' ? 'What would you like?' : 'What happened?' }}</label>
+              <label class="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">{{ reportCopy.descLabel }}</label>
               <textarea
                 v-model="bugDescription"
                 rows="5"
                 :maxlength="MAX_DESC"
-                :placeholder="mode === 'feature' ? 'What should it do, and why would it help?' : 'Steps to reproduce, what you expected, what happened instead…'"
+                :placeholder="reportCopy.descPh"
                 class="w-full resize-none border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-action-primary-500 focus:border-transparent text-sm"
               ></textarea>
               <div class="text-right text-[11px] text-gray-400 mt-0.5">{{ bugDescription.length }}/{{ MAX_DESC }}</div>
@@ -218,13 +214,16 @@
 
           <!-- Stage: review (see-before-send) -->
           <template v-else-if="bugStage === 'review'">
-            <div class="p-3 rounded-lg bg-status-warning-50 dark:bg-status-warning-900/20 border border-status-warning-200 dark:border-status-warning-800 text-xs text-status-warning-700 dark:text-status-warning-300">
+            <div v-if="mode === 'feedback'" class="p-3 rounded-lg bg-action-primary-50 dark:bg-action-primary-900/20 border border-action-primary-200 dark:border-action-primary-800 text-xs text-action-primary-700 dark:text-action-primary-300">
+              🔒 This feedback is sent <strong>privately</strong> to the Trinity team — it is not posted publicly. Review before sending.
+            </div>
+            <div v-else class="p-3 rounded-lg bg-status-warning-50 dark:bg-status-warning-900/20 border border-status-warning-200 dark:border-status-warning-800 text-xs text-status-warning-700 dark:text-status-warning-300">
               ⚠️ This creates a <strong>public</strong> GitHub issue in <code>abilityai/trinity</code> — anyone on the internet can read it. Review everything below before sending.
             </div>
 
             <div>
               <div class="text-xs font-medium text-gray-700 dark:text-gray-300">Type</div>
-              <div class="text-gray-900 dark:text-gray-100">{{ mode === 'feature' ? '✨ Feature request' : '🐛 Bug report' }}</div>
+              <div class="text-gray-900 dark:text-gray-100">{{ mode === 'feedback' ? '💬 Feedback' : (mode === 'feature' ? '✨ Feature request' : '🐛 Bug report') }}</div>
             </div>
             <div>
               <div class="text-xs font-medium text-gray-700 dark:text-gray-300">Title</div>
@@ -282,7 +281,9 @@
                 </svg>
               </div>
               <h3 class="text-sm font-medium text-gray-900 dark:text-white">
-                {{ bugDeduped ? 'Matches an existing report' : (mode === 'feature' ? 'Thanks — feature request filed!' : 'Thanks — report filed!') }}
+                {{ bugDeduped
+                  ? (mode === 'feedback' ? 'Already received — thanks!' : 'Matches an existing report')
+                  : (mode === 'feedback' ? 'Thanks — feedback sent!' : (mode === 'feature' ? 'Thanks — feature request filed!' : 'Thanks — report filed!')) }}
               </h3>
               <a
                 v-if="bugResult"
@@ -293,7 +294,7 @@
               >
                 View the GitHub issue ↗
               </a>
-              <p v-else class="text-xs text-gray-500 dark:text-gray-400">Your report was filed successfully.</p>
+              <p v-else class="text-xs text-gray-500 dark:text-gray-400">{{ mode === 'feedback' ? 'Your feedback was sent to the team.' : 'Your report was filed successfully.' }}</p>
               <div>
                 <button @click="resetBug" class="text-xs text-gray-500 dark:text-gray-400 hover:underline">
                   Report another
@@ -330,6 +331,7 @@ const tabs = [
   { id: 'ask', label: 'Ask' },
   { id: 'bug', label: 'Bug' },
   { id: 'feature', label: 'Feature' },
+  { id: 'feedback', label: 'Feedback' },
 ]
 
 const isOpen = ref(false)
@@ -362,6 +364,28 @@ const messagesRef = ref(null)
 const inputRef = ref(null)
 
 const canReview = computed(() => bugTitle.value.trim() && bugDescription.value.trim())
+
+// Type-aware copy for the shared report form (bug | feature | feedback).
+const reportCopy = computed(() => {
+  if (mode.value === 'feature') return {
+    intro: "Have an idea? Describe the feature you'd like. We'll attach diagnostics you can review before anything is sent.",
+    titlePh: 'Short summary of your idea',
+    descLabel: 'What would you like?',
+    descPh: 'What should it do, and why would it help?',
+  }
+  if (mode.value === 'feedback') return {
+    intro: "Share anything — what's working, what's not, ideas. This goes privately to our team.",
+    titlePh: 'Summary of your feedback',
+    descLabel: 'Your feedback',
+    descPh: 'Tell us what you think…',
+  }
+  return {
+    intro: "Found something broken? Describe it below. We'll attach diagnostics you can review before anything is sent.",
+    titlePh: 'Short summary of the problem',
+    descLabel: 'What happened?',
+    descPh: 'Steps to reproduce, what you expected, what happened instead…',
+  }
+})
 
 const diagnosticsPreview = computed(() => {
   if (!pendingPayload.value) return ''
@@ -504,7 +528,7 @@ async function reviewReport() {
   try { await loadBuildInfo() } catch { /* build info is best-effort */ }
   const consoleLines = scrubLines(getConsoleBuffer(50))
   pendingPayload.value = {
-    type: mode.value === 'feature' ? 'feature' : 'bug',
+    type: ['bug', 'feature', 'feedback'].includes(mode.value) ? mode.value : 'bug',
     title: scrub(bugTitle.value.trim()).slice(0, MAX_TITLE),
     description: scrub(bugDescription.value.trim()).slice(0, MAX_DESC),
     install_id: getInstallId(),
