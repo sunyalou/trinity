@@ -118,6 +118,34 @@ class TestTrySpawnGating:
         monkeypatch.delenv("TRINITY_MCP_API_KEY", raising=False)
         assert rc.try_spawn_async(_req()) is False
 
+    @pytest.mark.parametrize(
+        "bad_id",
+        [
+            "../../etc/passwd",          # path traversal
+            "a/b",                       # path separator
+            "a\\b",                      # windows separator
+            "..",                        # parent dir
+            "id.with.dots",              # '.' not in token_urlsafe / UUID charset
+            "id with space",
+            "x" * 129,                   # over the length cap
+            "",                          # empty (caught earlier, but covered)
+        ],
+    )
+    def test_unsafe_execution_id_returns_false(self, monkeypatch, bad_id):
+        # Defense-in-depth (#1083): a non-token/UUID execution_id must never reach
+        # the pending-results path build / callback URL — fall back to sync.
+        monkeypatch.setattr(rc.agent_state, "agent_runtime", "claude-code")
+        monkeypatch.setenv("TRINITY_BACKEND_URL", "http://backend:8000")
+        monkeypatch.setenv("TRINITY_MCP_API_KEY", "trinity_mcp_k")
+        assert rc.try_spawn_async(_req(execution_id=bad_id)) is False
+
+    def test_is_safe_execution_id_accepts_real_ids(self):
+        # secrets.token_urlsafe(16) charset + UUID forms are accepted.
+        assert rc._is_safe_execution_id("Ab3_-xYz09kLmNoPqRsTuv") is True
+        assert rc._is_safe_execution_id("550e8400-e29b-41d4-a716-446655440000") is True
+        assert rc._is_safe_execution_id("../escape") is False
+        assert rc._is_safe_execution_id(None) is False
+
     def test_eligible_spawns_detached_task(self, monkeypatch):
         monkeypatch.setattr(rc.agent_state, "agent_runtime", "claude-code")
         monkeypatch.setenv("TRINITY_BACKEND_URL", "http://backend:8000")

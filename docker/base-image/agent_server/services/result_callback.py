@@ -27,6 +27,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Set
@@ -67,7 +68,24 @@ def _callbacks_configured() -> bool:
     return bool(os.getenv("TRINITY_BACKEND_URL") and os.getenv("TRINITY_MCP_API_KEY"))
 
 
+# Defense-in-depth (#1083): execution_id is backend-generated — a urlsafe token
+# (``secrets.token_urlsafe``) or a UUID — and is used both to build a filesystem
+# path under _PENDING_DIR and the backend callback URL. Validate it against that
+# charset at the async-dispatch entry point so a malformed/hostile value can
+# never traverse out of the pending dir or inject into the URL. (The ``temp-…``
+# fallback id carries a ``.`` but only exists when execution_id is absent, in
+# which case try_spawn_async already falls back to sync.)
+_SAFE_EXECUTION_ID = re.compile(r"\A[A-Za-z0-9_-]{1,128}\Z")
+
+
+def _is_safe_execution_id(execution_id: Any) -> bool:
+    return bool(isinstance(execution_id, str) and _SAFE_EXECUTION_ID.match(execution_id))
+
+
 def _pending_path(execution_id: str) -> Path:
+    # Callers pass an _is_safe_execution_id-validated id (try_spawn_async gates
+    # the async path; resend uses bare *.json glob stems), so this stays a plain
+    # join with no traversal risk.
     return _PENDING_DIR / f"{execution_id}.json"
 
 
@@ -261,6 +279,14 @@ def try_spawn_async(request) -> bool:
         return False
     if not request.execution_id:
         logger.info("[#1083] async_result requested without execution_id — running sync")
+        return False
+    if not _is_safe_execution_id(request.execution_id):
+        # Defense-in-depth: a malformed/hostile execution_id must never reach the
+        # pending-results path build or the callback URL. Fall back to sync.
+        logger.warning(
+            "[#1083] async_result requested with unsafe execution_id %r — running sync",
+            request.execution_id,
+        )
         return False
     if not _callbacks_configured():
         logger.info("[#1083] async_result requested but callback creds absent — running sync")
