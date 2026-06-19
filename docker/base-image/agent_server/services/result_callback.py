@@ -70,11 +70,12 @@ def _callbacks_configured() -> bool:
 
 # Defense-in-depth (#1083): execution_id is backend-generated — a urlsafe token
 # (``secrets.token_urlsafe``) or a UUID — and is used both to build a filesystem
-# path under _PENDING_DIR and the backend callback URL. Validate it against that
-# charset at the async-dispatch entry point so a malformed/hostile value can
-# never traverse out of the pending dir or inject into the URL. (The ``temp-…``
-# fallback id carries a ``.`` but only exists when execution_id is absent, in
-# which case try_spawn_async already falls back to sync.)
+# path under _PENDING_DIR and the backend callback URL. Belt: validate it against
+# that charset at the async-dispatch entry point (try_spawn_async) so a
+# malformed/hostile value never reaches the path build or the callback URL. (The
+# ``temp-…`` fallback id carries a ``.`` but only exists when execution_id is
+# absent, in which case try_spawn_async already falls back to sync.)
+# Suspenders: resolve() + is_relative_to() containment in _pending_path below.
 _SAFE_EXECUTION_ID = re.compile(r"\A[A-Za-z0-9_-]{1,128}\Z")
 
 
@@ -83,10 +84,19 @@ def _is_safe_execution_id(execution_id: Any) -> bool:
 
 
 def _pending_path(execution_id: str) -> Path:
-    # Callers pass an _is_safe_execution_id-validated id (try_spawn_async gates
-    # the async path; resend uses bare *.json glob stems), so this stays a plain
-    # join with no traversal risk.
-    return _PENDING_DIR / f"{execution_id}.json"
+    """Resolve the on-disk pending-result path, guaranteeing containment.
+
+    The resolve() + is_relative_to() check is the CWE-022 barrier on the
+    path-build dataflow itself (mirrors ``jsonl_recovery._read_jsonl_records``),
+    so a hostile execution_id can never escape _PENDING_DIR even if a caller
+    forgets the _is_safe_execution_id belt. Raises ValueError on a containment
+    violation; the best-effort _persist/_delete callers catch and log it.
+    """
+    root = _PENDING_DIR.resolve()
+    candidate = (root / f"{execution_id}.json").resolve()
+    if not candidate.is_relative_to(root):
+        raise ValueError(f"pending-result path escapes {root}: {execution_id!r}")
+    return candidate
 
 
 def _persist(execution_id: str, record: Dict) -> None:

@@ -174,6 +174,22 @@ class TestPersistResend:
         rc._delete("exec-9")
         assert not (tmp_path / "exec-9.json").exists()
 
+    def test_pending_path_rejects_traversal(self, tmp_path, monkeypatch):
+        # Suspenders (CWE-022): resolve() + is_relative_to() containment means a
+        # traversal id can never escape _PENDING_DIR, even bypassing the belt.
+        monkeypatch.setattr(rc, "_PENDING_DIR", tmp_path)
+        assert rc._pending_path("exec-ok") == (tmp_path.resolve() / "exec-ok.json")
+        with pytest.raises(ValueError):
+            rc._pending_path("../../etc/passwd")
+
+    def test_persist_delete_swallow_traversal(self, tmp_path, monkeypatch):
+        # _persist/_delete stay best-effort: a hostile id is logged, never raised,
+        # and nothing is written outside the pending dir.
+        monkeypatch.setattr(rc, "_PENDING_DIR", tmp_path)
+        rc._persist("../escape", {"agent_name": "a", "envelope": {}})  # must not raise
+        rc._delete("../escape")  # must not raise
+        assert not (tmp_path.parent / "escape.json").exists()
+
     def test_resend_delivers_and_deletes(self, tmp_path, monkeypatch):
         monkeypatch.setattr(rc, "_PENDING_DIR", tmp_path)
         monkeypatch.setenv("TRINITY_BACKEND_URL", "http://backend:8000")
