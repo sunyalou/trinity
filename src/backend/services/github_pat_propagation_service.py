@@ -20,7 +20,7 @@ import httpx
 
 from database import db
 from models import AgentPropagationStatus, GithubPatPropagationResult
-from services.docker_service import list_all_agents_fast
+from services.docker_service import list_all_agents_fast, get_agent_container
 
 logger = logging.getLogger(__name__)
 
@@ -110,9 +110,10 @@ async def propagate_pat_to_single_agent(agent_name: str, pat: str) -> dict:
     status dict for the set-PAT API response.
     """
     from services import git_service
-    from services.docker_service import get_agent_container
 
     # #1264 review: query the single container instead of enumerating the fleet.
+    # get_agent_container is a module-level import (above) so it's patchable as a
+    # stable module global, not resolved from sys.modules at call time.
     container = get_agent_container(agent_name)
     if container is None or container.status != "running":
         return {"applied": False, "reason": "agent_not_running"}

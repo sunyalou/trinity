@@ -41,14 +41,11 @@ propagate_pat_to_single_agent = svc.propagate_pat_to_single_agent
 
 
 def _patch_get_agent_container(monkeypatch, fn):
-    """Patch get_agent_container on the LIVE services.docker_service module.
-
-    The function under test resolves `from services.docker_service import
-    get_agent_container` at call time; a sibling test may have swapped
-    services.docker_service for a MagicMock in sys.modules, so we must patch the
-    current module object (string target), not a collection-time reference.
-    """
-    monkeypatch.setattr("services.docker_service.get_agent_container", fn, raising=False)
+    """Patch get_agent_container as a module global on the bound propagation
+    service. It's imported at that module's top, so the function closes over this
+    global — patching it here is robust to sibling sys.modules pollution (no
+    call-time `from services.docker_service import …` resolution to race)."""
+    monkeypatch.setattr(svc, "get_agent_container", fn)
 
 
 # ---------------------------------------------------------------------------
