@@ -272,3 +272,20 @@ class CredentialInjectResponse(BaseModel):
     """Response from credential injection"""
     status: str  # "success"
     files_written: List[str]
+
+
+class TokenReloadRequest(BaseModel):
+    """Request to hot-reload the subscription OAuth token (#1089).
+
+    Surgical alternative to a container recreate: mutates the agent-server
+    process env so the NEXT claude subprocess uses the rotated token while
+    in-flight turns keep their already-inherited old token and finish.
+    """
+    token: str  # CLAUDE_CODE_OAUTH_TOKEN value to apply
+    remove_api_key: bool = False  # also drop ANTHROPIC_API_KEY from env
+
+
+class TokenReloadResponse(BaseModel):
+    """Response from a subscription token hot-reload"""
+    status: str  # "success"
+    reloaded: bool

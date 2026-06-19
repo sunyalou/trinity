@@ -368,6 +368,20 @@ if [ -d "/config/mcp-servers" ]; then
     done
 fi
 
+# === Rotated subscription token: durable override (#1089) ===
+# A hot-reload (POST /api/credentials/reload-token) persists the rotated
+# CLAUDE_CODE_OAUTH_TOKEN to this writable-layer path so it survives a plain
+# stop+start. The container's baked Config.Env still holds the OLD token and a
+# fleet restart (ops.py) does a raw stop+start that bypasses start_agent_internal
+# — so export the override (when present and non-empty) BEFORE launching the
+# agent server, so the rotated token wins. The file is wiped on recreate (fresh
+# writable layer), so a DB-driven recreate cleanly reverts to the freshly-baked
+# Config.Env token — no marker logic needed.
+if [ -s /var/lib/trinity/oauth-token ]; then
+    export CLAUDE_CODE_OAUTH_TOKEN="$(cat /var/lib/trinity/oauth-token)"
+    echo "Applied rotated subscription token from durable override"
+fi
+
 # Start Agent Web Server (self-contained UI)
 if [ "${ENABLE_AGENT_UI}" = "true" ]; then
     echo "Starting Agent Web UI on port ${AGENT_SERVER_PORT:-8000}..."

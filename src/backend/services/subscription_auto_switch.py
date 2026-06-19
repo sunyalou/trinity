@@ -270,8 +270,11 @@ async def _perform_auto_switch(
     # utils/helpers.py, issue #476) and the 24h cleanup in
     # services/cleanup_service.py removes them from disk.
 
-    # Restart agent container to apply new subscription token
-    restart_result = await _restart_agent(agent_name)
+    # Rotate the subscription token on the running container via hot-reload so
+    # in-flight turns survive the switch (#1089). Falls back to a full restart on
+    # a 404 (old base image without the endpoint), transport failure, or when no
+    # token is resolvable — identical to the previous recreate behavior.
+    restart_result = await _hot_reload_subscription_token(agent_name)
 
     # Log activity event
     from services.activity_service import activity_service
@@ -355,3 +358,98 @@ async def _restart_agent(agent_name: str) -> str:
     except Exception as e:
         logger.error(f"[SUB-003] Failed to restart agent '{agent_name}': {e}")
         return f"failed: {e}"
+
+
+async def _hot_reload_subscription_token(agent_name: str) -> str:
+    """Push the agent's current DB subscription token to the running container
+    via ``POST /api/credentials/reload-token`` (#1089).
+
+    The agent server mutates its own ``os.environ["CLAUDE_CODE_OAUTH_TOKEN"]``,
+    so the NEXT claude subprocess uses the rotated token while in-flight turns
+    keep their already-inherited old token and finish — "rotate a credential"
+    is no longer the same operation as "kill every running turn".
+
+    Falls back to the full ``_restart_agent`` recreate path (today's behavior,
+    no regression) on:
+      - a 404 — an old base image that predates the endpoint,
+      - any transport / circuit failure (``AgentClientError`` family), or
+      - no resolvable token for the agent's current subscription.
+    Returns ``"no_container"`` / ``"not_running"`` when the agent is not a
+    running container, mirroring ``_restart_agent``.
+    """
+    try:
+        from services.docker_service import (
+            get_agent_container,
+            get_agent_status_from_container,
+        )
+        from services.agent_client import get_agent_client, AgentClientError
+
+        container = get_agent_container(agent_name)
+        if not container:
+            return "no_container"
+        if get_agent_status_from_container(container).status != "running":
+            return "not_running"
+
+        sub_id = db.get_agent_subscription_id(agent_name)
+        token = db.get_subscription_token(sub_id) if sub_id else None
+        if not token:
+            # No token to push (e.g. assignment cleared mid-flight). Fall back to
+            # the recreate path, which re-bakes Config.Env from the DB.
+            return await _restart_agent(agent_name)
+
+        client = get_agent_client(agent_name)
+        try:
+            # remove_api_key=False is intentional: subscription-backed agents never
+            # carry ANTHROPIC_API_KEY in env (popped at create time, lifecycle.py).
+            # The param is kept for a future mode-change-via-hot-reload caller.
+            resp = await client.post(
+                "/api/credentials/reload-token",
+                json={"token": token, "remove_api_key": False},
+                timeout=10.0,
+            )
+        except AgentClientError as e:
+            logger.warning(
+                f"[SUB-003] hot-reload transport failure for '{agent_name}': {e}; "
+                f"falling back to restart"
+            )
+            return await _restart_agent(agent_name)
+
+        if resp.status_code >= 400:  # 404 = old base image without the endpoint
+            logger.info(
+                f"[SUB-003] hot-reload returned HTTP {resp.status_code} for "
+                f"'{agent_name}'; falling back to restart"
+            )
+            return await _restart_agent(agent_name)
+
+        logger.info(f"[SUB-003] Hot-reloaded subscription token for '{agent_name}' (no recreate)")
+        return "hot_reloaded"
+    except Exception as e:
+        logger.error(
+            f"[SUB-003] hot-reload error for '{agent_name}': {e}; falling back to restart"
+        )
+        return await _restart_agent(agent_name)
+
+
+async def reload_subscription_for_all_agents(subscription_id: str) -> dict[str, str]:
+    """Hot-reload the subscription token on every running agent assigned to
+    `subscription_id` (#1089 key rollover — re-registering a subscription's
+    token via the `/api/subscriptions` upsert).
+
+    Best-effort per agent, each under the #799 per-agent switch lock so a
+    rollout can't interleave with a concurrent auto-switch: a failure on one
+    agent is logged and does NOT abort the fan-out or block the others. Stopped
+    agents are skipped by the helper (`not_running`) — they pick up the new
+    token on next start (Config.Env is re-baked from the DB on recreate).
+    Returns ``{agent_name: result}`` for observability.
+    """
+    results: dict[str, str] = {}
+    for agent_name in db.get_agents_by_subscription(subscription_id):
+        try:
+            async with await agent_switch_lock(agent_name):
+                results[agent_name] = await _hot_reload_subscription_token(agent_name)
+        except Exception as e:
+            logger.error(
+                f"[SUB-003] key-rollover hot-reload failed for '{agent_name}': {e}"
+            )
+            results[agent_name] = f"failed: {e}"
+    return results

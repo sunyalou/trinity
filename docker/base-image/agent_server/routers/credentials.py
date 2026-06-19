@@ -15,6 +15,8 @@ from ..models import (
     CredentialReadResponse,
     CredentialInjectRequest,
     CredentialInjectResponse,
+    TokenReloadRequest,
+    TokenReloadResponse,
 )
 from ..state import agent_state
 from ..services.trinity_mcp import inject_trinity_mcp_if_configured
@@ -130,6 +132,60 @@ async def update_credentials(request: CredentialUpdateRequest):
     except Exception as e:
         logger.error(f"Failed to update credentials: {e}")
         raise HTTPException(status_code=500, detail=f"Credential update failed: {str(e)}")
+
+
+# Writable-layer override path (#1089). Deliberately NOT under /home/developer —
+# that path is the persistent agent-{name}-workspace volume which
+# `recreate_container_with_updated_config` preserves, so a token written there
+# would survive a recreate and shadow the freshly-baked Config.Env (DB token).
+# The writable layer instead survives a plain stop+start (same container) but is
+# wiped on recreate (new container, fresh layer) — self-reconciling by Docker
+# semantics, no marker logic needed. The directory is created + chowned to UID
+# 1000 in the base-image Dockerfile (before the USER switch).
+_TOKEN_OVERRIDE = Path("/var/lib/trinity/oauth-token")
+
+
+@router.post("/api/credentials/reload-token", response_model=TokenReloadResponse)
+async def reload_subscription_token(request: TokenReloadRequest):
+    """Hot-reload CLAUDE_CODE_OAUTH_TOKEN for the NEXT claude subprocess (#1089).
+
+    Mutates the agent-server process env so the next `subprocess.Popen` for
+    `claude` inherits the rotated token; in-flight subprocesses keep their
+    already-inherited old token and finish. Also persists the token to the
+    writable-layer override so it survives a plain stop+start (fleet restart
+    bypasses `start_agent_internal`, which would otherwise revert to the old
+    Config.Env token — F2).
+
+    Deliberately does NOT rewrite .env / .mcp.json or re-inject Trinity MCP: the
+    subscription token is not a .env credential, and the `/update` / `/inject`
+    endpoints destructively rewrite whole files.
+    """
+    if not request.token:
+        raise HTTPException(status_code=400, detail="token is required")
+
+    os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = request.token
+    if request.remove_api_key:
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+
+    # Persist to the writable-layer override. Parent dir is created + chowned in
+    # the Dockerfile, so the agent (UID 1000) can write here. Create the file
+    # atomically with 0600 via os.open() rather than write_text()+chmod(): the
+    # latter creates the file under the process umask (typically 0644) and leaves
+    # it world-readable until the follow-up chmod, a brief but avoidable window.
+    # The mode arg only applies on *creation*, so also fchmod the fd — a
+    # pre-existing override (older write path / tampering) keeps its own perms
+    # through O_CREAT|O_TRUNC, and we must still force it back to 0600.
+    fd = os.open(_TOKEN_OVERRIDE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        os.fchmod(f.fileno(), 0o600)
+        f.write(request.token)
+
+    # Add the new token to the log-redaction set (drops the old exact-match
+    # value; OAuth tokens stay caught by the sk-ant value regex regardless).
+    refresh_credential_values()
+
+    logger.info("Hot-reloaded CLAUDE_CODE_OAUTH_TOKEN (next subprocess; in-flight turns unaffected)")
+    return TokenReloadResponse(status="success", reloaded=True)
 
 
 @router.get("/api/credentials/status")
