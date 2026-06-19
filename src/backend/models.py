@@ -749,3 +749,45 @@ class AgentAnalyticsResponse(BaseModel):
     timeline: List[AgentAnalyticsTimelinePoint] = []
     sampled: bool = False
     sample_size: int = 0
+
+
+class ScheduleSummaryRow(BaseModel):
+    """One per-schedule performance rollup (#1115).
+
+    `success_rate` is terminal-based (success / (success + failed [incl.
+    `error`])) and `None` when there were zero terminal runs in the window —
+    the UI renders `—`, not a false 0%. `avg_duration_ms` / `context_avg` are
+    `None` when nothing measurable ran. A zero-run schedule still appears
+    (all counts 0, rates `None`).
+    """
+    schedule_id: str
+    name: str
+    command: str = ""
+    cron_expression: str
+    enabled: bool
+    total_executions: int
+    success_count: int
+    failed_count: int
+    cancelled_count: int
+    success_rate: Optional[float] = None
+    avg_duration_ms: Optional[int] = None
+    cost_total: float
+    context_avg: Optional[int] = None
+    tool_call_total: int
+    last_run_at: Optional[str] = None
+    last_run_status: Optional[str] = None
+
+
+class AgentSchedulesSummaryResponse(BaseModel):
+    """Response envelope for GET /api/agents/{name}/schedules/analytics-summary (#1115).
+
+    One compact rollup row per non-deleted schedule for the window — consumed
+    by BOTH the Overview "Schedules performance" section and the Schedules-tab
+    inline stats from a single call (no N per-schedule round-trips).
+    `tool_calls_sampled` flags when the agent-wide tool-call parse pool was
+    capped. UTC window via `iso_cutoff`.
+    """
+    window_hours: int
+    schedule_count: int
+    tool_calls_sampled: bool = False
+    schedules: List[ScheduleSummaryRow] = []

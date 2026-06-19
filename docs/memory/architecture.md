@@ -223,7 +223,7 @@ Channel DB modules: `db/slack_channels.py` (workspace connections, channel-agent
 - `stores/auth.js` - Email/admin authentication + JWT
 - `stores/collaborations.js` - Collaboration graph state, WebSocket integration
 - `stores/loops.js` - Sequential agent loops UI state, agent-scoped, WebSocket-driven (#1106)
-- `stores/executions.js` - Fleet execution list/stats + agent Overview analytics (`fetchAgentAnalytics`, cached per `${name}:${window}`, never polled) (#1107)
+- `stores/executions.js` - Fleet execution list/stats + agent Overview analytics (`fetchAgentAnalytics`, cached per `${name}:${window}`, never polled) (#1107) + per-schedule performance rollups (`fetchSchedulesSummary`, same `${name}:${window}` cache; one fetch shared by the Overview "Schedules performance" section and the Schedules-tab inline stats) (#1115)
 - `stores/sessions.js` - Session tab state
 
 **Real-time:** WebSocket client at `utils/websocket.js` with auto-reconnect; tracks `_eid` and replays via `last-event-id` — see [Real-time Delivery](#real-time-delivery-reliability-003-306).
@@ -592,6 +592,7 @@ Lookup keys: S-01/E-02/L-03 shipped via #653; S-02/E-01/E-05/B-01 (Phase 2) and 
 | GET/PUT/DELETE | `/api/agents/{name}/schedules/{id}` | Get / update (same 400 on timeout) / soft-delete |
 | POST | `/api/agents/{name}/schedules/{id}/enable` · `/disable` · `/trigger` | Enable / disable / manual trigger |
 | GET | `/api/agents/{name}/schedules/{id}/executions` | Execution history |
+| GET | `/api/agents/{name}/schedules/analytics-summary` | **Per-schedule performance rollups for the whole agent** in one compact call (#1115). `?window=` ∈ {7d,14d,30d}→168/336/720h (422 otherwise). One row per **non-deleted** schedule (zero-run schedules included): terminal `success_rate` (`None`→`—` when zero terminal), `avg_duration_ms` (NULL-skip), `cost_total`, `context_avg`, `tool_call_total`, last-run outcome. Backs BOTH the Overview "Schedules performance" section AND the Schedules-tab inline stats from a single fetch (no N round-trips). **Declared before `/{id}` in `routers/schedules.py`** so the literal `analytics-summary` isn't captured as a `schedule_id` (Invariant #4). DB: `get_agent_schedules_summary` (generalises #868). Tool-call totals parsed over the newest 5,000 rows agent-wide (`tool_calls_sampled` flag) |
 | GET | `/api/agents/{name}/schedules/{id}/analytics` | Per-schedule analytics: counts, success rate, duration p50/p95/p99, cost, tool-call top-5, daily timeline. `?window_hours=` ∈ {24,168,720}, default 168 (#868). Percentiles Python-side over the newest 5,000 success rows (`sampled:true` reported when capped); counts + timeline full-set; UTC day buckets gap-filled. Tenant boundary in the DB layer (`agent_name` passed through) — `AuthorizedAgent` validates only the path agent name, NOT that `schedule_id` belongs to it, so the DB-layer filter is the actual boundary. Soft-deleted schedules 404 |
 | POST/GET/DELETE | `/api/agents/{name}/schedules/{id}/webhook` | Generate/rotate token · status + URL · revoke (WEBHOOK-001) |
 
