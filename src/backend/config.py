@@ -10,6 +10,14 @@ from urllib.parse import urlparse
 # Can also be set via system_settings table (key: "email_auth_enabled", value: "true"/"false")
 EMAIL_AUTH_ENABLED = os.getenv("EMAIL_AUTH_ENABLED", "true").lower() == "true"
 
+# Public self-signup gate (trinity-enterprise#10). When OFF (the secure
+# default), the unauthenticated POST /api/access/request endpoint returns 403 —
+# it does NOT auto-whitelist arbitrary emails. Operators who want frictionless
+# CLI onboarding (`trinity:connect`) opt in explicitly via this env var or the
+# system_settings key "public_access_requests_enabled". Does not affect login
+# code requests for already-whitelisted emails (separate endpoint).
+PUBLIC_ACCESS_REQUESTS_ENABLED = os.getenv("PUBLIC_ACCESS_REQUESTS_ENABLED", "false").lower() == "true"
+
 # JWT Settings
 # SECURITY: SECRET_KEY must be set via environment variable in production
 # Generate with: openssl rand -hex 32

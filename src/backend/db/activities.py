@@ -16,6 +16,7 @@ from typing import Optional, List, Dict
 from sqlalchemy import select, insert, update, and_
 
 from .engine import get_engine
+from .query_helpers import latest_per_group
 from .tables import agent_activities
 from models import ActivityState, ActivityType
 from utils.helpers import utc_now_iso, to_utc_iso, parse_iso_timestamp
@@ -63,6 +64,33 @@ class ActivityOperations:
             "details": json.loads(row[12]) if row[12] else None,
             "error": row[13],
             "created_at": row[14]
+        }
+
+    @staticmethod
+    def _mapping_to_activity(row) -> Dict:
+        """Convert a name-accessible mapping row to an activity dict.
+
+        Used by ``get_latest_activity_for_agents`` (which projects the curated
+        ``_ACTIVITY_COLUMNS`` via the shared window helper). Name-based access —
+        unlike the positional ``_row_to_activity`` — so reordering a column in
+        ``_ACTIVITY_COLUMNS`` can never silently misalign the fields.
+        """
+        return {
+            "id": row["id"],
+            "agent_name": row["agent_name"],
+            "activity_type": row["activity_type"],
+            "activity_state": row["activity_state"],
+            "parent_activity_id": row["parent_activity_id"],
+            "started_at": row["started_at"],
+            "completed_at": row["completed_at"],
+            "duration_ms": row["duration_ms"],
+            "user_id": row["user_id"],
+            "triggered_by": row["triggered_by"],
+            "related_chat_message_id": row["related_chat_message_id"],
+            "related_execution_id": row["related_execution_id"],
+            "details": json.loads(row["details"]) if row["details"] else None,
+            "error": row["error"],
+            "created_at": row["created_at"],
         }
 
     def create_activity(self, activity: 'ActivityCreate') -> str:
@@ -199,13 +227,38 @@ class ActivityOperations:
         with get_engine().connect() as conn:
             return [self._row_to_activity(row) for row in conn.execute(stmt).all()]
 
+    def get_latest_activity_for_agents(self, agent_names: List[str]) -> Dict[str, Dict]:
+        """Return the single most-recent activity per agent, in one query.
+
+        #1265: replaces a per-agent ``get_agent_activities(name, limit=1)``
+        fan-out (one query per running agent) on the Dashboard context-stats
+        path. Uses the shared ``latest_per_group`` window helper (partition by
+        agent_name, order by created_at DESC) — served by ``idx_activities_agent``.
+
+        Returns ``{agent_name: activity_dict}``; agents with no activity are
+        simply absent from the map.
+        """
+        rows = latest_per_group(
+            _ACTIVITY_COLUMNS,
+            agent_activities.c.agent_name,   # partition
+            agent_activities.c.created_at,   # order (DESC)
+            agent_activities.c.agent_name,   # filter IN
+            agent_names,
+        )
+        return {row["agent_name"]: self._mapping_to_activity(row) for row in rows}
+
     def get_activities_in_range(self, start_time: Optional[str] = None,
                                 end_time: Optional[str] = None,
                                 activity_types: Optional[List[str]] = None,
-                                limit: int = 100) -> List[Dict]:
+                                limit: int = 100,
+                                agent_names: Optional[List[str]] = None) -> List[Dict]:
         """
         Get activities across all agents in a time range.
-        Optionally filter by activity types.
+        Optionally filter by activity types and by an access-control allow-list.
+
+        #1265: ``agent_names`` pushes the per-user access filter into SQL so the
+        timeline no longer over-fetches ``limit*2`` rows and filters in Python.
+        ``None`` means no agent filter (admin); an empty list returns nothing.
         """
         conditions = []
 
@@ -217,6 +270,11 @@ class ActivityOperations:
 
         if activity_types:
             conditions.append(agent_activities.c.activity_type.in_(activity_types))
+
+        if agent_names is not None:
+            if not agent_names:
+                return []
+            conditions.append(agent_activities.c.agent_name.in_(agent_names))
 
         stmt = select(*_ACTIVITY_COLUMNS)
         if conditions:
