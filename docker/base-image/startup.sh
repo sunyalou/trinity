@@ -307,6 +307,31 @@ if [ -d "/generated-creds" ]; then
     echo "Credential files copied"
 fi
 
+# === Codex runtime setup (#1187) ===
+# Codex is the third agent runtime. Two Codex-specific quirks are fixed here:
+#  1. Identity: Codex reads AGENTS.md (NOT CLAUDE.md). Mirror the agent's
+#     instructions so a Codex agent gets the same platform identity Claude does
+#     (the per-turn system prompt is additionally prepended by codex_runtime.py).
+#  2. CODEX_HOME defaults to ~/.codex — inside the git-tracked repo, which would
+#     dirty auto-sync. Relocate it onto the disk-backed scratch dir (#1098).
+# NOTE: startup.sh must NOT write to .gitignore (#953) — the canonical list
+# (`_GITIGNORE_PATTERNS` in src/backend/services/git_service.py, applied on git
+# init/push by `_build_gitignore_merge_command`) carries `.tmp/`, so the
+# relocated CODEX_HOME under $TMPDIR is excluded from git without a shell write.
+if [ "${AGENT_RUNTIME}" = "codex" ]; then
+    echo "Configuring Codex runtime..."
+
+    if [ -f "/home/developer/CLAUDE.md" ] && [ ! -f "/home/developer/AGENTS.md" ]; then
+        cp /home/developer/CLAUDE.md /home/developer/AGENTS.md 2>/dev/null && \
+            echo "  Mirrored CLAUDE.md -> AGENTS.md for Codex" || \
+            echo "  Warning: could not create AGENTS.md"
+    fi
+
+    CODEX_HOME_DIR="${CODEX_HOME:-${AGENT_TMPDIR}/codex}"
+    mkdir -p "${CODEX_HOME_DIR}" 2>/dev/null && chmod 700 "${CODEX_HOME_DIR}" 2>/dev/null || \
+        echo "  Warning: could not create CODEX_HOME ${CODEX_HOME_DIR}"
+fi
+
 # Ensure core agent-server dependencies are installed correctly
 # This prevents template repos from breaking the agent server with incompatible packages
 echo "Verifying agent-server dependencies..."

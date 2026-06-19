@@ -1238,6 +1238,9 @@ INDEXES = [
 
     # Activity indexes
     "CREATE INDEX IF NOT EXISTS idx_activities_agent ON agent_activities(agent_name, created_at DESC)",
+    # #1265: fleet-wide timeline sorts by created_at DESC with no agent_name predicate;
+    # the composite idx_activities_agent can't serve that sort, so it degraded to scan+sort.
+    "CREATE INDEX IF NOT EXISTS idx_activities_created ON agent_activities(created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_activities_type ON agent_activities(activity_type)",
     "CREATE INDEX IF NOT EXISTS idx_activities_state ON agent_activities(activity_state)",
     "CREATE INDEX IF NOT EXISTS idx_activities_user ON agent_activities(user_id)",

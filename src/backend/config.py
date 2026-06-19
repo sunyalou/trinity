@@ -10,6 +10,14 @@ from urllib.parse import urlparse
 # Can also be set via system_settings table (key: "email_auth_enabled", value: "true"/"false")
 EMAIL_AUTH_ENABLED = os.getenv("EMAIL_AUTH_ENABLED", "true").lower() == "true"
 
+# Public self-signup gate (trinity-enterprise#10). When OFF (the secure
+# default), the unauthenticated POST /api/access/request endpoint returns 403 —
+# it does NOT auto-whitelist arbitrary emails. Operators who want frictionless
+# CLI onboarding (`trinity:connect`) opt in explicitly via this env var or the
+# system_settings key "public_access_requests_enabled". Does not affect login
+# code requests for already-whitelisted emails (separate endpoint).
+PUBLIC_ACCESS_REQUESTS_ENABLED = os.getenv("PUBLIC_ACCESS_REQUESTS_ENABLED", "false").lower() == "true"
+
 # JWT Settings
 # SECURITY: SECRET_KEY must be set via environment variable in production
 # Generate with: openssl rand -hex 32
@@ -111,6 +119,20 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", 
 # agent_ownership.circuit_breaker_enabled (also default OFF). Both must be on
 # for the breaker to engage — a true opt-in canary (D7/D11).
 DISPATCH_BREAKER_ENABLED = os.getenv("DISPATCH_BREAKER_ENABLED", "false").lower() == "true"
+
+# Fire-and-Forget Dispatch — global master switch (#1083).
+# When ON, eligible autonomous turns are dispatched to the agent with a 202
+# accept and finalized via the result-callback endpoint, so a wedged turn
+# holds zero backend coroutine/slot beyond its lease. Default OFF; flipping
+# early is safe because a non-202 agent response (old image / non-Claude
+# runtime) falls back to today's synchronous handling.
+DISPATCH_ASYNC = os.getenv("DISPATCH_ASYNC", "false").lower() == "true"
+
+# Triggers eligible for async dispatch (#1083 v1). ONLY {schedule, webhook}:
+# these reach execute_task through the scheduler's async-poll path with no
+# synchronous result consumer. `loop`/`fan_out` consume result.response and
+# MUST stay sync; `event` POSTs the agent directly (bypassing execute_task).
+ASYNC_DISPATCH_ELIGIBLE_TRIGGERS = frozenset({"schedule", "webhook"})
 
 # Voice Chat Configuration (VOICE-001)
 VOICE_ENABLED = os.getenv("VOICE_ENABLED", "true").lower() == "true"

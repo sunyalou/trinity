@@ -545,6 +545,9 @@ const defaultModel = computed(() => {
   if (runtime === 'gemini-cli' || runtime === 'gemini') {
     return 'gemini-2.5-flash'
   }
+  if (runtime === 'codex') {
+    return 'gpt-5.1-codex' // OpenAI Codex default (#1187)
+  }
   return 'sonnet' // Claude default
 })
 
@@ -650,7 +653,10 @@ const visibleTabs = computed(() => {
 
   // Session tab — SESSION_TAB_2026-04. Sits between Chat and the rest;
   // gated on the platform feature flag so it's invisible until enabled.
-  if (sessionsStore.sessionTabEnabled) {
+  // Hidden for runtimes without cached-UUID --resume (Codex, #1187): they lack
+  // the Session tab's resume machinery, so the backend runs stateless turns and
+  // the tab would be misleading. Chat (with continuity) stays available.
+  if (sessionsStore.sessionTabEnabled && agent.value?.runtime !== 'codex') {
     tabs.push({ id: 'session', label: 'Session' })
   }
 

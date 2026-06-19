@@ -14,7 +14,7 @@ import asyncio
 import logging
 import subprocess
 import threading
-from typing import Optional
+from typing import Literal, Optional
 
 from ..utils.subprocess_pgroup import (
     capture_pgid as _capture_pgid,
@@ -23,8 +23,16 @@ from ..utils.subprocess_pgroup import (
     drain_reader_threads as _drain_reader_threads,
 )
 
+# Outcome of a bounded drain, returned to the caller so the orchestrator can
+# decide whether to treat the run's shared mutable state as trustworthy
+# (#1025 / salvaged from #980). Every non-``completed`` outcome leaves a reader
+# thread that may still be mutating the run context concurrently; the headless
+# path snapshots its finalize-read fields on those outcomes.
+DrainOutcome = Literal["completed", "budget_exceeded", "errored", "leaked"]
+
 __all__ = [
     "_DRAIN_BUDGET_SECONDS",
+    "DrainOutcome",
     "_drain_bounded",
     "_capture_pgid",
     "_terminate_process_group",
@@ -51,7 +59,7 @@ def _drain_bounded(
     grace: int = 5,
     pgid: Optional[int] = None,
     execution_tag: Optional[str] = None,
-) -> None:
+) -> DrainOutcome:
     """Run drain_reader_threads with a hard _DRAIN_BUDGET_SECONDS time cap.
 
     Prevents a TextIOWrapper lock deadlock in safe_close_pipes (Issue #728)
@@ -62,17 +70,52 @@ def _drain_bounded(
 
     Issue #817: ``execution_tag`` is threaded through to the underlying
     ``drain_reader_threads`` so the env-tag sweep runs after every drain.
+
+    Issue #1025 (salvaged from #980): returns the drain outcome instead of
+    ``None`` so the headless orchestrator can detect every case that leaves a
+    reader thread still mutating the shared run context, and snapshot its
+    finalize-read fields before reading them. Only ``"completed"`` guarantees
+    no reader survives:
+
+    - ``"completed"``       — the drain finished within budget AND every
+      reader thread passed in has exited.
+    - ``"budget_exceeded"`` — the daemon thread did not finish within
+      ``_DRAIN_BUDGET_SECONDS`` (the #728 safe_close_pipes deadlock); the
+      reader thread is leaked.
+    - ``"errored"``         — the drain raised. Previously swallowed with
+      ``except Exception: pass``, which masked the failure as a clean
+      ``"completed"``; now captured and logged (honours the project-wide
+      "never swallow exceptions silently" rule).
+    - ``"leaked"``          — the drain returned normally within budget but a
+      reader thread is still alive. ``drain_reader_threads`` force-closes the
+      pipes and *continues* when a grandchild-held reader won't EOF (its own
+      ``outcome=leaked`` METRIC), returning normally — so a within-budget,
+      non-raising drain does NOT by itself prove the readers are dead. This
+      outcome closes that gap (the #586 leaked-reader case).
     """
     done = threading.Event()
+    # Single write-once cell, set only by the daemon thread and read only after
+    # the ``done`` barrier — no second Event / ordering invariant to maintain.
+    outcome: DrainOutcome = "completed"
 
     def _target() -> None:
+        nonlocal outcome
         try:
             asyncio.run(_drain_reader_threads(
                 process, *threads, grace=grace, pgid=pgid,
                 execution_tag=execution_tag,
             ))
         except Exception:
-            pass
+            # #1025: capture + log instead of swallowing. A drain that raises
+            # used to be indistinguishable from a clean completion, hiding a
+            # leaked reader thread from the finalize path.
+            outcome = "errored"
+            logger.exception(
+                "[Subprocess] Drain raised inside the daemon thread "
+                "(pid=%s) — treating as errored; reader thread(s) may be "
+                "leaked. Issue #1025.",
+                process.pid,
+            )
         finally:
             done.set()
 
@@ -84,3 +127,21 @@ def _drain_bounded(
             "leaked daemon threads (pid=%s). Issue #728.",
             _DRAIN_BUDGET_SECONDS, process.pid,
         )
+        return "budget_exceeded"
+    # done is set → _target finished, so ``outcome`` is fully settled.
+    if outcome == "errored":
+        return "errored"
+    # The drain returned within budget without raising, but drain_reader_threads
+    # force-closes and continues on the #586 leaked-reader case. If any reader
+    # we were asked to drain is still alive, it can keep mutating ctx — surface
+    # that so the caller snapshots instead of trusting the live buffers (#1025).
+    if any(t is not None and t.is_alive() for t in threads):
+        logger.warning(
+            "[Subprocess] Drain returned within budget but %d reader thread(s) "
+            "are still alive (pid=%s) — reporting 'leaked' so finalize snapshots "
+            "the run context. Issue #1025.",
+            sum(1 for t in threads if t is not None and t.is_alive()),
+            process.pid,
+        )
+        return "leaked"
+    return "completed"

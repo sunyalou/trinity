@@ -591,12 +591,33 @@ async def set_agent_github_pat(
     if not success:
         raise HTTPException(status_code=500, detail="Failed to save PAT")
 
+    # #1264: propagate to the running container so the PAT takes effect WITHOUT a
+    # restart — inject GITHUB_PAT into .env (adding the line if the container was
+    # created tokenless) and re-template the live git remote. Best-effort: a
+    # stopped agent picks it up on next start (relaxed lifecycle injection +
+    # startup self-heal).
+    from services.github_pat_propagation_service import propagate_pat_to_single_agent
+    propagation = await propagate_pat_to_single_agent(agent_name, pat)
+
+    # #1264 review: the live git process authenticates from the remote URL, so
+    # only `remote_updated` means git ops work *immediately*. An env-only update
+    # (or a stopped agent) takes effect on the next restart.
+    if propagation.get("remote_updated"):
+        note = "PAT applied to the running agent — git operations will use it immediately."
+    elif propagation.get("env_updated"):
+        note = "PAT saved to the agent; it will take effect on the next restart."
+    elif propagation.get("reason") == "agent_not_running":
+        note = "PAT saved. Start the agent for it to take effect in git operations."
+    else:
+        note = "PAT saved, but live propagation did not complete; restart the agent to apply it."
+
     return {
         "message": "GitHub PAT configured successfully",
         "agent_name": agent_name,
         "github_username": username,
         "source": "agent",
-        "note": "Restart agent for new PAT to be used in git operations"
+        "propagation": propagation,
+        "note": note,
     }
 
 

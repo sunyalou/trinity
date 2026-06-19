@@ -220,7 +220,7 @@ export async function createServer(config: ServerConfig = {}) {
     createMemoryTools(client, requireApiKey),     // MEM-001 write path (#888)
     createLoopTools(client, requireApiKey),       // Sequential agent loops (#740)
     createVoipTools(client, requireApiKey),       // VoIP telephony — call_user (VOIP-001, #1056)
-    createOperatorQueueTools(client, requireApiKey), // Operator queue read surface (OPS-001, #1101)
+    createOperatorQueueTools(client, requireApiKey), // Operator queue read + respond (OPS-001, #1101/#1104)
   ];
   for (const group of toolGroups) {
     addAllTools(group);

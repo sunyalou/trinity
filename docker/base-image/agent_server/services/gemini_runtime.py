@@ -21,7 +21,7 @@ from ..state import agent_state
 from ..utils.subprocess_pgroup import EXECUTION_TAG_NAME
 from ..utils.orphan_sweep import kill_cgroup_orphans
 from .activity_tracking import start_tool_execution, complete_tool_execution
-from .runtime_adapter import AgentRuntime
+from .runtime_adapter import AgentRuntime, RuntimeCapabilities
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,18 @@ def calculate_gemini_cost(input_tokens: int, output_tokens: int, model: Optional
 
 class GeminiRuntime(AgentRuntime):
     """Gemini CLI implementation of AgentRuntime interface."""
+
+    @classmethod
+    def capabilities(cls) -> RuntimeCapabilities:
+        # Gemini supports chat continuity (--resume) and MCP, but NOT the
+        # Session-tab cached-UUID resume (execute_headless ignores
+        # resume_session_id), and cost is derived from tokens. (#1187)
+        return RuntimeCapabilities(
+            chat_continuity=True,
+            session_tab_resume=False,
+            mcp_support=True,
+            cost_reporting="estimated",
+        )
 
     def is_available(self) -> bool:
         """Check if Gemini CLI is installed."""
