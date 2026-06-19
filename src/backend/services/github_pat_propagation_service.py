@@ -55,6 +55,58 @@ def _env_has_github_pat(env_content: str) -> bool:
     return bool(_GITHUB_PAT_LINE_RE.search(env_content))
 
 
+async def propagate_pat_to_single_agent(agent_name: str, pat: str) -> dict:
+    """Push a newly-set per-agent PAT into a running container with no restart (#1264).
+
+    Unlike :func:`_propagate_to_agent` (the global-PAT path, which *skips* an
+    agent whose ``.env`` lacks a ``GITHUB_PAT`` line), this ADDS the line when
+    missing — the #1264 case is a container created without any token. It then
+    re-templates the live git remote so the frozen empty-password remote
+    (``https://x-access-token:@…``) is fixed immediately and fetch/push work.
+
+    Best-effort and non-fatal: a stopped agent picks the PAT up on next start via
+    the relaxed lifecycle injection + the startup.sh self-heal. Returns a small
+    status dict for the set-PAT API response.
+    """
+    from services import git_service
+
+    running = {a.name for a in list_all_agents_fast() if a.status == "running"}
+    if agent_name not in running:
+        return {"applied": False, "reason": "agent_not_running"}
+
+    env_updated = False
+    base_url = f"http://agent-{agent_name}:8000"
+    async with httpx.AsyncClient(timeout=AGENT_HTTP_TIMEOUT_SECONDS) as client:
+        try:
+            read_resp = await client.get(
+                f"{base_url}/api/credentials/read", params={"paths": ".env"}
+            )
+            read_resp.raise_for_status()
+            env_content = read_resp.json().get("files", {}).get(".env") or ""
+            patched = _patch_env_github_pat(env_content, pat)  # adds the line if absent
+            inject_resp = await client.post(
+                f"{base_url}/api/credentials/inject", json={"files": {".env": patched}}
+            )
+            inject_resp.raise_for_status()
+            env_updated = True
+        except (httpx.HTTPStatusError, httpx.RequestError) as e:
+            logger.warning("single-agent PAT .env inject failed for %s: %s", agent_name, e)
+
+    # Re-template the live remote so an existing clone picks up the token now.
+    git_config = db.get_git_config(agent_name)
+    github_repo = getattr(git_config, "github_repo", None) if git_config else None
+    remote_updated = (
+        await git_service.update_remote_pat(agent_name, pat, github_repo)
+        if github_repo else False
+    )
+
+    return {
+        "applied": env_updated or remote_updated,
+        "env_updated": env_updated,
+        "remote_updated": remote_updated,
+    }
+
+
 async def _propagate_to_agent(
     agent_name: str,
     new_pat: str,

@@ -170,6 +170,48 @@ def generate_working_branch(agent_name: str, instance_id: str) -> str:
     return f"trinity/{agent_name}/{instance_id}"
 
 
+async def update_remote_pat(agent_name: str, github_pat: str, github_repo: str) -> bool:
+    """Re-template a running agent's ``origin`` remote to embed ``github_pat`` (#1264).
+
+    A per-agent PAT configured *after* the container/git was set up never reaches
+    the live remote — it stays frozen with an empty password
+    (``https://x-access-token:@github.com/...``) in the persisted workspace
+    volume, so every fetch/push fails. This rewrites ``remote.origin.url`` in the
+    container's git dir to the authenticated URL, idempotently (set-url if origin
+    exists, else add). The startup.sh self-heal does the same on restart; this is
+    the no-restart path used by ``set_agent_github_pat``.
+
+    Returns True on success. Best-effort: returns False (never raises) if the
+    container isn't running, has no git dir, or the command fails.
+    """
+    if not github_pat or not github_repo:
+        return False
+    container_name = f"agent-{agent_name}"
+    try:
+        git_dir = await _detect_git_dir(container_name)
+        url = _git_remote_url(github_pat, github_repo)
+        # Same idempotent set-url/add pattern as initialize_github_sync (step 3).
+        cmd = (
+            f"git remote get-url origin >/dev/null 2>&1 && "
+            f"git remote set-url origin {url} || git remote add origin {url}"
+        )
+        result = await execute_command_in_container(
+            container_name=container_name,
+            command=f'bash -c "cd {git_dir} && {cmd}"',
+            timeout=30,
+        )
+        ok = result.get("exit_code", 1) == 0
+        if not ok:
+            logger.warning(
+                "update_remote_pat: set-url failed for %s: %s",
+                agent_name, result.get("output", "")[:200],
+            )
+        return ok
+    except Exception as e:  # noqa: BLE001 — best-effort, container may be down
+        logger.warning("update_remote_pat: error for %s: %s", agent_name, e)
+        return False
+
+
 # ============================================================================
 # S4 — Persistent State Allowlist (abilityai/trinity#383)
 # ============================================================================

@@ -381,11 +381,14 @@ async def recreate_container_with_updated_config(agent_name: str, old_container,
         env_vars.pop('ANTHROPIC_API_KEY', None)
         env_vars.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
 
-    # Update GITHUB_PAT using per-agent PAT first, then platform PAT
-    if env_vars.get('GITHUB_PAT'):
+    # Update GITHUB_PAT using per-agent PAT first, then platform PAT.
+    if db.get_git_config(agent_name):  # #1264: gate on git config, not GITHUB_PAT presence
         from routers.git import get_github_pat_for_agent
         current_pat = get_github_pat_for_agent(agent_name)
         if current_pat:
+            # #1264: a tokenless container (PAT configured after creation) now
+            # receives the effective per-agent PAT on restart; startup.sh then
+            # re-templates the remote so fetch/push authenticate.
             env_vars['GITHUB_PAT'] = current_pat
 
     # GUARD-001: re-serialise guardrails overrides into env so startup.sh

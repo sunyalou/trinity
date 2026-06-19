@@ -453,12 +453,19 @@ def check_github_pat_env_matches(container, agent_name: str) -> bool:
     env_list = container.attrs.get("Config", {}).get("Env", [])
     env_dict = {e.split("=", 1)[0]: e.split("=", 1)[1] for e in env_list if "=" in e}
 
+    current_pat = get_github_pat_for_agent(agent_name)
+
     container_pat = env_dict.get("GITHUB_PAT")
     if not container_pat:
-        # Agent doesn't use GITHUB_PAT — no update needed
+        # #1264: a tokenless container that now has an effective PAT AND git sync
+        # configured genuinely mismatches desired state — recreation re-injects
+        # the token (crud.py) so the remote can authenticate. Without this, a
+        # per-agent PAT set after a tokenless creation never reached the env.
+        if current_pat and db.get_git_config(agent_name):
+            return False
+        # Otherwise the agent doesn't use GITHUB_PAT — no update needed.
         return True
 
-    current_pat = get_github_pat_for_agent(agent_name)
     if not current_pat:
         # No PAT configured anywhere — can't update, leave as-is
         return True
