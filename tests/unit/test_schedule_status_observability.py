@@ -227,6 +227,27 @@ class TestResidualRaceObservabilityLog:
 #   2. BEHAVIOURAL no-op proofs (`TestStatusWriteNoOpOnTerminalRow`) that drive
 #      a real row to a terminal state and assert each writer leaves it untouched
 #      — these survive refactors of the underlying SQL.
+#
+# Static-guard BLIND SPOTS (it is a tripwire, not a proof — do not read a green
+# guard as "every status write in the system is CAS-protected"):
+#   - File-scoped to db/schedules.py. It does NOT parse the standalone scheduler
+#     process (src/scheduler/database.py), which writes the SAME trinity.db with
+#     un-CAS-guarded raw SQL (`update_execution_status`, `schedule_retry`) — a
+#     tracked #1082 follow-up (see feature-flows/status-as-projection.md
+#     "Known gap"). Nor does it see metadata.py's rename-cascade update (harmless
+#     — writes agent_name, not status).
+#   - Recognizes only the `update(schedule_executions)` call shape. Raw
+#     `text("UPDATE schedule_executions ...")`, the executemany form
+#     `conn.execute(update(...), rows)`, and an aliased table (`t =
+#     schedule_executions; update(t)`) all evade detection.
+#   - `_has_status_precondition` accepts ANY `schedule_executions.c.status`
+#     comparison in the function — a check-then-blind-update (read status, then
+#     UPDATE with no status in the WHERE) would pass. `_writes_status` also only
+#     sees `.values(status=...)` / a Dict literal with a constant "status" key,
+#     so an imperatively-built `vals["status"]=...; .values(**vals)` evades it.
+# The inventory tripwire (test_update_site_inventory_is_complete) still forces a
+# human to classify any NEW update(schedule_executions) site, which is the
+# backstop for these shape gaps within this file.
 
 _SCHEDULES_PY = _BACKEND / "db" / "schedules.py"
 
