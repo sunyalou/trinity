@@ -18,7 +18,15 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Query, WebSocket
 from pydantic import BaseModel
 
-from models import AgentConfig, AgentStatus, User, DeployLocalRequest, CircuitBreakerConfigUpdate
+from models import (
+    AgentConfig,
+    AgentStatus,
+    User,
+    DeployLocalRequest,
+    CircuitBreakerConfigUpdate,
+    ExecutionResultEnvelope,
+    TaskExecutionStatus,
+)
 from database import db
 from dependencies import get_current_user, decode_token, require_role, AuthorizedAgentByName, OwnedAgentByName, CurrentUser
 from services.docker_service import (
@@ -820,6 +828,161 @@ async def agent_heartbeat(agent_name: str, payload: HeartbeatPayload, request: R
         agent_name, payload.model_dump(exclude_none=True)
     )
     return {"ok": True, "stored": stored}
+
+
+# ============================================================================
+# Fire-and-Forget Result Callback (#1083)
+# ============================================================================
+
+# Field caps for the result callback — well above a legitimate large transcript
+# (the synchronous /api/task path already accepts these), low enough to bound a
+# buggy/compromised agent. Enforced as a clean 413 (not a Pydantic 422) so the
+# agent's status-code-driven retry logic treats it as a permanent reject.
+_MAX_CALLBACK_RESPONSE_CHARS = 4_000_000
+_MAX_CALLBACK_LOG_BYTES = 16_000_000
+
+# Authoritative terminals a callback must NOT overwrite — short-circuit as an
+# idempotent replay. FAILED is deliberately EXCLUDED: a row FAILED by the lease
+# reaper (LEASE_EXPIRED) must still let a genuinely-late SUCCESS callback through
+# to `apply_result`, whose CAS lets SUCCESS overwrite a non-cancelled terminal
+# (#378 / Codex #2 — "not guarded against"). A duplicate FAILED callback on an
+# already-FAILED row is harmless: the non-success CAS blocks it (won=False) so no
+# side-effect re-runs. SUCCESS/CANCELLED/SKIPPED are final and replay-safe to ACK.
+_AUTHORITATIVE_TERMINALS = frozenset({
+    TaskExecutionStatus.SUCCESS,
+    TaskExecutionStatus.CANCELLED,
+    TaskExecutionStatus.SKIPPED,
+})
+
+# The durable async marker set at dispatch (PR2.F) — the ONLY RUNNING rows the
+# callback may finalize. Keeps the callback from terminal-writing a sync /
+# interactive execution the backend is mid-await on (Codex #3 / decision 2).
+_ASYNC_DISPATCH_MARKER = "dispatched_async"
+
+
+@router.post("/{agent_name}/executions/{execution_id}/result")
+async def agent_execution_result(
+    agent_name: str,
+    execution_id: str,
+    payload: ExecutionResultEnvelope,
+    request: Request,
+):
+    """Receive a fire-and-forget turn's terminal from the agent (#1083).
+
+    Fully hardened and fail-closed. Auth mirrors the heartbeat endpoint
+    (decision 2): the agent's OWN agent-scoped MCP key (Bearer), validated with
+    ``track_usage=False`` and ``authorize_heartbeat`` (an agent may only report
+    its own executions). Then an execution-ownership check and a **durable
+    async-marker gate**.
+
+    Acceptance rules (fail-closed):
+      * Missing/non-Bearer auth, or a user/system/wrong-agent key → 403.
+      * Execution missing or not owned by ``agent_name`` → 404.
+      * Execution already terminal → idempotent replay → 200 ``{replayed: true}``
+        (the row is final; no write happens — safe to ACK so the agent stops
+        retrying).
+      * Execution RUNNING but NOT carrying the ``dispatched_async`` marker → 409.
+        This is the cross-path guard: a synchronous/interactive execution the
+        backend is mid-await on must never be finalized from here. **In PR1 no
+        execution is ever marked async, so every live RUNNING callback hits this
+        409 — the endpoint ships hardened but inert until PR2 sets the marker.**
+      * Oversized ``response``/``execution_log`` → 413.
+
+    On accept the terminal flows through ``apply_result`` (release_slot=True — the
+    callback owns the lease), which CAS-gates every side effect, so a duplicate
+    callback is a no-op (no double activity close / breaker churn / slot drain).
+    """
+    from services import heartbeat_service
+    from services.task_execution_service import (
+        TaskExecutionErrorCode,
+        TerminalEnvelope,
+        dispatch_breaker_active,
+        get_task_execution_service,
+    )
+
+    # ---- Auth: agent's own MCP key (mirror heartbeat) -----------------------
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=403, detail="Result callback requires the agent's own MCP key")
+    token = auth_header[7:]
+    res = db.validate_mcp_api_key(token, track_usage=False)
+    if not heartbeat_service.authorize_heartbeat(res, agent_name):
+        raise HTTPException(status_code=403, detail="Result callback requires the agent's own MCP key")
+
+    # ---- Ownership: the execution must exist and belong to this agent -------
+    execution = db.get_execution(execution_id)
+    if not execution or execution.agent_name != agent_name:
+        # 404 (not 403) — don't leak existence of another agent's execution id.
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    # ---- Idempotent replay: an authoritative terminal is a no-op ACK --------
+    # (FAILED falls through — a late SUCCESS may still correct a reaper
+    # LEASE_EXPIRED via the CAS; a duplicate FAILED is CAS-blocked downstream.)
+    if execution.status in _AUTHORITATIVE_TERMINALS:
+        return {"ok": True, "replayed": True, "status": execution.status}
+
+    # ---- Durable async-marker gate (fail-closed cross-path guard) ----------
+    # RUNNING-sync / interactive rows (marker 'dispatched' / real-uuid / NULL) and
+    # any non-async FAILED row are rejected — the callback only finalizes rows it
+    # owns. A reaper-FAILED async row keeps its 'dispatched_async' marker, so a
+    # late SUCCESS still passes here.
+    if execution.claude_session_id != _ASYNC_DISPATCH_MARKER:
+        raise HTTPException(
+            status_code=409,
+            detail="Execution was not async-dispatched; result callback rejected",
+        )
+
+    # ---- Body-size hardening ------------------------------------------------
+    if payload.response is not None and len(payload.response) > _MAX_CALLBACK_RESPONSE_CHARS:
+        raise HTTPException(status_code=413, detail="response too large")
+    if payload.execution_log is not None:
+        try:
+            log_bytes = len(json.dumps(payload.execution_log))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="execution_log is not JSON-serializable")
+        if log_bytes > _MAX_CALLBACK_LOG_BYTES:
+            raise HTTPException(status_code=413, detail="execution_log too large")
+
+    # ---- Build the normalized terminal + apply -----------------------------
+    status = (
+        TaskExecutionStatus.SUCCESS
+        if payload.status == "success"
+        else TaskExecutionStatus.FAILED
+    )
+    error_code = None
+    if payload.error_code:
+        try:
+            error_code = TaskExecutionErrorCode(payload.error_code)
+        except ValueError:
+            # Unknown codes are non-fatal — apply_result only special-cases AUTH.
+            error_code = None
+
+    envelope = TerminalEnvelope(
+        execution_id=execution_id,
+        status=status,
+        response=payload.response,
+        error=payload.error,
+        error_code=error_code,
+        metadata=payload.metadata or {},
+        execution_log=payload.execution_log,
+        session_id=payload.session_id,
+        execution_time_ms=payload.execution_time_ms,
+    )
+
+    svc = get_task_execution_service()
+    result = await svc.apply_result(
+        agent_name,
+        envelope,
+        activity_id=db.get_open_activity_id_for_execution(execution_id),
+        breaker_enabled=dispatch_breaker_active(agent_name),
+        release_slot=True,
+    )
+    if payload.terminal_reason:
+        logger.info(
+            "[#1083] result callback for %s applied: status=%s terminal_reason=%s",
+            execution_id, result.status, payload.terminal_reason,
+        )
+    return {"ok": True, "replayed": False, "status": result.status}
 
 
 # ============================================================================

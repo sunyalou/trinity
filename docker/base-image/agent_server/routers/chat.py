@@ -9,13 +9,14 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 
 from ..models import ChatRequest, ModelRequest, ParallelTaskRequest
 from ..state import agent_state
 from ..services.claude_code import get_execution_lock
 from ..services.runtime_adapter import get_runtime
 from ..services.process_registry import get_process_registry
+from ..services import result_callback
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -125,6 +126,18 @@ async def execute_task(request: ParallelTaskRequest):
         logger.info(f"[Task] Resuming session {request.resume_session_id}: {request.message[:50]}...")
     else:
         logger.info(f"[Task] Executing parallel task: {request.message[:50]}...")
+
+    # #1083 fire-and-forget: when the backend requests async AND this is the
+    # Claude runtime, accept with 202 and run the turn in a detached task that
+    # reports the terminal to the backend's result-callback endpoint. The detached
+    # task owns its own record_task_start/finish. try_spawn_async returns False
+    # (→ synchronous handling below) for non-Claude runtimes, a missing
+    # execution_id, or absent callback creds — the non-202 fallback.
+    if result_callback.try_spawn_async(request):
+        return JSONResponse(
+            status_code=202,
+            content={"execution_id": request.execution_id, "status": "accepted"},
+        )
 
     # Execute via runtime adapter in headless mode (no lock, no --continue)
     runtime = get_runtime()

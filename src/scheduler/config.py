@@ -75,6 +75,26 @@ class SchedulerConfig:
         "POLL_DEADLINE_BUFFER", "60"
     )))
 
+    # Dispatch deadline for the scheduler→backend POST /api/internal/execute-task
+    # round-trip. The async endpoint normally returns ~instantly; reaching this
+    # ceiling means the backend did not RESPOND in time (event-loop stall under
+    # fan-out). NOTE: outcome is UNKNOWN, not "rejected" — the backend spawns the
+    # bg task before replying (internal.py), so a timeout may mean the task is
+    # already running (it then becomes an orphan recovered by the cleanup service;
+    # see the D4 follow-up). Lifted from a literal (#1022) so the deadline is
+    # tunable + "dispatch timed out" is distinguishable from "task ran long".
+    dispatch_timeout: float = field(default_factory=lambda: float(os.getenv(
+        "DISPATCH_TIMEOUT", "30"
+    )))
+
+    # Pre-check hook deadline (agent-side hook is 60s; this is the backend-call ceiling
+    # with headroom). Same backend stall that times out dispatch also times out the
+    # pre-check; lifted from the 70.0 literal (#1022, D1) for tunability. Fail-open —
+    # a pre-check timeout never produces a failed row, it just fires the schedule.
+    pre_check_timeout: float = field(default_factory=lambda: float(os.getenv(
+        "PRE_CHECK_TIMEOUT", "70"
+    )))
+
     # Misfire grace time — how long after a missed trigger APScheduler will
     # still execute the job.  Default 30s is far too low for weekly cron jobs
     # whose container may restart.  3600s (1 hour) gives ample runway.

@@ -31,6 +31,49 @@ DEFAULT_BASE_IMAGE_ALLOWLIST = [
     "trinity-agent-base:*",
 ]
 
+# #1187: runtime classification. Subscriptions are Claude-OAuth tokens, so the
+# auto-assign (crud) and the CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY juggle
+# (lifecycle recreate) apply ONLY to the Claude Code runtime. Gemini and Codex
+# bring their own credentials via .env (CRED-002).
+CLAUDE_RUNTIME_NAMES = frozenset({"claude-code", "claude"})
+
+
+def is_claude_runtime(runtime: Optional[str]) -> bool:
+    """True for the Claude Code runtime, INCLUDING the default (unset/empty →
+    claude-code). Non-Claude runtimes (gemini-cli, gemini, codex) return False.
+    """
+    return (runtime or "claude-code").lower() in CLAUDE_RUNTIME_NAMES
+
+
+# #1187: every runtime the platform can launch. Mirrors the agent-side
+# `runtime_adapter.KNOWN_RUNTIMES` (which lives in the base image and isn't
+# importable from the backend). Keep the two in sync when adding a runtime.
+KNOWN_RUNTIME_NAMES = CLAUDE_RUNTIME_NAMES | frozenset({"gemini-cli", "gemini", "codex"})
+
+
+def validate_runtime(runtime: Optional[str]) -> None:
+    """Reject an unknown ``runtime`` at create time.
+
+    The agent-side ``get_runtime()`` already fails loud on a bad
+    ``AGENT_RUNTIME``, but only when the container boots — by then the agent
+    exists and the failure is a cryptic crash-loop. Catching a typo'd
+    ``runtime:`` here turns it into a clear 400 at creation. Unset/empty is
+    valid (defaults to claude-code).
+
+    Raises:
+        HTTPException(400): if ``runtime`` is set to an unrecognized value.
+    """
+    if not runtime:
+        return
+    if runtime.lower() not in KNOWN_RUNTIME_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown runtime {runtime!r}. "
+                f"Supported runtimes: {sorted(KNOWN_RUNTIME_NAMES)}."
+            ),
+        )
+
 
 def validate_base_image(image: str) -> None:
     """
@@ -442,6 +485,24 @@ def check_guardrails_env_matches(container, agent_name: str) -> bool:
         return False
 
 
+def needs_per_agent_pat_injection(agent_name: str) -> bool:
+    """#1264: True when the agent has a **per-agent** GitHub PAT configured AND
+    git sync — i.e. the container SHOULD carry that token.
+
+    Gated on ``db.get_agent_github_pat`` (the per-agent PAT only), NOT
+    ``get_github_pat_for_agent`` (which falls back to the global platform PAT).
+    Using the global fallback here would force-recreate / inject into every
+    tokenless git agent the moment an operator sets a global PAT — that's #211's
+    deliberate opt-in `.env` path, not this one's job, and is out of #1264 scope.
+
+    Shared by the recreate matcher (:func:`check_github_pat_env_matches`) and the
+    lifecycle recreate inject gate so the two predicates cannot drift — if they
+    did, the matcher could keep requesting a recreate the inject never satisfies
+    (infinite recreate loop).
+    """
+    return bool(db.get_agent_github_pat(agent_name)) and bool(db.get_git_config(agent_name))
+
+
 def check_github_pat_env_matches(container, agent_name: str) -> bool:
     """
     Check if container's GITHUB_PAT env var matches the effective PAT for this agent.
@@ -455,9 +516,15 @@ def check_github_pat_env_matches(container, agent_name: str) -> bool:
 
     container_pat = env_dict.get("GITHUB_PAT")
     if not container_pat:
-        # Agent doesn't use GITHUB_PAT — no update needed
-        return True
+        # #1264: a tokenless container needs a recreate ONLY when a per-agent PAT
+        # is configured (so creation/recreate will inject it). A global-only PAT
+        # must NOT force tokenless agents to recreate — see
+        # needs_per_agent_pat_injection. Recreate converges in one pass because
+        # the lifecycle inject gate uses the SAME predicate.
+        return not needs_per_agent_pat_injection(agent_name)
 
+    # Container already has a token — keep it in sync with the effective PAT
+    # (per-agent first, then the global fallback for already-tokened containers).
     current_pat = get_github_pat_for_agent(agent_name)
     if not current_pat:
         # No PAT configured anywhere — can't update, leave as-is

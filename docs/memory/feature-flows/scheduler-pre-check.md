@@ -33,7 +33,7 @@ Returns:
 ## Scheduler Layer
 **Service**: `src/scheduler/service.py` — `_run_pre_check(agent_name)`
 
-Calls the backend's internal endpoint (not the agent directly — topology stays "scheduler → backend → agent"). Translates the backend response into a scheduler decision:
+Calls the backend's internal endpoint (not the agent directly — topology stays "scheduler → backend → agent"). The scheduler→backend HTTP call uses `config.pre_check_timeout` (env `PRE_CHECK_TIMEOUT`, default 70s — the agent-side hook deadline is 60s, this adds headroom; lifted from a literal in #1022). A timeout fails open (`None` → fire as usual) and is logged with the exception **type** rather than the empty parens a bare `httpx` timeout would otherwise print (#1022). Translates the backend response into a scheduler decision:
 
 | Backend response | Scheduler decision |
 |---|---|

@@ -97,6 +97,39 @@ def _safe_add_column(cursor, table: str, column: str, ddl: str, *, log_msg: str 
         raise
 
 
+def _atomic_rebuild(cursor, conn, table, create_new_sql, copy_sql, *, indexes=()):
+    """Atomically rebuild ``table`` via rename-swap inside an explicit transaction.
+
+    Closes the DROP-rebuild data-loss window (#1160). Under Python's legacy
+    sqlite3 isolation an *implicit* DDL statement autocommits, so the old code's
+    ``DROP TABLE`` committed before the re-INSERT — a crash in between lost the
+    rows permanently. An *explicit* ``BEGIN`` holds the drop and re-create in one
+    transaction that rolls back cleanly on any failure, so the old table is never
+    gone until the new one is committed in the same unit of work.
+
+    ``create_new_sql`` must create ``{table}_new``; ``copy_sql`` must
+    ``INSERT INTO {table}_new ... SELECT ... FROM {table}`` (copy happens
+    server-side — the rows never live only in a Python list across a commit).
+    ``indexes`` are CREATE INDEX statements re-run after the rename.
+    """
+    new = f"{table}_new"
+    conn.commit()  # clear any pending implicit transaction before BEGIN
+    try:
+        cursor.execute("BEGIN")
+        # Drop an orphan _new from a prior crashed attempt before recreating it.
+        cursor.execute(f"DROP TABLE IF EXISTS {new}")
+        cursor.execute(create_new_sql)
+        cursor.execute(copy_sql)
+        cursor.execute(f"DROP TABLE {table}")
+        cursor.execute(f"ALTER TABLE {new} RENAME TO {table}")
+        for idx_sql in indexes:
+            cursor.execute(idx_sql)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def run_all_migrations(cursor, conn):
     """Run all pending migrations in order. Called twice from init_database().
 
@@ -140,10 +173,28 @@ def run_all_migrations(cursor, conn):
                 logger.debug("Migration %s: table not present yet, skipping (fresh install)", name)
             else:
                 logger.error("Migration FAILED (%s): %s", name, e, exc_info=True)
+                # Name the migration on the exception itself (#1160) so it rides
+                # the crash-loop traceback, while preserving the original type.
+                e.add_note(f"Trinity migration that failed: {name!r}")
                 raise
         except Exception as e:
             logger.error("Migration FAILED (%s): %s", name, e, exc_info=True)
+            e.add_note(f"Trinity migration that failed: {name!r}")
             raise
+
+
+def migration_health(cursor):
+    """Migration-completeness snapshot for the `/health` check (#1160).
+
+    Returns ``(applied, expected, first_pending)``: how many of ``MIGRATIONS``
+    are recorded in ``schema_migrations``, the total expected, and the first
+    registered migration not yet recorded (``None`` when all are applied) — so a
+    503 names the stuck/pending migration instead of just reporting a count.
+    """
+    cursor.execute("SELECT name FROM schema_migrations")
+    applied_names = {row[0] for row in cursor.fetchall()}
+    first_pending = next((name for name, _ in MIGRATIONS if name not in applied_names), None)
+    return len(applied_names), len(MIGRATIONS), first_pending
 
 
 def _migrate_agent_sharing_table(cursor, conn):
@@ -155,20 +206,17 @@ def _migrate_agent_sharing_table(cursor, conn):
     if "shared_with_id" in columns and "shared_with_email" not in columns:
         print("Migrating agent_sharing table to email-based schema...")
 
-        # Migrate existing data: join with users to get emails
-        cursor.execute("""
-            SELECT s.id, s.agent_name, u.email, s.shared_by_id, s.created_at
-            FROM agent_sharing s
-            JOIN users u ON s.shared_with_id = u.id
-        """)
-        existing_shares = cursor.fetchall()
-
-        # Drop old table
-        cursor.execute("DROP TABLE agent_sharing")
-
-        # Create new table with email
-        cursor.execute("""
-            CREATE TABLE agent_sharing (
+        # Rename-swap inside one transaction (#1160) — the copy joins users to
+        # resolve emails, lowercases them, and drops NULL-email rows, exactly as
+        # the previous row-by-row Python loop did (which silently skipped
+        # `if share[2]`). Indexes are created by init_schema's index pass, so
+        # none are recreated here (matches the prior behavior).
+        _atomic_rebuild(
+            cursor,
+            conn,
+            "agent_sharing",
+            """
+            CREATE TABLE agent_sharing_new (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 agent_name TEXT NOT NULL,
                 shared_with_email TEXT NOT NULL,
@@ -177,18 +225,17 @@ def _migrate_agent_sharing_table(cursor, conn):
                 FOREIGN KEY (shared_by_id) REFERENCES users(id),
                 UNIQUE(agent_name, shared_with_email)
             )
-        """)
-
-        # Re-insert migrated data
-        for share in existing_shares:
-            if share[2]:  # email exists
-                cursor.execute("""
-                    INSERT INTO agent_sharing (agent_name, shared_with_email, shared_by_id, created_at)
-                    VALUES (?, ?, ?, ?)
-                """, (share[1], share[2].lower(), share[3], share[4]))
-
-        conn.commit()
-        print(f"Migrated {len(existing_shares)} sharing records to email-based schema")
+            """,
+            """
+            INSERT INTO agent_sharing_new
+                (agent_name, shared_with_email, shared_by_id, created_at)
+            SELECT s.agent_name, lower(u.email), s.shared_by_id, s.created_at
+            FROM agent_sharing s
+            JOIN users u ON s.shared_with_id = u.id
+            WHERE u.email IS NOT NULL AND u.email != ''
+            """,
+        )
+        print("Migrated agent_sharing to email-based schema")
 
 
 def _migrate_schedule_executions_observability(cursor, conn):
@@ -478,16 +525,14 @@ def _migrate_agent_skills_table(cursor, conn):
     if "skill_id" in columns and "skill_name" not in columns:
         print("Migrating agent_skills table: renaming skill_id to skill_name...")
 
-        # Get existing data
-        cursor.execute("SELECT id, agent_name, skill_id, assigned_by, assigned_at FROM agent_skills")
-        existing_data = cursor.fetchall()
-
-        # Drop old table
-        cursor.execute("DROP TABLE agent_skills")
-
-        # Create new table with correct schema
-        cursor.execute("""
-            CREATE TABLE agent_skills (
+        # Rename-swap inside one transaction (#1160) — straight column copy
+        # (skill_id -> skill_name). Recreates the two indexes the old code did.
+        _atomic_rebuild(
+            cursor,
+            conn,
+            "agent_skills",
+            """
+            CREATE TABLE agent_skills_new (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 agent_name TEXT NOT NULL,
                 skill_name TEXT NOT NULL,
@@ -495,21 +540,18 @@ def _migrate_agent_skills_table(cursor, conn):
                 assigned_at TEXT NOT NULL,
                 UNIQUE(agent_name, skill_name)
             )
-        """)
-
-        # Reinsert data
-        for row in existing_data:
-            cursor.execute("""
-                INSERT INTO agent_skills (agent_name, skill_name, assigned_by, assigned_at)
-                VALUES (?, ?, ?, ?)
-            """, (row[1], row[2], row[3], row[4]))
-
-        # Recreate indexes
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_skills_agent ON agent_skills(agent_name)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_skills_skill ON agent_skills(skill_name)")
-
-        conn.commit()
-        print(f"Migrated {len(existing_data)} agent_skills records")
+            """,
+            """
+            INSERT INTO agent_skills_new
+                (agent_name, skill_name, assigned_by, assigned_at)
+            SELECT agent_name, skill_id, assigned_by, assigned_at FROM agent_skills
+            """,
+            indexes=(
+                "CREATE INDEX IF NOT EXISTS idx_agent_skills_agent ON agent_skills(agent_name)",
+                "CREATE INDEX IF NOT EXISTS idx_agent_skills_skill ON agent_skills(skill_name)",
+            ),
+        )
+        print("Migrated agent_skills to skill_name schema")
 
 
 def _migrate_agent_dashboard_values_table(cursor, conn):
@@ -2383,6 +2425,21 @@ def _migrate_users_suspended_at(cursor, conn):
     conn.commit()
 
 
+def _migrate_activities_created_index(cursor, conn):
+    """Issue #1265: standalone index on agent_activities(created_at DESC).
+
+    The cross-agent timeline (/api/activities/timeline) sorts by created_at DESC
+    with no agent_name predicate, which the composite idx_activities_agent
+    (agent_name, created_at DESC) cannot serve as a sort — it degraded to a
+    full scan + sort as activity volume grew with fleet size. Idempotent.
+    """
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_activities_created "
+        "ON agent_activities(created_at DESC)"
+    )
+    conn.commit()
+
+
 def _migrate_operator_queue_cleared_at(cursor, conn):
     """#1017 — Clear All on the Operations Resolved tab.
 
@@ -2475,4 +2532,5 @@ MIGRATIONS = [
     ("agent_ownership_circuit_breaker", _migrate_agent_ownership_circuit_breaker),
     ("voip_tables", _migrate_voip_tables),
     ("operator_queue_cleared_at", _migrate_operator_queue_cleared_at),
+    ("activities_created_index", _migrate_activities_created_index),
 ]
