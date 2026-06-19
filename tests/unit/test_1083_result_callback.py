@@ -174,21 +174,24 @@ class TestPersistResend:
         rc._delete("exec-9")
         assert not (tmp_path / "exec-9.json").exists()
 
-    def test_pending_path_rejects_traversal(self, tmp_path, monkeypatch):
-        # Suspenders (CWE-022): resolve() + is_relative_to() containment means a
-        # traversal id can never escape _PENDING_DIR, even bypassing the belt.
+    def test_pending_path_neutralizes_traversal(self, tmp_path, monkeypatch):
+        # CWE-022: basename strips directory components and resolve()+is_relative_to()
+        # confines the result, so a traversal id can never escape _PENDING_DIR.
         monkeypatch.setattr(rc, "_PENDING_DIR", tmp_path)
         assert rc._pending_path("exec-ok") == (tmp_path.resolve() / "exec-ok.json")
-        with pytest.raises(ValueError):
-            rc._pending_path("../../etc/passwd")
+        p = rc._pending_path("../../etc/passwd")
+        assert p == (tmp_path.resolve() / "passwd.json")
+        assert p.is_relative_to(tmp_path.resolve())
 
-    def test_persist_delete_swallow_traversal(self, tmp_path, monkeypatch):
-        # _persist/_delete stay best-effort: a hostile id is logged, never raised,
-        # and nothing is written outside the pending dir.
+    def test_persist_delete_traversal_stays_contained(self, tmp_path, monkeypatch):
+        # A hostile id is basename-neutralized: the write lands inside the pending
+        # dir (never the parent) and nothing raises.
         monkeypatch.setattr(rc, "_PENDING_DIR", tmp_path)
         rc._persist("../escape", {"agent_name": "a", "envelope": {}})  # must not raise
-        rc._delete("../escape")  # must not raise
+        assert (tmp_path / "escape.json").exists()
         assert not (tmp_path.parent / "escape.json").exists()
+        rc._delete("../escape")  # must not raise
+        assert not (tmp_path / "escape.json").exists()
 
     def test_resend_delivers_and_deletes(self, tmp_path, monkeypatch):
         monkeypatch.setattr(rc, "_PENDING_DIR", tmp_path)

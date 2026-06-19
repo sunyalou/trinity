@@ -86,14 +86,16 @@ def _is_safe_execution_id(execution_id: Any) -> bool:
 def _pending_path(execution_id: str) -> Path:
     """Resolve the on-disk pending-result path, guaranteeing containment.
 
-    The resolve() + is_relative_to() check is the CWE-022 barrier on the
-    path-build dataflow itself (mirrors ``jsonl_recovery._read_jsonl_records``),
-    so a hostile execution_id can never escape _PENDING_DIR even if a caller
-    forgets the _is_safe_execution_id belt. Raises ValueError on a containment
-    violation; the best-effort _persist/_delete callers catch and log it.
+    ``os.path.basename`` strips any directory components from the id before it is
+    joined onto _PENDING_DIR — the CWE-022 barrier that confines a hostile
+    execution_id to the pending dir even if a caller forgets the
+    _is_safe_execution_id belt. resolve() + is_relative_to() is the suspenders:
+    it raises ValueError on a (now unreachable) escape, which the best-effort
+    _persist/_delete callers catch and log.
     """
+    safe_name = f"{os.path.basename(execution_id)}.json"
     root = _PENDING_DIR.resolve()
-    candidate = (root / f"{execution_id}.json").resolve()
+    candidate = (root / safe_name).resolve()
     if not candidate.is_relative_to(root):
         raise ValueError(f"pending-result path escapes {root}: {execution_id!r}")
     return candidate
