@@ -381,12 +381,18 @@ async def recreate_container_with_updated_config(agent_name: str, old_container,
         env_vars.pop('ANTHROPIC_API_KEY', None)
         env_vars.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
 
-    # Update GITHUB_PAT using per-agent PAT first, then platform PAT
-    if env_vars.get('GITHUB_PAT'):
+    # Update GITHUB_PAT using per-agent PAT first, then platform PAT.
+    _per_agent_pat = bool(db.get_agent_github_pat(agent_name)) and bool(db.get_git_config(agent_name))
+    if env_vars.get('GITHUB_PAT') or _per_agent_pat:
         from routers.git import get_github_pat_for_agent
         current_pat = get_github_pat_for_agent(agent_name)
         if current_pat:
             env_vars['GITHUB_PAT'] = current_pat
+    # NB: gated on db.get_agent_github_pat (NOT the global fallback) so a global-
+    # only PAT is never injected into a previously-tokenless container (#211's
+    # opt-in path); kept in sync with the recreate matcher so the two converge.
+    # Inlined via db rather than importing the helper, so a test stubbing
+    # services.agent_service.helpers can't break this module's import (#1271 CI).
 
     # GUARD-001: re-serialise guardrails overrides into env so startup.sh
     # can render the runtime config with the latest values.

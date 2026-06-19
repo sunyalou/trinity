@@ -165,9 +165,60 @@ def _git_remote_url(github_pat: str, github_repo: str) -> str:
     return f"{scheme}://oauth2:{github_pat}@{host_path}/{github_repo}.git"
 
 
+def _remote_seturl_subcommand(url: str) -> str:
+    """Idempotent `origin` set-url/add shell subcommand, with the (token-bearing)
+    URL shell-quoted (#1264 review). Shared by ``initialize_github_sync`` and
+    ``update_remote_pat`` so the templating logic lives in one place; the
+    ``shlex.quote`` is defense-in-depth (canonical PATs are ``[A-Za-z0-9_]``,
+    but ``set_agent_github_pat`` accepts arbitrary input)."""
+    q = shlex.quote(url)
+    return (
+        f"git remote get-url origin >/dev/null 2>&1 && "
+        f"git remote set-url origin {q} || git remote add origin {q}"
+    )
+
+
 def generate_working_branch(agent_name: str, instance_id: str) -> str:
     """Generate a working branch name for an agent instance."""
     return f"trinity/{agent_name}/{instance_id}"
+
+
+async def update_remote_pat(agent_name: str, github_pat: str, github_repo: str) -> bool:
+    """Re-template a running agent's ``origin`` remote to embed ``github_pat`` (#1264).
+
+    A per-agent PAT configured *after* the container/git was set up never reaches
+    the live remote — it stays frozen with an empty password (e.g.
+    ``https://x-access-token:@github.com/...``) in the persisted workspace
+    volume, so every fetch/push fails. This rewrites ``remote.origin.url`` to the
+    authenticated ``oauth2:<pat>@`` URL (``_git_remote_url``, same scheme
+    startup.sh uses), idempotently (set-url if origin exists, else add). The
+    startup.sh self-heal does the same on restart; this is the no-restart path
+    used by ``set_agent_github_pat``.
+
+    Returns True on success. Best-effort: returns False (never raises) if the
+    container isn't running, has no git dir, or the command fails.
+    """
+    if not github_pat or not github_repo:
+        return False
+    container_name = f"agent-{agent_name}"
+    try:
+        git_dir = await _detect_git_dir(container_name)
+        cmd = _remote_seturl_subcommand(_git_remote_url(github_pat, github_repo))
+        result = await execute_command_in_container(
+            container_name=container_name,
+            command=f'bash -c "cd {git_dir} && {cmd}"',
+            timeout=30,
+        )
+        ok = result.get("exit_code", 1) == 0
+        if not ok:
+            logger.warning(
+                "update_remote_pat: set-url failed for %s: %s",
+                agent_name, result.get("output", "")[:200],
+            )
+        return ok
+    except Exception as e:  # noqa: BLE001 — best-effort, container may be down
+        logger.warning("update_remote_pat: error for %s: %s", agent_name, e)
+        return False
 
 
 # ============================================================================
@@ -878,9 +929,7 @@ async def initialize_git_in_container(
         ('git config --global user.name "Trinity Agent"', True),
         ('git config --global init.defaultBranch main', True),
         ('git init', True),
-        (f'git remote get-url origin >/dev/null 2>&1 && '
-         f'git remote set-url origin {_git_remote_url(github_pat, github_repo)} || '
-         f'git remote add origin {_git_remote_url(github_pat, github_repo)}', True),
+        (_remote_seturl_subcommand(_git_remote_url(github_pat, github_repo)), True),
         ('git fetch origin', False),  # Optional — remote may be empty
     ]
 

@@ -442,6 +442,24 @@ def check_guardrails_env_matches(container, agent_name: str) -> bool:
         return False
 
 
+def needs_per_agent_pat_injection(agent_name: str) -> bool:
+    """#1264: True when the agent has a **per-agent** GitHub PAT configured AND
+    git sync — i.e. the container SHOULD carry that token.
+
+    Gated on ``db.get_agent_github_pat`` (the per-agent PAT only), NOT
+    ``get_github_pat_for_agent`` (which falls back to the global platform PAT).
+    Using the global fallback here would force-recreate / inject into every
+    tokenless git agent the moment an operator sets a global PAT — that's #211's
+    deliberate opt-in `.env` path, not this one's job, and is out of #1264 scope.
+
+    Shared by the recreate matcher (:func:`check_github_pat_env_matches`) and the
+    lifecycle recreate inject gate so the two predicates cannot drift — if they
+    did, the matcher could keep requesting a recreate the inject never satisfies
+    (infinite recreate loop).
+    """
+    return bool(db.get_agent_github_pat(agent_name)) and bool(db.get_git_config(agent_name))
+
+
 def check_github_pat_env_matches(container, agent_name: str) -> bool:
     """
     Check if container's GITHUB_PAT env var matches the effective PAT for this agent.
@@ -455,9 +473,15 @@ def check_github_pat_env_matches(container, agent_name: str) -> bool:
 
     container_pat = env_dict.get("GITHUB_PAT")
     if not container_pat:
-        # Agent doesn't use GITHUB_PAT — no update needed
-        return True
+        # #1264: a tokenless container needs a recreate ONLY when a per-agent PAT
+        # is configured (so creation/recreate will inject it). A global-only PAT
+        # must NOT force tokenless agents to recreate — see
+        # needs_per_agent_pat_injection. Recreate converges in one pass because
+        # the lifecycle inject gate uses the SAME predicate.
+        return not needs_per_agent_pat_injection(agent_name)
 
+    # Container already has a token — keep it in sync with the effective PAT
+    # (per-agent first, then the global fallback for already-tokened containers).
     current_pat = get_github_pat_for_agent(agent_name)
     if not current_pat:
         # No PAT configured anywhere — can't update, leave as-is

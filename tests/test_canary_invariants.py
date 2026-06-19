@@ -714,7 +714,9 @@ class TestInvariantS01:
         assert len(violations) == 1
         v = violations[0]
         assert v.invariant_id == "S-01"
-        assert v.severity == "critical"
+        # #1082: downgraded critical → major (redundant under single-owner
+        # status; still Tier A, still fires on real ZSET/SQL drift).
+        assert v.severity == "major"
         assert v.observed_state["in_redis_only"] == ["phantom"]
         assert v.observed_state["in_sql_only"] == []
         assert v.observed_state["agent_name"] == "a1"

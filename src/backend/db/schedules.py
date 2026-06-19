@@ -18,6 +18,7 @@ from sqlalchemy import select, insert, update, delete, and_, or_, func, text, ca
 from sqlalchemy.exc import IntegrityError
 
 from .engine import get_engine
+from .query_helpers import latest_per_group
 from .tables import (
     agent_schedules,
     schedule_executions,
@@ -1056,12 +1057,25 @@ class ScheduleOperations:
             queued_at: ISO timestamp (used as the FIFO ordering key).
 
         Returns:
-            True if the row was updated, False if not found.
+            True if the row was moved to QUEUED, False if it is missing or no
+            longer RUNNING. The ``status == RUNNING`` precondition makes this a
+            CAS-guarded projection write (#1082): a stale or duplicate re-queue
+            against an already-terminal row is rejected, so a terminal row can
+            never be resurrected into QUEUED (the E-02 phantom-reversal class).
         """
         with get_engine().begin() as conn:
             result = conn.execute(
                 update(schedule_executions)
-                .where(schedule_executions.c.id == execution_id)
+                .where(
+                    and_(
+                        schedule_executions.c.id == execution_id,
+                        # Only a currently-running row (the state set by
+                        # create_task_execution before the slot acquire failed)
+                        # may spill into the backlog — mirrors the sibling
+                        # release_claim_to_queued guard (#1082).
+                        schedule_executions.c.status == TaskExecutionStatus.RUNNING,
+                    )
+                )
                 .values(
                     status=TaskExecutionStatus.QUEUED,
                     queued_at=queued_at,
@@ -1401,6 +1415,56 @@ class ScheduleOperations:
                 self._row_to_schedule_execution(row)
                 for row in conn.execute(stmt).mappings()
             ]
+
+    def get_latest_execution_per_schedule(self, schedule_ids: List[str]) -> Dict[str, Dict]:
+        """Return the most-recent execution per schedule, in one query.
+
+        #1265: replaces the per-schedule ``get_schedule_executions(id, limit=5)``
+        fan-out on the /api/ops/schedules dashboard endpoint (one query per
+        schedule -> N+1 that grows with total schedule count). Uses the shared
+        ``latest_per_group`` window helper (partition by schedule_id, order by
+        started_at DESC).
+
+        Projects ONLY the columns the dashboard's ``last_execution`` block needs
+        — never the large TEXT blobs (``response``, ``execution_log``,
+        ``tool_calls``, ``message``) — so the single bulk query stays light even
+        with hundreds of schedules. Returns ``{schedule_id: {id, status,
+        started_at, completed_at, duration_ms, error}}``; ``started_at`` /
+        ``completed_at`` are normalised to ISO strings (matching the prior
+        ``.isoformat()`` API output). Schedules with no executions are absent.
+        """
+        cols = (
+            schedule_executions.c.schedule_id,
+            schedule_executions.c.id,
+            schedule_executions.c.status,
+            schedule_executions.c.started_at,
+            schedule_executions.c.completed_at,
+            schedule_executions.c.duration_ms,
+            schedule_executions.c.error,
+        )
+        rows = latest_per_group(
+            cols,
+            schedule_executions.c.schedule_id,   # partition
+            schedule_executions.c.started_at,    # order (DESC)
+            schedule_executions.c.schedule_id,   # filter IN
+            schedule_ids,
+        )
+
+        def _iso(v):
+            ts = parse_iso_timestamp(v) if v else None
+            return ts.isoformat() if ts else None
+
+        return {
+            row["schedule_id"]: {
+                "id": row["id"],
+                "status": row["status"],
+                "started_at": _iso(row["started_at"]),
+                "completed_at": _iso(row["completed_at"]),
+                "duration_ms": row["duration_ms"],
+                "error": row["error"],
+            }
+            for row in rows
+        }
 
     def get_agent_executions(self, agent_name: str, limit: int = 50) -> List[ScheduleExecution]:
         """Get all executions for an agent across all schedules."""
