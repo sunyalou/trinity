@@ -10,7 +10,10 @@ import json
 import secrets
 from typing import Any, List, Optional
 
-from db.connection import get_db_connection
+from sqlalchemy import select, insert, update, func, and_
+
+from .engine import get_engine
+from .tables import agent_loops, agent_loop_runs
 from utils.helpers import utc_now_iso
 
 
@@ -88,30 +91,32 @@ class LoopOperations:
         now = utc_now_iso()
         allowed_tools_json = json.dumps(allowed_tools) if allowed_tools else None
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO agent_loops (
-                    id, agent_name, message_template, max_runs, stop_signal,
-                    delay_seconds, timeout_per_run, model, allowed_tools,
-                    status, runs_completed, stop_reason, last_response, error,
-                    started_by_user_id, started_by_user_email,
-                    source_agent_name, source_mcp_key_id, source_mcp_key_name,
-                    created_at, started_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL,
-                          ?, ?, ?, ?, ?, ?, NULL, NULL)
-                """,
-                (
-                    loop_id, agent_name, message_template, max_runs, stop_signal,
-                    delay_seconds, timeout_per_run, model, allowed_tools_json,
-                    "queued",
-                    started_by_user_id, started_by_user_email,
-                    source_agent_name, source_mcp_key_id, source_mcp_key_name,
-                    now,
-                ),
-            )
-            conn.commit()
+        stmt = insert(agent_loops).values(
+            id=loop_id,
+            agent_name=agent_name,
+            message_template=message_template,
+            max_runs=max_runs,
+            stop_signal=stop_signal,
+            delay_seconds=delay_seconds,
+            timeout_per_run=timeout_per_run,
+            model=model,
+            allowed_tools=allowed_tools_json,
+            status="queued",
+            runs_completed=0,
+            stop_reason=None,
+            last_response=None,
+            error=None,
+            started_by_user_id=started_by_user_id,
+            started_by_user_email=started_by_user_email,
+            source_agent_name=source_agent_name,
+            source_mcp_key_id=source_mcp_key_id,
+            source_mcp_key_name=source_mcp_key_name,
+            created_at=now,
+            started_at=None,
+            completed_at=None,
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
         return {
             "id": loop_id,
@@ -139,22 +144,20 @@ class LoopOperations:
         }
 
     def get_loop(self, loop_id: str) -> Optional[dict]:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM agent_loops WHERE id = ?", (loop_id,))
-            row = cursor.fetchone()
+        stmt = select(agent_loops).where(agent_loops.c.id == loop_id)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
             return _loop_row_to_dict(row) if row else None
 
     def mark_loop_running(self, loop_id: str) -> None:
         """Flip queued → running and stamp started_at."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE agent_loops SET status = 'running', started_at = ? "
-                "WHERE id = ? AND status = 'queued'",
-                (utc_now_iso(), loop_id),
-            )
-            conn.commit()
+        stmt = (
+            update(agent_loops)
+            .where(and_(agent_loops.c.id == loop_id, agent_loops.c.status == "queued"))
+            .values(status="running", started_at=utc_now_iso())
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
     def update_loop_progress(
         self,
@@ -164,13 +167,13 @@ class LoopOperations:
         last_response: Optional[str],
     ) -> None:
         """Bump runs_completed + last_response after each iteration."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE agent_loops SET runs_completed = ?, last_response = ? WHERE id = ?",
-                (runs_completed, last_response, loop_id),
-            )
-            conn.commit()
+        stmt = (
+            update(agent_loops)
+            .where(agent_loops.c.id == loop_id)
+            .values(runs_completed=runs_completed, last_response=last_response)
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
     def finalize_loop(
         self,
@@ -183,17 +186,18 @@ class LoopOperations:
         """Set terminal status + stop_reason + completed_at."""
         if status not in TERMINAL_STATUSES:
             raise ValueError(f"finalize_loop requires terminal status, got '{status}'")
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE agent_loops
-                   SET status = ?, stop_reason = ?, error = ?, completed_at = ?
-                 WHERE id = ?
-                """,
-                (status, stop_reason, error, utc_now_iso(), loop_id),
+        stmt = (
+            update(agent_loops)
+            .where(agent_loops.c.id == loop_id)
+            .values(
+                status=status,
+                stop_reason=stop_reason,
+                error=error,
+                completed_at=utc_now_iso(),
             )
-            conn.commit()
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
     def list_loops_for_agent(
         self,
@@ -202,26 +206,25 @@ class LoopOperations:
         status: Optional[str] = None,
         limit: int = 50,
     ) -> List[dict]:
-        sql = "SELECT * FROM agent_loops WHERE agent_name = ?"
-        params: List[Any] = [agent_name]
+        conds: List[Any] = [agent_loops.c.agent_name == agent_name]
         if status:
-            sql += " AND status = ?"
-            params.append(status)
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, tuple(params))
-            return [_loop_row_to_dict(r) for r in cursor.fetchall()]
+            conds.append(agent_loops.c.status == status)
+        stmt = (
+            select(agent_loops)
+            .where(and_(*conds))
+            .order_by(agent_loops.c.created_at.desc())
+            .limit(limit)
+        )
+        with get_engine().connect() as conn:
+            return [_loop_row_to_dict(r) for r in conn.execute(stmt).mappings()]
 
     def list_non_terminal_loops(self) -> List[dict]:
         """All loops in `queued` or `running` — used by restart-recovery."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM agent_loops WHERE status IN ('queued', 'running')"
-            )
-            return [_loop_row_to_dict(r) for r in cursor.fetchall()]
+        stmt = select(agent_loops).where(
+            agent_loops.c.status.in_(("queued", "running"))
+        )
+        with get_engine().connect() as conn:
+            return [_loop_row_to_dict(r) for r in conn.execute(stmt).mappings()]
 
     def mark_orphans_interrupted(self) -> int:
         """Bulk-flip all non-terminal loops to `interrupted` (startup hook).
@@ -230,20 +233,18 @@ class LoopOperations:
         non-terminal rows, no-op.
         """
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE agent_loops
-                   SET status = 'interrupted',
-                       stop_reason = 'interrupted',
-                       completed_at = COALESCE(completed_at, ?)
-                 WHERE status IN ('queued', 'running')
-                """,
-                (now,),
+        stmt = (
+            update(agent_loops)
+            .where(agent_loops.c.status.in_(("queued", "running")))
+            .values(
+                status="interrupted",
+                stop_reason="interrupted",
+                completed_at=func.coalesce(agent_loops.c.completed_at, now),
             )
-            affected = cursor.rowcount
-            conn.commit()
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            affected = result.rowcount
         return affected
 
     # ---- Loop run rows -----------------------------------------------------
@@ -258,18 +259,21 @@ class LoopOperations:
         """Insert a new `running` loop-run row; return its id."""
         run_id = f"lr_{secrets.token_urlsafe(10)}"
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO agent_loop_runs (
-                    id, loop_id, run_number, execution_id, status,
-                    response, error, cost, duration_ms, started_at, completed_at
-                ) VALUES (?, ?, ?, ?, 'running', NULL, NULL, NULL, NULL, ?, NULL)
-                """,
-                (run_id, loop_id, run_number, execution_id, now),
-            )
-            conn.commit()
+        stmt = insert(agent_loop_runs).values(
+            id=run_id,
+            loop_id=loop_id,
+            run_number=run_number,
+            execution_id=execution_id,
+            status="running",
+            response=None,
+            error=None,
+            cost=None,
+            duration_ms=None,
+            started_at=now,
+            completed_at=None,
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
         return run_id
 
     def finalize_loop_run(
@@ -283,32 +287,27 @@ class LoopOperations:
         duration_ms: Optional[int],
         execution_id: Optional[str] = None,
     ) -> None:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE agent_loop_runs
-                   SET status = ?,
-                       response = ?,
-                       error = ?,
-                       cost = ?,
-                       duration_ms = ?,
-                       execution_id = COALESCE(?, execution_id),
-                       completed_at = ?
-                 WHERE id = ?
-                """,
-                (
-                    status, response, error, cost, duration_ms,
-                    execution_id, utc_now_iso(), run_id,
-                ),
+        stmt = (
+            update(agent_loop_runs)
+            .where(agent_loop_runs.c.id == run_id)
+            .values(
+                status=status,
+                response=response,
+                error=error,
+                cost=cost,
+                duration_ms=duration_ms,
+                execution_id=func.coalesce(execution_id, agent_loop_runs.c.execution_id),
+                completed_at=utc_now_iso(),
             )
-            conn.commit()
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
     def list_runs(self, loop_id: str) -> List[dict]:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM agent_loop_runs WHERE loop_id = ? ORDER BY run_number ASC",
-                (loop_id,),
-            )
-            return [_run_row_to_dict(r) for r in cursor.fetchall()]
+        stmt = (
+            select(agent_loop_runs)
+            .where(agent_loop_runs.c.loop_id == loop_id)
+            .order_by(agent_loop_runs.c.run_number.asc())
+        )
+        with get_engine().connect() as conn:
+            return [_run_row_to_dict(r) for r in conn.execute(stmt).mappings()]

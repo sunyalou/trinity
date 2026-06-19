@@ -1,6 +1,6 @@
 # MCP Server
 
-Trinity's MCP server exposes 74 tools for agent orchestration via the Model Context Protocol, enabling programmatic control from Claude Code, other MCP clients, or agent-to-agent communication.
+Trinity's MCP server exposes 80 tools for agent orchestration via the Model Context Protocol, enabling programmatic control from Claude Code, other MCP clients, or agent-to-agent communication.
 
 ## Concepts
 
@@ -43,7 +43,7 @@ Add Trinity as an MCP server in your Claude Code configuration:
 | Module | Tools | Description |
 |--------|-------|-------------|
 | `agents.ts` | 19 | Agent lifecycle, credentials, SSH, local deploy, GitHub sync, per-agent PAT |
-| `chat.ts` | 3 | Chat (gateway-timeout safe), history, logs |
+| `chat.ts` | 4 | Chat (gateway-timeout safe), fan-out, history, logs |
 | `schedules.ts` | 8 | Schedule CRUD and execution history |
 | `executions.ts` | 3 | Execution queries, async polling, activity monitoring |
 | `skills.ts` | 7 | Skill management and assignment |
@@ -59,12 +59,18 @@ Add Trinity as an MCP server in your Claude Code configuration:
 | `messages.ts` | 1 | Proactive user messaging by verified email |
 | `files.ts` | 1 | `share_file` — publish file to a signed download URL |
 | `memory.ts` | 1 | `write_user_memory` — per-user memory blob, isolated server-side |
+| `loops.ts` | 3 | `run_agent_loop`, `get_loop_status`, `stop_loop` — sequential bounded task loops |
+| `voip.ts` | 1 | `call_user` — outbound phone call (flag-gated, requires a per-agent voice binding) |
+| `operator_queue.ts` | 2 | `list_operator_queue`, `get_operator_queue_item` — read-only Operating Room queue |
 
 ### Key Tools Worth Knowing
 
 | Tool | Why it exists |
 |------|---------------|
-| `chat_with_agent` | Send a message to another agent. **Gateway-timeout safe**: if the sync call exceeds `MCP_CHAT_TIMEOUT_MS` (default 25s), it returns `{status: "queued_timeout", execution_id, message}` so the caller polls instead of duplicate-queueing the request. |
+| `chat_with_agent` | Send a message to another agent. **Gateway-timeout safe**: if the sync call exceeds `MCP_CHAT_TIMEOUT_MS` (default 25s), it returns `{status: "queued_timeout", agent, execution_id, message}` so the caller polls `get_execution_result` instead of duplicate-queueing the request. Calls also carry a deterministic idempotency key, so a transport-level retry of the same call dedupes server-side. |
+| `run_agent_loop` | Run the same task against an agent repeatedly (bounded, sequential), with templated messages and an optional stop signal. Poll with `get_loop_status`; stop gracefully with `stop_loop`. See [Agent Loops](../automation/agent-loops.md). |
+| `list_operator_queue` | Read the Operating Room queue (approvals, questions, alerts). Agent-scoped keys see only the calling agent plus its permitted agents. |
+| `call_user` | Place an outbound phone call to a user and hold a voice conversation. Server-gated: works only when VoIP is enabled platform-wide and the agent has a voice binding; rate-limited and daily-capped. See [VoIP Telephony](../advanced/voip-telephony.md). |
 | `share_file` | The agent drops a file into `/home/developer/public/` and calls this tool to mint a signed, expiring download URL (universal — works for web, Slack, Telegram, WhatsApp, email). |
 | `write_user_memory` | Per-user memory blob in an isolated store. Trinity resolves the user's email from `execution_id` server-side, so an agent cannot accidentally cross-write another user's memory. |
 | `send_message` | Proactive message to a specific user by verified email. Rate-limited and audit-logged. |
@@ -88,8 +94,7 @@ Add Trinity as an MCP server in your Claude Code configuration:
 
 ## Limitations
 
-- API keys are invalidated when the backend restarts.
-- Agent-scoped keys cannot access tools outside their assigned agent.
+- Agent-scoped keys cannot access tools outside their assigned agent (plus explicitly permitted agents).
 - MCP clients must be manually reconnected after a backend restart.
 - `chat_with_agent` sync mode caps at `MCP_CHAT_TIMEOUT_MS` (default 25s). Long-running calls beyond that switch to poll-mode via the returned `execution_id`.
 

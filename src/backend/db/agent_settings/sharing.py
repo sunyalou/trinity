@@ -4,11 +4,14 @@ Agent sharing database operations.
 Handles share/unshare agents by email, share lookups, and permission checks.
 """
 
-import sqlite3
 from datetime import datetime
 from typing import Optional, List
 
-from db.connection import get_db_connection
+from sqlalchemy import select, insert, update, delete, and_, func
+from sqlalchemy.exc import IntegrityError
+
+from ..engine import get_engine
+from ..tables import agent_sharing, access_requests, users
 from db_models import AgentShare
 from utils.helpers import utc_now_iso
 
@@ -58,34 +61,41 @@ class SharingMixin:
 
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    INSERT INTO agent_sharing (agent_name, shared_with_email, shared_by_id, created_at)
-                    VALUES (?, ?, ?, ?)
-                """, (agent_name, normalized_email, owner["id"], now))
+        try:
+            with get_engine().begin() as conn:
+                result = conn.execute(
+                    insert(agent_sharing).values(
+                        agent_name=agent_name,
+                        shared_with_email=normalized_email,
+                        shared_by_id=owner["id"],
+                        created_at=now,
+                    )
+                )
                 # #446: once the email is on the allow-list, any pending access
                 # request for the same (agent, email) is stale — drop it so the
                 # owner's Pending list doesn't double-prompt them.
-                cursor.execute("""
-                    DELETE FROM access_requests
-                    WHERE agent_name = ? AND email = ? AND status = 'pending'
-                """, (agent_name, normalized_email))
-                conn.commit()
-                share_id = cursor.lastrowid
-
-                return AgentShare(
-                    id=share_id,
-                    agent_name=agent_name,
-                    shared_with_email=normalized_email,
-                    shared_by_id=owner["id"],
-                    shared_by_email=owner.get("email") or owner.get("username") or "unknown",
-                    created_at=datetime.fromisoformat(now)
+                conn.execute(
+                    delete(access_requests).where(
+                        and_(
+                            access_requests.c.agent_name == agent_name,
+                            access_requests.c.email == normalized_email,
+                            access_requests.c.status == "pending",
+                        )
+                    )
                 )
-            except sqlite3.IntegrityError:
-                # Already shared with this email
-                return None
+                share_id = result.inserted_primary_key[0]
+
+            return AgentShare(
+                id=share_id,
+                agent_name=agent_name,
+                shared_with_email=normalized_email,
+                shared_by_id=owner["id"],
+                shared_by_email=owner.get("email") or owner.get("username") or "unknown",
+                created_at=datetime.fromisoformat(now)
+            )
+        except IntegrityError:
+            # Already shared with this email
+            return None
 
     def unshare_agent(self, agent_name: str, owner_username: str, share_with_email: str) -> bool:
         """Remove sharing access for an email."""
@@ -93,29 +103,38 @@ class SharingMixin:
         if not self.can_user_share_agent(owner_username, agent_name):
             return False
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM agent_sharing
-                WHERE agent_name = ? AND shared_with_email = ?
-            """, (agent_name, share_with_email.lower()))
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                delete(agent_sharing).where(
+                    and_(
+                        agent_sharing.c.agent_name == agent_name,
+                        agent_sharing.c.shared_with_email == share_with_email.lower(),
+                    )
+                )
+            )
+            return result.rowcount > 0
 
     def get_agent_shares(self, agent_name: str) -> List[AgentShare]:
         """Get all emails an agent is shared with."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT s.id, s.agent_name, s.shared_with_email, s.shared_by_id, s.created_at,
-                       s.allow_proactive,
-                       COALESCE(sb.email, sb.username) as shared_by_email
-                FROM agent_sharing s
-                JOIN users sb ON s.shared_by_id = sb.id
-                WHERE s.agent_name = ?
-                ORDER BY s.created_at DESC
-            """, (agent_name,))
-            return [self._row_to_agent_share(row) for row in cursor.fetchall()]
+        stmt = (
+            select(
+                agent_sharing.c.id,
+                agent_sharing.c.agent_name,
+                agent_sharing.c.shared_with_email,
+                agent_sharing.c.shared_by_id,
+                agent_sharing.c.created_at,
+                agent_sharing.c.allow_proactive,
+                func.coalesce(users.c.email, users.c.username).label("shared_by_email"),
+            )
+            .select_from(
+                agent_sharing.join(users, agent_sharing.c.shared_by_id == users.c.id)
+            )
+            .where(agent_sharing.c.agent_name == agent_name)
+            .order_by(agent_sharing.c.created_at.desc())
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [self._row_to_agent_share(row) for row in rows]
 
     def get_shared_agents(self, username: str) -> List[str]:
         """Get all agent names shared with a user (by their email)."""
@@ -127,25 +146,26 @@ class SharingMixin:
         if not user_email:
             return []
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT agent_name FROM agent_sharing WHERE shared_with_email = ?
-            """, (user_email.lower(),))
-            return [row["agent_name"] for row in cursor.fetchall()]
+        stmt = select(agent_sharing.c.agent_name).where(
+            agent_sharing.c.shared_with_email == user_email.lower()
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [row["agent_name"] for row in rows]
 
     def is_agent_shared_with_email(self, agent_name: str, email: str) -> bool:
         """Check if an agent is shared with the given email directly."""
         normalized = (email or "").strip().lower()
         if not normalized:
             return False
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT 1 FROM agent_sharing
-                WHERE agent_name = ? AND shared_with_email = ?
-            """, (agent_name, normalized))
-            return cursor.fetchone() is not None
+        stmt = select(agent_sharing.c.id).where(
+            and_(
+                agent_sharing.c.agent_name == agent_name,
+                agent_sharing.c.shared_with_email == normalized,
+            )
+        )
+        with get_engine().connect() as conn:
+            return conn.execute(stmt).first() is not None
 
     def email_has_agent_access(self, agent_name: str, email: str) -> bool:
         """Cross-channel access check (Issue #311).
@@ -177,13 +197,14 @@ class SharingMixin:
         if not user_email:
             return False
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT 1 FROM agent_sharing
-                WHERE agent_name = ? AND shared_with_email = ?
-            """, (agent_name, user_email.lower()))
-            return cursor.fetchone() is not None
+        stmt = select(agent_sharing.c.id).where(
+            and_(
+                agent_sharing.c.agent_name == agent_name,
+                agent_sharing.c.shared_with_email == user_email.lower(),
+            )
+        )
+        with get_engine().connect() as conn:
+            return conn.execute(stmt).first() is not None
 
     def can_user_share_agent(self, username: str, agent_name: str) -> bool:
         """Check if a user can share an agent (only owner or admin)."""
@@ -199,11 +220,11 @@ class SharingMixin:
 
     def delete_agent_shares(self, agent_name: str) -> int:
         """Delete all sharing records for an agent (when agent is deleted)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM agent_sharing WHERE agent_name = ?", (agent_name,))
-            conn.commit()
-            return cursor.rowcount
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                delete(agent_sharing).where(agent_sharing.c.agent_name == agent_name)
+            )
+            return result.rowcount
 
     # =========================================================================
     # Proactive Messaging (Issue #321)
@@ -227,13 +248,15 @@ class SharingMixin:
                 return True
 
         # Check sharing with allow_proactive flag
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT 1 FROM agent_sharing
-                WHERE agent_name = ? AND shared_with_email = ? AND allow_proactive = 1
-            """, (agent_name, email.lower()))
-            return cursor.fetchone() is not None
+        stmt = select(agent_sharing.c.id).where(
+            and_(
+                agent_sharing.c.agent_name == agent_name,
+                agent_sharing.c.shared_with_email == email.lower(),
+                agent_sharing.c.allow_proactive == 1,
+            )
+        )
+        with get_engine().connect() as conn:
+            return conn.execute(stmt).first() is not None
 
     def set_allow_proactive(
         self, agent_name: str, email: str, allow: bool, setter_username: str
@@ -246,22 +269,26 @@ class SharingMixin:
         if not self.can_user_share_agent(setter_username, agent_name):
             return False
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_sharing
-                SET allow_proactive = ?
-                WHERE agent_name = ? AND shared_with_email = ?
-            """, (1 if allow else 0, agent_name, email.lower()))
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_sharing)
+                .where(
+                    and_(
+                        agent_sharing.c.agent_name == agent_name,
+                        agent_sharing.c.shared_with_email == email.lower(),
+                    )
+                )
+                .values(allow_proactive=1 if allow else 0)
+            )
+            return result.rowcount > 0
 
     def get_proactive_enabled_shares(self, agent_name: str) -> List[str]:
         """Get all emails that have opted in to receive proactive messages from this agent."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT shared_with_email FROM agent_sharing
-                WHERE agent_name = ? AND allow_proactive = 1
-            """, (agent_name,))
-            return [row[0] for row in cursor.fetchall()]
+        stmt = select(agent_sharing.c.shared_with_email).where(
+            and_(
+                agent_sharing.c.agent_name == agent_name,
+                agent_sharing.c.allow_proactive == 1,
+            )
+        )
+        with get_engine().connect() as conn:
+            return [row[0] for row in conn.execute(stmt).all()]

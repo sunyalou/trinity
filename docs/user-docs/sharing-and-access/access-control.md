@@ -20,6 +20,20 @@ Unified access control across all channels (web, Telegram, Slack). Verified emai
 2. Enable **Require verified email**.
 3. Users must now verify their email before chatting.
 
+### Fleet-Wide Default for New Agents
+
+Admins can set the default `require_email` policy that newly created agents start with:
+
+1. Go to **Settings → General**.
+2. Toggle **Require verified email for new agents**.
+
+This default is **on** out of the box (secure-by-default). It applies at agent-creation time only — existing agents are never rewritten, and owners can still override the setting per agent in the agent's Sharing tab.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/settings/agent-defaults/access-policy` | GET | Current fleet-wide default (admin-only) |
+| `/api/settings/agent-defaults/access-policy` | PUT | Update the default for new agents (admin-only) |
+
 ### Channel-Specific Verification
 
 | Channel | How Email is Verified |

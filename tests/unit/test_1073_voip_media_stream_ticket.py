@@ -128,6 +128,13 @@ def _load_media_stream_module() -> types.ModuleType:
 
     config_mod = types.ModuleType("config")
     config_mod.REDIS_URL = "redis://test:test@redis:6379"
+    # twilio_media_stream.py imports VOIP_MAX_CALL_DURATION alongside REDIS_URL
+    # (added with the VOIP call-duration cap, #1091). The stub must expose it or
+    # the `from config import ...` raises ImportError at module load — which
+    # aborts the ENTIRE unit collection (one collection error interrupts
+    # pytest), and the base-vs-head diff gate then masks the whole dead suite
+    # as green.
+    config_mod.VOIP_MAX_CALL_DURATION = 600
 
     database_mod = types.ModuleType("database")
     database_mod.db = MagicMock()

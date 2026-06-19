@@ -18,6 +18,7 @@ if _src_path not in sys.path:
     sys.path.insert(0, _src_path)
 
 import asyncio
+import httpx
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
 from datetime import datetime
@@ -685,3 +686,222 @@ class TestFireAndForget:
 
         assert task.cancelled() or task.done()
         assert len(service._active_poll_tasks) == 0
+
+
+class TestDescribeException:
+    """#1022: _describe_exception never persists a blank/whitespace error."""
+
+    def test_blank_stringifying_exception_falls_back_to_type_name(self):
+        # httpx timeout exceptions str() to '' — the exact #1022 trigger.
+        from scheduler.service import _describe_exception
+
+        msg = _describe_exception(httpx.ReadTimeout(""))
+        assert msg.strip()  # non-empty
+        assert "ReadTimeout" in msg
+
+    def test_whitespace_only_exception_falls_back_to_type_name(self):
+        from scheduler.service import _describe_exception
+
+        msg = _describe_exception(Exception("   "))
+        assert msg.strip()
+        assert "Exception" in msg
+
+    def test_normal_exception_message_preserved(self):
+        from scheduler.service import _describe_exception
+
+        assert _describe_exception(Exception("boom")) == "boom"
+
+
+class TestDispatchTimeout:
+    """#1022: dispatch POST timeout → descriptive raise + config-driven deadline."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_timeout_raises_descriptive_error(
+        self,
+        db_with_data: SchedulerDatabase,
+        mock_lock_manager: LockManager,
+    ):
+        """A blank-stringifying httpx timeout on the POST becomes a descriptive,
+        non-empty Exception naming the threshold + subtype (was the silent bug)."""
+        service = SchedulerService(
+            database=db_with_data,
+            lock_manager=mock_lock_manager,
+        )
+
+        execution = db_with_data.create_execution(
+            schedule_id="schedule-1",
+            agent_name="test-agent",
+            message="Test",
+        )
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post.side_effect = httpx.ReadTimeout("")  # str() == ''
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            with pytest.raises(Exception) as exc_info:
+                await service._call_backend_execute_task(
+                    agent_name="test-agent",
+                    message="Test",
+                    triggered_by="schedule",
+                    execution_id=execution.id,
+                )
+
+        msg = str(exc_info.value)
+        assert "timed out" in msg
+        assert "30" in msg  # the default dispatch_timeout value names the threshold
+        assert "ReadTimeout" in msg
+
+    @pytest.mark.asyncio
+    async def test_dispatch_uses_config_timeout(
+        self,
+        db_with_data: SchedulerDatabase,
+        mock_lock_manager: LockManager,
+    ):
+        """The dispatch deadline comes from config.dispatch_timeout, not a literal.
+        Complements test_dispatch_uses_short_timeout (30.0 default)."""
+        service = SchedulerService(
+            database=db_with_data,
+            lock_manager=mock_lock_manager,
+        )
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "status": "accepted",
+            "execution_id": "exec-1",
+            "async_mode": True,
+        }
+
+        execution = db_with_data.create_execution(
+            schedule_id="schedule-1",
+            agent_name="test-agent",
+            message="Test",
+        )
+        db_with_data.update_execution_status(
+            execution_id=execution.id,
+            status=ExecutionStatus.SUCCESS,
+        )
+
+        with patch("httpx.AsyncClient") as mock_client_cls, \
+             patch("scheduler.service.config.dispatch_timeout", 12.5):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            await service._call_backend_execute_task(
+                agent_name="test-agent",
+                message="Test",
+                triggered_by="schedule",
+                execution_id=execution.id,
+            )
+
+            call_kwargs = mock_client.post.call_args
+            assert call_kwargs[1]["timeout"] == 12.5
+
+
+class TestDispatchTimeoutRegression:
+    """#1022 regression — the exact failure signature, INVERTED.
+
+    A dispatch httpx timeout (str()=='') driven end-to-end must persist a
+    NON-EMPTY `error` on a FAILED row, instead of the silent `error=''`.
+    """
+
+    @pytest.mark.asyncio
+    async def test_dispatch_timeout_persists_nonempty_error(
+        self,
+        db_with_data: SchedulerDatabase,
+        mock_lock_manager: LockManager,
+    ):
+        service = SchedulerService(
+            database=db_with_data,
+            lock_manager=mock_lock_manager,
+        )
+
+        mock_lock = MagicMock()
+        mock_lock_manager.try_acquire_schedule_lock = MagicMock(return_value=mock_lock)
+
+        with patch("httpx.AsyncClient") as mock_client_cls, \
+             patch.object(service, "_publish_event", new_callable=AsyncMock):
+            mock_client = AsyncMock()
+            # Every POST (pre-check fail-open + dispatch) blank-stringifies.
+            mock_client.post.side_effect = httpx.ReadTimeout("")
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            await service._execute_schedule_with_lock("schedule-1")
+
+        with db_with_data.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT status, error FROM schedule_executions
+                WHERE schedule_id = 'schedule-1'
+                ORDER BY started_at DESC
+                LIMIT 1
+            """)
+            row = cursor.fetchone()
+
+        assert row is not None
+        assert row["status"] == ExecutionStatus.FAILED
+        # The #1022 signature inverted: error must NOT be blank.
+        assert row["error"] is not None and row["error"].strip() != ""
+        assert "timed out" in row["error"]
+
+
+class TestRetryDispatchTimeoutRegression:
+    """#1022 — the second persistence path the fix touched: `_execute_retry`.
+
+    A blank-stringifying timeout raised by the backend dispatch during a
+    retry attempt must land a NON-EMPTY `error` on the retry's FAILED row
+    (service.py:`error=_describe_exception(e)[:2000]`), not the silent
+    `error=str(e)=''` it replaced.
+    """
+
+    @pytest.mark.asyncio
+    async def test_retry_dispatch_timeout_persists_nonempty_error(
+        self,
+        db_with_data: SchedulerDatabase,
+        mock_lock_manager: LockManager,
+    ):
+        service = SchedulerService(
+            database=db_with_data,
+            lock_manager=mock_lock_manager,
+        )
+
+        # The dispatch inside the retry blank-stringifies (the #1022 trigger).
+        service._call_backend_execute_task = AsyncMock(
+            side_effect=httpx.ReadTimeout("")
+        )
+
+        await service._execute_retry(
+            original_execution_id="orig-exec",
+            failed_execution_id="failed-exec",
+            schedule_id="schedule-1",
+            agent_name="test-agent",
+            message="Retry me",
+            timeout_seconds=None,
+            model="claude-sonnet-4-6",
+            allowed_tools=[],
+            next_attempt_number=2,
+        )
+
+        with db_with_data.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT status, error FROM schedule_executions
+                WHERE schedule_id = 'schedule-1' AND triggered_by = 'retry'
+                ORDER BY started_at DESC
+                LIMIT 1
+            """)
+            row = cursor.fetchone()
+
+        assert row is not None, "retry execution row was never created"
+        assert row["status"] == ExecutionStatus.FAILED
+        # #1022 inverted: a blank-stringifying timeout must NOT persist blank.
+        assert row["error"] is not None and row["error"].strip() != ""
+        assert "ReadTimeout" in row["error"]

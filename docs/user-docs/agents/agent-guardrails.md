@@ -84,10 +84,12 @@ Owners can tighten guardrails for specific agents. Overrides are additive -- you
 ### Configure via UI
 
 1. Open the agent detail page
-2. Go to the **Config** tab
-3. Expand **Guardrails** section
-4. Adjust settings and save
+2. Go to the **Settings** tab (visible to owners; on narrow windows it may sit under the **More ▾** menu)
+3. In the **Guardrails** section, set **Max turns (chat)** and **Max turns (task)**. Leave a field blank to inherit the platform default.
+4. Click **Save**
 5. **Restart the agent** to apply changes
+
+The UI currently exposes the turn limits only. The other overrides (deny lists, disallowed tools, execution timeout) are API-only -- the UI preserves them when saving, so a UI save never wipes overrides set via the API.
 
 ### Configure via API
 
@@ -150,7 +152,7 @@ See [Backend API Docs](http://localhost:8000/docs) for full request/response sch
 - **Baseline cannot be relaxed** -- Per-agent overrides only add restrictions, never remove them.
 - **Restart required** -- Guardrail changes require stopping and starting the agent.
 - **Pattern matching** -- Bash deny-list uses regex patterns; creative command reformulation may evade detection.
-- **No UI yet** -- Configuration is API-only until GUARD-005 ships the Guardrails tab.
+- **Partial UI coverage** -- The Settings tab manages turn limits; deny lists, disallowed tools, and the execution timeout override are configured via the API.
 
 ## See Also
 

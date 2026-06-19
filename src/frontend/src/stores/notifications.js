@@ -8,6 +8,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import axios from 'axios'
+import api from '../api'
 
 export const useNotificationsStore = defineStore('notifications', () => {
   // State
@@ -118,7 +119,9 @@ export const useNotificationsStore = defineStore('notifications', () => {
   async function fetchPendingCount() {
     try {
       const token = localStorage.getItem('token')
-      const response = await axios.get('/api/notifications?status=pending&limit=1', {
+      // #1143: use the dedicated count endpoint — the list endpoint's `count`
+      // is page-capped (len of returned page), so limit=1 clamped the badge to 1.
+      const response = await axios.get('/api/notifications/count?status=pending', {
         headers: { Authorization: `Bearer ${token}` },
       })
       pendingCount.value = response.data.count || 0
@@ -176,6 +179,24 @@ export const useNotificationsStore = defineStore('notifications', () => {
       return true
     } catch (err) {
       console.error('Failed to dismiss notification:', err)
+      throw err
+    }
+  }
+
+  // Server-side Clear All (#1017): one call dismisses every non-dismissed
+  // notification for accessible agents — including ones beyond the loaded
+  // page — unlike the per-id bulk helpers below.
+  async function dismissAll(agentName = null) {
+    error.value = null
+    try {
+      const response = await api.post('/api/notifications/dismiss-all', {
+        agent_name: agentName,
+      })
+      await fetchNotifications()
+      await fetchPendingCount()
+      return response.data
+    } catch (err) {
+      error.value = err.response?.data?.detail || 'Failed to dismiss notifications'
       throw err
     }
   }
@@ -299,6 +320,7 @@ export const useNotificationsStore = defineStore('notifications', () => {
     fetchPendingCount,
     acknowledgeNotification,
     dismissNotification,
+    dismissAll,
     bulkAcknowledge,
     bulkDismiss,
     addNotification,

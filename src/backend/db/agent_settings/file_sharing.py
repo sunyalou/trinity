@@ -10,7 +10,10 @@ creation happens in services/agent_service/crud.py mirroring the
 shared-folders pattern.
 """
 
-from db.connection import get_db_connection
+from sqlalchemy import select, update, func, and_
+
+from ..engine import get_engine
+from ..tables import agent_ownership
 
 
 class FileSharingMixin:
@@ -22,31 +25,30 @@ class FileSharingMixin:
 
     def get_file_sharing_enabled(self, agent_name: str) -> bool:
         """Whether the agent has file sharing enabled. Default: False."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT COALESCE(file_sharing_enabled, 0) AS file_sharing_enabled
-                FROM agent_ownership WHERE agent_name = ? AND deleted_at IS NULL
-                """,
-                (agent_name,),
+        stmt = select(
+            func.coalesce(agent_ownership.c.file_sharing_enabled, 0).label(
+                "file_sharing_enabled"
             )
-            row = cursor.fetchone()
-            return bool(row["file_sharing_enabled"]) if row else False
+        ).where(
+            and_(
+                agent_ownership.c.agent_name == agent_name,
+                agent_ownership.c.deleted_at.is_(None),
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        return bool(row["file_sharing_enabled"]) if row else False
 
     def set_file_sharing_enabled(self, agent_name: str, enabled: bool) -> bool:
         """Flip the toggle. Returns True if a row was updated."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE agent_ownership SET file_sharing_enabled = ?
-                WHERE agent_name = ?
-                """,
-                (1 if enabled else 0, agent_name),
-            )
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = (
+            update(agent_ownership)
+            .where(agent_ownership.c.agent_name == agent_name)
+            .values(file_sharing_enabled=1 if enabled else 0)
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     # =========================================================================
     # Volume / mount conventions

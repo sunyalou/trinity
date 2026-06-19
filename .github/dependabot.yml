@@ -1,19 +1,30 @@
 version: 2
+# All version-update PRs target `dev` per the SDLC (feature → dev → main).
+# Note: Dependabot reads this file from the DEFAULT branch (main), so changes
+# here only take effect after a release cut. Security updates ignore
+# target-branch and still go to main by GitHub design.
 updates:
   # GitHub Actions: catch new SHAs for already-pinned third-party actions and
   # flag CVEs in first-party actions. Weekly cadence — security PRs from
   # Dependabot are auto-grouped by ecosystem so review burden stays low.
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
     labels:
       - dependencies
       - github-actions
+    groups:
+      # One PR per week for all action bumps, not one PR per action (#1243).
+      github-actions:
+        patterns:
+          - "*"
 
   # Frontend (Vite + Vue): catches Vue / Vite / Chart.js / DOMPurify CVEs.
   - package-ecosystem: npm
     directory: /src/frontend
+    target-branch: dev
     schedule:
       interval: weekly
     labels:
@@ -30,6 +41,7 @@ updates:
   # this entry continues that cadence.
   - package-ecosystem: pip
     directory: /src/backend
+    target-branch: dev
     schedule:
       interval: weekly
     labels:
@@ -44,11 +56,27 @@ updates:
   # MCP server (TypeScript).
   - package-ecosystem: npm
     directory: /src/mcp-server
+    target-branch: dev
     schedule:
       interval: weekly
     labels:
       - dependencies
       - mcp-server
+    groups:
+      patch-and-minor:
+        update-types:
+          - patch
+          - minor
+
+  # git-sync test harness (#1243): previously uncovered, which left esbuild CVEs
+  # here (alert #152) only reachable via security updates against main.
+  - package-ecosystem: npm
+    directory: /tests/git-sync
+    target-branch: dev
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
     groups:
       patch-and-minor:
         update-types:
@@ -65,6 +93,7 @@ updates:
       - /docker/backend
       - /docker/frontend
       - /docker/scheduler
+    target-branch: dev
     schedule:
       interval: weekly
     labels:

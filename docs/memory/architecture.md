@@ -147,7 +147,7 @@
 - `settings_service.py` - Centralized settings retrieval (API keys, ops config, agent quotas)
 
 *Execution & Scheduling:*
-- `task_execution_service.py` - Unified task execution lifecycle: slot mgmt, activity tracking, sanitization (EXEC-024). Runs the #678 reader-race auto-retry: on an empty result (502 dict body with `num_turns < 5`, `raw_message_count == 0`, `parse_failure_count == 0`) it fires one in-line retry with the **same** `execution_id` capped at 300s, persisting `retry_count` and rolling previous-attempt cost into the terminal write. Records dispatch-breaker outcomes — see [Circuit Breakers](#circuit-breakers-transport--dispatch-526)
+- `task_execution_service.py` - Unified task execution lifecycle: slot mgmt, activity tracking, sanitization (EXEC-024). Runs the #678 reader-race auto-retry: on an empty result (502 dict body with `num_turns < 5`, `raw_message_count == 0`, `parse_failure_count == 0`) it fires one in-line retry with the **same** `execution_id` capped at 300s, persisting `retry_count` and rolling previous-attempt cost into the terminal write. Records dispatch-breaker outcomes — see [Circuit Breakers](#circuit-breakers-transport--dispatch-526). Hosts `apply_result` (the shared terminal applier) and the 202 dispatch-and-return path — see [Fire-and-Forget Dispatch](#fire-and-forget-dispatch-1083)
 - `capacity_manager.py` - Unified capacity facade for admit/release/status — see [Capacity & Backlog](#capacity--backlog-428)
 - `slot_service.py` - Internal to `CapacityManager`: atomic N-ary capacity counter (Redis ZSET, dynamic per-agent TTL) (CAPACITY-001)
 - `backlog_service.py` - Internal to `CapacityManager`: persistent SQLite FIFO overflow store with drain-on-release (BACKLOG-001)
@@ -163,7 +163,7 @@
 
 *Monitoring & Activities:*
 - `activity_service.py` - Activity tracking and timeline
-- `monitoring_service.py` - Fleet-wide health monitoring, 30s loop — authoritative for aggregate status (MON-001)
+- `monitoring_service.py` - Fleet-wide health monitoring, 30s loop — authoritative for aggregate status; lifespan-resumed from persisted `monitoring_config`, default OFF (MON-001, #1121)
 - `monitoring_alerts.py` - Alert threshold configuration
 - `heartbeat_service.py` - Agent push-heartbeat liveness layer — see [Heartbeat Liveness](#heartbeat-liveness-reliability-004-307)
 - `operator_queue_service.py` - Operating Room sync with agent containers (OPS-001)
@@ -263,7 +263,7 @@ FastMCP, Streamable HTTP transport, port 8080. API-key auth via `Authorization: 
 | `loops.ts` (3) | `run_agent_loop`, `get_loop_status`, `stop_loop` | Sequential bounded task execution (#740) |
 | `memory.ts` (1) | `write_user_memory` | Per-user memory blob; user email resolved server-side from execution_id (MEM-001, #888) |
 | `voip.ts` (1) | `call_user` | Outbound phone call via Twilio Media Streams; server-gated + rate-limited (VOIP-001, #1056) |
-| `operator_queue.ts` (2) | `list_operator_queue`, `get_operator_queue_item` | Read-only Operating Room queue, broad or `agent_name`-scoped; agent-scoped keys gated to `{self} ∪ permitted` in the MCP layer (OPS-001, #1101) |
+| `operator_queue.ts` (3) | `list_operator_queue`, `get_operator_queue_item`, `respond_to_operator_queue` | Read the Operating Room queue (broad or `agent_name`-scoped) and **resolve** a pending item — answer / approve / deny via `POST /{id}/respond`. The respond tool resolves the item's `agent_name`, then applies the same MCP-layer gate before writing (non-`pending` → structured error). Agent-scoped keys gated to `{self} ∪ permitted`. `cancel` deferred. (OPS-001, #1101 read / #1104 respond) |
 
 ### Vector Log Aggregator (`config/vector.yaml`)
 
@@ -276,11 +276,14 @@ Vector 0.43.1 (`timberio/vector:0.43.1-alpine`). Captures all container stdout/s
 **Internal server** `agent-server.py` (FastAPI, port 8000):
 - `/api/chat` - Claude Code execution (messages persisted to database)
 - `/health` - Health check. Returns `{status}` plus `active_tasks` (concurrent executions across `/api/chat` + `/api/task`), `last_task_at`, `consecutive_failures` (reset on success — consumed by the dispatch breaker #526 and fleet health #307) and the #333 `diagnostics` gauges (#1020). `mailbox_depth` intentionally NOT emitted — no agent-side mailbox until the actor model (#945); the backend derives queue depth from `CapacityManager`. Counters live in `agent_server/state.py`; backend reads them in `monitoring_service.py` with graceful defaults for older images.
-- `/api/credentials/update` - Hot-reload credentials
+- `/api/credentials/update` - Hot-reload credentials (rewrites `.env`/`.mcp.json`)
+- `/api/credentials/reload-token` - Surgical subscription-token hot-reload (#1089): mutates the agent-server process `os.environ["CLAUDE_CODE_OAUTH_TOKEN"]` so the NEXT claude subprocess uses the rotated token while in-flight subprocesses keep theirs; persists to the writable-layer override `/var/lib/trinity/oauth-token` (0600). Does NOT touch `.env`/`.mcp.json`. See [Subscription Token Rotation](#subscription-token-rotation-via-hot-reload-1089)
 - `/api/chat/session` - Context window stats
 - `/api/files`, `/api/files/download` (100MB limit), `/api/files/mkdir` (workspace-confined, #37)
 
 The agent server also runs two loops: the 15-min git `auto_sync` heartbeat (see [Git Sync Health](#git-sync-health-389390)) and the 5s liveness heartbeat (see [Heartbeat Liveness](#heartbeat-liveness-reliability-004-307)).
+
+**Durable subscription-token override (#1089):** `startup.sh` exports `CLAUDE_CODE_OAUTH_TOKEN` from `/var/lib/trinity/oauth-token` (when present, non-empty) **before** launching the agent server, so a token rotated via hot-reload survives a plain stop+start (a fleet restart via `routers/ops.py` does a raw `container_stop`+`container_start` that bypasses `start_agent_internal` and would otherwise revert to the baked `Config.Env` token). The path is deliberately on the writable layer, **not** under the persisted `/home/developer` volume: it survives `stop`→`start` (same container) but is wiped on recreate (fresh layer), so a DB-driven recreate cleanly re-bakes `Config.Env` from the DB and the stale override is gone — self-reconciling, no marker logic. Dir created+chowned to UID 1000 in the base-image Dockerfile.
 
 **Template-supplied pre-check** (SCHED-COND-001, #454): if the template ships an executable `~/.trinity/pre-check`, the backend's internal endpoint `POST /api/internal/agents/{name}/pre-check` runs it via `docker exec` before a cron-triggered chat. Language-agnostic — interpreter selected by shebang. The hook's stdout becomes the chat message; empty stdout + exit 0 records a skipped execution (Claude never invoked). Uses the same `execute_command_in_container` primitive as `git_service.py`, `ssh_service.py`, and the agent terminal — no agent-server HTTP endpoint.
 
@@ -310,7 +313,7 @@ Services that run continuously in the backend process:
 | **Cleanup Service** | `cleanup_service.py` | Every 5 min: active watchdog reconciliation against agent process registries (orphan recovery, auto-terminate timeouts) + passive stale recovery (CLEANUP-001, #129). Also runs retention + soft-delete purge sweeps and the #740 startup orphan-loop hook — see [Soft Delete & Retention](#soft-delete-retention--recovery-834-772) |
 | **Operator Queue Sync** | `operator_queue_service.py` | Polls running agents every 5s, reads `~/.trinity/operator-queue.json`, syncs to DB, writes responses back (OPS-001) |
 | **Sync Health Service** | `sync_health_service.py` | Polls git-enabled agents every 60s — see [Git Sync Health](#git-sync-health-389390) |
-| **Monitoring Service** | `monitoring_service.py` | Fleet-wide health checks on configurable interval (30s default); authoritative for aggregate status (MON-001) |
+| **Monitoring Service** | `monitoring_service.py` | Fleet-wide health checks on configurable interval (30s default); authoritative for aggregate status. **Lifespan-resumed (#1121):** boot reads the persisted `monitoring_config` (staggered +12s) and starts the loop only when `enabled` — the flag is the single source of truth, **defaults OFF**, persisted by `enable`/`disable`/`PUT /config` (which also reconcile the running loop) so the choice survives restarts; `*_check_interval` rejects non-positive values (422), loop clamps sleep ≥1s (MON-001) |
 | **Heartbeat Watch Loop** | `heartbeat_service.py` | 5s loop acting on missed agent heartbeats — see [Heartbeat Liveness](#heartbeat-liveness-reliability-004-307) |
 | **Scheduler Service** | `scheduler_service.py` | APScheduler cron execution; async fire-and-forget with DB polling for status. On each cron fire, optionally invokes the agent's `~/.trinity/pre-check` (see Agent Containers) |
 | **Capacity Maintenance** | `capacity_manager.py` | `run_maintenance()` every 60s — see [Capacity & Backlog](#capacity--backlog-428) |
@@ -325,11 +328,23 @@ Services that run continuously in the backend process:
 
 Canonical home for each multi-component feature. Endpoint signatures live in [API Endpoints](#api-endpoints); table DDL in [Database Schema](#database-schema).
 
+### Agent Runtimes — multi-runtime / "harness == runtime" (#1187)
+
+A Trinity **harness IS an `AgentRuntime`** — the pluggable execution engine inside the agent container. Three ship today: **Claude Code** (default), **Gemini CLI**, and **OpenAI Codex** (#1187). `AGENT_RUNTIME` (container env, set from `template.yaml runtime:` via `crud.py`; also a `trinity.agent-runtime` label) selects one; `runtime_adapter.get_runtime()` is the factory — it **validates** the value against `KNOWN_RUNTIMES` and raises on an unknown one rather than silently defaulting to Claude.
+
+**ABC** (`agent_server/services/runtime_adapter.py`): `execute` (chat), `execute_headless` (stateless task), `configure_mcp`, `is_available`, `get_default_model`, `get_context_window`, plus a non-abstract `capabilities()` classmethod returning a `RuntimeCapabilities` dataclass (`chat_continuity`, `session_tab_resume`, `mcp_support`, `cost_reporting: "native"|"estimated"`) — conservative by default so a new runtime that forgets to override is treated as least-capable. Each runtime is a singleton (`get_<name>_runtime()`).
+
+**Codex** (`codex_runtime.py`, built independently on the per-runtime primitives — NOT a shared helper, so it never inherits Gemini's blanket `kill_cgroup_orphans()`): `codex exec --json` → JSONL events (`thread.started`→session id, `turn.completed.usage`→tokens where `reasoning_output_tokens` is a SUBSET of `output_tokens`, `item.completed`→response/tool activity, `turn.failed`/`error`); `-o/--output-last-message` is the authoritative result (read-then-delete in `finally`); `codex exec resume <thread_id>` for chat continuity; cost estimated via `CODEX_PRICING`. Concurrency-safe orphan cleanup via `_drain_bounded` (`kill_cgroup_orphans(extra_pids=…)` preserves sibling executions). Error→HTTP: auth→503, rate→429, runtime-unavailable→**500** (not 503 — avoids the AUTH collision), pipe-drop→**502** (SUB-003 guard).
+
+**Parity surface** (every runtime must wire these — see the [Harness Authoring Guide](harness-authoring-guide.md)): platform **system prompt** (Codex prepends it + mirrors `CLAUDE.md`→`AGENTS.md` at startup), **sandbox** (`_resolve_sandbox_mode`: normal mode → `--sandbox danger-full-access` — Codex's own bubblewrap sandbox can't create a user namespace inside the hardened agent container (`bwrap: No permissions to create a new namespace`), which blocks every shell tool, so it's dropped and the Trinity container is the sole boundary, same posture as Claude/Gemini; **read-only mode** → `--sandbox read-only`, read from `~/.trinity/read-only-config.json` since the Claude PreToolUse hook doesn't apply — a fail-closed read-only enforcement story for Codex is a fast-follow), **guardrails** (`_load_guardrails()`; unmappable Claude tool-names are surfaced in logs, not silently dropped), and **credential sanitization** (`utils/credential_sanitizer` over response + logs). Codex credentials: `OPENAI_API_KEY` from process env else parsed from `/home/developer/.env` (CRED-002; not exported into the agent-server process), injected into the subprocess; `CODEX_HOME` is relocated under `$TMPDIR` (gitignored) so codex state never dirties the repo. Codex agents skip Claude-subscription auto-assign in `crud.py`/`lifecycle.py` (`is_claude_runtime`). Backend reads nothing runtime-specific in MVP: it still infers AUTH from HTTP 503; `ExecutionMetadata.status`/`error_code` ship unused (fast-follow). The **Session tab** is gated off for runtimes lacking `session_tab_resume` (one backend constant `RUNTIMES_WITHOUT_SESSION_TAB_RESUME` in `sessions.py` runs a stateless turn; frontend hides the tab). MCP: `_configure_codex_mcp_servers`/`_inject_codex_mcp` write `$CODEX_HOME/config.toml` directly, the Trinity HTTP MCP referencing the token via `bearer_token_env_var` (never persisted as a literal). The platform prompt is **runtime-aware** (`platform_prompt_service.get_platform_system_prompt(runtime=…)`/`compose_system_prompt(runtime=…)`, threaded from `routers/chat.py` + `task_execution_service.py` via the `trinity.agent-runtime` label resolved best-effort by `docker_service.get_agent_runtime`): for Codex it strips the Claude-only `mcp__trinity__` tool-name prefix (which otherwise made Codex emit `unknown MCP server`) and references the auto-discovered `trinity` tools by bare name; Claude/Gemini/unknown keep the canonical naming. Frontend: `RuntimeBadge.vue` codex case, `AgentDetail.vue` default model + terminal map, `AgentTerminal.vue` `codex` mode.
+
 ### Capacity & Backlog (#428)
 
 `CapacityManager` (CAPACITY-CONSOLIDATE) is the single public API for admit/release/status across `/chat` (`max_concurrent=max_parallel_tasks`, `queue_in_memory` policy) and `/task` (`queue_persistent` policy). It composes two private internals — `slot_service.py` (atomic N-ary counter, Redis ZSET `agent:slots:{name}`, dynamic per-agent TTL) and `backlog_service.py` (SQLite FIFO over `schedule_executions.status='queued'`, drain-on-release) — and owns the in-memory overflow store (Redis LIST, depth 3).
 
 `run_maintenance()` every 60s: expires stale queued tasks (>24h), drains orphans after restart, runs the #526 breaker-aware backstop (below), and on each successful sweep writes a unix-timestamp heartbeat to Redis `canary:drain_tick_at` (read by canary B-02 to distinguish stuck drains from "drain just hasn't run yet"; written at sweep END so a mid-sweep crash leaves the cursor stale and trips the check).
+
+**Status-as-projection (#1082):** `schedule_executions.status` is a CAS-guarded *projection* of an execution's terminal event — the agent process registry is the runtime authority for "is running"; no backend reader treats `status='running'` as the standalone authority (cleanup-watchdog readers use it only as a candidate filter, then confirm against the agent registry / Redis before any destructive write). In the **backend `db/schedules.py` module**, every `update(schedule_executions)` that writes `status` carries a status precondition in its `WHERE`, including `update_execution_to_queued` (the overflow re-queue), whose `AND status == RUNNING` guard (#1082) closes the one gap where a stale re-queue could resurrect a terminal row into `queued` (E-02 phantom-reversal class). A static + behavioural regression guard in `tests/unit/test_schedule_status_observability.py` keeps the invariant (the static guard is file-scoped to `db/schedules.py` — see the test's blind-spots note). **Not yet covered (tracked #1082 follow-up):** the standalone scheduler process (`src/scheduler/`) writes the same `trinity.db` with raw-SQL status writers (`scheduler/database.py::update_execution_status`, `::schedule_retry`) that are *not* CAS-guarded; the cron path compensates with a non-atomic read-then-check (`scheduler/service.py` SCHED-ASYNC-001) but the retry-failure path does not, so a late backend `SUCCESS` can still be clobbered there. See [status-as-projection.md](feature-flows/status-as-projection.md).
 
 ### Circuit Breakers (transport + dispatch, #526)
 
@@ -346,9 +361,21 @@ Two independent per-agent breakers, separate Redis namespaces and separate Lua, 
 
 API: `GET`/`PUT /api/agents/{name}/circuit-breaker` (owner-only toggle), `POST .../circuit-breaker/reset` (admin-only; resets BOTH breakers) — see API Endpoints.
 
+### Fire-and-Forget Dispatch (#1083)
+
+Removes backend-thread pinning for autonomous turns by construction: an eligible turn is dispatched with a **202 ACK** and runs in the agent's background, then POSTs its terminal back to a callback that finalizes the row. `execute_task` returns right after the ACK, so a wedged turn holds **zero** backend coroutine and the slot becomes a **lease** (released by the callback or reclaimed by the existing TTL reaper). Flag-gated `DISPATCH_ASYNC` (default OFF) AND Claude-runtime only (decision: the typed terminal envelope is Claude-specific); non-202 responses (old image / non-Claude / flag off) fall through to today's **synchronous** handling — the safe mixed-fleet fallback. v1 eligible triggers: **`{schedule, webhook}`** only (the triggers reaching `execute_task` with no synchronous `result.response` consumer; `loop`/`fan_out` stay sync, `event` bypasses `execute_task`).
+
+- **Terminal applier** (`task_execution_service.apply_result`): the single point that finalizes an execution — shared by the inline sync path and the callback. Derives every persisted field from a normalized `TerminalEnvelope` and **gates ALL side-effects on the CAS bool** (`db.update_execution_status` → bool): a CAS-lost write (replay / late callback) completes no activity, records no breaker outcome, and releases no slot. `slot_service.release_slot` also gates the BACKLOG-001 drain on the ZREM result, so a replayed release can't admit past `max_parallel_tasks`.
+- **Durable async marker**: `mark_execution_dispatched(async_dispatch=True)` writes `claude_session_id='dispatched_async'` (both sentinels non-NULL, so the no-session sweep / E-05 treat them identically). The callback finalizes **only** RUNNING rows carrying it (fail-closed cross-path guard — never terminal-writes a sync/interactive execution mid-await).
+- **Callback endpoint** (`routers/agents.py`, `POST /api/agents/{name}/executions/{id}/result`): agent's own MCP key (mirrors `authorize_heartbeat`) + ownership (404) + marker gate (409) + idempotent replay (an **authoritative** terminal — SUCCESS/CANCELLED/SKIPPED — short-circuits `{replayed:true}`; a FAILED row falls through so a late SUCCESS can still overwrite a reaper `LEASE_EXPIRED` via the CAS, Codex #2) + body-size 413 caps. On accept → `apply_result(..., release_slot=True)`, closing the activity via the filtered `get_open_activity_id_for_execution` (chat/schedule_start + `started`, never a shared-eid tool_call row).
+- **Agent side** (`agent_server/services/result_callback.py`): `try_spawn_async` gates on async + Claude + execution_id + callback creds; `_run_and_report` runs the headless turn, builds the typed envelope (success → `completed`; HTTPException → status-mapped `error_code`/`terminal_reason`, metadata salvaged from the structured 502 body), **persists** it to `~/.trinity/pending-results/<eid>.json`, and delivers with capped backoff up to the lease deadline (dispatch + `timeout + SLOT_TTL_BUFFER`), deleting on a 2xx / permanent 4xx. A strong-ref `_inflight` set defeats the asyncio GC footgun; a **startup sweep** (`main.py`) re-sends leftover envelopes so a crash/restart mid-callback doesn't lose completed work (a late SUCCESS still overwrites a reaper `LEASE_EXPIRED` via CAS).
+- **Lease reaper** (`cleanup_service`): an expired lease (no callback before the slot TTL) FAILs the row with the `lease_expired` tag (`TaskExecutionErrorCode.LEASE_EXPIRED`) and closes its open activity. The stale-execution sweep uses each agent's `timeout + SLOT_TTL_BUFFER` window (not the flat 120-min default) so a legitimately-running max-timeout async turn isn't failed early.
+
+**v1 boundaries**: lease-expiry = FAIL (not re-queue); async empty-result = FAIL (the #678 inline auto-retry stays sync-only); SUB-003 auto-switch stays inline-only (the breaker still protects the fleet); 504/503 async failures write a null-cost row until `execute_headless_task` exposes `ctx.metadata` on those paths (T8 / #1201 fast-follow).
+
 ### Heartbeat Liveness (RELIABILITY-004, #307)
 
-Additive push-heartbeat layer; the 30s `monitoring_service` loop stays authoritative for aggregate status.
+Additive push-heartbeat layer; the 30s `monitoring_service` loop (lifespan-resumed, default-off, #1121) stays authoritative for aggregate status when enabled.
 
 **Agent side** (`agent_server/heartbeat.py`): 5s loop, gated on both `TRINITY_BACKEND_URL` and `TRINITY_MCP_API_KEY` being present. POSTs `{memory_mb, active_executions, uptime_s}` to `POST /api/agents/{name}/heartbeat`, authenticated with the agent's own agent-scoped MCP key (Option B — least privilege, no master secret injected). `memory_mb` from `/proc/self/status` VmRSS (no psutil). Sleeps-first and swallows **all** exceptions — a failed beat is silent by design; the backend watch loop acts on absence.
 
@@ -366,6 +393,12 @@ agent:heartbeat:misses:{name} → STRING(int), ~60s TTL. Consecutive-miss counte
 ### Idempotency (RELIABILITY-006, #525)
 
 Trigger-boundary dedup — policy in Architectural Invariant #18, table DDL under `idempotency_keys`. `services/idempotency_service.py` (key derivation + `begin`/`complete`/`fail`) over `db/idempotency.py`. The `(scope, key)` PRIMARY KEY is the atomic claim: `claim()` INSERTs an `in_flight` row; a concurrent loser catches `IntegrityError` and reads the surviving row — cross-process safe across uvicorn workers and the standalone scheduler (shared SQLite file). Lifecycle: `claim` → (`attach_execution`) → `complete` (stores `response_snapshot` for replay) or `release` (deletes the in_flight row so a failed attempt can retry; never deletes a `completed` row). Rows older than 24h are treated as expired and re-claimed; the cleanup service purges them (`idempotency_purge_expired`). Duplicates within 24h short-circuit with the original result + `X-Idempotent-Replay: true`; an in-flight duplicate returns 409. Fail-open — a key never blocks a real execution.
+
+### Subscription Token Rotation via Hot-Reload (#1089)
+
+Rotating an agent's subscription token used to recreate the container, making "rotate a credential" and "kill every in-flight turn" the same operation (#1037). Token rotation now hot-reloads the running container; recreate is reserved for image/template/auth-**mode** changes (TARGET_ARCHITECTURE §Agent Runtime). The agent server authenticates Claude purely from `CLAUDE_CODE_OAUTH_TOKEN` (no `.credentials.json`) and is a single uvicorn worker, so mutating its process env makes the **next** subprocess use the new token while in-flight subprocesses finish on the old one.
+
+Backend orchestration in `services/subscription_auto_switch.py`: `_hot_reload_subscription_token(agent_name)` POSTs the agent's current DB token to the agent-server `POST /api/credentials/reload-token`, falling back to `_restart_agent` on a 404 (old base image), transport failure, or missing token (`no_container`/`not_running` short-circuit otherwise). Three producer paths converted, all under the #799 `agent_switch_lock`: **auto-switch** (`_perform_auto_switch`, SUB-003), **manual sub→sub reassignment** (`PUT /api/subscriptions/agents/{name}` — auth-mode changes none/api-key→sub still recreate), and **key rollover** (`reload_subscription_for_all_agents(sub_id)` fans a best-effort reload across every running agent on a re-registered subscription). Durable override (`/var/lib/trinity/oauth-token`) + `startup.sh` read make a rotation survive a plain restart — see the agent-server [Durable subscription-token override](#agent-containers) note. Agent-server endpoint mirroring follows Invariant #5.
 
 ### Real-time Delivery (RELIABILITY-003, #306)
 
@@ -433,7 +466,7 @@ Lookup keys: S-01/E-02/L-03 shipped via #653; S-02/E-01/E-05/B-01 (Phase 2) and 
 
 | ID | Tier | Severity | Invariant (bug class guarded) |
 |----|------|----------|-------------------------------|
-| S-01 | A | critical | Slot–row bijection: per agent, execution_ids in `agent:slots:{name}` (drain sentinels filtered) ≡ execution_ids of `running` rows (PR #378/#403 class) |
+| S-01 | A | major | Slot–row bijection: per agent, execution_ids in `agent:slots:{name}` (drain sentinels filtered) ≡ execution_ids of `running` rows (PR #378/#403 class). Severity `critical`→`major` (#1082): redundant under #1082 single-owner status — the slot ZSET is no longer a competing authority — and retires with the slot ZSET in #1081 Phase 5 |
 | S-02 | A | critical | No overbooking: `ZCARD(agent:slots:{name})` ≤ `max_parallel_tasks` — distinct from S-01 because Redis and SQL can agree on N+1 (`acquire_slot` concurrency bypass) |
 | S-03 | A | critical | Slot TTL floor: every `agent:slot:{name}:{eid}` HASH created with ≥ `execution_timeout_seconds + 300s` TTL. Kinds: `missing` (-2, HASH expired ahead of ZSET — #226 class), `no_expiry` (-1), `below_floor`. Decay-invariant (#913): reconstructs *initial* TTL as `ttl + age` (age = snapshot − ZSET score, the ZADD epoch) vs `floor − 1` (1s wire-rounding tolerance), so natural decay never fires but a real below-floor set still does |
 | E-01 | B | critical | Terminal-state closure: no `running` row older than `execution_timeout_seconds + 300s` (matches `SLOT_TTL_BUFFER`, so it fires after cleanup's window) |
@@ -489,6 +522,7 @@ Lookup keys: S-01/E-02/L-03 shipped via #653; S-02/E-01/E-05/B-01 (Phase 2) and 
 | DELETE | `/api/agents/{name}/shared-files/{file_id}` | Revoke a shared file (owner-only; idempotent) |
 | POST | `/api/agents/{name}/user-memory` | Write per-user memory blob; email resolved from execution_id server-side (MEM-001, #888) |
 | POST | `/api/agents/{name}/heartbeat` | Agent liveness heartbeat — auth and semantics in [Heartbeat Liveness](#heartbeat-liveness-reliability-004-307) |
+| POST | `/api/agents/{name}/executions/{execution_id}/result` | Fire-and-forget terminal callback — agent's own MCP key + ownership + durable async-marker gate; finalizes via `apply_result`. See [Fire-and-Forget Dispatch](#fire-and-forget-dispatch-1083) (#1083) |
 | GET | `/api/agents/{name}/circuit-breaker` | Unified breaker state: `{dispatch:{state,failure_count,retry_after_seconds}, transport:{...}, open:bool, config:{enabled,global_enabled}}` (#526) |
 | PUT | `/api/agents/{name}/circuit-breaker` | Enable/disable per-agent dispatch breaker (owner-only); engages only with global `DISPATCH_BREAKER_ENABLED` (#526) |
 | POST | `/api/agents/{name}/circuit-breaker/reset` | Admin-only; resets BOTH transport and dispatch breakers to closed (#921, #526) |
@@ -606,18 +640,22 @@ Access: admins see all; non-admins only owned/shared agents (`accessible_agent_n
 |--------|------|------|-------------|
 | GET | `/api/agents/{name}/analytics` | `AuthorizedAgent` | Multi-day execution analytics for the Overview tab. `?window=` ∈ {`7d`,`14d`,`30d`} (422 otherwise). Returns per-day counts stacked by type bucket, per-day + headline terminal success rate, duration avg (full-set) + p95 (sampled), avg context use, per-bucket totals, gap-filled UTC-day timeline |
 
-Generalises #868 to agent scope (`db/schedules.py:get_agent_analytics`); read-only, DB-sourced (renders when the agent is stopped). Data-source discipline (locked by /autoplan review): all per-day series and headline `avg`/`context_avg` are **full-set** aggregates — never the capped pool (a sampled avg would be silently wrong on high-traffic agents); only headline p95 uses the newest 5,000 success rows (`sampled=true` when capped). `triggered_by` grouped in Python via `_TRIGGER_BUCKETS` (Chat/Tasks, MCP, Channels, Public, Scheduled, Agent-to-agent, Voice) with an explicit `Other` catch-all so a new trigger never silently vanishes (`manual` → Chat/Tasks). `success_rate` is terminal-based; zero-terminal days report `null` so charts render a gap, not a false 0%; `context_avg` uses NULL-skipping AVG.
+Generalises #868 to agent scope (`db/schedules.py:get_agent_analytics`); read-only, DB-sourced (renders when the agent is stopped). Data-source discipline (locked by /autoplan review): all per-day series and headline `avg`/`context_avg` are **full-set** aggregates — never the capped pool (a sampled avg would be silently wrong on high-traffic agents); only headline p95 uses the newest 5,000 success rows (`sampled=true` when capped). `triggered_by` grouped in Python via `_TRIGGER_BUCKETS` (Chat/Tasks, MCP, Channels, Public, Scheduled, Loops, Agent-to-agent, Voice) with an explicit `Other` catch-all so a new trigger never silently vanishes (`manual` → Chat/Tasks; `loop` → Loops, #1150). `success_rate` is terminal-based; zero-terminal days report `null` so charts render a gap, not a false 0%; `context_avg` uses NULL-skipping AVG.
 
 ### Operator Queue (OPS-001)
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/operator-queue` | List queue items (filters: status, type, priority, agent_name, since) |
 | GET | `/api/operator-queue/stats` | Counts by status/type/priority/agent |
+| POST | `/api/operator-queue/bulk-cancel` | Cancel listed pending items (`{ids: [...]}`, 1–500, ids-scoped so a sync race can't cancel unseen items); returns `{cancelled, skipped}`; audit-logged (#1017) |
+| POST | `/api/operator-queue/clear-resolved` | Hide terminal rows (acknowledged/cancelled/expired) by setting `cleared_at` — NOT a DELETE (the 5s sync loop would resurrect items whose agent-file entry still says `pending`); `responded` kept visible until delivered; actual deletion deferred to the retention sweep (#1142); returns `{cleared}`; audit-logged (#1017) |
 | GET | `/api/operator-queue/{id}` | Single item |
-| POST | `/api/operator-queue/{id}/respond` / `/cancel` | Submit operator response / cancel pending item |
+| POST | `/api/operator-queue/{id}/respond` / `/cancel` | Submit operator response / cancel pending item. Respond returns **409** if the item left `pending` under the caller (race vs bulk-cancel, #1017) |
 | GET | `/api/operator-queue/agents/{name}` | Items for one agent |
 
-WebSocket events: `operator_queue_new`, `operator_queue_responded`, `operator_queue_acknowledged`. Backed by the 5s Operator Queue Sync background service.
+Bulk ops scope writes to the caller's accessible agents (tri-state: admin = no filter, empty set = no-op). The sync service write-back also propagates `cancelled`/`expired` status into agent queue files (in-place flips of still-`pending` entries only) so agents stop waiting on cleared items and stale file entries can't resurrect purged rows (#1017). The Operations UI exposes these as a per-tab **Clear All** button (`notifications` tab uses `POST /api/notifications/dismiss-all` — bulk pending+acknowledged → dismissed, same accessible-set scoping).
+
+WebSocket events: `operator_queue_new`, `operator_queue_responded`, `operator_queue_acknowledged`, `operator_queue_cleared` (one per bulk op, #1017; `notifications_cleared` for the notifications variant). Backed by the 5s Operator Queue Sync background service.
 
 ### Platform Audit Log (SEC-001)
 | Method | Path | Auth | Description |
@@ -674,6 +712,7 @@ Coverage: agent lifecycle, auth, sharing, credentials, settings, rename; request
 | GET/PUT/DELETE | `/api/settings/mcp-url` | Get (any auth user) / set / reset-to-auto-detect (admin-only) MCP server URL |
 | GET | `/api/settings/feature-flags` | Public-safe UI gating flags (any auth user): `session_tab_enabled`, `voice_available` (`VOICE_ENABLED && GEMINI_API_KEY`), `workspace_available` (voice AND `WORKSPACE_ENABLED`, opt-in #860), `voip_available` (#1056), `enterprise_features` (registered enterprise modules; empty in OSS-only builds or under `TRINITY_OSS_ONLY=1`) (#847) |
 | GET/PUT | `/api/settings/agent-defaults/resources` | Fleet-wide default CPU/memory for new containers (admin-only; CPU 1/2/4/8/16, memory 1g–32g) (RES-001) |
+| GET/PUT | `/api/settings/agent-defaults/access-policy` | Fleet-wide default `require_email` for new agents (admin-only, #1129). Stored in `system_settings`, **secure-by-default ON** (code fallback when unset — no migration); seeds `agent_ownership.require_email` at creation (`register_agent_owner`) for **new** agents only, never rewrites existing rows; owners still override per agent via `PUT /api/agents/{name}/access-policy` |
 
 ### Session Tab
 | Method | Path | Description |
@@ -694,6 +733,7 @@ Open-core seam: enterprise backend code lives in the private `trinity-enterprise
 | `audit` | (#941) | Entitlement only — flips the OSS audit-log dashboard route visible; `/api/audit-log/*` stays OSS |
 | `user_management` | `enterprise/backend/user_management/` (#995) | Org lifecycle: invite (whitelist + email), deactivate/reactivate (over the OSS `users.suspended_at` primitive), per-user activity view (reads OSS `audit_log`). `/api/enterprise/user-management/*`; Settings → User Management UI |
 | `siem` | `enterprise/backend/siem/` (#997) | SIEM log export — ships OSS `audit_log` to a customer SIEM over HTTP/JSON webhook. Private `enterprise_siem_config` (destination + AES-encrypted token + export cursor); Redis-lock-serialised background pusher; at-least-once (cursor advances only on successful POST). `/api/enterprise/siem/*`; no OSS/UI surface |
+| `2fa` | `enterprise/backend/two_factor/` (#5) | Two-factor auth via **TOTP** (RFC 6238; Google Authenticator is one compatible app — chosen over Google-OIDC to avoid a runtime IdP dependency). Private `enterprise_user_2fa` (AES-256-GCM secret + monotonic `last_used_step` replay guard), `enterprise_2fa_recovery_codes` (single-use, SHA-256-hashed), `enterprise_2fa_config` (per-role policy). `/api/enterprise/2fa/*` — self-service enroll/confirm/disable/recovery + admin policy + the `login/*` challenge-completion endpoints. Login seam is edition-agnostic: `services/mfa_gate.py` (no provider in OSS → no-op, fail-open) + `create_mfa_challenge_token`/`decode_mfa_challenge` in `dependencies.py`; on a required second factor the OSS auth routers (`/token`, `/api/auth/email/verify`) return a short-lived challenge token instead of an access token. Settings → Security UI |
 
 ---
 
@@ -705,7 +745,7 @@ These are structural patterns that must be preserved. Breaking them causes casca
 
 2. **DB Layer: Class-per-domain with Mixin Composition** — Each `db/` file defines an `XOperations` class. Agent-specific settings use mixins (`db/agent_settings/`) composed into `AgentOperations`. New agent settings → new mixin, not a bigger class.
 
-3. **Schema in `db/schema.py`, Migrations in `db/migrations.py`** — All OSS table DDL lives in `schema.py`. Schema changes require a versioned migration in `migrations.py` (tracked in the `schema_migrations` table). Never create tables ad-hoc in service code. **Two-track migrations (open-core):** enterprise modules own only `enterprise_*` tables and migrate them through a **separate** runner (`enterprise/backend/_migrations.py`) tracked in `enterprise_schema_migrations` — never the OSS `schema_migrations`, so the two version-lines can't collide. Enterprise authors one file per migration in the module's `migrations/` package (`NNNN_slug.py` with `NAME` + `upgrade(cursor, conn)`, auto-discovered in filename order). Enterprise migrations may FK-into OSS tables but must **never ALTER** an OSS table — anything OSS must enforce goes through an OSS migration as an edition-agnostic primitive (e.g. `users.suspended_at`, #995). The enterprise runner is invoked from `register_enterprise` *after* OSS `init_database`, so OSS tables already exist.
+3. **Schema in `db/schema.py`, Migrations in `db/migrations.py`** — All OSS table DDL lives in `schema.py`. Schema changes require a versioned migration in `migrations.py` (tracked in the `schema_migrations` table). Never create tables ad-hoc in service code. **Runner safety (#1160):** `init_database()` wraps both migration passes + `init_schema` in a cross-process `flock` (`db/migration_lock.py`) so concurrent uvicorn workers + the scheduler container can't race the suite; table-rebuild migrations use `_atomic_rebuild` (rename-swap inside an explicit `BEGIN`/`COMMIT`) so a crash mid-rebuild rolls back instead of losing rows between an autocommitted `DROP` and the re-insert; a failed migration is named on its traceback (`add_note`) and surfaced as `first_pending` in the `/health` 503. **Backend split (#1183):** the `db/migrations.py` bespoke runner (PRAGMA + `INSERT OR IGNORE`) is **SQLite-only**. The PostgreSQL backend is owned by **Alembic** — `init_database()`'s non-SQLite branch calls `db/alembic_runner.upgrade_to_head()` (`src/backend/migrations/` + `alembic.ini`; `env.py` targets the `db/tables.py` MetaData). A fresh PG DB is built by the `0001_baseline` revision (which reuses the exact `init_schema_postgres` head DDL); a pre-Alembic PG DB is stamped at baseline, not rebuilt. The two systems coexist during the SQLite→Postgres transition, so a schema change currently lands in **both** `migrations.py` (SQLite) and a new Alembic revision (Postgres) until SQLite is retired — the long-term goal (#746) is `tables.py` MetaData as the single source with autogenerated revisions. **Two-track migrations (open-core):** enterprise modules own only `enterprise_*` tables and migrate them through a **separate** runner (`enterprise/backend/_migrations.py`) tracked in `enterprise_schema_migrations` — never the OSS `schema_migrations`, so the two version-lines can't collide. Enterprise authors one file per migration in the module's `migrations/` package (`NNNN_slug.py` with `NAME` + `upgrade(cursor, conn)`, auto-discovered in filename order). Enterprise migrations may FK-into OSS tables but must **never ALTER** an OSS table — anything OSS must enforce goes through an OSS migration as an edition-agnostic primitive (e.g. `users.suspended_at`, #995). The enterprise runner is invoked from `register_enterprise` *after* OSS `init_database`, so OSS tables already exist.
 
 4. **Router Registration Order Matters** — In `main.py`, static routes like `/api/agents/context-stats` must come before `/{name}` catch-all. New collection-level agent endpoints must be registered before parameterized routes.
 
@@ -1280,13 +1320,14 @@ CREATE TABLE operator_queue (
     responded_by_email TEXT,
     responded_at TEXT,
     acknowledged_at TEXT,
+    cleared_at TEXT,                    -- #1017: NULL = visible; set = hidden by Clear All (deletion deferred to retention sweep #1142)
     FOREIGN KEY (responded_by_id) REFERENCES users(id)
 );
-CREATE INDEX idx_opqueue_status ON operator_queue(status);
-CREATE INDEX idx_opqueue_agent ON operator_queue(agent_name);
-CREATE INDEX idx_opqueue_priority ON operator_queue(priority);
-CREATE INDEX idx_opqueue_created ON operator_queue(created_at);
-CREATE INDEX idx_opqueue_agent_status ON operator_queue(agent_name, status);
+CREATE INDEX idx_operator_queue_agent ON operator_queue(agent_name);
+CREATE INDEX idx_operator_queue_status ON operator_queue(status);
+CREATE INDEX idx_operator_queue_priority ON operator_queue(priority);
+CREATE INDEX idx_operator_queue_type ON operator_queue(type);
+CREATE INDEX idx_operator_queue_created ON operator_queue(created_at DESC);
 ```
 
 **agent_sync_state** (#389 — see [Git Sync Health](#git-sync-health-389390)):
@@ -1413,6 +1454,7 @@ CREATE INDEX idx_idempotency_created ON idempotency_keys(created_at);
 - Email whitelist controls who can login via email; admin login always available for 'admin'.
 - **4-tier role hierarchy** (ROLE-001): `user` < `operator` < `creator` < `admin`. Agent creation requires `creator`+. Enforced via `require_role()` in `dependencies.py`.
 - **Whitelist-driven role on first login** (#314): new email users inherit the `default_role` on their `email_whitelist` row (fallback `user`). Callsites pass explicit intent — `/share` and access-request approvals → `user` (chat-only grant); public `/api/access/request` self-signup → `user`; admin whitelist UI → caller-specified. Owners promote collaborators explicitly via `PUT /api/users/{username}/role`. Closes a privilege escalation where any access grant silently promoted the recipient to `creator`.
+- **Public self-signup is default-OFF** (trinity-enterprise#10): the unauthenticated `POST /api/access/request` returns **403** unless an operator opts in via `PUBLIC_ACCESS_REQUESTS_ENABLED` (env) or the `public_access_requests_enabled` system setting. When off it never auto-whitelists, so the email whitelist stays authoritative against self-enrollment. Login-code requests for already-whitelisted emails are unaffected.
 
 ### 2. MCP API Keys (User → MCP Server)
 
@@ -1487,7 +1529,7 @@ Bridges (members of **both** networks): `backend` (primary HTTP API — Redis on
 ## Container Security
 
 - **Non-root execution** (Invariant #17, #874): backend and scheduler as `trinity` (UID 1000), MCP server as `node` (UID 1000), frontend as `nginx` (UID 101), agents as `developer` (UID 1000). Backend needs `group_add: ${DOCKER_GID:-999}` for Docker socket access on Linux.
-- `CAP_DROP: ALL` + `CAP_ADD: NET_BIND_SERVICE`; `security_opt: no-new-privileges:true`; tmpfs `/tmp` with `noexec,nosuid`; no external UI port exposure; network isolation per Network Topology above.
+- `CAP_DROP: ALL` + `CAP_ADD: NET_BIND_SERVICE`; `security_opt: no-new-privileges:true`; tmpfs `/tmp` with `noexec,nosuid` (RAM-backed, default 512 MB — operator-tunable via `AGENT_TMP_SIZE` on the backend service, validated `^\d+[mg]$` with invalid→default; `noexec,nosuid` stay fixed; counts against the agent memory cgroup; creation-time, so existing agents pick up a change on recreate not restart, #1231. Heavy scratch like pip/npm/ML wheels is redirected via a default `TMPDIR=/home/developer/.tmp` on the disk-backed home volume, created at start by `startup.sh`; mount spec + TMPDIR default live in `services/agent_service/capabilities.py` so create/recreate/system-agent can't drift, #1098); no external UI port exposure; network isolation per Network Topology above.
 - **Internal API security (C-003)**: `/api/internal/` endpoints (scheduler, agent containers) require the `X-Internal-Secret` header; falls back to `SECRET_KEY` if `INTERNAL_API_SECRET` unset.
 - **WebSocket security (C-002, #550)**: single-use ticket auth — see [Real-time Delivery](#real-time-delivery-reliability-003-306).
 - **Frontend XSS (H-005)**: all markdown rendering uses DOMPurify via `utils/markdown.js`; no direct `v-html` with unsanitized content.

@@ -4,13 +4,19 @@ Sync state DB operations (Issue #389 — S1).
 One row per agent captures last sync outcome, consecutive_failures counter,
 remote SHAs, and ahead/behind tuples. The SyncHealthService upserts here
 after polling each agent; routers read here to render the dashboard dot.
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL.
 """
 
 from typing import Dict, List, Optional
 
+from sqlalchemy import select, delete
+
 from utils.helpers import utc_now_iso
 
-from .connection import get_db_connection
+from .engine import get_engine, make_insert
+from .tables import agent_sync_state
 
 # Keep in sync with agent_sync_state column order so row indexes match.
 _COLUMNS = (
@@ -29,6 +35,9 @@ _COLUMNS = (
     "updated_at",
 )
 
+# Non-key columns updated on conflict (everything except the agent_name PK).
+_UPSERT_SET_COLUMNS = tuple(c for c in _COLUMNS if c != "agent_name")
+
 
 def _row_to_dict(row) -> Dict:
     return {col: row[col] for col in _COLUMNS}
@@ -38,18 +47,17 @@ class SyncStateOperations:
     """CRUD for agent_sync_state (#389)."""
 
     def get(self, agent_name: str) -> Optional[Dict]:
-        with get_db_connection() as conn:
-            row = conn.execute(
-                f"SELECT {', '.join(_COLUMNS)} FROM agent_sync_state WHERE agent_name = ?",
-                (agent_name,),
-            ).fetchone()
+        stmt = select(
+            *[agent_sync_state.c[col] for col in _COLUMNS]
+        ).where(agent_sync_state.c.agent_name == agent_name)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
         return _row_to_dict(row) if row else None
 
     def list_all(self) -> List[Dict]:
-        with get_db_connection() as conn:
-            rows = conn.execute(
-                f"SELECT {', '.join(_COLUMNS)} FROM agent_sync_state"
-            ).fetchall()
+        stmt = select(*[agent_sync_state.c[col] for col in _COLUMNS])
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
         return [_row_to_dict(r) for r in rows]
 
     def upsert(
@@ -106,36 +114,19 @@ class SyncStateOperations:
             "updated_at": now,
         }
 
-        with get_db_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO agent_sync_state (
-                    agent_name, last_sync_at, last_sync_status, consecutive_failures,
-                    last_error_summary, last_remote_sha_main, last_remote_sha_working,
-                    ahead_main, behind_main, ahead_working, behind_working,
-                    last_check_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(agent_name) DO UPDATE SET
-                    last_sync_at = excluded.last_sync_at,
-                    last_sync_status = excluded.last_sync_status,
-                    consecutive_failures = excluded.consecutive_failures,
-                    last_error_summary = excluded.last_error_summary,
-                    last_remote_sha_main = excluded.last_remote_sha_main,
-                    last_remote_sha_working = excluded.last_remote_sha_working,
-                    ahead_main = excluded.ahead_main,
-                    behind_main = excluded.behind_main,
-                    ahead_working = excluded.ahead_working,
-                    behind_working = excluded.behind_working,
-                    last_check_at = excluded.last_check_at,
-                    updated_at = excluded.updated_at
-                """,
-                tuple(row[c] for c in _COLUMNS),
-            )
+        stmt = make_insert(agent_sync_state).values(**row)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[agent_sync_state.c.agent_name],
+            set_={col: row[col] for col in _UPSERT_SET_COLUMNS},
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
         return row
 
     def delete(self, agent_name: str) -> bool:
-        with get_db_connection() as conn:
-            cursor = conn.execute(
-                "DELETE FROM agent_sync_state WHERE agent_name = ?", (agent_name,)
-            )
-            return cursor.rowcount > 0
+        stmt = delete(agent_sync_state).where(
+            agent_sync_state.c.agent_name == agent_name
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0

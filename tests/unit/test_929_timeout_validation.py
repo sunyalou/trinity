@@ -15,7 +15,6 @@ as `test_agent_soft_delete.py`.
 
 from __future__ import annotations
 
-import sqlite3
 import sys
 import types
 from pathlib import Path
@@ -72,88 +71,46 @@ while _BACKEND_STR in sys.path:
     sys.path.remove(_BACKEND_STR)
 sys.path.insert(0, _BACKEND_STR)
 
-
-def _make_db_schema(conn: sqlite3.Connection) -> None:
-    """Subset of Trinity's schema sufficient for the accessors under test."""
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE agent_ownership (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_name TEXT UNIQUE NOT NULL,
-            owner_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            execution_timeout_seconds INTEGER DEFAULT 3600,
-            deleted_at TEXT
-        )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE agent_schedules (
-            id TEXT PRIMARY KEY,
-            agent_name TEXT NOT NULL,
-            name TEXT NOT NULL,
-            cron_expression TEXT NOT NULL,
-            message TEXT NOT NULL,
-            enabled INTEGER DEFAULT 1,
-            timezone TEXT DEFAULT 'UTC',
-            description TEXT,
-            owner_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            timeout_seconds INTEGER DEFAULT 3600,
-            deleted_at TEXT
-        )
-        """
-    )
-    conn.commit()
+from db_harness import db_backend, run as _hrun  # noqa: E402
 
 
 @pytest.fixture
-def tmp_agent_db(tmp_path, monkeypatch):
-    try:
-        import db.connection as connection_mod
-    except ImportError:
-        pytest.skip("backend venv required (no `db.connection` import)")
+def tmp_agent_db(db_backend):
+    """Active backend with a fresh full schema (db_harness, #300). Runs on
+    SQLite and, when TEST_POSTGRES_URL is set, PostgreSQL. Returns the backend
+    marker (leading positional arg the seed helpers accept).
 
-    db_path = tmp_path / "trinity.db"
-    conn = sqlite3.connect(str(db_path))
-    _make_db_schema(conn)
-    conn.close()
-    monkeypatch.setattr(connection_mod, "DB_PATH", str(db_path))
-    return str(db_path)
+    NOTE: the prior fixture monkeypatched the legacy db.connection.DB_PATH seam,
+    which the #300 Core conversion no longer reads — so the production accessor
+    queried the wrong DB and the offenders assertion failed (masked while the
+    suite was dead). Routing through db_backend (DATABASE_URL + engine) fixes it.
+    """
+    return db_backend
 
 
-def _seed_agent(db_path: str, name: str, cap_seconds: int = 3600) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        "INSERT INTO agent_ownership(agent_name, owner_id, created_at, execution_timeout_seconds) "
-        "VALUES (?, 1, '2026-01-01T00:00:00Z', ?)",
-        (name, cap_seconds),
+def _seed_agent(_db, name: str, cap_seconds: int = 3600) -> None:
+    _hrun(
+        "INSERT INTO agent_ownership (agent_name, owner_id, created_at, execution_timeout_seconds) "
+        "VALUES (:n, 1, '2026-01-01T00:00:00Z', :cap)",
+        n=name, cap=cap_seconds,
     )
-    conn.commit()
-    conn.close()
 
 
 def _seed_schedule(
-    db_path: str,
+    _db,
     agent_name: str,
     schedule_id: str,
     timeout_seconds: int,
     deleted: bool = False,
 ) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        "INSERT INTO agent_schedules(id, agent_name, name, cron_expression, message, "
+    _hrun(
+        "INSERT INTO agent_schedules (id, agent_name, name, cron_expression, message, "
         "owner_id, created_at, updated_at, timeout_seconds, deleted_at) "
-        "VALUES (?, ?, ?, '0 * * * *', 'test', 1, '2026-01-01T00:00:00Z', "
-        "'2026-01-01T00:00:00Z', ?, ?)",
-        (schedule_id, agent_name, schedule_id, timeout_seconds,
-         '2026-05-01T00:00:00Z' if deleted else None),
+        "VALUES (:sid, :a, :sid, '0 * * * *', 'test', 1, '2026-01-01T00:00:00Z', "
+        "'2026-01-01T00:00:00Z', :to, :deleted)",
+        sid=schedule_id, a=agent_name, to=timeout_seconds,
+        deleted='2026-05-01T00:00:00Z' if deleted else None,
     )
-    conn.commit()
-    conn.close()
 
 
 # ---------------------------------------------------------------------------

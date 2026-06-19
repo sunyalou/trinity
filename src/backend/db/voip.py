@@ -10,13 +10,19 @@ Handles:
 
 Encryption mirrors the WhatsApp/Slack/Telegram pattern: the AuthToken is wrapped
 in an AES-256-GCM JSON envelope via CredentialEncryptionService (Invariant #12).
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL.
 """
 
 import logging
 import secrets
 from typing import List, Optional
 
-from db.connection import get_db_connection
+from sqlalchemy import select, insert, update, delete, func
+
+from .engine import get_engine, make_insert
+from .tables import voip_bindings, voip_call_logs
 from utils.helpers import utc_now_iso, iso_cutoff
 
 logger = logging.getLogger(__name__)
@@ -67,57 +73,80 @@ class VoipOperations:
         encrypted_token = self._encrypt_auth_token(auth_token)
         cap = daily_call_cap if daily_call_cap is not None else 50
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO voip_bindings
-                (agent_name, account_sid, auth_token_encrypted, from_number,
-                 inbound_number, webhook_secret, daily_call_cap, display_name,
-                 enabled, created_by, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-                ON CONFLICT(agent_name) DO UPDATE SET
-                    account_sid = excluded.account_sid,
-                    auth_token_encrypted = excluded.auth_token_encrypted,
-                    from_number = excluded.from_number,
-                    inbound_number = excluded.inbound_number,
-                    webhook_secret = excluded.webhook_secret,
-                    daily_call_cap = excluded.daily_call_cap,
-                    display_name = excluded.display_name,
-                    enabled = 1,
-                    updated_at = excluded.updated_at
-            """, (agent_name, account_sid, encrypted_token, from_number,
-                  inbound_number, webhook_secret, cap, display_name,
-                  created_by, now, now))
-            conn.commit()
+        stmt = make_insert(voip_bindings).values(
+            agent_name=agent_name,
+            account_sid=account_sid,
+            auth_token_encrypted=encrypted_token,
+            from_number=from_number,
+            inbound_number=inbound_number,
+            webhook_secret=webhook_secret,
+            daily_call_cap=cap,
+            display_name=display_name,
+            enabled=1,
+            created_by=created_by,
+            created_at=now,
+            updated_at=now,
+        ).on_conflict_do_update(
+            index_elements=[voip_bindings.c.agent_name],
+            set_={
+                "account_sid": account_sid,
+                "auth_token_encrypted": encrypted_token,
+                "from_number": from_number,
+                "inbound_number": inbound_number,
+                "webhook_secret": webhook_secret,
+                "daily_call_cap": cap,
+                "display_name": display_name,
+                "enabled": 1,
+                "updated_at": now,
+            },
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
         return self.get_binding_by_agent(agent_name)
 
     def get_binding_by_agent(self, agent_name: str) -> Optional[dict]:
         """Fetch binding by agent name. AuthToken stays encrypted."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, agent_name, account_sid, auth_token_encrypted,
-                       from_number, inbound_number, webhook_secret, webhook_url,
-                       daily_call_cap, display_name, enabled,
-                       created_by, created_at, updated_at
-                FROM voip_bindings WHERE agent_name = ?
-            """, (agent_name,))
-            row = cursor.fetchone()
+        stmt = select(
+            voip_bindings.c.id,
+            voip_bindings.c.agent_name,
+            voip_bindings.c.account_sid,
+            voip_bindings.c.auth_token_encrypted,
+            voip_bindings.c.from_number,
+            voip_bindings.c.inbound_number,
+            voip_bindings.c.webhook_secret,
+            voip_bindings.c.webhook_url,
+            voip_bindings.c.daily_call_cap,
+            voip_bindings.c.display_name,
+            voip_bindings.c.enabled,
+            voip_bindings.c.created_by,
+            voip_bindings.c.created_at,
+            voip_bindings.c.updated_at,
+        ).where(voip_bindings.c.agent_name == agent_name)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
         return self._row_to_binding(row) if row else None
 
     def get_binding_by_webhook_secret(self, webhook_secret: str) -> Optional[dict]:
         """Resolve webhook_secret → binding (Phase 2 inbound routing)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, agent_name, account_sid, auth_token_encrypted,
-                       from_number, inbound_number, webhook_secret, webhook_url,
-                       daily_call_cap, display_name, enabled,
-                       created_by, created_at, updated_at
-                FROM voip_bindings WHERE webhook_secret = ?
-            """, (webhook_secret,))
-            row = cursor.fetchone()
+        stmt = select(
+            voip_bindings.c.id,
+            voip_bindings.c.agent_name,
+            voip_bindings.c.account_sid,
+            voip_bindings.c.auth_token_encrypted,
+            voip_bindings.c.from_number,
+            voip_bindings.c.inbound_number,
+            voip_bindings.c.webhook_secret,
+            voip_bindings.c.webhook_url,
+            voip_bindings.c.daily_call_cap,
+            voip_bindings.c.display_name,
+            voip_bindings.c.enabled,
+            voip_bindings.c.created_by,
+            voip_bindings.c.created_at,
+            voip_bindings.c.updated_at,
+        ).where(voip_bindings.c.webhook_secret == webhook_secret)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
         return self._row_to_binding(row) if row else None
 
     def get_decrypted_auth_token(self, agent_name: str) -> Optional[str]:
@@ -127,38 +156,41 @@ class VoipOperations:
         return self._decrypt_auth_token(binding["auth_token_encrypted"])
 
     def get_all_bindings(self) -> List[dict]:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, agent_name, account_sid, auth_token_encrypted,
-                       from_number, inbound_number, webhook_secret, webhook_url,
-                       daily_call_cap, display_name, enabled,
-                       created_by, created_at, updated_at
-                FROM voip_bindings
-            """)
-            rows = cursor.fetchall()
+        stmt = select(
+            voip_bindings.c.id,
+            voip_bindings.c.agent_name,
+            voip_bindings.c.account_sid,
+            voip_bindings.c.auth_token_encrypted,
+            voip_bindings.c.from_number,
+            voip_bindings.c.inbound_number,
+            voip_bindings.c.webhook_secret,
+            voip_bindings.c.webhook_url,
+            voip_bindings.c.daily_call_cap,
+            voip_bindings.c.display_name,
+            voip_bindings.c.enabled,
+            voip_bindings.c.created_by,
+            voip_bindings.c.created_at,
+            voip_bindings.c.updated_at,
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
         return [self._row_to_binding(row) for row in rows]
 
     def update_webhook_url(self, agent_name: str, webhook_url: str) -> None:
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE voip_bindings
-                SET webhook_url = ?, updated_at = ?
-                WHERE agent_name = ?
-            """, (webhook_url, now, agent_name))
-            conn.commit()
+        stmt = (
+            update(voip_bindings)
+            .where(voip_bindings.c.agent_name == agent_name)
+            .values(webhook_url=webhook_url, updated_at=now)
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
     def delete_binding(self, agent_name: str) -> bool:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM voip_bindings WHERE agent_name = ?",
-                (agent_name,)
-            )
-            deleted = cursor.rowcount > 0
-            conn.commit()
+        stmt = delete(voip_bindings).where(voip_bindings.c.agent_name == agent_name)
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            deleted = result.rowcount > 0
         return deleted
 
     # =========================================================================
@@ -177,16 +209,19 @@ class VoipOperations:
     ) -> None:
         """Record an initiated call (status='initiated')."""
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO voip_call_logs
-                (call_id, agent_name, chat_session_id, to_number, direction,
-                 status, initiated_by_user_id, initiated_by_email, started_at)
-                VALUES (?, ?, ?, ?, ?, 'initiated', ?, ?, ?)
-            """, (call_id, agent_name, chat_session_id, to_number, direction,
-                  initiated_by_user_id, initiated_by_email, now))
-            conn.commit()
+        stmt = insert(voip_call_logs).values(
+            call_id=call_id,
+            agent_name=agent_name,
+            chat_session_id=chat_session_id,
+            to_number=to_number,
+            direction=direction,
+            status="initiated",
+            initiated_by_user_id=initiated_by_user_id,
+            initiated_by_email=initiated_by_email,
+            started_at=now,
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
     def update_call_status(
         self,
@@ -198,31 +233,24 @@ class VoipOperations:
     ) -> None:
         """Advance a call's lifecycle status. Stamps connected_at/ended_at."""
         now = utc_now_iso()
-        sets = ["status = ?"]
-        params: list = [status]
+        values: dict = {"status": status}
         if twilio_call_sid is not None:
-            sets.append("twilio_call_sid = ?")
-            params.append(twilio_call_sid)
+            values["twilio_call_sid"] = twilio_call_sid
         if error is not None:
-            sets.append("error = ?")
-            params.append(error)
+            values["error"] = error
         if duration_ms is not None:
-            sets.append("duration_ms = ?")
-            params.append(duration_ms)
+            values["duration_ms"] = duration_ms
         if status == "connected":
-            sets.append("connected_at = ?")
-            params.append(now)
+            values["connected_at"] = now
         if status in ("completed", "failed"):
-            sets.append("ended_at = ?")
-            params.append(now)
-        params.append(call_id)
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                f"UPDATE voip_call_logs SET {', '.join(sets)} WHERE call_id = ?",
-                params,
-            )
-            conn.commit()
+            values["ended_at"] = now
+        stmt = (
+            update(voip_call_logs)
+            .where(voip_call_logs.c.call_id == call_id)
+            .values(**values)
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
     def count_calls_since(self, agent_name: str, hours: int = 24) -> int:
         """Durable count of calls started in the trailing window (daily cap).
@@ -231,13 +259,12 @@ class VoipOperations:
         so a datetime('now', ...) comparison would be format-mismatched.
         """
         cutoff = iso_cutoff(hours)
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT COUNT(*) FROM voip_call_logs
-                WHERE agent_name = ? AND started_at >= ?
-            """, (agent_name, cutoff))
-            row = cursor.fetchone()
+        stmt = select(func.count()).where(
+            voip_call_logs.c.agent_name == agent_name,
+            voip_call_logs.c.started_at >= cutoff,
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
         return int(row[0]) if row else 0
 
     # =========================================================================
@@ -247,18 +274,18 @@ class VoipOperations:
     @staticmethod
     def _row_to_binding(row) -> dict:
         return {
-            "id": row[0],
-            "agent_name": row[1],
-            "account_sid": row[2],
-            "auth_token_encrypted": row[3],
-            "from_number": row[4],
-            "inbound_number": row[5],
-            "webhook_secret": row[6],
-            "webhook_url": row[7],
-            "daily_call_cap": row[8],
-            "display_name": row[9],
-            "enabled": bool(row[10]),
-            "created_by": row[11],
-            "created_at": row[12],
-            "updated_at": row[13],
+            "id": row["id"],
+            "agent_name": row["agent_name"],
+            "account_sid": row["account_sid"],
+            "auth_token_encrypted": row["auth_token_encrypted"],
+            "from_number": row["from_number"],
+            "inbound_number": row["inbound_number"],
+            "webhook_secret": row["webhook_secret"],
+            "webhook_url": row["webhook_url"],
+            "daily_call_cap": row["daily_call_cap"],
+            "display_name": row["display_name"],
+            "enabled": bool(row["enabled"]),
+            "created_by": row["created_by"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
         }

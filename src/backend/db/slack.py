@@ -9,6 +9,11 @@ Handles:
 Bot tokens are encrypted at rest via `services.credential_encryption`
 (AES-256-GCM, JSON envelope) — same pattern as `db/slack_channels.py`,
 `db/telegram_channels.py`, and `db/whatsapp_channels.py`. See #453.
+
+Converted from raw sqlite3 to SQLAlchemy Core for the configurable database
+backend (#300) so it runs unchanged on both SQLite and PostgreSQL. Queries are
+built from the table handles in ``db/tables.py``; the engine is resolved via
+``db/engine.py``. The public API of ``SlackOperations`` is unchanged.
 """
 
 import logging
@@ -16,7 +21,15 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Optional, List
 
-from db.connection import get_db_connection
+from sqlalchemy import select, insert, update, delete, and_
+
+from .engine import get_engine, make_insert
+from .tables import (
+    slack_link_connections,
+    slack_user_verifications,
+    slack_pending_verifications,
+    agent_public_links,
+)
 from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -81,28 +94,36 @@ class SlackOperations:
         now = utc_now_iso()
         encrypted_token = self._encrypt_token(slack_bot_token)
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO slack_link_connections
-                (id, link_id, slack_team_id, slack_team_name, slack_bot_token, connected_by, connected_at, enabled)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-            """, (connection_id, link_id, slack_team_id, slack_team_name, encrypted_token, connected_by, now))
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(slack_link_connections).values(
+                    id=connection_id,
+                    link_id=link_id,
+                    slack_team_id=slack_team_id,
+                    slack_team_name=slack_team_name,
+                    slack_bot_token=encrypted_token,
+                    connected_by=connected_by,
+                    connected_at=now,
+                    enabled=1,
+                )
+            )
 
         return self.get_slack_connection(connection_id)
 
     def get_slack_connection(self, connection_id: str) -> Optional[dict]:
         """Get a Slack connection by ID."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, link_id, slack_team_id, slack_team_name, slack_bot_token,
-                       connected_by, connected_at, enabled
-                FROM slack_link_connections
-                WHERE id = ?
-            """, (connection_id,))
-            row = cursor.fetchone()
+        stmt = select(
+            slack_link_connections.c.id,
+            slack_link_connections.c.link_id,
+            slack_link_connections.c.slack_team_id,
+            slack_link_connections.c.slack_team_name,
+            slack_link_connections.c.slack_bot_token,
+            slack_link_connections.c.connected_by,
+            slack_link_connections.c.connected_at,
+            slack_link_connections.c.enabled,
+        ).where(slack_link_connections.c.id == connection_id)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
 
         if not row:
             return None
@@ -111,15 +132,18 @@ class SlackOperations:
 
     def get_slack_connection_by_link(self, link_id: str) -> Optional[dict]:
         """Get a Slack connection by public link ID."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, link_id, slack_team_id, slack_team_name, slack_bot_token,
-                       connected_by, connected_at, enabled
-                FROM slack_link_connections
-                WHERE link_id = ?
-            """, (link_id,))
-            row = cursor.fetchone()
+        stmt = select(
+            slack_link_connections.c.id,
+            slack_link_connections.c.link_id,
+            slack_link_connections.c.slack_team_id,
+            slack_link_connections.c.slack_team_name,
+            slack_link_connections.c.slack_bot_token,
+            slack_link_connections.c.connected_by,
+            slack_link_connections.c.connected_at,
+            slack_link_connections.c.enabled,
+        ).where(slack_link_connections.c.link_id == link_id)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
 
         if not row:
             return None
@@ -128,24 +152,42 @@ class SlackOperations:
 
     def get_slack_connection_by_team(self, slack_team_id: str) -> Optional[dict]:
         """Get a Slack connection by Slack team/workspace ID."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT c.id, c.link_id, c.slack_team_id, c.slack_team_name, c.slack_bot_token,
-                       c.connected_by, c.connected_at, c.enabled,
-                       l.agent_name, l.require_email
-                FROM slack_link_connections c
-                JOIN agent_public_links l ON c.link_id = l.id
-                WHERE c.slack_team_id = ? AND c.enabled = 1 AND l.enabled = 1
-            """, (slack_team_id,))
-            row = cursor.fetchone()
+        stmt = (
+            select(
+                slack_link_connections.c.id,
+                slack_link_connections.c.link_id,
+                slack_link_connections.c.slack_team_id,
+                slack_link_connections.c.slack_team_name,
+                slack_link_connections.c.slack_bot_token,
+                slack_link_connections.c.connected_by,
+                slack_link_connections.c.connected_at,
+                slack_link_connections.c.enabled,
+                agent_public_links.c.agent_name,
+                agent_public_links.c.require_email,
+            )
+            .select_from(
+                slack_link_connections.join(
+                    agent_public_links,
+                    slack_link_connections.c.link_id == agent_public_links.c.id,
+                )
+            )
+            .where(
+                and_(
+                    slack_link_connections.c.slack_team_id == slack_team_id,
+                    slack_link_connections.c.enabled == 1,
+                    agent_public_links.c.enabled == 1,
+                )
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
 
         if not row:
             return None
 
-        connection = self._row_to_connection(row[:8])
-        connection["agent_name"] = row[8]
-        connection["require_email"] = bool(row[9])
+        connection = self._row_to_connection(row)
+        connection["agent_name"] = row["agent_name"]
+        connection["require_email"] = bool(row["require_email"])
         return connection
 
     def update_slack_connection(
@@ -155,60 +197,69 @@ class SlackOperations:
         slack_team_name: Optional[str] = None
     ) -> Optional[dict]:
         """Update a Slack connection."""
-        updates = []
-        values = []
+        values = {}
 
         if enabled is not None:
-            updates.append("enabled = ?")
-            values.append(1 if enabled else 0)
+            values["enabled"] = 1 if enabled else 0
         if slack_team_name is not None:
-            updates.append("slack_team_name = ?")
-            values.append(slack_team_name)
+            values["slack_team_name"] = slack_team_name
 
-        if not updates:
+        if not values:
             return self.get_slack_connection(connection_id)
 
-        values.append(connection_id)
-
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"""
-                UPDATE slack_link_connections
-                SET {", ".join(updates)}
-                WHERE id = ?
-            """, values)
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                update(slack_link_connections)
+                .where(slack_link_connections.c.id == connection_id)
+                .values(**values)
+            )
 
         return self.get_slack_connection(connection_id)
 
     def delete_slack_connection(self, connection_id: str) -> bool:
         """Delete a Slack connection."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        with get_engine().begin() as conn:
             # Get link_id for cleanup
-            cursor.execute("SELECT link_id FROM slack_link_connections WHERE id = ?", (connection_id,))
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(slack_link_connections.c.link_id)
+                .where(slack_link_connections.c.id == connection_id)
+            ).mappings().first()
             if row:
-                link_id = row[0]
+                link_id = row["link_id"]
                 # Delete related verifications
-                cursor.execute("DELETE FROM slack_user_verifications WHERE link_id = ?", (link_id,))
-                cursor.execute("DELETE FROM slack_pending_verifications WHERE link_id = ?", (link_id,))
+                conn.execute(
+                    delete(slack_user_verifications)
+                    .where(slack_user_verifications.c.link_id == link_id)
+                )
+                conn.execute(
+                    delete(slack_pending_verifications)
+                    .where(slack_pending_verifications.c.link_id == link_id)
+                )
             # Delete the connection
-            cursor.execute("DELETE FROM slack_link_connections WHERE id = ?", (connection_id,))
-            conn.commit()
-            return cursor.rowcount > 0
+            result = conn.execute(
+                delete(slack_link_connections)
+                .where(slack_link_connections.c.id == connection_id)
+            )
+            return result.rowcount > 0
 
     def delete_slack_connection_by_link(self, link_id: str) -> bool:
         """Delete a Slack connection by public link ID."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        with get_engine().begin() as conn:
             # Delete related verifications
-            cursor.execute("DELETE FROM slack_user_verifications WHERE link_id = ?", (link_id,))
-            cursor.execute("DELETE FROM slack_pending_verifications WHERE link_id = ?", (link_id,))
+            conn.execute(
+                delete(slack_user_verifications)
+                .where(slack_user_verifications.c.link_id == link_id)
+            )
+            conn.execute(
+                delete(slack_pending_verifications)
+                .where(slack_pending_verifications.c.link_id == link_id)
+            )
             # Delete the connection
-            cursor.execute("DELETE FROM slack_link_connections WHERE link_id = ?", (link_id,))
-            conn.commit()
-            return cursor.rowcount > 0
+            result = conn.execute(
+                delete(slack_link_connections)
+                .where(slack_link_connections.c.link_id == link_id)
+            )
+            return result.rowcount > 0
 
     def _row_to_connection(self, row) -> dict:
         """Convert a database row to a connection dict.
@@ -218,14 +269,14 @@ class SlackOperations:
         surface as before encryption was added.
         """
         return {
-            "id": row[0],
-            "link_id": row[1],
-            "slack_team_id": row[2],
-            "slack_team_name": row[3],
-            "slack_bot_token": self._decrypt_token(row[4]),
-            "connected_by": row[5],
-            "connected_at": row[6],
-            "enabled": bool(row[7])
+            "id": row["id"],
+            "link_id": row["link_id"],
+            "slack_team_id": row["slack_team_id"],
+            "slack_team_name": row["slack_team_name"],
+            "slack_bot_token": self._decrypt_token(row["slack_bot_token"]),
+            "connected_by": row["connected_by"],
+            "connected_at": row["connected_at"],
+            "enabled": bool(row["enabled"])
         }
 
     # =========================================================================
@@ -239,27 +290,35 @@ class SlackOperations:
         slack_team_id: str
     ) -> Optional[dict]:
         """Check if a Slack user is verified for a link."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, link_id, slack_user_id, slack_team_id, verified_email,
-                       verification_method, verified_at
-                FROM slack_user_verifications
-                WHERE link_id = ? AND slack_user_id = ? AND slack_team_id = ?
-            """, (link_id, slack_user_id, slack_team_id))
-            row = cursor.fetchone()
+        stmt = select(
+            slack_user_verifications.c.id,
+            slack_user_verifications.c.link_id,
+            slack_user_verifications.c.slack_user_id,
+            slack_user_verifications.c.slack_team_id,
+            slack_user_verifications.c.verified_email,
+            slack_user_verifications.c.verification_method,
+            slack_user_verifications.c.verified_at,
+        ).where(
+            and_(
+                slack_user_verifications.c.link_id == link_id,
+                slack_user_verifications.c.slack_user_id == slack_user_id,
+                slack_user_verifications.c.slack_team_id == slack_team_id,
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
 
         if not row:
             return None
 
         return {
-            "id": row[0],
-            "link_id": row[1],
-            "slack_user_id": row[2],
-            "slack_team_id": row[3],
-            "verified_email": row[4],
-            "verification_method": row[5],
-            "verified_at": row[6]
+            "id": row["id"],
+            "link_id": row["link_id"],
+            "slack_user_id": row["slack_user_id"],
+            "slack_team_id": row["slack_team_id"],
+            "verified_email": row["verified_email"],
+            "verification_method": row["verification_method"],
+            "verified_at": row["verified_at"]
         }
 
     def create_user_verification(
@@ -274,15 +333,30 @@ class SlackOperations:
         verification_id = secrets.token_urlsafe(16)
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            # Upsert - replace if exists
-            cursor.execute("""
-                INSERT OR REPLACE INTO slack_user_verifications
-                (id, link_id, slack_user_id, slack_team_id, verified_email, verification_method, verified_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (verification_id, link_id, slack_user_id, slack_team_id, verified_email, verification_method, now))
-            conn.commit()
+        with get_engine().begin() as conn:
+            # Upsert - replace if exists. Conflict target is the
+            # UNIQUE(link_id, slack_user_id, slack_team_id) constraint; on
+            # conflict, overwrite the verification details (id is not updated,
+            # matching INSERT OR REPLACE keeping the surviving row addressable
+            # by the same natural key).
+            stmt = make_insert(slack_user_verifications).values(
+                id=verification_id,
+                link_id=link_id,
+                slack_user_id=slack_user_id,
+                slack_team_id=slack_team_id,
+                verified_email=verified_email,
+                verification_method=verification_method,
+                verified_at=now,
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["link_id", "slack_user_id", "slack_team_id"],
+                set_={
+                    "verified_email": verified_email,
+                    "verification_method": verification_method,
+                    "verified_at": now,
+                },
+            )
+            conn.execute(stmt)
 
         return self.get_user_verification(link_id, slack_user_id, slack_team_id)
 
@@ -296,16 +370,25 @@ class SlackOperations:
         slack_team_id: str
     ) -> Optional[dict]:
         """Get a pending verification for a Slack user."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, link_id, slack_user_id, slack_team_id, email, code,
-                       created_at, expires_at, state
-                FROM slack_pending_verifications
-                WHERE slack_user_id = ? AND slack_team_id = ?
-                AND expires_at > ?
-            """, (slack_user_id, slack_team_id, utc_now_iso()))
-            row = cursor.fetchone()
+        stmt = select(
+            slack_pending_verifications.c.id,
+            slack_pending_verifications.c.link_id,
+            slack_pending_verifications.c.slack_user_id,
+            slack_pending_verifications.c.slack_team_id,
+            slack_pending_verifications.c.email,
+            slack_pending_verifications.c.code,
+            slack_pending_verifications.c.created_at,
+            slack_pending_verifications.c.expires_at,
+            slack_pending_verifications.c.state,
+        ).where(
+            and_(
+                slack_pending_verifications.c.slack_user_id == slack_user_id,
+                slack_pending_verifications.c.slack_team_id == slack_team_id,
+                slack_pending_verifications.c.expires_at > utc_now_iso(),
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
 
         if not row:
             return None
@@ -326,20 +409,30 @@ class SlackOperations:
         now = datetime.utcnow()
         expires_at = (now + timedelta(minutes=10)).isoformat()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        with get_engine().begin() as conn:
             # Delete any existing pending verification for this user
-            cursor.execute("""
-                DELETE FROM slack_pending_verifications
-                WHERE slack_user_id = ? AND slack_team_id = ?
-            """, (slack_user_id, slack_team_id))
+            conn.execute(
+                delete(slack_pending_verifications).where(
+                    and_(
+                        slack_pending_verifications.c.slack_user_id == slack_user_id,
+                        slack_pending_verifications.c.slack_team_id == slack_team_id,
+                    )
+                )
+            )
             # Create new one
-            cursor.execute("""
-                INSERT INTO slack_pending_verifications
-                (id, link_id, slack_user_id, slack_team_id, email, code, created_at, expires_at, state)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (pending_id, link_id, slack_user_id, slack_team_id, email, code, now.isoformat(), expires_at, state))
-            conn.commit()
+            conn.execute(
+                insert(slack_pending_verifications).values(
+                    id=pending_id,
+                    link_id=link_id,
+                    slack_user_id=slack_user_id,
+                    slack_team_id=slack_team_id,
+                    email=email,
+                    code=code,
+                    created_at=now.isoformat(),
+                    expires_at=expires_at,
+                    state=state,
+                )
+            )
 
         return self.get_pending_verification(slack_user_id, slack_team_id)
 
@@ -352,33 +445,29 @@ class SlackOperations:
         state: Optional[str] = None
     ) -> Optional[dict]:
         """Update a pending verification (transition state machine)."""
-        updates = []
-        values = []
+        values = {}
 
         if email is not None:
-            updates.append("email = ?")
-            values.append(email)
+            values["email"] = email
         if code is not None:
-            updates.append("code = ?")
-            values.append(code)
+            values["code"] = code
         if state is not None:
-            updates.append("state = ?")
-            values.append(state)
+            values["state"] = state
 
         # Reset expiration
-        updates.append("expires_at = ?")
-        values.append((datetime.utcnow() + timedelta(minutes=10)).isoformat())
+        values["expires_at"] = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
 
-        values.extend([slack_user_id, slack_team_id])
-
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"""
-                UPDATE slack_pending_verifications
-                SET {", ".join(updates)}
-                WHERE slack_user_id = ? AND slack_team_id = ?
-            """, values)
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                update(slack_pending_verifications)
+                .where(
+                    and_(
+                        slack_pending_verifications.c.slack_user_id == slack_user_id,
+                        slack_pending_verifications.c.slack_team_id == slack_team_id,
+                    )
+                )
+                .values(**values)
+            )
 
         return self.get_pending_verification(slack_user_id, slack_team_id)
 
@@ -388,36 +477,37 @@ class SlackOperations:
         slack_team_id: str
     ) -> bool:
         """Delete a pending verification (after successful verification)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM slack_pending_verifications
-                WHERE slack_user_id = ? AND slack_team_id = ?
-            """, (slack_user_id, slack_team_id))
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                delete(slack_pending_verifications).where(
+                    and_(
+                        slack_pending_verifications.c.slack_user_id == slack_user_id,
+                        slack_pending_verifications.c.slack_team_id == slack_team_id,
+                    )
+                )
+            )
+            return result.rowcount > 0
 
     def cleanup_expired_pending_verifications(self) -> int:
         """Clean up expired pending verifications."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM slack_pending_verifications
-                WHERE expires_at < ?
-            """, (utc_now_iso(),))
-            conn.commit()
-            return cursor.rowcount
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                delete(slack_pending_verifications).where(
+                    slack_pending_verifications.c.expires_at < utc_now_iso()
+                )
+            )
+            return result.rowcount
 
     def _row_to_pending(self, row) -> dict:
         """Convert a database row to a pending verification dict."""
         return {
-            "id": row[0],
-            "link_id": row[1],
-            "slack_user_id": row[2],
-            "slack_team_id": row[3],
-            "email": row[4],
-            "code": row[5],
-            "created_at": row[6],
-            "expires_at": row[7],
-            "state": row[8]
+            "id": row["id"],
+            "link_id": row["link_id"],
+            "slack_user_id": row["slack_user_id"],
+            "slack_team_id": row["slack_team_id"],
+            "email": row["email"],
+            "code": row["code"],
+            "created_at": row["created_at"],
+            "expires_at": row["expires_at"],
+            "state": row["state"]
         }

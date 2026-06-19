@@ -1560,6 +1560,7 @@ All subsections 18.1–18.10 were deleted with the code. Flow docs archived at `
   - `src/backend/routers/chat.py` - 429 interception hooks
   - `src/frontend/src/views/Settings.vue` - Toggle UI
 - **Negative markers on `is_auth_failure` (#904, 2026-05-21)**: substring match on `AUTH_INDICATORS` now short-circuits to False when the error message also contains an unambiguous signal-kill / OOM / timeout marker (`sigkill`, `sigterm`, `sigint`, `exit code -9`, `exit code 137`, `exit code 143`, `out of memory`, `oom`, `memory cgroup`, `terminated by`, `killed by`). Prevents the SUB-003 trigger from firing on cgroup OOM kills whose detail string happens to contain a word like "token" or "authentication" via downstream wrapping. The same exclusion list lives in `src/scheduler/service.py:_is_auth_failure` to keep the two surfaces from drifting (see §10.4.1).
+- **Hot-reload, not recreate (#1089, 2026-06-13)**: the auto-switch no longer recreates the container — `_perform_auto_switch` hot-reloads the new token in place so in-flight turns on the agent survive. See §20.6.
 
 ### 20.5 Per-Subscription Usage Tracking (SUB-004)
 - **Status**: ✅ Implemented (2026-04-01)
@@ -1579,6 +1580,32 @@ All subsections 18.1–18.10 were deleted with the code. Flow docs archived at `
   - `src/backend/routers/chat.py` - Subscription ID capture at execution time
   - `src/backend/db/chat.py` - Session creation with subscription_id
   - `src/frontend/src/views/Settings.vue` - Usage display (if applicable)
+
+### 20.6 Credential Rotation via Hot-Reload, not Container Recreate (#1089)
+- **Status**: ✅ Implemented (2026-06-13)
+- **GitHub Issue**: #1089
+- **Extends**: SUB-002 / SUB-003
+- **Priority**: HIGH (`theme-reliability`)
+- **Builds on**: #799 (per-agent `agent_switch_lock`)
+- **Description**: Rotating an agent's subscription token used to **recreate the container**, making "rotate a credential" and "kill every in-flight turn" the same operation (#1037 collateral kills — one 429 on a shared subscription would auto-switch and destroy every parallel execution). Token rotation now goes through a surgical hot-reload of the running container; recreate is reserved for image/template/auth-**mode** changes. This removes the credential↔execution collision class structurally (TARGET_ARCHITECTURE §Agent Runtime).
+- **Mechanism**: the agent server spawns Claude via `subprocess.Popen(..., env={**os.environ, ...})` and authenticates purely from the `CLAUDE_CODE_OAUTH_TOKEN` env var (no `.credentials.json` write); it is a single uvicorn worker. Mutating the agent-server process `os.environ["CLAUDE_CODE_OAUTH_TOKEN"]` makes the **next** Claude subprocess use the new token; **in-flight** subprocesses keep their already-inherited old token and finish.
+- **Rotation paths converted to hot-reload**:
+  1. **Auto-switch** (SUB-003): `_perform_auto_switch` hot-reloads instead of `_restart_agent` (runs inside the #799 `agent_switch_lock`).
+  2. **Manual reassignment** (`PUT /api/subscriptions/agents/{name}`): a sub→sub swap hot-reloads under the lock; an auth-**mode** change (none/api-key → subscription) still recreates so `ANTHROPIC_API_KEY` is dropped and the OAuth token is baked into `Config.Env`.
+  3. **Key rollover** (`POST /api/subscriptions` upsert): re-registering a subscription's token fans a best-effort hot-reload out to every running agent on that subscription (one agent's failure never fails the upsert nor blocks the others).
+- **Key Features**:
+  - Agent-server endpoint `POST /api/credentials/reload-token` (`{token, remove_api_key}`) — mutates `os.environ` + persists the token to the writable-layer override; does **not** rewrite `.env`/`.mcp.json` or re-inject Trinity MCP.
+  - **Durable override (F2)**: the token is written to `/var/lib/trinity/oauth-token` (0600), deliberately **not** under `/home/developer` (the persisted workspace volume). `startup.sh` exports it before launching the agent server, so a plain fleet restart (`ops.py` raw stop+start, which bypasses `start_agent_internal`) keeps the rotated token. **Self-reconciling by Docker semantics**: the writable layer survives `stop`→`start` but is wiped on recreate (fresh layer), so a DB-driven recreate re-bakes `Config.Env` (DB token) and the stale override is gone — no marker logic.
+  - **Back-compat fallback**: running containers on an older base image return **404** for the endpoint → the backend falls back to `_restart_agent` (identical to pre-#1089 behavior). Per #1037, recreate stays out of scope; the fallback inherits whatever #1037 lands. An agent only gains the endpoint once recreated onto a rebuilt base image (no automatic fleet-wide adoption).
+- **Backend helpers** (`services/subscription_auto_switch.py`): `_hot_reload_subscription_token(agent_name)` (POST + restart fallback on 404/transport/no-token; `no_container`/`not_running` short-circuits) and `reload_subscription_for_all_agents(subscription_id)` (key-rollover fan-out under the lock).
+- **Files**:
+  - `docker/base-image/agent_server/routers/credentials.py` - `reload-token` endpoint + writable-layer override write
+  - `docker/base-image/agent_server/models.py` - `TokenReloadRequest`/`TokenReloadResponse`
+  - `docker/base-image/Dockerfile` - `mkdir+chown /var/lib/trinity` (Invariant #17 non-root)
+  - `docker/base-image/startup.sh` - export override token before agent-server launch
+  - `src/backend/services/subscription_auto_switch.py` - hot-reload helper + fan-out + auto-switch wire-in
+  - `src/backend/routers/subscriptions.py` - manual sub→sub under lock + key-rollover fan-out
+- **Known limitations**: cross-worker race on the process-local `agent_switch_lock` (prod `--workers 2`) is flagged for #1166/#799 (escalate to Redis `SETNX`); a bulk `delete_subscription` still leaves the deleted token live until next start (pre-existing, out of scope). Both self-heal via the durable override / `check_api_key_env_matches` reconciliation.
 
 ---
 
@@ -2873,6 +2900,59 @@ Standalone mobile-friendly admin page for managing agents on the go. Designed as
   allowlist (Phase 2); UI config surface, schedule-action trigger, and
   call cost/duration observability (Phase 3). Real PSTN path is
   manual-verify (needs a live Twilio voice number).
+
+---
+
+## 40. Multi-Runtime Harnesses — OpenAI Codex (#1187)
+
+### 40.1 Codex CLI Execution Engine (#1187 — MVP)
+
+Trinity agents may run on the **OpenAI Codex CLI** as a third execution runtime
+("harness == runtime") alongside Claude Code and Gemini. A template selects it
+via `runtime: { type: codex, model: gpt-5.1-codex }`; the container is created
+with `AGENT_RUNTIME=codex` and `codex_runtime.py` implements the `AgentRuntime`
+ABC. Follow-up to spike #854.
+
+**Functional requirements:**
+- **FR-1 — Execution:** `/api/chat` and `/api/task` run via `codex exec --json`;
+  the `-o/--output-last-message` file is the authoritative response (read-then-delete);
+  JSONL `agent_message` is the fallback. Tokens/cost from `turn.completed.usage`
+  (estimated cost — Codex has no native cost; `reasoning_output_tokens` is a subset
+  of `output_tokens`, never double-counted).
+- **FR-2 — Chat continuity:** `codex exec resume <thread_id>` continues the Chat-tab
+  conversation. The Session tab's cached-UUID `--resume` model is NOT supported in
+  the MVP (gated off for codex; chat continuity lives in the Chat tab).
+- **FR-3 — Safety parity (blocking):** the platform system prompt reaches Codex
+  (prepended per-turn; `CLAUDE.md`→`AGENTS.md` mirrored at startup for identity);
+  read-only mode maps to `--sandbox read-only`; guardrails are honored where they
+  map to Codex's control surface and surfaced (logged) where they don't; Codex
+  output + logs pass through the credential sanitizer.
+- **FR-4 — Sandbox + network:** normal (writable) agents run `--sandbox danger-full-access`,
+  which DISABLES Codex's own bubblewrap sandbox — `workspace-write`/`read-only` both invoke
+  `bwrap` to create a user namespace, which the hardened Trinity container forbids
+  (`bwrap: No permissions to create a new namespace`), blocking every shell tool. The Trinity
+  container is already the boundary (`cap_drop ALL` + AppArmor + `no-new-privileges`), the same
+  posture Claude/Gemini run under, so dropping the redundant inner sandbox weakens nothing.
+  Read-only agents keep `--sandbox read-only` (sandbox-native write protection) as the interim
+  enforcement — a fail-closed read-only enforcement story for Codex is a fast-follow.
+- **FR-5 — Credentials:** `OPENAI_API_KEY` from the agent's `.env` (CRED-002),
+  loaded into the subprocess env; Codex agents are NOT assigned a Claude subscription.
+- **FR-6 — MCP:** Trinity HTTP MCP + template MCP servers wired via `$CODEX_HOME/config.toml`;
+  the bearer token is referenced by env var, never persisted as a literal.
+- **FR-7 — Capabilities:** each runtime declares `RuntimeCapabilities`
+  (`chat_continuity`, `session_tab_resume`, `mcp_support`, `cost_reporting`);
+  `get_runtime()` validates `AGENT_RUNTIME` and fails loudly on unknown values.
+
+**Non-functional:** concurrency-safe orphan cleanup (must not kill sibling
+executions); `CODEX_HOME` relocated off the git-tracked workspace; error→HTTP
+mapping keeps non-auth failures at 500 (never 503) so the dispatch breaker's
+AUTH-only counting and the SUB-003 auth switch stay inert for Codex.
+
+**Out of scope (fast-follow):** shared subprocess-helper DRY extraction; Session-tab
+cached-UUID resume for Codex; backend reading `ExecutionMetadata.error_code`
+directly; Codex SSE streaming; vision/images; a post-creation runtime-switch
+endpoint. See the [Harness Authoring Guide](harness-authoring-guide.md) for adding
+a fourth runtime.
 
 ---
 

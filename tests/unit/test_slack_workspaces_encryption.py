@@ -35,6 +35,7 @@ import pytest
 _BACKEND = Path(__file__).resolve().parent.parent.parent / "src" / "backend"
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
+from db_harness import db_backend, engine_conn  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -50,50 +51,14 @@ def encryption_key(monkeypatch):
 
 
 @pytest.fixture
-def slack_channels_ops_with_temp_db(tmp_path, monkeypatch):
-    """Build a SlackChannelOperations bound to a temp SQLite DB with the
-    workspace + channel-agents schema needed for these tests."""
+def slack_channels_ops_with_temp_db(db_backend):
+    """Ops + an engine-backed conn shim on the active backend
+    (db_harness, #300). Runs on SQLite and, when TEST_POSTGRES_URL is
+    set, PostgreSQL. db_backend builds the full schema; the shim mimics
+    a sqlite3 connection for the tests' on-disk envelope reads + legacy
+    plaintext seeding."""
     from db import slack_channels as sc_db
-
-    db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("""
-        CREATE TABLE slack_workspaces (
-            id TEXT PRIMARY KEY,
-            team_id TEXT NOT NULL UNIQUE,
-            team_name TEXT,
-            bot_token TEXT NOT NULL,
-            connected_by TEXT,
-            connected_at TEXT NOT NULL,
-            enabled INTEGER DEFAULT 1
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE slack_channel_agents (
-            id TEXT PRIMARY KEY,
-            team_id TEXT NOT NULL,
-            slack_channel_id TEXT NOT NULL,
-            slack_channel_name TEXT,
-            agent_name TEXT NOT NULL,
-            is_dm_default INTEGER DEFAULT 0,
-            created_by TEXT,
-            created_at TEXT NOT NULL,
-            UNIQUE(team_id, slack_channel_id)
-        )
-    """)
-    conn.commit()
-
-    class _ConnCtx:
-        def __enter__(self):
-            return conn
-        def __exit__(self, *args):
-            return False
-
-    monkeypatch.setattr(sc_db, "get_db_connection", lambda: _ConnCtx())
-
-    ops = sc_db.SlackChannelOperations()
-    yield ops, conn, db_path
-    conn.close()
+    yield sc_db.SlackChannelOperations(), engine_conn(), None
 
 
 # ---------------------------------------------------------------------------

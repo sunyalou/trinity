@@ -9,13 +9,14 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 
 from ..models import ChatRequest, ModelRequest, ParallelTaskRequest
 from ..state import agent_state
 from ..services.claude_code import get_execution_lock
 from ..services.runtime_adapter import get_runtime
 from ..services.process_registry import get_process_registry
+from ..services import result_callback
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -126,6 +127,18 @@ async def execute_task(request: ParallelTaskRequest):
     else:
         logger.info(f"[Task] Executing parallel task: {request.message[:50]}...")
 
+    # #1083 fire-and-forget: when the backend requests async AND this is the
+    # Claude runtime, accept with 202 and run the turn in a detached task that
+    # reports the terminal to the backend's result-callback endpoint. The detached
+    # task owns its own record_task_start/finish. try_spawn_async returns False
+    # (→ synchronous handling below) for non-Claude runtimes, a missing
+    # execution_id, or absent callback creds — the non-202 fallback.
+    if result_callback.try_spawn_async(request):
+        return JSONResponse(
+            status_code=202,
+            content={"execution_id": request.execution_id, "status": "accepted"},
+        )
+
     # Execute via runtime adapter in headless mode (no lock, no --continue)
     runtime = get_runtime()
     # #1020: feed the richer /health signal — count this execution and record
@@ -193,8 +206,8 @@ async def get_model():
         return {
             "model": agent_state.current_model,
             "runtime": runtime,
-            "available_models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
-            "note": "Gemini models. 2.5-pro has 1M context window."
+            "available_models": ["gemini-3-pro", "gemini-3-flash", "gemini-2.5-pro", "gemini-2.5-flash"],
+            "note": "Gemini models. 3-pro is the most capable; 3-flash is the fast default."
         }
     else:
         return {
@@ -214,7 +227,7 @@ async def set_model(request: ModelRequest):
 
     # Validate based on runtime
     if runtime == "gemini-cli" or runtime == "gemini":
-        valid_models = ["gemini-3-pro", "gemini-3-flash", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
+        valid_models = ["gemini-3-pro", "gemini-3-flash", "gemini-2.5-pro", "gemini-2.5-flash"]
         if request.model in valid_models or request.model.startswith("gemini-"):
             agent_state.current_model = request.model
             logger.info(f"Model changed to: {request.model}")
@@ -226,7 +239,7 @@ async def set_model(request: ModelRequest):
         else:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid Gemini model: {request.model}. Use: gemini-2.5-pro, gemini-2.5-flash, etc."
+                detail=f"Invalid Gemini model: {request.model}. Use: gemini-3-pro, gemini-3-flash, gemini-2.5-pro, gemini-2.5-flash."
             )
     else:
         # Claude Code validation

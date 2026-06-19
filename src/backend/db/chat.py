@@ -2,13 +2,21 @@
 Chat session and message persistence database operations.
 
 Handles chat session management, message storage, and history retrieval.
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL. Queries are built from the ``chat_sessions`` and
+``chat_messages`` tables in ``db/tables.py`` (dialect-agnostic expressions, no
+``?`` placeholders), and the engine is resolved via ``db/engine.py``.
 """
 
 import secrets
 from datetime import datetime
 from typing import Optional, List
 
-from .connection import get_db_connection
+from sqlalchemy import select, insert, update, delete, and_
+
+from .engine import get_engine
+from .tables import chat_sessions, chat_messages
 from db_models import ChatSession, ChatMessage
 from utils.helpers import utc_now_iso
 
@@ -69,18 +77,20 @@ class ChatOperations:
         Get the active chat session for a user+agent, or create a new one.
         Returns the most recent active session if it exists.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Try to find an active session for this user+agent
-            cursor.execute("""
-                SELECT * FROM chat_sessions
-                WHERE agent_name = ? AND user_id = ? AND status = 'active'
-                ORDER BY last_message_at DESC
-                LIMIT 1
-            """, (agent_name, user_id))
-
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(chat_sessions)
+                .where(
+                    and_(
+                        chat_sessions.c.agent_name == agent_name,
+                        chat_sessions.c.user_id == user_id,
+                        chat_sessions.c.status == "active",
+                    )
+                )
+                .order_by(chat_sessions.c.last_message_at.desc())
+                .limit(1)
+            ).mappings().first()
             if row:
                 return self._row_to_chat_session(row)
 
@@ -88,19 +98,22 @@ class ChatOperations:
             session_id = secrets.token_urlsafe(16)
             now = utc_now_iso()
 
-            cursor.execute("""
-                INSERT INTO chat_sessions (
-                    id, agent_name, user_id, user_email, started_at, last_message_at,
-                    subscription_id
+            conn.execute(
+                insert(chat_sessions).values(
+                    id=session_id,
+                    agent_name=agent_name,
+                    user_id=user_id,
+                    user_email=user_email,
+                    started_at=now,
+                    last_message_at=now,
+                    subscription_id=subscription_id,
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (session_id, agent_name, user_id, user_email, now, now, subscription_id))
-
-            conn.commit()
+            )
 
             # Return the newly created session
-            cursor.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,))
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(chat_sessions).where(chat_sessions.c.id == session_id)
+            ).mappings().first()
             return self._row_to_chat_session(row)
 
     def add_chat_message(
@@ -121,67 +134,77 @@ class ChatOperations:
         output_tokens: Optional[int] = None,
     ) -> ChatMessage:
         """Add a message to a chat session and update session stats."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Create message
             message_id = secrets.token_urlsafe(16)
             now = utc_now_iso()
 
-            cursor.execute("""
-                INSERT INTO chat_messages (
-                    id, session_id, agent_name, user_id, user_email,
-                    role, content, timestamp,
-                    cost, context_used, context_max, tool_calls, execution_time_ms,
-                    source, subscription_id, output_tokens
+            conn.execute(
+                insert(chat_messages).values(
+                    id=message_id,
+                    session_id=session_id,
+                    agent_name=agent_name,
+                    user_id=user_id,
+                    user_email=user_email,
+                    role=role,
+                    content=content,
+                    timestamp=now,
+                    cost=cost,
+                    context_used=context_used,
+                    context_max=context_max,
+                    tool_calls=tool_calls,
+                    execution_time_ms=execution_time_ms,
+                    source=source or "text",
+                    subscription_id=subscription_id,
+                    output_tokens=output_tokens,
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                message_id, session_id, agent_name, user_id, user_email,
-                role, content, now,
-                cost, context_used, context_max, tool_calls, execution_time_ms,
-                source or "text", subscription_id, output_tokens,
-            ))
+            )
 
             # Update session stats
-            cursor.execute("""
-                UPDATE chat_sessions
-                SET last_message_at = ?,
-                    message_count = message_count + 1,
-                    total_cost = total_cost + COALESCE(?, 0),
-                    total_context_used = COALESCE(?, total_context_used),
-                    total_context_max = COALESCE(?, total_context_max)
-                WHERE id = ?
-            """, (now, cost or 0, context_used, context_max, session_id))
-
-            conn.commit()
+            conn.execute(
+                update(chat_sessions)
+                .where(chat_sessions.c.id == session_id)
+                .values(
+                    last_message_at=now,
+                    message_count=chat_sessions.c.message_count + 1,
+                    total_cost=chat_sessions.c.total_cost + (cost or 0),
+                    total_context_used=context_used
+                    if context_used is not None
+                    else chat_sessions.c.total_context_used,
+                    total_context_max=context_max
+                    if context_max is not None
+                    else chat_sessions.c.total_context_max,
+                )
+            )
 
             # Return the created message
-            cursor.execute("SELECT * FROM chat_messages WHERE id = ?", (message_id,))
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(chat_messages).where(chat_messages.c.id == message_id)
+            ).mappings().first()
             return self._row_to_chat_message(row)
 
     def get_chat_session(self, session_id: str) -> Optional[ChatSession]:
         """Get a specific chat session by ID."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,))
-            row = cursor.fetchone()
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                select(chat_sessions).where(chat_sessions.c.id == session_id)
+            ).mappings().first()
             return self._row_to_chat_session(row) if row else None
 
     def get_chat_messages(self, session_id: str, limit: int = 100) -> List[ChatMessage]:
         """Get messages for a chat session (oldest first for display order)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM (
-                    SELECT * FROM chat_messages
-                    WHERE session_id = ?
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                ) sub ORDER BY timestamp ASC
-            """, (session_id, limit))
-            return [self._row_to_chat_message(row) for row in cursor.fetchall()]
+        with get_engine().connect() as conn:
+            # Inner query: newest `limit` messages; outer: re-sort oldest-first.
+            inner = (
+                select(chat_messages)
+                .where(chat_messages.c.session_id == session_id)
+                .order_by(chat_messages.c.timestamp.desc())
+                .limit(limit)
+                .subquery()
+            )
+            stmt = select(inner).order_by(inner.c.timestamp.asc())
+            rows = conn.execute(stmt).mappings().all()
+            return [self._row_to_chat_message(row) for row in rows]
 
     def get_agent_chat_history(
         self,
@@ -194,23 +217,18 @@ class ChatOperations:
         If user_id is provided, filter to that user's messages.
         Returns messages across all sessions, newest first.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            if user_id:
-                cursor.execute("""
-                    SELECT * FROM chat_messages
-                    WHERE agent_name = ? AND user_id = ?
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                """, (agent_name, user_id, limit))
-            else:
-                cursor.execute("""
-                    SELECT * FROM chat_messages
-                    WHERE agent_name = ?
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                """, (agent_name, limit))
-            return [self._row_to_chat_message(row) for row in cursor.fetchall()]
+        conds = [chat_messages.c.agent_name == agent_name]
+        if user_id:
+            conds.append(chat_messages.c.user_id == user_id)
+        stmt = (
+            select(chat_messages)
+            .where(and_(*conds))
+            .order_by(chat_messages.c.timestamp.desc())
+            .limit(limit)
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+            return [self._row_to_chat_message(row) for row in rows]
 
     def get_agent_chat_sessions(
         self,
@@ -222,34 +240,29 @@ class ChatOperations:
         Get all chat sessions for an agent.
         Optionally filter by user_id and/or status.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
-            query = "SELECT * FROM chat_sessions WHERE agent_name = ?"
-            params = [agent_name]
-
-            if user_id:
-                query += " AND user_id = ?"
-                params.append(user_id)
-
-            if status:
-                query += " AND status = ?"
-                params.append(status)
-
-            query += " ORDER BY last_message_at DESC"
-
-            cursor.execute(query, params)
-            return [self._row_to_chat_session(row) for row in cursor.fetchall()]
+        conds = [chat_sessions.c.agent_name == agent_name]
+        if user_id:
+            conds.append(chat_sessions.c.user_id == user_id)
+        if status:
+            conds.append(chat_sessions.c.status == status)
+        stmt = (
+            select(chat_sessions)
+            .where(and_(*conds))
+            .order_by(chat_sessions.c.last_message_at.desc())
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+            return [self._row_to_chat_session(row) for row in rows]
 
     def close_chat_session(self, session_id: str) -> bool:
         """Mark a chat session as closed."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE chat_sessions SET status = 'closed' WHERE id = ?
-            """, (session_id,))
-            conn.commit()
-            return cursor.rowcount > 0
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(chat_sessions)
+                .where(chat_sessions.c.id == session_id)
+                .values(status="closed")
+            )
+            return result.rowcount > 0
 
     def create_new_chat_session(
         self,
@@ -262,44 +275,53 @@ class ChatOperations:
         Create a new chat session, closing any existing active sessions for this user+agent.
         Use this when user explicitly wants a new conversation (e.g., "New Chat" button).
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Close any existing active sessions for this user+agent
-            cursor.execute("""
-                UPDATE chat_sessions SET status = 'closed'
-                WHERE agent_name = ? AND user_id = ? AND status = 'active'
-            """, (agent_name, user_id))
+            conn.execute(
+                update(chat_sessions)
+                .where(
+                    and_(
+                        chat_sessions.c.agent_name == agent_name,
+                        chat_sessions.c.user_id == user_id,
+                        chat_sessions.c.status == "active",
+                    )
+                )
+                .values(status="closed")
+            )
 
             # Create a new session
             session_id = secrets.token_urlsafe(16)
             now = utc_now_iso()
 
-            cursor.execute("""
-                INSERT INTO chat_sessions (
-                    id, agent_name, user_id, user_email, started_at, last_message_at,
-                    subscription_id
+            conn.execute(
+                insert(chat_sessions).values(
+                    id=session_id,
+                    agent_name=agent_name,
+                    user_id=user_id,
+                    user_email=user_email,
+                    started_at=now,
+                    last_message_at=now,
+                    subscription_id=subscription_id,
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (session_id, agent_name, user_id, user_email, now, now, subscription_id))
-
-            conn.commit()
+            )
 
             # Return the newly created session
-            cursor.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,))
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(chat_sessions).where(chat_sessions.c.id == session_id)
+            ).mappings().first()
             return self._row_to_chat_session(row)
 
     def delete_chat_session(self, session_id: str) -> bool:
         """Delete a chat session and all its messages."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Delete messages first (foreign key constraint)
-            cursor.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+            conn.execute(
+                delete(chat_messages).where(chat_messages.c.session_id == session_id)
+            )
 
             # Delete session
-            cursor.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+            result = conn.execute(
+                delete(chat_sessions).where(chat_sessions.c.id == session_id)
+            )
 
-            conn.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0

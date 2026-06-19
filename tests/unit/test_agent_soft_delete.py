@@ -16,7 +16,6 @@ test discovery imports things.
 
 from __future__ import annotations
 
-import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -30,76 +29,20 @@ while _BACKEND_STR in sys.path:
     sys.path.remove(_BACKEND_STR)
 sys.path.insert(0, _BACKEND_STR)
 
-
-def _make_db_schema(conn: sqlite3.Connection) -> None:
-    """Build a representative subset of Trinity's schema."""
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE agent_ownership (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_name TEXT UNIQUE NOT NULL,
-            owner_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            deleted_at TEXT
-        )
-        """
-    )
-    # Child tables from #816 registry — to verify cascade fires on purge.
-    for t in ("agent_sharing", "agent_schedules", "chat_messages",
-              "agent_activities", "agent_skills", "agent_tags"):
-        cur.execute(f"CREATE TABLE {t} (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_name TEXT)")
-    cur.execute(
-        "CREATE TABLE schedule_executions (id INTEGER PRIMARY KEY, agent_name TEXT)"  # KEEP-policy
-    )
-    cur.execute(
-        "CREATE TABLE nevermined_payment_log (id INTEGER PRIMARY KEY, agent_name TEXT)"  # KEEP
-    )
-    cur.execute(
-        "CREATE TABLE mcp_api_keys (id INTEGER PRIMARY KEY, agent_name TEXT, scope TEXT)"
-    )
-    cur.execute(
-        "CREATE TABLE agent_permissions "
-        "(id INTEGER PRIMARY KEY AUTOINCREMENT, source_agent TEXT, target_agent TEXT)"
-    )
-    cur.execute(
-        "CREATE TABLE agent_event_subscriptions "
-        "(id INTEGER PRIMARY KEY AUTOINCREMENT, subscriber_agent TEXT, source_agent TEXT)"
-    )
-    cur.execute(
-        "CREATE TABLE agent_events "
-        "(id INTEGER PRIMARY KEY AUTOINCREMENT, source_agent TEXT)"
-    )
-    cur.execute(
-        "CREATE INDEX idx_agent_ownership_deleted_at "
-        "ON agent_ownership(deleted_at) WHERE deleted_at IS NOT NULL"
-    )
-    conn.commit()
+from db_harness import db_backend, run as _hrun, scalar as _hscalar  # noqa: E402
 
 
 @pytest.fixture
-def tmp_agent_db(tmp_path, monkeypatch):
-    """Route the production `db.connection.get_db_connection()` to an
-    ephemeral SQLite file and return its path.
+def tmp_agent_db(db_backend):
+    """Active backend with a fresh FULL production schema (db_harness, #300).
 
-    Skips the test if the backend package itself can't be imported
-    (no `pydantic`/`fastapi` available — local dev w/o venv).
-    """
-    try:
-        import db.connection as connection_mod
-    except ImportError:
-        pytest.skip("backend venv required (no `db.connection` import)")
-
-    db_path = tmp_path / "trinity.db"
-    conn = sqlite3.connect(str(db_path))
-    _make_db_schema(conn)
-    conn.close()
-
-    # Patch the module attribute — `get_db_connection()` reads
-    # `DB_PATH` on every call (sqlite3.connect happens per
-    # context-manager entry), so the override sticks.
-    monkeypatch.setattr(connection_mod, "DB_PATH", str(db_path))
-    return str(db_path)
+    Runs on SQLite and, when TEST_POSTGRES_URL is set, PostgreSQL. Returns the
+    backend marker (leading positional arg the seed/count helpers accept).
+    Replaces the prior simplified hand-rolled cascade schema — the seeds below
+    now supply full valid rows against the real tables (NOT NULL columns and
+    real id/PK types), so the #816 cascade primitive is exercised on the
+    production schema on both backends."""
+    return db_backend
 
 
 @pytest.fixture
@@ -113,42 +56,56 @@ def agent_ops(tmp_agent_db):
     return AgentOperations(UserOperations())
 
 
-def _seed(conn, name: str, deleted_at: str | None = None):
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO agent_ownership(agent_name, owner_id, created_at, deleted_at) "
-        "VALUES (?, 1, '2026-01-01T00:00:00Z', ?)",
-        (name, deleted_at),
+_TS = "2026-01-01T00:00:00Z"
+
+
+def _seed_into(_db, name: str, deleted_at: str | None = None):
+    """Seed an agent + one valid row in each cascade child table on the real
+    schema (full NOT NULL columns, correct id/PK types). Engine-based so it
+    runs on both backends. First positional arg is the ignored backend marker."""
+    _hrun(
+        "INSERT INTO agent_ownership (agent_name, owner_id, created_at, deleted_at) "
+        "VALUES (:n, 1, :ts, :deleted)", n=name, ts=_TS, deleted=deleted_at,
     )
-    for t in ("agent_sharing", "agent_schedules", "chat_messages",
-              "agent_activities", "agent_skills", "agent_tags"):
-        cur.execute(f"INSERT INTO {t}(agent_name) VALUES (?)", (name,))
-    cur.execute("INSERT INTO schedule_executions(agent_name) VALUES (?)", (name,))
-    cur.execute("INSERT INTO nevermined_payment_log(agent_name) VALUES (?)", (name,))
-    cur.execute("INSERT INTO mcp_api_keys(agent_name, scope) VALUES (?, 'agent')", (name,))
-    conn.commit()
+    # WIPE-on-purge children
+    _hrun("INSERT INTO agent_sharing (agent_name, shared_with_email, shared_by_id, created_at) "
+          "VALUES (:n, 'u@example.com', 1, :ts)", n=name, ts=_TS)
+    _hrun("INSERT INTO agent_schedules (id, agent_name, name, cron_expression, message, "
+          "owner_id, created_at, updated_at) "
+          "VALUES (:id, :n, 's', '0 0 * * *', 'm', 1, :ts, :ts)", id=f"sch-{name}", n=name, ts=_TS)
+    _hrun("INSERT INTO chat_messages (id, session_id, agent_name, user_id, user_email, role, "
+          "content, timestamp) VALUES (:id, 'sess', :n, 1, 'u@example.com', 'user', 'hi', :ts)",
+          id=f"cm-{name}", n=name, ts=_TS)
+    _hrun("INSERT INTO agent_activities (id, agent_name, activity_type, activity_state, "
+          "started_at, triggered_by) VALUES (:id, :n, 'chat_start', 'started', :ts, 'user')",
+          id=f"act-{name}", n=name, ts=_TS)
+    _hrun("INSERT INTO agent_skills (agent_name, skill_name, assigned_by, assigned_at) "
+          "VALUES (:n, 'sk', 'admin', :ts)", n=name, ts=_TS)
+    _hrun("INSERT INTO agent_tags (agent_name, tag) VALUES (:n, 't1')", n=name)
+    # KEEP-on-purge children (billing rollups)
+    _hrun("INSERT INTO schedule_executions (id, schedule_id, agent_name, status, started_at, "
+          "message, triggered_by) VALUES (:id, :sch, :n, 'success', :ts, 'm', 'schedule')",
+          id=f"ex-{name}", sch=f"sch-{name}", n=name, ts=_TS)
+    _hrun("INSERT INTO nevermined_payment_log (id, agent_name, action, success, created_at) "
+          "VALUES (:id, :n, 'charge', 1, :ts)", id=f"npl-{name}", n=name, ts=_TS)
+    # agent-scoped mcp key (cascade target)
+    _hrun("INSERT INTO mcp_api_keys (id, name, key_prefix, key_hash, created_at, user_id, "
+          "agent_name, scope) VALUES (:id, :n, 'pfx', :kh, :ts, 1, :n, 'agent')",
+          id=f"key-{name}", n=name, kh=f"hash-{name}", ts=_TS)
 
 
-def _seed_into(db_path: str, name: str, deleted_at: str | None = None):
-    conn = sqlite3.connect(db_path)
-    _seed(conn, name, deleted_at)
-    conn.close()
+def _count(_db, table: str, where: str, params: tuple) -> int:
+    binds = {f"p{i}": v for i, v in enumerate(params)}
+    clause = where
+    for i in range(len(params)):
+        clause = clause.replace("?", f":p{i}", 1)
+    return _hscalar(f"SELECT COUNT(*) FROM {table} WHERE {clause}", **binds) or 0
 
 
-def _count(db_path: str, table: str, where: str, params: tuple) -> int:
-    conn = sqlite3.connect(db_path)
-    n = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}", params).fetchone()[0]
-    conn.close()
-    return n
-
-
-def _deleted_at(db_path: str, name: str):
-    conn = sqlite3.connect(db_path)
-    row = conn.execute(
-        "SELECT deleted_at FROM agent_ownership WHERE agent_name = ?", (name,)
-    ).fetchone()
-    conn.close()
-    return row[0] if row else None
+def _deleted_at(_db, name: str):
+    return _hscalar(
+        "SELECT deleted_at FROM agent_ownership WHERE agent_name = :n", n=name
+    )
 
 
 # -----------------------------------------------------------------------------

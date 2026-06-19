@@ -3,13 +3,22 @@ Agent-to-agent permissions database operations.
 
 Phase 9.10: Centralized permission system controlling which agents
 can communicate with other agents.
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL. Queries are built from the ``agent_permissions``
+table in ``db/tables.py`` (dialect-agnostic expressions, no ``?`` placeholders),
+and the engine is resolved via ``db/engine.py``. The public API of
+``PermissionOperations`` is unchanged.
 """
 
-import sqlite3
 from datetime import datetime
 from typing import Optional, List
 
-from .connection import get_db_connection
+from sqlalchemy import select, insert, delete, and_
+from sqlalchemy.exc import IntegrityError
+
+from .engine import get_engine
+from .tables import agent_permissions
 from db_models import AgentPermission
 from utils.helpers import utc_now_iso
 
@@ -43,14 +52,13 @@ class PermissionOperations:
 
         Returns list of target agent names.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT target_agent FROM agent_permissions
-                WHERE source_agent = ?
-                ORDER BY target_agent
-            """, (source_agent,))
-            return [row["target_agent"] for row in cursor.fetchall()]
+        stmt = (
+            select(agent_permissions.c.target_agent)
+            .where(agent_permissions.c.source_agent == source_agent)
+            .order_by(agent_permissions.c.target_agent)
+        )
+        with get_engine().connect() as conn:
+            return [row["target_agent"] for row in conn.execute(stmt).mappings()]
 
     def get_all_permission_edges(self, accessible_agents: Optional[set] = None) -> List[dict]:
         """
@@ -63,28 +71,30 @@ class PermissionOperations:
 
         Returns list of {"source": str, "target": str} dicts.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        stmt = select(
+            agent_permissions.c.source_agent,
+            agent_permissions.c.target_agent,
+        )
 
-            if accessible_agents:
-                # Filter at SQL level to avoid info leakage
-                placeholders = ",".join("?" for _ in accessible_agents)
-                agent_list = list(accessible_agents)
-                cursor.execute(f"""
-                    SELECT source_agent, target_agent FROM agent_permissions
-                    WHERE source_agent IN ({placeholders})
-                      AND target_agent IN ({placeholders})
-                    ORDER BY source_agent, target_agent
-                """, agent_list + agent_list)
-            else:
-                cursor.execute("""
-                    SELECT source_agent, target_agent FROM agent_permissions
-                    ORDER BY source_agent, target_agent
-                """)
+        if accessible_agents:
+            # Filter at SQL level to avoid info leakage
+            agent_list = list(accessible_agents)
+            stmt = stmt.where(
+                and_(
+                    agent_permissions.c.source_agent.in_(agent_list),
+                    agent_permissions.c.target_agent.in_(agent_list),
+                )
+            )
 
+        stmt = stmt.order_by(
+            agent_permissions.c.source_agent,
+            agent_permissions.c.target_agent,
+        )
+
+        with get_engine().connect() as conn:
             return [
                 {"source": row["source_agent"], "target": row["target_agent"]}
-                for row in cursor.fetchall()
+                for row in conn.execute(stmt).mappings()
             ]
 
     def get_permission_details(self, source_agent: str) -> List[AgentPermission]:
@@ -93,15 +103,19 @@ class PermissionOperations:
 
         Returns list of AgentPermission objects.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, source_agent, target_agent, created_at, created_by
-                FROM agent_permissions
-                WHERE source_agent = ?
-                ORDER BY target_agent
-            """, (source_agent,))
-            return [self._row_to_permission(row) for row in cursor.fetchall()]
+        stmt = (
+            select(
+                agent_permissions.c.id,
+                agent_permissions.c.source_agent,
+                agent_permissions.c.target_agent,
+                agent_permissions.c.created_at,
+                agent_permissions.c.created_by,
+            )
+            .where(agent_permissions.c.source_agent == source_agent)
+            .order_by(agent_permissions.c.target_agent)
+        )
+        with get_engine().connect() as conn:
+            return [self._row_to_permission(row) for row in conn.execute(stmt).mappings()]
 
     def is_permitted(self, source_agent: str, target_agent: str) -> bool:
         """
@@ -109,13 +123,14 @@ class PermissionOperations:
 
         Returns True if permission exists.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT 1 FROM agent_permissions
-                WHERE source_agent = ? AND target_agent = ?
-            """, (source_agent, target_agent))
-            return cursor.fetchone() is not None
+        stmt = select(agent_permissions.c.id).where(
+            and_(
+                agent_permissions.c.source_agent == source_agent,
+                agent_permissions.c.target_agent == target_agent,
+            )
+        )
+        with get_engine().connect() as conn:
+            return conn.execute(stmt).first() is not None
 
     def add_permission(self, source_agent: str, target_agent: str, created_by: str) -> Optional[AgentPermission]:
         """
@@ -125,25 +140,28 @@ class PermissionOperations:
         """
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    INSERT INTO agent_permissions (source_agent, target_agent, created_at, created_by)
-                    VALUES (?, ?, ?, ?)
-                """, (source_agent, target_agent, now, created_by))
-                conn.commit()
-
-                return AgentPermission(
-                    id=cursor.lastrowid,
-                    source_agent=source_agent,
-                    target_agent=target_agent,
-                    created_at=datetime.fromisoformat(now),
-                    created_by=created_by
+        try:
+            with get_engine().begin() as conn:
+                result = conn.execute(
+                    insert(agent_permissions).values(
+                        source_agent=source_agent,
+                        target_agent=target_agent,
+                        created_at=now,
+                        created_by=created_by,
+                    )
                 )
-            except sqlite3.IntegrityError:
-                # Permission already exists
-                return None
+                new_id = result.inserted_primary_key[0]
+        except IntegrityError:
+            # Permission already exists
+            return None
+
+        return AgentPermission(
+            id=new_id,
+            source_agent=source_agent,
+            target_agent=target_agent,
+            created_at=datetime.fromisoformat(now),
+            created_by=created_by
+        )
 
     def remove_permission(self, source_agent: str, target_agent: str) -> bool:
         """
@@ -151,14 +169,15 @@ class PermissionOperations:
 
         Returns True if a permission was removed.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM agent_permissions
-                WHERE source_agent = ? AND target_agent = ?
-            """, (source_agent, target_agent))
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = delete(agent_permissions).where(
+            and_(
+                agent_permissions.c.source_agent == source_agent,
+                agent_permissions.c.target_agent == target_agent,
+            )
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     def set_permissions(self, source_agent: str, target_agents: List[str], created_by: str) -> int:
         """
@@ -167,27 +186,33 @@ class PermissionOperations:
         Removes all existing permissions and adds new ones.
         Returns the number of permissions set.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            now = utc_now_iso()
+        now = utc_now_iso()
 
+        with get_engine().begin() as conn:
             # Remove all existing permissions for this source
-            cursor.execute("""
-                DELETE FROM agent_permissions WHERE source_agent = ?
-            """, (source_agent,))
+            conn.execute(
+                delete(agent_permissions).where(
+                    agent_permissions.c.source_agent == source_agent
+                )
+            )
 
             # Add new permissions
             for target in target_agents:
                 if target != source_agent:  # Can't permit self
+                    sp = conn.begin_nested()
                     try:
-                        cursor.execute("""
-                            INSERT INTO agent_permissions (source_agent, target_agent, created_at, created_by)
-                            VALUES (?, ?, ?, ?)
-                        """, (source_agent, target, now, created_by))
-                    except sqlite3.IntegrityError:
-                        pass  # Skip duplicates
+                        conn.execute(
+                            insert(agent_permissions).values(
+                                source_agent=source_agent,
+                                target_agent=target,
+                                created_at=now,
+                                created_by=created_by,
+                            )
+                        )
+                        sp.commit()
+                    except IntegrityError:
+                        sp.rollback()  # Skip duplicates
 
-            conn.commit()
             return len(target_agents)
 
     def delete_agent_permissions(self, agent_name: str) -> int:
@@ -197,22 +222,23 @@ class PermissionOperations:
         Removes permissions where agent is source OR target.
         Returns total number of permissions deleted.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Delete where agent is source
-            cursor.execute("""
-                DELETE FROM agent_permissions WHERE source_agent = ?
-            """, (agent_name,))
-            source_count = cursor.rowcount
+            source_result = conn.execute(
+                delete(agent_permissions).where(
+                    agent_permissions.c.source_agent == agent_name
+                )
+            )
+            source_count = source_result.rowcount
 
             # Delete where agent is target
-            cursor.execute("""
-                DELETE FROM agent_permissions WHERE target_agent = ?
-            """, (agent_name,))
-            target_count = cursor.rowcount
+            target_result = conn.execute(
+                delete(agent_permissions).where(
+                    agent_permissions.c.target_agent == agent_name
+                )
+            )
+            target_count = target_result.rowcount
 
-            conn.commit()
             return source_count + target_count
 
     def grant_default_permissions(self, agent_name: str, owner_username: str) -> int:

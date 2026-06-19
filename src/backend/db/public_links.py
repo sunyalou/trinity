@@ -5,6 +5,12 @@ Handles:
 - Public link CRUD operations
 - Email verification codes
 - Usage tracking
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL. Queries are built from the Core table handles in
+``db/tables.py`` (dialect-agnostic expressions, no ``?``/``%s`` placeholders),
+and the engine is resolved from ``DATABASE_URL`` via ``db/engine.py``. The
+public API of ``PublicLinkOperations`` is unchanged.
 """
 
 import json
@@ -12,7 +18,15 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
-from db.connection import get_db_connection
+from sqlalchemy import select, insert, update, delete, func, and_, or_
+
+from .engine import get_engine
+from .tables import (
+    agent_public_links,
+    public_link_verifications,
+    public_link_usage,
+    public_user_memory,
+)
 from utils.helpers import utc_now_iso
 
 
@@ -97,28 +111,38 @@ class PublicLinkOperations:
         token = secrets.token_urlsafe(24)
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO agent_public_links
-                (id, agent_name, token, created_by, created_at, expires_at, enabled, name, type)
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-            """, (link_id, agent_name, token, created_by, now, expires_at, name, link_type))
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(agent_public_links).values(
+                    id=link_id,
+                    agent_name=agent_name,
+                    token=token,
+                    created_by=created_by,
+                    created_at=now,
+                    expires_at=expires_at,
+                    enabled=1,
+                    name=name,
+                    type=link_type,
+                )
+            )
 
         return self.get_public_link(link_id)
 
     def get_public_link(self, link_id: str) -> Optional[dict]:
         """Get a public link by ID."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, agent_name, token, created_by, created_at, expires_at,
-                       enabled, name, type
-                FROM agent_public_links
-                WHERE id = ?
-            """, (link_id,))
-            row = cursor.fetchone()
+        stmt = select(
+            agent_public_links.c.id,
+            agent_public_links.c.agent_name,
+            agent_public_links.c.token,
+            agent_public_links.c.created_by,
+            agent_public_links.c.created_at,
+            agent_public_links.c.expires_at,
+            agent_public_links.c.enabled,
+            agent_public_links.c.name,
+            agent_public_links.c.type,
+        ).where(agent_public_links.c.id == link_id)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
 
         if not row:
             return None
@@ -127,15 +151,19 @@ class PublicLinkOperations:
 
     def get_public_link_by_token(self, token: str) -> Optional[dict]:
         """Get a public link by token."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, agent_name, token, created_by, created_at, expires_at,
-                       enabled, name, type
-                FROM agent_public_links
-                WHERE token = ?
-            """, (token,))
-            row = cursor.fetchone()
+        stmt = select(
+            agent_public_links.c.id,
+            agent_public_links.c.agent_name,
+            agent_public_links.c.token,
+            agent_public_links.c.created_by,
+            agent_public_links.c.created_at,
+            agent_public_links.c.expires_at,
+            agent_public_links.c.enabled,
+            agent_public_links.c.name,
+            agent_public_links.c.type,
+        ).where(agent_public_links.c.token == token)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
 
         if not row:
             return None
@@ -144,16 +172,23 @@ class PublicLinkOperations:
 
     def list_agent_public_links(self, agent_name: str) -> List[dict]:
         """List all public links for an agent."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, agent_name, token, created_by, created_at, expires_at,
-                       enabled, name, type
-                FROM agent_public_links
-                WHERE agent_name = ?
-                ORDER BY created_at DESC
-            """, (agent_name,))
-            rows = cursor.fetchall()
+        stmt = (
+            select(
+                agent_public_links.c.id,
+                agent_public_links.c.agent_name,
+                agent_public_links.c.token,
+                agent_public_links.c.created_by,
+                agent_public_links.c.created_at,
+                agent_public_links.c.expires_at,
+                agent_public_links.c.enabled,
+                agent_public_links.c.name,
+                agent_public_links.c.type,
+            )
+            .where(agent_public_links.c.agent_name == agent_name)
+            .order_by(agent_public_links.c.created_at.desc())
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).all()
 
         return [self._row_to_link(row) for row in rows]
 
@@ -168,66 +203,84 @@ class PublicLinkOperations:
 
         Email verification is agent-level (agent_ownership.require_email).
         """
-        updates = []
-        values = []
+        values = {}
 
         if name is not None:
-            updates.append("name = ?")
-            values.append(name)
+            values["name"] = name
         if enabled is not None:
-            updates.append("enabled = ?")
-            values.append(1 if enabled else 0)
+            values["enabled"] = 1 if enabled else 0
         if expires_at is not None:
-            updates.append("expires_at = ?")
-            values.append(expires_at)
+            values["expires_at"] = expires_at
 
-        if not updates:
+        if not values:
             return self.get_public_link(link_id)
 
-        values.append(link_id)
-
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"""
-                UPDATE agent_public_links
-                SET {", ".join(updates)}
-                WHERE id = ?
-            """, values)
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                update(agent_public_links)
+                .where(agent_public_links.c.id == link_id)
+                .values(**values)
+            )
 
         return self.get_public_link(link_id)
 
     def delete_public_link(self, link_id: str) -> bool:
         """Delete a public link."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        with get_engine().begin() as conn:
             # First delete related verifications and usage
-            cursor.execute("DELETE FROM public_link_verifications WHERE link_id = ?", (link_id,))
-            cursor.execute("DELETE FROM public_link_usage WHERE link_id = ?", (link_id,))
+            conn.execute(
+                delete(public_link_verifications).where(
+                    public_link_verifications.c.link_id == link_id
+                )
+            )
+            conn.execute(
+                delete(public_link_usage).where(
+                    public_link_usage.c.link_id == link_id
+                )
+            )
             # Then delete the link
-            cursor.execute("DELETE FROM agent_public_links WHERE id = ?", (link_id,))
-            deleted = cursor.rowcount > 0
-            conn.commit()
+            result = conn.execute(
+                delete(agent_public_links).where(
+                    agent_public_links.c.id == link_id
+                )
+            )
+            deleted = result.rowcount > 0
 
         return deleted
 
     def delete_agent_public_links(self, agent_name: str) -> int:
         """Delete all public links for an agent (cascade on agent deletion)."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        with get_engine().begin() as conn:
             # Get link IDs first
-            cursor.execute("SELECT id FROM agent_public_links WHERE agent_name = ?", (agent_name,))
-            link_ids = [row[0] for row in cursor.fetchall()]
+            link_ids = [
+                row[0]
+                for row in conn.execute(
+                    select(agent_public_links.c.id).where(
+                        agent_public_links.c.agent_name == agent_name
+                    )
+                ).all()
+            ]
 
             # Delete related data
             for link_id in link_ids:
-                cursor.execute("DELETE FROM public_link_verifications WHERE link_id = ?", (link_id,))
-                cursor.execute("DELETE FROM public_link_usage WHERE link_id = ?", (link_id,))
+                conn.execute(
+                    delete(public_link_verifications).where(
+                        public_link_verifications.c.link_id == link_id
+                    )
+                )
+                conn.execute(
+                    delete(public_link_usage).where(
+                        public_link_usage.c.link_id == link_id
+                    )
+                )
 
             # Delete links
-            cursor.execute("DELETE FROM agent_public_links WHERE agent_name = ?", (agent_name,))
-            deleted = cursor.rowcount
-            conn.commit()
+            result = conn.execute(
+                delete(agent_public_links).where(
+                    agent_public_links.c.agent_name == agent_name
+                )
+            )
+            deleted = result.rowcount
 
         return deleted
 
@@ -267,21 +320,31 @@ class PublicLinkOperations:
         now = datetime.utcnow()
         expires_at = (now + timedelta(minutes=expiry_minutes)).isoformat()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        with get_engine().begin() as conn:
             # Invalidate any existing pending verifications for this email+link
-            cursor.execute("""
-                UPDATE public_link_verifications
-                SET verified = -1
-                WHERE link_id = ? AND email = ? AND verified = 0
-            """, (link_id, email.lower()))
+            conn.execute(
+                update(public_link_verifications)
+                .where(
+                    and_(
+                        public_link_verifications.c.link_id == link_id,
+                        public_link_verifications.c.email == email.lower(),
+                        public_link_verifications.c.verified == 0,
+                    )
+                )
+                .values(verified=-1)
+            )
 
-            cursor.execute("""
-                INSERT INTO public_link_verifications
-                (id, link_id, email, code, created_at, expires_at, verified)
-                VALUES (?, ?, ?, ?, ?, ?, 0)
-            """, (verification_id, link_id, email.lower(), code, now.isoformat(), expires_at))
-            conn.commit()
+            conn.execute(
+                insert(public_link_verifications).values(
+                    id=verification_id,
+                    link_id=link_id,
+                    email=email.lower(),
+                    code=code,
+                    created_at=now.isoformat(),
+                    expires_at=expires_at,
+                    verified=0,
+                )
+            )
 
         return {
             "id": verification_id,
@@ -301,14 +364,21 @@ class PublicLinkOperations:
         Verify an email verification code.
         Returns: (success, error_reason, session_data)
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, expires_at, verified
-                FROM public_link_verifications
-                WHERE link_id = ? AND email = ? AND code = ? AND verified = 0
-            """, (link_id, email.lower(), code))
-            row = cursor.fetchone()
+        with get_engine().begin() as conn:
+            row = conn.execute(
+                select(
+                    public_link_verifications.c.id,
+                    public_link_verifications.c.expires_at,
+                    public_link_verifications.c.verified,
+                ).where(
+                    and_(
+                        public_link_verifications.c.link_id == link_id,
+                        public_link_verifications.c.email == email.lower(),
+                        public_link_verifications.c.code == code,
+                        public_link_verifications.c.verified == 0,
+                    )
+                )
+            ).first()
 
             if not row:
                 return False, "invalid_code", None
@@ -324,12 +394,15 @@ class PublicLinkOperations:
             session_expires = (datetime.utcnow() + timedelta(hours=session_hours)).isoformat()
 
             # Mark as verified and set session
-            cursor.execute("""
-                UPDATE public_link_verifications
-                SET verified = 1, session_token = ?, session_expires_at = ?
-                WHERE id = ?
-            """, (session_token, session_expires, verification_id))
-            conn.commit()
+            conn.execute(
+                update(public_link_verifications)
+                .where(public_link_verifications.c.id == verification_id)
+                .values(
+                    verified=1,
+                    session_token=session_token,
+                    session_expires_at=session_expires,
+                )
+            )
 
         return True, None, {
             "session_token": session_token,
@@ -341,14 +414,18 @@ class PublicLinkOperations:
         Validate a session token.
         Returns: (is_valid, email_if_valid)
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT email, session_expires_at
-                FROM public_link_verifications
-                WHERE link_id = ? AND session_token = ? AND verified = 1
-            """, (link_id, session_token))
-            row = cursor.fetchone()
+        stmt = select(
+            public_link_verifications.c.email,
+            public_link_verifications.c.session_expires_at,
+        ).where(
+            and_(
+                public_link_verifications.c.link_id == link_id,
+                public_link_verifications.c.session_token == session_token,
+                public_link_verifications.c.verified == 1,
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
 
         if not row:
             return False, None
@@ -373,20 +450,27 @@ class PublicLinkOperations:
 
         Returns: (is_valid, email_if_valid)
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT v.email, v.session_expires_at
-                  FROM public_link_verifications v
-                  JOIN agent_public_links l ON v.link_id = l.id
-                 WHERE l.agent_name = ?
-                   AND v.session_token = ?
-                   AND v.verified = 1
-                """,
-                (agent_name, session_token),
+        stmt = (
+            select(
+                public_link_verifications.c.email,
+                public_link_verifications.c.session_expires_at,
             )
-            row = cursor.fetchone()
+            .select_from(
+                public_link_verifications.join(
+                    agent_public_links,
+                    public_link_verifications.c.link_id == agent_public_links.c.id,
+                )
+            )
+            .where(
+                and_(
+                    agent_public_links.c.agent_name == agent_name,
+                    public_link_verifications.c.session_token == session_token,
+                    public_link_verifications.c.verified == 1,
+                )
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
 
         if not row:
             return False, None
@@ -400,14 +484,14 @@ class PublicLinkOperations:
         """Count verification requests for an email in the last N minutes."""
         cutoff = (datetime.utcnow() - timedelta(minutes=minutes)).isoformat()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT COUNT(*)
-                FROM public_link_verifications
-                WHERE email = ? AND created_at > ?
-            """, (email.lower(), cutoff))
-            count = cursor.fetchone()[0]
+        stmt = select(func.count()).where(
+            and_(
+                public_link_verifications.c.email == email.lower(),
+                public_link_verifications.c.created_at > cutoff,
+            )
+        )
+        with get_engine().connect() as conn:
+            count = conn.execute(stmt).scalar()
 
         return count
 
@@ -422,74 +506,95 @@ class PublicLinkOperations:
         ip_address: Optional[str] = None
     ) -> dict:
         """Record a chat usage for a public link."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            now = utc_now_iso()
+        now = utc_now_iso()
 
+        with get_engine().begin() as conn:
             # Check for existing usage record
-            cursor.execute("""
-                SELECT id, message_count
-                FROM public_link_usage
-                WHERE link_id = ? AND (email = ? OR (email IS NULL AND ? IS NULL))
-                  AND (ip_address = ? OR ip_address IS NULL)
-            """, (link_id, email, email, ip_address))
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(
+                    public_link_usage.c.id,
+                    public_link_usage.c.message_count,
+                ).where(
+                    and_(
+                        public_link_usage.c.link_id == link_id,
+                        or_(
+                            public_link_usage.c.email == email,
+                            and_(
+                                public_link_usage.c.email.is_(None),
+                                email is None,
+                            ),
+                        ),
+                        or_(
+                            public_link_usage.c.ip_address == ip_address,
+                            public_link_usage.c.ip_address.is_(None),
+                        ),
+                    )
+                )
+            ).first()
 
             if row:
                 usage_id, count = row
-                cursor.execute("""
-                    UPDATE public_link_usage
-                    SET message_count = ?, last_used_at = ?
-                    WHERE id = ?
-                """, (count + 1, now, usage_id))
+                conn.execute(
+                    update(public_link_usage)
+                    .where(public_link_usage.c.id == usage_id)
+                    .values(message_count=count + 1, last_used_at=now)
+                )
             else:
                 usage_id = secrets.token_urlsafe(16)
-                cursor.execute("""
-                    INSERT INTO public_link_usage
-                    (id, link_id, email, ip_address, message_count, created_at, last_used_at)
-                    VALUES (?, ?, ?, ?, 1, ?, ?)
-                """, (usage_id, link_id, email, ip_address, now, now))
-
-            conn.commit()
+                conn.execute(
+                    insert(public_link_usage).values(
+                        id=usage_id,
+                        link_id=link_id,
+                        email=email,
+                        ip_address=ip_address,
+                        message_count=1,
+                        created_at=now,
+                        last_used_at=now,
+                    )
+                )
 
         return {"id": usage_id, "recorded": True}
 
     def get_link_usage_stats(self, link_id: str) -> dict:
         """Get usage statistics for a public link."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().connect() as conn:
             # Total messages
-            cursor.execute("""
-                SELECT COALESCE(SUM(message_count), 0)
-                FROM public_link_usage
-                WHERE link_id = ?
-            """, (link_id,))
-            total_messages = cursor.fetchone()[0]
+            total_messages = conn.execute(
+                select(
+                    func.coalesce(func.sum(public_link_usage.c.message_count), 0)
+                ).where(public_link_usage.c.link_id == link_id)
+            ).scalar()
 
             # Unique users (emails)
-            cursor.execute("""
-                SELECT COUNT(DISTINCT email)
-                FROM public_link_usage
-                WHERE link_id = ? AND email IS NOT NULL
-            """, (link_id,))
-            unique_users = cursor.fetchone()[0]
+            unique_users = conn.execute(
+                select(
+                    func.count(func.distinct(public_link_usage.c.email))
+                ).where(
+                    and_(
+                        public_link_usage.c.link_id == link_id,
+                        public_link_usage.c.email.isnot(None),
+                    )
+                )
+            ).scalar()
 
             # Unique IPs
-            cursor.execute("""
-                SELECT COUNT(DISTINCT ip_address)
-                FROM public_link_usage
-                WHERE link_id = ? AND ip_address IS NOT NULL
-            """, (link_id,))
-            unique_ips = cursor.fetchone()[0]
+            unique_ips = conn.execute(
+                select(
+                    func.count(func.distinct(public_link_usage.c.ip_address))
+                ).where(
+                    and_(
+                        public_link_usage.c.link_id == link_id,
+                        public_link_usage.c.ip_address.isnot(None),
+                    )
+                )
+            ).scalar()
 
             # Last used
-            cursor.execute("""
-                SELECT MAX(last_used_at)
-                FROM public_link_usage
-                WHERE link_id = ?
-            """, (link_id,))
-            last_used = cursor.fetchone()[0]
+            last_used = conn.execute(
+                select(
+                    func.max(public_link_usage.c.last_used_at)
+                ).where(public_link_usage.c.link_id == link_id)
+            ).scalar()
 
         return {
             "total_messages": total_messages,
@@ -502,14 +607,16 @@ class PublicLinkOperations:
         """Count messages from an IP in the last N minutes (for rate limiting)."""
         cutoff = (datetime.utcnow() - timedelta(minutes=minutes)).isoformat()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT COALESCE(SUM(message_count), 0)
-                FROM public_link_usage
-                WHERE ip_address = ? AND last_used_at > ?
-            """, (ip_address, cutoff))
-            count = cursor.fetchone()[0]
+        stmt = select(
+            func.coalesce(func.sum(public_link_usage.c.message_count), 0)
+        ).where(
+            and_(
+                public_link_usage.c.ip_address == ip_address,
+                public_link_usage.c.last_used_at > cutoff,
+            )
+        )
+        with get_engine().connect() as conn:
+            count = conn.execute(stmt).scalar()
 
         return count
 
@@ -520,14 +627,16 @@ class PublicLinkOperations:
         """
         cutoff = (datetime.utcnow() - timedelta(minutes=minutes)).isoformat()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT COALESCE(SUM(message_count), 0)
-                FROM public_link_usage
-                WHERE link_id = ? AND last_used_at > ?
-            """, (link_id, cutoff))
-            count = cursor.fetchone()[0]
+        stmt = select(
+            func.coalesce(func.sum(public_link_usage.c.message_count), 0)
+        ).where(
+            and_(
+                public_link_usage.c.link_id == link_id,
+                public_link_usage.c.last_used_at > cutoff,
+            )
+        )
+        with get_engine().connect() as conn:
+            count = conn.execute(stmt).scalar()
 
         return count
 
@@ -548,14 +657,23 @@ class PublicLinkOperations:
         email = user_email.lower()
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, agent_name, user_email, memory_text, message_count, created_at, updated_at
-                FROM public_user_memory
-                WHERE agent_name = ? AND user_email = ?
-            """, (agent_name, email))
-            row = cursor.fetchone()
+        with get_engine().begin() as conn:
+            row = conn.execute(
+                select(
+                    public_user_memory.c.id,
+                    public_user_memory.c.agent_name,
+                    public_user_memory.c.user_email,
+                    public_user_memory.c.memory_text,
+                    public_user_memory.c.message_count,
+                    public_user_memory.c.created_at,
+                    public_user_memory.c.updated_at,
+                ).where(
+                    and_(
+                        public_user_memory.c.agent_name == agent_name,
+                        public_user_memory.c.user_email == email,
+                    )
+                )
+            ).first()
 
             if row:
                 parsed = _parse_memory_blob(row[3])
@@ -569,12 +687,17 @@ class PublicLinkOperations:
 
             # Create new record
             memory_id = secrets.token_urlsafe(16)
-            cursor.execute("""
-                INSERT INTO public_user_memory
-                (id, agent_name, user_email, memory_text, message_count, created_at, updated_at)
-                VALUES (?, ?, ?, '', 0, ?, ?)
-            """, (memory_id, agent_name, email, now, now))
-            conn.commit()
+            conn.execute(
+                insert(public_user_memory).values(
+                    id=memory_id,
+                    agent_name=agent_name,
+                    user_email=email,
+                    memory_text="",
+                    message_count=0,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
 
         return {
             "id": memory_id, "agent_name": agent_name, "user_email": email,
@@ -591,20 +714,29 @@ class PublicLinkOperations:
         email = user_email.lower()
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE public_user_memory
-                SET message_count = message_count + 1, updated_at = ?
-                WHERE agent_name = ? AND user_email = ?
-            """, (now, agent_name, email))
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                update(public_user_memory)
+                .where(
+                    and_(
+                        public_user_memory.c.agent_name == agent_name,
+                        public_user_memory.c.user_email == email,
+                    )
+                )
+                .values(
+                    message_count=public_user_memory.c.message_count + 1,
+                    updated_at=now,
+                )
+            )
 
-            cursor.execute("""
-                SELECT message_count FROM public_user_memory
-                WHERE agent_name = ? AND user_email = ?
-            """, (agent_name, email))
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(public_user_memory.c.message_count).where(
+                    and_(
+                        public_user_memory.c.agent_name == agent_name,
+                        public_user_memory.c.user_email == email,
+                    )
+                )
+            ).first()
 
         return row[0] if row else 0
 
@@ -628,21 +760,29 @@ class PublicLinkOperations:
         email = user_email.lower()
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT memory_text FROM public_user_memory
-                WHERE agent_name = ? AND user_email = ?
-            """, (agent_name, email))
-            row = cursor.fetchone()
+        with get_engine().begin() as conn:
+            row = conn.execute(
+                select(public_user_memory.c.memory_text).where(
+                    and_(
+                        public_user_memory.c.agent_name == agent_name,
+                        public_user_memory.c.user_email == email,
+                    )
+                )
+            ).first()
 
             if row is None:
                 memory_id = secrets.token_urlsafe(16)
-                cursor.execute("""
-                    INSERT INTO public_user_memory
-                    (id, agent_name, user_email, memory_text, message_count, created_at, updated_at)
-                    VALUES (?, ?, ?, '', 0, ?, ?)
-                """, (memory_id, agent_name, email, now, now))
+                conn.execute(
+                    insert(public_user_memory).values(
+                        id=memory_id,
+                        agent_name=agent_name,
+                        user_email=email,
+                        memory_text="",
+                        message_count=0,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
                 current = {"agent_notes": "", "conversation_summary": ""}
             else:
                 current = _parse_memory_blob(row[0])
@@ -656,12 +796,16 @@ class PublicLinkOperations:
                 current["agent_notes"], current["conversation_summary"]
             )
 
-            cursor.execute("""
-                UPDATE public_user_memory
-                SET memory_text = ?, updated_at = ?
-                WHERE agent_name = ? AND user_email = ?
-            """, (new_blob, now, agent_name, email))
-            conn.commit()
+            conn.execute(
+                update(public_user_memory)
+                .where(
+                    and_(
+                        public_user_memory.c.agent_name == agent_name,
+                        public_user_memory.c.user_email == email,
+                    )
+                )
+                .values(memory_text=new_blob, updated_at=now)
+            )
 
         return True
 

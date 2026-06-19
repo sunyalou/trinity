@@ -34,7 +34,6 @@ import asyncio
 import importlib.util
 import json
 import os
-import sqlite3
 import sys
 import types
 from datetime import datetime, timedelta, timezone
@@ -62,97 +61,27 @@ while _BACKEND_STR in sys.path:
     sys.path.remove(_BACKEND_STR)
 sys.path.insert(0, _BACKEND_STR)
 
+from db_harness import db_backend, run as _hrun  # noqa: E402
+
 
 @pytest.fixture
-def tmp_db(tmp_path, monkeypatch):
-    """Provision a fresh SQLite DB with just the tables BACKLOG-001 touches.
+def tmp_db(db_backend):
+    """Active backend with a fresh FULL production schema (db_harness, #300).
 
-    We don't run Trinity's full schema here — only the minimal columns the
-    backlog code reads/writes. This keeps the test isolated from schema drift
-    elsewhere in the codebase.
-    """
-    db_path = tmp_path / "trinity.db"
-    monkeypatch.setenv("TRINITY_DB_PATH", str(db_path))
-
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-
-    # Minimal schedule_executions. Columns pulled from db/schema.py as of
-    # 2026-04-13 plus the BACKLOG-001 additions. Only columns actually touched
-    # by the code under test are mandatory — the rest are here so the
-    # existing _row_to_schedule_execution mapper doesn't choke on missing keys.
-    cur.execute(
-        """
-        CREATE TABLE schedule_executions (
-            id TEXT PRIMARY KEY,
-            schedule_id TEXT NOT NULL,
-            agent_name TEXT NOT NULL,
-            status TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            completed_at TEXT,
-            duration_ms INTEGER,
-            message TEXT NOT NULL,
-            response TEXT,
-            error TEXT,
-            triggered_by TEXT NOT NULL,
-            context_used INTEGER,
-            context_max INTEGER,
-            cost REAL,
-            tool_calls TEXT,
-            execution_log TEXT,
-            source_user_id INTEGER,
-            source_user_email TEXT,
-            source_agent_name TEXT,
-            source_mcp_key_id TEXT,
-            source_mcp_key_name TEXT,
-            claude_session_id TEXT,
-            model_used TEXT,
-            fan_out_id TEXT,
-            subscription_id TEXT,
-            queued_at TEXT,
-            backlog_metadata TEXT
-        )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE agent_ownership (
-            agent_name TEXT PRIMARY KEY,
-            owner_id INTEGER,
-            max_parallel_tasks INTEGER DEFAULT 3,
-            execution_timeout_seconds INTEGER DEFAULT 900,
-            max_backlog_depth INTEGER DEFAULT 50,
-            deleted_at TEXT  -- #834: read paths filter `WHERE deleted_at IS NULL`
-        )
-        """
-    )
-    cur.execute(
-        "CREATE INDEX idx_executions_queued ON schedule_executions(agent_name, queued_at) "
-        "WHERE status = 'queued'"
-    )
-    conn.commit()
-    conn.close()
-
-    # Re-import modules that read DB_PATH at import time, so the new env var
-    # takes effect for this test. Use importlib to avoid polluting sys.modules
-    # between tests.
+    Runs on SQLite and, when TEST_POSTGRES_URL is set, PostgreSQL. Replaces the
+    old hand-rolled partial schema — which omitted schedule_executions.attempt_
+    number that the backlog claim/cancel/expire queries reference, so those
+    tests failed once the suite actually ran (quarantined in #1103). The real
+    schema includes it, so they pass and are un-quarantined here. Returns the
+    backend marker. Pops cached db modules so production code re-resolves."""
     def _evict():
-        for mod in (
-            "db.connection",
-            "db.schedules",
-            "db.agent_settings.resources",
-            # database.py captures DB_PATH transitively via db.connection;
-            # evict it on teardown too so the next test file (e.g.
-            # test_file_upload) doesn't load `database.db` against this
-            # fixture's partial schema. (#660)
-            "database",
-        ):
+        for mod in ("db.connection", "db.schedules",
+                    "db.agent_settings.resources", "database"):
             sys.modules.pop(mod, None)
 
     _evict()
     try:
-        yield db_path
+        yield db_backend
     finally:
         _evict()
 
@@ -183,14 +112,12 @@ def seed_agent(tmp_db):
     """Insert a minimal agent_ownership row so backlog depth lookups work."""
 
     def _seed(name: str, max_parallel_tasks: int = 1, max_backlog_depth: int = 50):
-        conn = sqlite3.connect(str(tmp_db))
-        conn.execute(
+        _hrun(
             "INSERT INTO agent_ownership (agent_name, owner_id, max_parallel_tasks, "
-            "execution_timeout_seconds, max_backlog_depth) VALUES (?, ?, ?, ?, ?)",
-            (name, 1, max_parallel_tasks, 900, max_backlog_depth),
+            "execution_timeout_seconds, max_backlog_depth, created_at) "
+            "VALUES (:n, 1, :mpt, 900, :mbd, '2026-01-01T00:00:00Z')",
+            n=name, mpt=max_parallel_tasks, mbd=max_backlog_depth,
         )
-        conn.commit()
-        conn.close()
 
     return _seed
 
@@ -212,18 +139,13 @@ def insert_execution(tmp_db):
 
         exec_id = execution_id or _secrets.token_urlsafe(12)
         ts = started_at or datetime.now(timezone.utc).isoformat()
-        conn = sqlite3.connect(str(tmp_db))
-        conn.execute(
-            """
-            INSERT INTO schedule_executions
-                (id, schedule_id, agent_name, status, started_at,
-                 queued_at, message, triggered_by)
-            VALUES (?, '__manual__', ?, ?, ?, ?, ?, 'manual')
-            """,
-            (exec_id, agent_name, status, ts, queued_at, message),
+        _hrun(
+            "INSERT INTO schedule_executions "
+            "(id, schedule_id, agent_name, status, started_at, queued_at, "
+            " message, triggered_by) "
+            "VALUES (:id, '__manual__', :a, :st, :ts, :q, :msg, 'manual')",
+            id=exec_id, a=agent_name, st=status, ts=ts, q=queued_at, msg=message,
         )
-        conn.commit()
-        conn.close()
         return exec_id
 
     return _insert
@@ -249,24 +171,20 @@ class TestEnum:
 
 class TestMigration:
     def test_columns_and_index_present(self, tmp_db):
-        conn = sqlite3.connect(str(tmp_db))
-        cur = conn.cursor()
+        # Dialect-agnostic schema introspection (#300) — works on SQLite + PG.
+        from sqlalchemy import inspect
+        from db.engine import get_engine
 
-        cur.execute("PRAGMA table_info(schedule_executions)")
-        se_cols = {row[1] for row in cur.fetchall()}
+        insp = inspect(get_engine())
+        se_cols = {c["name"] for c in insp.get_columns("schedule_executions")}
         assert "queued_at" in se_cols
         assert "backlog_metadata" in se_cols
 
-        cur.execute("PRAGMA table_info(agent_ownership)")
-        ao_cols = {row[1] for row in cur.fetchall()}
+        ao_cols = {c["name"] for c in insp.get_columns("agent_ownership")}
         assert "max_backlog_depth" in ao_cols
 
-        cur.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type = 'index' AND name = 'idx_executions_queued'"
-        )
-        assert cur.fetchone() is not None
-        conn.close()
+        index_names = {ix["name"] for ix in insp.get_indexes("schedule_executions")}
+        assert "idx_executions_queued" in index_names
 
 
 # ---------------------------------------------------------------------------

@@ -42,6 +42,9 @@
           <!-- MCP Keys Tab Content (extracted to component, #302) -->
           <McpKeysTab v-if="activeTab === 'mcp-keys'" />
 
+          <!-- #5 — Security / Two-Factor (enterprise, gated by `2fa`) -->
+          <TwoFactorPanel v-if="activeTab === 'security'" />
+
           <!-- Platform Section -->
           <div v-if="activeTab === 'general'" class="bg-white dark:bg-gray-800 shadow dark:shadow-gray-900 rounded-lg">
             <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
@@ -147,6 +150,34 @@
                   <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
                     Model used for schedules and chats where no model is explicitly selected.
                     Changes take effect on the next execution — no restart required.
+                  </p>
+                </div>
+
+                <!-- Default Access Policy (#1129) — secure-by-default require_email -->
+                <div v-if="isAdmin" class="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
+                  <label class="flex items-center justify-between cursor-pointer">
+                    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Require verified email for new agents
+                    </span>
+                    <input
+                      type="checkbox"
+                      v-model="defaultRequireEmail"
+                      :disabled="savingDefaultAccessPolicy"
+                      @change="saveDefaultAccessPolicy"
+                      class="h-4 w-4 text-action-primary-600 border-gray-300 dark:border-gray-600 rounded focus:ring-action-primary-500 disabled:opacity-50"
+                    />
+                  </label>
+                  <div v-if="defaultAccessPolicySaveSuccess" class="mt-1 flex items-center text-sm text-status-success-600 dark:text-status-success-400">
+                    <svg class="h-4 w-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                    Saved
+                  </div>
+                  <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                    Secure-by-default. When on, newly created agents require a verified email on
+                    incoming DMs / public chat / shared access. Applies to <strong>new agents
+                    only</strong> — existing agents keep their current setting, and owners can
+                    override per agent in the agent's Sharing tab.
                   </p>
                 </div>
               </div>
@@ -1062,7 +1093,7 @@ Example:
               <dl v-else-if="buildInfo.info.value" class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
                 <div>
                   <dt class="text-gray-500 dark:text-gray-400">Version</dt>
-                  <dd class="font-mono text-gray-900 dark:text-white">{{ buildInfo.info.value.version }}</dd>
+                  <dd class="font-mono text-gray-900 dark:text-white">{{ buildInfo.displayVersion.value }}</dd>
                 </div>
                 <div>
                   <dt class="text-gray-500 dark:text-gray-400">Branch</dt>
@@ -1879,12 +1910,17 @@ import { useSettingsStore } from '../stores/settings'
 import { useEnterpriseStore } from '../stores/enterprise'
 import NavBar from '../components/NavBar.vue'
 import McpKeysTab from '../components/settings/McpKeysTab.vue'
+import TwoFactorPanel from '../components/settings/TwoFactorPanel.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 
 const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 const settingsStore = useSettingsStore()
+// Declared early: visibleTabs (and thus the activeTab initializer below) reads
+// it during setup to gate the enterprise-only Security tab (#5). Declaring it
+// later would hit the temporal dead zone and blank the whole Settings page.
+const enterpriseStore = useEnterpriseStore()
 
 // #926: cached fetch of /api/version (singleton shared with NavBar).
 const buildInfo = useBuildInfo()
@@ -1905,11 +1941,17 @@ const ALL_TABS = [
   { id: 'access',       label: 'Access',       adminOnly: true  },
   { id: 'integrations', label: 'Integrations', adminOnly: true  },
   { id: 'mcp-keys',     label: 'MCP Keys',     adminOnly: false },
+  { id: 'security',     label: 'Security',     adminOnly: false, requires: '2fa' },
   { id: 'agents',       label: 'Agents',       adminOnly: true  },
 ]
 const { isAdmin } = useRole()
 const visibleTabs = computed(() =>
-  ALL_TABS.filter(t => isAdmin.value || !t.adminOnly)
+  ALL_TABS.filter(t => {
+    // #5 — the Security (2FA) tab only appears when the enterprise `2fa`
+    // feature is entitled; otherwise it's hidden in OSS-only builds.
+    if (t.requires) return enterpriseStore.isEntitled(t.requires)
+    return isAdmin.value || !t.adminOnly
+  })
 )
 const validTabIds = computed(() => visibleTabs.value.map(t => t.id))
 const DEFAULT_TAB = computed(() =>
@@ -1947,7 +1989,7 @@ const usersList = ref([])
 const loadingUsers = ref(false)
 
 // #995 — enterprise per-user activity audit (gated by user_management).
-const enterpriseStore = useEnterpriseStore()
+// (enterpriseStore is declared near the top — visibleTabs needs it during setup.)
 const umEntitled = computed(() => enterpriseStore.isEntitled('user_management'))
 const activityUser = ref(null)
 const activityData = ref(null)
@@ -2070,6 +2112,11 @@ const publicUrlCurrent = ref('')
 const platformDefaultModelValue = ref('claude-sonnet-4-6')
 const savingPlatformDefaultModel = ref(false)
 const platformDefaultModelSaveSuccess = ref(false)
+
+// #1129: fleet-wide default access policy (require verified email for new agents)
+const defaultRequireEmail = ref(true)
+const savingDefaultAccessPolicy = ref(false)
+const defaultAccessPolicySaveSuccess = ref(false)
 const savingPublicUrl = ref(false)
 const publicUrlSaveSuccess = ref(false)
 
@@ -2231,6 +2278,7 @@ async function loadSettings() {
     await Promise.all([
       loadPublicUrl(),
       loadPlatformDefaultModel(),
+      loadDefaultAccessPolicy(),
       loadApiKeyStatus(),
       loadSlackSettings(),
       loadSlackTransportStatus(),
@@ -2454,6 +2502,33 @@ async function savePlatformDefaultModel() {
     error.value = e.response?.data?.detail || 'Failed to save default model'
   } finally {
     savingPlatformDefaultModel.value = false
+  }
+}
+
+// #1129: fleet-wide default access policy
+async function loadDefaultAccessPolicy() {
+  try {
+    const policy = await settingsStore.getAgentDefaultAccessPolicy()
+    defaultRequireEmail.value = !!policy.require_email
+  } catch {
+    // non-critical; UI shows the code-default (ON)
+  }
+}
+
+async function saveDefaultAccessPolicy() {
+  savingDefaultAccessPolicy.value = true
+  defaultAccessPolicySaveSuccess.value = false
+  try {
+    const res = await settingsStore.setAgentDefaultRequireEmail(defaultRequireEmail.value)
+    defaultRequireEmail.value = !!res.require_email
+    defaultAccessPolicySaveSuccess.value = true
+    setTimeout(() => { defaultAccessPolicySaveSuccess.value = false }, 3000)
+  } catch (e) {
+    error.value = e.response?.data?.detail || 'Failed to save default access policy'
+    // revert the toggle to the persisted value on failure
+    await loadDefaultAccessPolicy()
+  } finally {
+    savingDefaultAccessPolicy.value = false
   }
 }
 

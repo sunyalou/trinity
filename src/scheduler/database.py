@@ -6,6 +6,7 @@ Uses the same SQLite database as the main backend.
 """
 
 import json
+import os
 import secrets
 import sqlite3
 import logging
@@ -19,6 +20,84 @@ from .models import Schedule, ScheduleExecution, ExecutionStatus, ProcessSchedul
 logger = logging.getLogger(__name__)
 
 
+def _scheduler_pg_url() -> Optional[str]:
+    """Return the PostgreSQL ``DATABASE_URL`` if configured, else None (#300).
+
+    The scheduler shares the backend's database. When the backend runs on
+    PostgreSQL, ``DATABASE_URL`` is a ``postgresql://`` URL and the scheduler
+    MUST read from PostgreSQL too — otherwise it reads a stale SQLite file and
+    silently never fires a schedule. When ``DATABASE_URL`` is unset (or
+    ``sqlite://``), the scheduler keeps using the shared SQLite file at
+    ``database_path`` exactly as before.
+    """
+    url = os.getenv("DATABASE_URL", "").strip()
+    if url and not url.startswith("sqlite"):
+        return url
+    return None
+
+
+# IntegrityError across both backends (psycopg2 only importable in PG deploys).
+_INTEGRITY_ERRORS: tuple = (sqlite3.IntegrityError,)
+try:  # pragma: no cover - depends on deployment
+    import psycopg2 as _psycopg2
+    _INTEGRITY_ERRORS = (sqlite3.IntegrityError, _psycopg2.IntegrityError)
+except Exception:
+    pass
+
+
+class _PgCursor:
+    """Adapt a psycopg2 cursor to the sqlite3 cursor API the scheduler uses:
+    qmark (``?``) params, Python-bool→int coercion for INTEGER columns, and
+    dict-style row access (the psycopg2 RealDictCursor returns mappings, so the
+    existing ``row["col"]`` access works unchanged). The scheduler's SQL is
+    plain ANSI with no ``%``/``LIKE``/sqlite-only constructs, so the ``?``→``%s``
+    rewrite is safe.
+    """
+
+    def __init__(self, cur):
+        self._cur = cur
+
+    def execute(self, sql, params=()):
+        pg_params = (
+            tuple(int(p) if isinstance(p, bool) else p for p in params)
+            if params else params
+        )
+        self._cur.execute(sql.replace("?", "%s"), pg_params)
+        return self
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
+    def close(self):
+        self._cur.close()
+
+
+class _PgConn:
+    """Minimal connection shim exposing the sqlite3 conn API used by the scheduler."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def cursor(self):
+        return _PgCursor(self._conn.cursor())
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+
 class SchedulerDatabase:
     """
     Database access for the scheduler service.
@@ -29,13 +108,28 @@ class SchedulerDatabase:
     def __init__(self, database_path: str = None):
         """Initialize database with path."""
         self.database_path = database_path or config.database_path
-        logger.info(f"Scheduler database initialized: {self.database_path}")
+        if _scheduler_pg_url():
+            logger.info("Scheduler database: PostgreSQL (via DATABASE_URL)")
+        else:
+            logger.info(f"Scheduler database initialized: {self.database_path}")
 
     @contextmanager
     def get_connection(self):
-        """Get a database connection with row factory."""
-        conn = sqlite3.connect(self.database_path)
-        conn.row_factory = sqlite3.Row
+        """Get a database connection with dict-style row access.
+
+        PostgreSQL when ``DATABASE_URL`` points at it (#300), else the shared
+        SQLite file. Both yield connections whose cursors accept ``?`` params
+        and return ``row["col"]``-accessible rows, so all query methods below
+        are backend-agnostic and unchanged.
+        """
+        pg_url = _scheduler_pg_url()
+        if pg_url:
+            import psycopg2
+            from psycopg2.extras import RealDictCursor
+            conn = _PgConn(psycopg2.connect(pg_url, cursor_factory=RealDictCursor))
+        else:
+            conn = sqlite3.connect(self.database_path)
+            conn.row_factory = sqlite3.Row
         try:
             yield conn
         finally:
@@ -716,7 +810,7 @@ class SchedulerDatabase:
                     created_at=datetime.fromisoformat(now),
                     updated_at=datetime.fromisoformat(now)
                 )
-            except sqlite3.IntegrityError:
+            except _INTEGRITY_ERRORS:
                 logger.warning(f"Process schedule already exists: {process_id}/{trigger_id}")
                 return None
 

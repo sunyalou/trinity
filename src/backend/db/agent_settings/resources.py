@@ -2,11 +2,19 @@
 Agent resource limits, parallel capacity, and execution timeout operations.
 
 Handles memory/CPU limits, max parallel tasks, and task timeout settings.
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL. Queries are built from the ``agent_ownership`` table
+handle in ``db/tables.py``; the engine is resolved via ``db/engine.py``. Method
+signatures, return shapes, and behavior are unchanged.
 """
 
 from typing import Optional, Dict
 
-from db.connection import get_db_connection
+from sqlalchemy import select, update, func
+
+from ..engine import get_engine
+from ..tables import agent_ownership
 
 
 class ResourcesMixin:
@@ -24,24 +32,26 @@ class ResourcesMixin:
         - memory: Memory limit (e.g., "8g", "16g")
         - cpu: CPU limit (e.g., "4", "8")
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT memory_limit, cpu_limit
-                FROM agent_ownership WHERE agent_name = ? AND deleted_at IS NULL
-            """, (agent_name,))
-            row = cursor.fetchone()
-            if row:
-                memory = row["memory_limit"]
-                cpu = row["cpu_limit"]
-                # Return None if no custom limits set
-                if memory is None and cpu is None:
-                    return None
-                return {
-                    "memory": memory,
-                    "cpu": cpu
-                }
-            return None
+        stmt = select(
+            agent_ownership.c.memory_limit,
+            agent_ownership.c.cpu_limit,
+        ).where(
+            (agent_ownership.c.agent_name == agent_name)
+            & (agent_ownership.c.deleted_at.is_(None))
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if row:
+            memory = row["memory_limit"]
+            cpu = row["cpu_limit"]
+            # Return None if no custom limits set
+            if memory is None and cpu is None:
+                return None
+            return {
+                "memory": memory,
+                "cpu": cpu
+            }
+        return None
 
     def set_resource_limits(self, agent_name: str, memory: Optional[str] = None, cpu: Optional[str] = None) -> bool:
         """
@@ -55,14 +65,14 @@ class ResourcesMixin:
         Returns:
             True if update succeeded, False otherwise
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_ownership SET memory_limit = ?, cpu_limit = ?
-                WHERE agent_name = ?
-            """, (memory, cpu, agent_name))
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = (
+            update(agent_ownership)
+            .where(agent_ownership.c.agent_name == agent_name)
+            .values(memory_limit=memory, cpu_limit=cpu)
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     # =========================================================================
     # Parallel Capacity (CAPACITY-001)
@@ -78,16 +88,17 @@ class ResourcesMixin:
         Returns:
             Maximum number of parallel tasks allowed (1-10, default 3)
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT COALESCE(max_parallel_tasks, 3) as max_parallel_tasks
-                FROM agent_ownership WHERE agent_name = ? AND deleted_at IS NULL
-            """, (agent_name,))
-            row = cursor.fetchone()
-            if row:
-                return row["max_parallel_tasks"]
-            return 3  # Default
+        stmt = select(
+            func.coalesce(agent_ownership.c.max_parallel_tasks, 3).label("max_parallel_tasks")
+        ).where(
+            (agent_ownership.c.agent_name == agent_name)
+            & (agent_ownership.c.deleted_at.is_(None))
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if row:
+            return row["max_parallel_tasks"]
+        return 3  # Default
 
     def set_max_parallel_tasks(self, agent_name: str, max_tasks: int) -> bool:
         """
@@ -104,14 +115,14 @@ class ResourcesMixin:
         if max_tasks < 1 or max_tasks > 10:
             return False
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_ownership SET max_parallel_tasks = ?
-                WHERE agent_name = ?
-            """, (max_tasks, agent_name))
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = (
+            update(agent_ownership)
+            .where(agent_ownership.c.agent_name == agent_name)
+            .values(max_parallel_tasks=max_tasks)
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     def get_all_agents_parallel_capacity(self) -> Dict[str, int]:
         """
@@ -120,14 +131,15 @@ class ResourcesMixin:
         Returns:
             Dict mapping agent_name to max_parallel_tasks
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT agent_name, COALESCE(max_parallel_tasks, 3) as max_parallel_tasks
-                FROM agent_ownership
-                WHERE deleted_at IS NULL
-            """)
-            return {row["agent_name"]: row["max_parallel_tasks"] for row in cursor.fetchall()}
+        stmt = select(
+            agent_ownership.c.agent_name,
+            func.coalesce(agent_ownership.c.max_parallel_tasks, 3).label("max_parallel_tasks"),
+        ).where(agent_ownership.c.deleted_at.is_(None))
+        with get_engine().connect() as conn:
+            return {
+                row["agent_name"]: row["max_parallel_tasks"]
+                for row in conn.execute(stmt).mappings()
+            }
 
     # =========================================================================
     # Dispatch Circuit Breaker opt-in (RELIABILITY-007, #526)
@@ -140,16 +152,17 @@ class ResourcesMixin:
         caller gates again on the global ``DISPATCH_BREAKER_ENABLED`` master
         switch so both must be on for the breaker to engage (D7/D11).
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT COALESCE(circuit_breaker_enabled, 0) as circuit_breaker_enabled
-                FROM agent_ownership WHERE agent_name = ? AND deleted_at IS NULL
-            """, (agent_name,))
-            row = cursor.fetchone()
-            if row:
-                return bool(row["circuit_breaker_enabled"])
-            return False
+        stmt = select(
+            func.coalesce(agent_ownership.c.circuit_breaker_enabled, 0).label("circuit_breaker_enabled")
+        ).where(
+            (agent_ownership.c.agent_name == agent_name)
+            & (agent_ownership.c.deleted_at.is_(None))
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if row:
+            return bool(row["circuit_breaker_enabled"])
+        return False
 
     def set_circuit_breaker_enabled(self, agent_name: str, enabled: bool) -> bool:
         """Enable/disable the per-agent dispatch breaker.
@@ -157,28 +170,32 @@ class ResourcesMixin:
         Returns:
             True if the row was updated.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_ownership SET circuit_breaker_enabled = ?
-                WHERE agent_name = ? AND deleted_at IS NULL
-            """, (1 if enabled else 0, agent_name))
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = (
+            update(agent_ownership)
+            .where(
+                (agent_ownership.c.agent_name == agent_name)
+                & (agent_ownership.c.deleted_at.is_(None))
+            )
+            .values(circuit_breaker_enabled=1 if enabled else 0)
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     def get_all_circuit_breaker_enabled(self) -> Dict[str, bool]:
         """Bulk opt-in flags for all live agents.
 
         Powers the slots-dashboard circuit badge without an N+1 SELECT.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT agent_name, COALESCE(circuit_breaker_enabled, 0) as cbe
-                FROM agent_ownership
-                WHERE deleted_at IS NULL
-            """)
-            return {row["agent_name"]: bool(row["cbe"]) for row in cursor.fetchall()}
+        stmt = select(
+            agent_ownership.c.agent_name,
+            func.coalesce(agent_ownership.c.circuit_breaker_enabled, 0).label("cbe"),
+        ).where(agent_ownership.c.deleted_at.is_(None))
+        with get_engine().connect() as conn:
+            return {
+                row["agent_name"]: bool(row["cbe"])
+                for row in conn.execute(stmt).mappings()
+            }
 
     # =========================================================================
     # Execution Timeout (TIMEOUT-001)
@@ -194,16 +211,17 @@ class ResourcesMixin:
         Returns:
             Timeout in seconds (default 3600)
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT COALESCE(execution_timeout_seconds, 3600) as execution_timeout_seconds
-                FROM agent_ownership WHERE agent_name = ? AND deleted_at IS NULL
-            """, (agent_name,))
-            row = cursor.fetchone()
-            if row:
-                return row["execution_timeout_seconds"]
-            return 3600  # Default 60 minutes (#665)
+        stmt = select(
+            func.coalesce(agent_ownership.c.execution_timeout_seconds, 3600).label("execution_timeout_seconds")
+        ).where(
+            (agent_ownership.c.agent_name == agent_name)
+            & (agent_ownership.c.deleted_at.is_(None))
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if row:
+            return row["execution_timeout_seconds"]
+        return 3600  # Default 60 minutes (#665)
 
     def get_all_execution_timeouts(self) -> Dict[str, int]:
         """
@@ -212,14 +230,15 @@ class ResourcesMixin:
         Returns:
             Dict mapping agent_name to timeout in seconds.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT agent_name, COALESCE(execution_timeout_seconds, 3600) as timeout
-                FROM agent_ownership
-                WHERE deleted_at IS NULL
-            """)
-            return {row["agent_name"]: row["timeout"] for row in cursor.fetchall()}
+        stmt = select(
+            agent_ownership.c.agent_name,
+            func.coalesce(agent_ownership.c.execution_timeout_seconds, 3600).label("timeout"),
+        ).where(agent_ownership.c.deleted_at.is_(None))
+        with get_engine().connect() as conn:
+            return {
+                row["agent_name"]: row["timeout"]
+                for row in conn.execute(stmt).mappings()
+            }
 
     def set_execution_timeout(self, agent_name: str, timeout_seconds: int) -> bool:
         """
@@ -236,14 +255,14 @@ class ResourcesMixin:
         if timeout_seconds < 60 or timeout_seconds > 7200:
             return False
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_ownership SET execution_timeout_seconds = ?
-                WHERE agent_name = ?
-            """, (timeout_seconds, agent_name))
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = (
+            update(agent_ownership)
+            .where(agent_ownership.c.agent_name == agent_name)
+            .values(execution_timeout_seconds=timeout_seconds)
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     # =========================================================================
     # Backlog Depth (BACKLOG-001)
@@ -256,19 +275,17 @@ class ResourcesMixin:
         The backlog holds async tasks that arrived while all parallel slots were
         busy. When a slot frees, the oldest queued item drains automatically.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT COALESCE(max_backlog_depth, 50) as max_backlog_depth
-                FROM agent_ownership WHERE agent_name = ? AND deleted_at IS NULL
-                """,
-                (agent_name,),
-            )
-            row = cursor.fetchone()
-            if row:
-                return row["max_backlog_depth"]
-            return 50
+        stmt = select(
+            func.coalesce(agent_ownership.c.max_backlog_depth, 50).label("max_backlog_depth")
+        ).where(
+            (agent_ownership.c.agent_name == agent_name)
+            & (agent_ownership.c.deleted_at.is_(None))
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if row:
+            return row["max_backlog_depth"]
+        return 50
 
     def set_max_backlog_depth(self, agent_name: str, depth: int) -> bool:
         """
@@ -278,14 +295,11 @@ class ResourcesMixin:
         """
         if depth < 1 or depth > 200:
             return False
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE agent_ownership SET max_backlog_depth = ?
-                WHERE agent_name = ?
-                """,
-                (depth, agent_name),
-            )
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = (
+            update(agent_ownership)
+            .where(agent_ownership.c.agent_name == agent_name)
+            .values(max_backlog_depth=depth)
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0

@@ -4,10 +4,32 @@ Agent metadata batch queries and rename operations.
 Handles N+1 query optimization and cross-table agent rename.
 """
 
-import sqlite3
 from typing import List, Dict
 
-from db.connection import get_db_connection
+from sqlalchemy import select, update, text
+from sqlalchemy.exc import IntegrityError
+
+from ..engine import get_engine
+from ..tables import (
+    agent_ownership,
+    agent_sharing,
+    agent_schedules,
+    schedule_executions,
+    chat_sessions,
+    chat_messages,
+    agent_activities,
+    agent_permissions,
+    agent_shared_folder_config,
+    agent_git_config,
+    agent_skills,
+    agent_tags,
+    agent_public_links,
+    mcp_api_keys,
+    agent_health_checks,
+    agent_dashboard_values,
+    monitoring_alert_cooldowns,
+    agent_shared_files,
+)
 
 
 class MetadataMixin:
@@ -30,34 +52,36 @@ class MetadataMixin:
         Returns:
             List of agent names the user can access (owned + shared, or all if admin)
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        if is_admin:
+            # Admin sees all live agents. Soft-deleted agents (#834)
+            # are excluded — admins recover via the dedicated admin
+            # endpoint, not via the user-facing accessible list.
+            stmt = select(agent_ownership.c.agent_name).where(
+                agent_ownership.c.deleted_at.is_(None)
+            )
+            with get_engine().connect() as conn:
+                return [row["agent_name"] for row in conn.execute(stmt).mappings()]
 
-            if is_admin:
-                # Admin sees all live agents. Soft-deleted agents (#834)
-                # are excluded — admins recover via the dedicated admin
-                # endpoint, not via the user-facing accessible list.
-                cursor.execute(
-                    "SELECT agent_name FROM agent_ownership WHERE deleted_at IS NULL"
-                )
-                return [row["agent_name"] for row in cursor.fetchall()]
-
-            # Get owned + shared agents. agent_sharing rows for a
-            # soft-deleted agent are filtered out via the join to
-            # agent_ownership; without it, a shared-with user would see
-            # the deleted agent's name in their accessible list.
-            cursor.execute("""
-                SELECT DISTINCT agent_name FROM (
-                    SELECT ao.agent_name FROM agent_ownership ao
-                    JOIN users u ON ao.owner_id = u.id
-                    WHERE LOWER(u.email) = LOWER(?) AND ao.deleted_at IS NULL
-                    UNION
-                    SELECT s.agent_name FROM agent_sharing s
-                    JOIN agent_ownership ao2 ON ao2.agent_name = s.agent_name
-                    WHERE LOWER(s.shared_with_email) = LOWER(?) AND ao2.deleted_at IS NULL
-                )
-            """, (user_email, user_email))
-            return [row["agent_name"] for row in cursor.fetchall()]
+        # Get owned + shared agents. agent_sharing rows for a
+        # soft-deleted agent are filtered out via the join to
+        # agent_ownership; without it, a shared-with user would see
+        # the deleted agent's name in their accessible list.
+        stmt = text("""
+            SELECT DISTINCT agent_name FROM (
+                SELECT ao.agent_name FROM agent_ownership ao
+                JOIN users u ON ao.owner_id = u.id
+                WHERE LOWER(u.email) = LOWER(:user_email) AND ao.deleted_at IS NULL
+                UNION
+                SELECT s.agent_name FROM agent_sharing s
+                JOIN agent_ownership ao2 ON ao2.agent_name = s.agent_name
+                WHERE LOWER(s.shared_with_email) = LOWER(:user_email) AND ao2.deleted_at IS NULL
+            ) AS accessible
+        """)
+        with get_engine().connect() as conn:
+            return [
+                row["agent_name"]
+                for row in conn.execute(stmt, {"user_email": user_email}).mappings()
+            ]
 
     # =========================================================================
     # Agent Rename (RENAME-001)
@@ -93,18 +117,18 @@ class MetadataMixin:
         Returns:
             True if rename succeeded, False if failed
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        with get_engine().begin() as conn:
             try:
                 # Check if old agent exists AND is live (not soft-deleted).
                 # Renaming a soft-deleted agent is meaningless; the row
                 # is on its way out.
-                cursor.execute(
-                    "SELECT 1 FROM agent_ownership "
-                    "WHERE agent_name = ? AND deleted_at IS NULL",
-                    (old_name,),
-                )
-                if not cursor.fetchone():
+                exists = conn.execute(
+                    select(1).where(
+                        agent_ownership.c.agent_name == old_name,
+                        agent_ownership.c.deleted_at.is_(None),
+                    )
+                ).first()
+                if not exists:
                     return False
 
                 # Check if new name is already taken. Intentionally does
@@ -112,129 +136,149 @@ class MetadataMixin:
                 # still reserve the name during the retention window
                 # (#834 acceptance criterion: "Agent name remains
                 # reserved for the retention period").
-                cursor.execute("SELECT 1 FROM agent_ownership WHERE agent_name = ?", (new_name,))
-                if cursor.fetchone():
+                taken = conn.execute(
+                    select(1).where(agent_ownership.c.agent_name == new_name)
+                ).first()
+                if taken:
                     return False
 
                 # Update all tables in order
                 # Primary table
-                cursor.execute(
-                    "UPDATE agent_ownership SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(agent_ownership)
+                    .where(agent_ownership.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Sharing
-                cursor.execute(
-                    "UPDATE agent_sharing SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(agent_sharing)
+                    .where(agent_sharing.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Schedules
-                cursor.execute(
-                    "UPDATE agent_schedules SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(agent_schedules)
+                    .where(agent_schedules.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Executions
-                cursor.execute(
-                    "UPDATE schedule_executions SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(schedule_executions)
+                    .where(schedule_executions.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Chat sessions
-                cursor.execute(
-                    "UPDATE chat_sessions SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(chat_sessions)
+                    .where(chat_sessions.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Chat messages
-                cursor.execute(
-                    "UPDATE chat_messages SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(chat_messages)
+                    .where(chat_messages.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Activities
-                cursor.execute(
-                    "UPDATE agent_activities SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(agent_activities)
+                    .where(agent_activities.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Permissions (both source and target)
-                cursor.execute(
-                    "UPDATE agent_permissions SET source_agent = ? WHERE source_agent = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(agent_permissions)
+                    .where(agent_permissions.c.source_agent == old_name)
+                    .values(source_agent=new_name)
                 )
-                cursor.execute(
-                    "UPDATE agent_permissions SET target_agent = ? WHERE target_agent = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(agent_permissions)
+                    .where(agent_permissions.c.target_agent == old_name)
+                    .values(target_agent=new_name)
                 )
 
                 # Shared folder config
-                cursor.execute(
-                    "UPDATE agent_shared_folder_config SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(agent_shared_folder_config)
+                    .where(agent_shared_folder_config.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Git config
-                cursor.execute(
-                    "UPDATE agent_git_config SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(agent_git_config)
+                    .where(agent_git_config.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Skills
-                cursor.execute(
-                    "UPDATE agent_skills SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(agent_skills)
+                    .where(agent_skills.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Tags
-                cursor.execute(
-                    "UPDATE agent_tags SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(agent_tags)
+                    .where(agent_tags.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Public links
-                cursor.execute(
-                    "UPDATE agent_public_links SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(agent_public_links)
+                    .where(agent_public_links.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # MCP API keys
-                cursor.execute(
-                    "UPDATE mcp_api_keys SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(mcp_api_keys)
+                    .where(mcp_api_keys.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Health checks
-                cursor.execute(
-                    "UPDATE agent_health_checks SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(agent_health_checks)
+                    .where(agent_health_checks.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Dashboard values
-                cursor.execute(
-                    "UPDATE agent_dashboard_values SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(agent_dashboard_values)
+                    .where(agent_dashboard_values.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Monitoring cooldowns
-                cursor.execute(
-                    "UPDATE monitoring_alert_cooldowns SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(monitoring_alert_cooldowns)
+                    .where(monitoring_alert_cooldowns.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
                 # Shared files (outbound — amazing-file-outbound).
                 # FK has ON UPDATE CASCADE as belt-and-suspenders; this keeps
                 # the explicit cascade list complete for visibility.
-                cursor.execute(
-                    "UPDATE agent_shared_files SET agent_name = ? WHERE agent_name = ?",
-                    (new_name, old_name)
+                conn.execute(
+                    update(agent_shared_files)
+                    .where(agent_shared_files.c.agent_name == old_name)
+                    .values(agent_name=new_name)
                 )
 
-                conn.commit()
                 return True
 
-            except sqlite3.IntegrityError:
+            except IntegrityError:
                 conn.rollback()
                 return False
 
@@ -277,39 +321,41 @@ class MetadataMixin:
             - github_repo, github_branch
             - is_shared_with_user (bool)
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        # Single query that joins all needed tables. Kept as text() — the
+        # multi-LEFT-JOIN with COALESCE/CASE is materially clearer than the
+        # Core equivalent and is portable (no sqlite-only constructs).
+        stmt = text("""
+            SELECT
+                ao.agent_name,
+                ao.owner_id,
+                u.username as owner_username,
+                u.email as owner_email,
+                COALESCE(ao.is_system, 0) as is_system,
+                COALESCE(ao.autonomy_enabled, 0) as autonomy_enabled,
+                COALESCE(ao.read_only_mode, 0) as read_only_enabled,
+                COALESCE(ao.use_platform_api_key, 1) as use_platform_api_key,
+                ao.memory_limit,
+                ao.cpu_limit,
+                ao.avatar_updated_at,
+                gc.github_repo,
+                gc.working_branch as github_branch,
+                CASE
+                    WHEN s.id IS NOT NULL THEN 1
+                    ELSE 0
+                END as is_shared_with_user
+            FROM agent_ownership ao
+            LEFT JOIN users u ON ao.owner_id = u.id
+            LEFT JOIN agent_git_config gc ON gc.agent_name = ao.agent_name
+            LEFT JOIN agent_sharing s ON s.agent_name = ao.agent_name
+                AND LOWER(s.shared_with_email) = LOWER(:user_email)
+            WHERE ao.deleted_at IS NULL
+        """)
 
-            # Single query that joins all needed tables
-            cursor.execute("""
-                SELECT
-                    ao.agent_name,
-                    ao.owner_id,
-                    u.username as owner_username,
-                    u.email as owner_email,
-                    COALESCE(ao.is_system, 0) as is_system,
-                    COALESCE(ao.autonomy_enabled, 0) as autonomy_enabled,
-                    COALESCE(ao.read_only_mode, 0) as read_only_enabled,
-                    COALESCE(ao.use_platform_api_key, 1) as use_platform_api_key,
-                    ao.memory_limit,
-                    ao.cpu_limit,
-                    ao.avatar_updated_at,
-                    gc.github_repo,
-                    gc.working_branch as github_branch,
-                    CASE
-                        WHEN s.id IS NOT NULL THEN 1
-                        ELSE 0
-                    END as is_shared_with_user
-                FROM agent_ownership ao
-                LEFT JOIN users u ON ao.owner_id = u.id
-                LEFT JOIN agent_git_config gc ON gc.agent_name = ao.agent_name
-                LEFT JOIN agent_sharing s ON s.agent_name = ao.agent_name
-                    AND LOWER(s.shared_with_email) = LOWER(?)
-                WHERE ao.deleted_at IS NULL  -- #834: exclude soft-deleted agents
-            """, (user_email or '',))
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt, {"user_email": user_email or ""}).mappings()
 
             result = {}
-            for row in cursor.fetchall():
+            for row in rows:
                 result[row["agent_name"]] = {
                     "owner_id": row["owner_id"],
                     "owner_username": row["owner_username"],

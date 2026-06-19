@@ -18,7 +18,6 @@ import os
 import sys
 import tempfile
 import sqlite3
-import types
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -38,12 +37,35 @@ if _backend_path not in sys.path:
     sys.path.insert(0, _backend_path)
 
 
+# ---------------------------------------------------------------------------
+# Neutralize the parent conftest's session-scoped autouse `cleanup_after_test`
+# fixture, which depends on `api_client` and therefore requires a LIVE backend
+# (it authenticates over HTTP). These are pure DB-layer unit tests with no
+# backend — shadow both fixtures at module scope so collection doesn't try to
+# open an HTTP connection.
+# ---------------------------------------------------------------------------
 @pytest.fixture
-def sharing_harness(monkeypatch):
-    """SharingMixin wired to an in-memory agent_sharing + access_requests DB."""
-    db_file = tempfile.NamedTemporaryFile(suffix="_gate_test.db", delete=False)
-    db_file.close()
-    db_path = db_file.name
+def api_client():
+    return None
+
+
+@pytest.fixture(autouse=True)
+def cleanup_after_test():
+    yield
+
+
+@pytest.fixture
+def sharing_harness(monkeypatch, tmp_path):
+    """SharingMixin (#300 SQLAlchemy seam) wired to a temp-file agent_sharing +
+    access_requests DB.
+
+    The converted `db/agent_settings/sharing.py` routes all queries through
+    `get_engine()` (which reads `DATABASE_URL`), so the temp DB is selected by
+    setenv'ing `DATABASE_URL` at the schema file and disposing the URL-keyed
+    engine cache (before ops run AND at teardown). The schema is built on the
+    SAME file the engine opens.
+    """
+    db_path = str(tmp_path / "gate_test.db")
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -79,35 +101,14 @@ def sharing_harness(monkeypatch):
     conn.commit()
     conn.close()
 
-    class _Ctx:
-        def __enter__(self):
-            self.c = sqlite3.connect(db_path)
-            self.c.row_factory = sqlite3.Row
-            return self.c
+    # Route the SQLAlchemy engine (#300) at the temp file. The engine cache is
+    # keyed by URL, so dispose after setting DATABASE_URL so the temp file's
+    # engine is the one created.
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    import db.engine as engine_mod
+    engine_mod.dispose_engines()
 
-        def __exit__(self, *a):
-            self.c.close()
-
-    fake_conn_mod = types.ModuleType("db.connection")
-    fake_conn_mod.get_db_connection = lambda: _Ctx()
-    monkeypatch.setitem(sys.modules, "db.connection", fake_conn_mod)
-
-    class _PermissiveModule(types.ModuleType):
-        def __getattr__(self, name):
-            return MagicMock
-
-    fake_models_mod = _PermissiveModule("db_models")
-    monkeypatch.setitem(sys.modules, "db_models", fake_models_mod)
-
-    import importlib.util
-
-    sharing_path = os.path.join(_backend_path, "db", "agent_settings", "sharing.py")
-    spec = importlib.util.spec_from_file_location(
-        "db_agent_settings_sharing_446", sharing_path
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    SharingMixin = mod.SharingMixin
+    from db.agent_settings.sharing import SharingMixin
 
     class _SharingOps(SharingMixin):
         def __init__(self):
@@ -118,7 +119,7 @@ def sharing_harness(monkeypatch):
             return self._owner
 
     yield _SharingOps(), db_path
-    os.unlink(db_path)
+    engine_mod.dispose_engines()
 
 
 def _seed_share(db_path: str, agent: str, email_lower: str, sharer_id: str = "1") -> None:

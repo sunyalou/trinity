@@ -3,16 +3,39 @@ Notification operations for agent notifications (NOTIF-001).
 
 Enables agents to send structured notifications to the Trinity platform.
 Notifications are persisted and broadcast via WebSocket.
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL. Queries are built from the ``agent_notifications``
+table in ``db/tables.py`` (dialect-agnostic expressions, no ``?``/``%s``
+placeholders), and the engine is resolved via ``db/engine.py``.
 """
 
 import json
 import secrets
 from typing import List, Optional
-from datetime import datetime
 
-from db.connection import get_db_connection
+from sqlalchemy import select, insert, update, delete, func, and_
+
+from .engine import get_engine
+from .tables import agent_notifications
 from db_models import Notification, NotificationCreate
 from utils.helpers import utc_now_iso
+
+# Columns returned for a full notification record (stable ordering for reads).
+_NOTIFICATION_COLUMNS = (
+    agent_notifications.c.id,
+    agent_notifications.c.agent_name,
+    agent_notifications.c.notification_type,
+    agent_notifications.c.title,
+    agent_notifications.c.message,
+    agent_notifications.c.priority,
+    agent_notifications.c.category,
+    agent_notifications.c.metadata,
+    agent_notifications.c.status,
+    agent_notifications.c.created_at,
+    agent_notifications.c.acknowledged_at,
+    agent_notifications.c.acknowledged_by,
+)
 
 
 class NotificationOperations:
@@ -39,26 +62,21 @@ class NotificationOperations:
         # Serialize metadata to JSON if provided
         metadata_json = json.dumps(data.metadata) if data.metadata else None
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO agent_notifications (
-                    id, agent_name, notification_type, title, message,
-                    priority, category, metadata, status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                notification_id,
-                agent_name,
-                data.notification_type,
-                data.title[:200],  # Enforce max length
-                data.message,
-                data.priority,
-                data.category,
-                metadata_json,
-                "pending",
-                now
-            ))
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                insert(agent_notifications).values(
+                    id=notification_id,
+                    agent_name=agent_name,
+                    notification_type=data.notification_type,
+                    title=data.title[:200],  # Enforce max length
+                    message=data.message,
+                    priority=data.priority,
+                    category=data.category,
+                    metadata=metadata_json,
+                    status="pending",
+                    created_at=now,
+                )
+            )
 
         return Notification(
             id=notification_id,
@@ -85,16 +103,11 @@ class NotificationOperations:
         Returns:
             The notification or None if not found
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, agent_name, notification_type, title, message,
-                       priority, category, metadata, status, created_at,
-                       acknowledged_at, acknowledged_by
-                FROM agent_notifications
-                WHERE id = ?
-            """, (notification_id,))
-            row = cursor.fetchone()
+        stmt = select(*_NOTIFICATION_COLUMNS).where(
+            agent_notifications.c.id == notification_id
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
 
         if not row:
             return None
@@ -122,39 +135,27 @@ class NotificationOperations:
         Returns:
             List of notifications
         """
-        query = """
-            SELECT id, agent_name, notification_type, title, message,
-                   priority, category, metadata, status, created_at,
-                   acknowledged_at, acknowledged_by
-            FROM agent_notifications
-            WHERE 1=1
-        """
-        params = []
+        conditions = []
 
         if agent_name:
-            query += " AND agent_name = ?"
-            params.append(agent_name)
+            conditions.append(agent_notifications.c.agent_name == agent_name)
 
         if status:
-            query += " AND status = ?"
-            params.append(status)
+            conditions.append(agent_notifications.c.status == status)
 
         if priority:
-            placeholders = ",".join("?" * len(priority))
-            query += f" AND priority IN ({placeholders})"
-            params.extend(priority)
+            conditions.append(agent_notifications.c.priority.in_(priority))
 
         if category:
-            query += " AND category = ?"
-            params.append(category)
+            conditions.append(agent_notifications.c.category == category)
 
-        query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        stmt = select(*_NOTIFICATION_COLUMNS)
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+        stmt = stmt.order_by(agent_notifications.c.created_at.desc()).limit(limit)
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
 
         return [self._row_to_notification(row) for row in rows]
 
@@ -198,24 +199,30 @@ class NotificationOperations:
         """
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_notifications
-                SET status = 'acknowledged',
-                    acknowledged_at = ?,
-                    acknowledged_by = ?
-                WHERE id = ? AND status = 'pending'
-            """, (now, acknowledged_by, notification_id))
-            conn.commit()
-
-            if cursor.rowcount == 0:
-                # Check if notification exists
-                cursor.execute(
-                    "SELECT id FROM agent_notifications WHERE id = ?",
-                    (notification_id,)
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_notifications)
+                .where(
+                    and_(
+                        agent_notifications.c.id == notification_id,
+                        agent_notifications.c.status == "pending",
+                    )
                 )
-                if not cursor.fetchone():
+                .values(
+                    status="acknowledged",
+                    acknowledged_at=now,
+                    acknowledged_by=acknowledged_by,
+                )
+            )
+
+            if result.rowcount == 0:
+                # Check if notification exists
+                exists = conn.execute(
+                    select(agent_notifications.c.id).where(
+                        agent_notifications.c.id == notification_id
+                    )
+                ).first()
+                if not exists:
                     return None
 
         return self.get_notification(notification_id)
@@ -237,21 +244,55 @@ class NotificationOperations:
         """
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE agent_notifications
-                SET status = 'dismissed',
-                    acknowledged_at = ?,
-                    acknowledged_by = ?
-                WHERE id = ?
-            """, (now, dismissed_by, notification_id))
-            conn.commit()
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_notifications)
+                .where(agent_notifications.c.id == notification_id)
+                .values(
+                    status="dismissed",
+                    acknowledged_at=now,
+                    acknowledged_by=dismissed_by,
+                )
+            )
 
-            if cursor.rowcount == 0:
+            if result.rowcount == 0:
                 return None
 
         return self.get_notification(notification_id)
+
+    def dismiss_all(
+        self,
+        dismissed_by: str,
+        agent_name: Optional[str] = None,
+        accessible_agent_names: Optional[set] = None,
+    ) -> int:
+        """Dismiss all non-dismissed notifications in one statement (#1017).
+
+        Targets pending AND acknowledged rows — a button named "Clear All"
+        must clear the visible feed, which shows both.
+
+        accessible_agent_names: None = no filter; empty set = no-op (a
+        zero-agent user must not touch anything); non-empty = SQL IN filter.
+
+        Returns the number of notifications dismissed.
+        """
+        if accessible_agent_names is not None and len(accessible_agent_names) == 0:
+            return 0
+
+        now = utc_now_iso()
+        conds = [agent_notifications.c.status.in_(("pending", "acknowledged"))]
+        if accessible_agent_names is not None:
+            conds.append(agent_notifications.c.agent_name.in_(sorted(accessible_agent_names)))
+        if agent_name:
+            conds.append(agent_notifications.c.agent_name == agent_name)
+
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                update(agent_notifications)
+                .where(and_(*conds))
+                .values(status="dismissed", acknowledged_at=now, acknowledged_by=dismissed_by)
+            )
+            return result.rowcount
 
     def delete_agent_notifications(self, agent_name: str) -> int:
         """
@@ -263,60 +304,70 @@ class NotificationOperations:
         Returns:
             Number of notifications deleted
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM agent_notifications WHERE agent_name = ?",
-                (agent_name,)
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                delete(agent_notifications).where(
+                    agent_notifications.c.agent_name == agent_name
+                )
             )
-            conn.commit()
-            return cursor.rowcount
+            return result.rowcount
 
     def count_pending_notifications(
         self,
-        agent_name: Optional[str] = None
+        agent_name: Optional[str] = None,
+        agent_names: Optional[List[str]] = None
     ) -> int:
         """
         Count pending notifications.
 
         Args:
-            agent_name: Optional filter by agent
+            agent_name: Optional filter by a single agent
+            agent_names: Optional filter by a set of agents (fleet-wide count
+                scoped to the caller's accessible agents). An empty list means
+                "no accessible agents" → 0 (not "all agents").
 
         Returns:
             Count of pending notifications
         """
-        query = "SELECT COUNT(*) FROM agent_notifications WHERE status = 'pending'"
-        params = []
+        # Empty accessible set → nothing to count (avoid invalid `IN ()` SQL).
+        if agent_names is not None and len(agent_names) == 0:
+            return 0
+
+        conditions = [agent_notifications.c.status == "pending"]
 
         if agent_name:
-            query += " AND agent_name = ?"
-            params.append(agent_name)
+            conditions.append(agent_notifications.c.agent_name == agent_name)
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            return cursor.fetchone()[0]
+        if agent_names:
+            conditions.append(agent_notifications.c.agent_name.in_(agent_names))
 
-    def _row_to_notification(self, row: tuple) -> Notification:
-        """Convert a database row to a Notification model."""
+        stmt = select(func.count()).select_from(agent_notifications).where(
+            and_(*conditions)
+        )
+
+        with get_engine().connect() as conn:
+            return conn.execute(stmt).scalar_one()
+
+    def _row_to_notification(self, row) -> Notification:
+        """Convert a database row (RowMapping) to a Notification model."""
         metadata = None
-        if row[7]:  # metadata column
+        if row["metadata"]:
             try:
-                metadata = json.loads(row[7])
+                metadata = json.loads(row["metadata"])
             except json.JSONDecodeError:
                 pass
 
         return Notification(
-            id=row[0],
-            agent_name=row[1],
-            notification_type=row[2],
-            title=row[3],
-            message=row[4],
-            priority=row[5],
-            category=row[6],
+            id=row["id"],
+            agent_name=row["agent_name"],
+            notification_type=row["notification_type"],
+            title=row["title"],
+            message=row["message"],
+            priority=row["priority"],
+            category=row["category"],
             metadata=metadata,
-            status=row[8],
-            created_at=row[9],
-            acknowledged_at=row[10],
-            acknowledged_by=row[11]
+            status=row["status"],
+            created_at=row["created_at"],
+            acknowledged_at=row["acknowledged_at"],
+            acknowledged_by=row["acknowledged_by"]
         )

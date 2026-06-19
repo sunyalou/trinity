@@ -7,17 +7,20 @@ dispatched; a duplicate within the TTL short-circuits with the original result
 instead of dispatching a second execution.
 
 Atomicity relies on the table's `PRIMARY KEY (scope, idempotency_key)` and
-SQLite database-level write locking: concurrent claimers serialize, the loser
-gets an IntegrityError and reads the existing row. This holds across processes
-(multiple uvicorn workers + the standalone scheduler share one DB file).
+database-level write locking: concurrent claimers serialize, the loser gets an
+IntegrityError and reads the existing row. This holds across processes
+(multiple uvicorn workers + the standalone scheduler share one DB).
 """
 
 import json
 import logging
-import sqlite3
 from typing import Optional
 
-from .connection import get_db_connection
+from sqlalchemy import select, insert, update, delete, func, and_
+from sqlalchemy.exc import IntegrityError
+
+from .engine import get_engine
+from .tables import idempotency_keys
 from utils.helpers import utc_now_iso, iso_cutoff
 
 logger = logging.getLogger(__name__)
@@ -44,30 +47,49 @@ class IdempotencyOperations:
         """
         now = utc_now_iso()
         cutoff = iso_cutoff(hours=ttl_hours)
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        with get_engine().begin() as conn:
             # Drop an expired row for this key so it can be re-claimed.
-            cursor.execute(
-                "DELETE FROM idempotency_keys "
-                "WHERE scope = ? AND idempotency_key = ? AND created_at < ?",
-                (scope, key, cutoff),
+            conn.execute(
+                delete(idempotency_keys).where(
+                    and_(
+                        idempotency_keys.c.scope == scope,
+                        idempotency_keys.c.idempotency_key == key,
+                        idempotency_keys.c.created_at < cutoff,
+                    )
+                )
             )
             try:
-                cursor.execute(
-                    "INSERT INTO idempotency_keys "
-                    "(scope, idempotency_key, execution_id, status, "
-                    " response_snapshot, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (scope, key, None, STATE_IN_FLIGHT, None, now, now),
-                )
+                # SAVEPOINT so a PK conflict rolls back ONLY this INSERT, not the
+                # whole transaction — PostgreSQL aborts the entire transaction on
+                # any error (InFailedSqlTransaction) and would reject the
+                # follow-up SELECT otherwise (#300). SQLite emulates savepoints.
+                with conn.begin_nested():
+                    conn.execute(
+                        insert(idempotency_keys).values(
+                            scope=scope,
+                            idempotency_key=key,
+                            execution_id=None,
+                            status=STATE_IN_FLIGHT,
+                            response_snapshot=None,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
                 return {"state": STATE_NEW, "execution_id": None, "snapshot": None}
-            except sqlite3.IntegrityError:
+            except IntegrityError:
                 # Lost the race / genuine duplicate — read the surviving row.
-                row = cursor.execute(
-                    "SELECT status, execution_id, response_snapshot "
-                    "FROM idempotency_keys WHERE scope = ? AND idempotency_key = ?",
-                    (scope, key),
-                ).fetchone()
+                row = conn.execute(
+                    select(
+                        idempotency_keys.c.status,
+                        idempotency_keys.c.execution_id,
+                        idempotency_keys.c.response_snapshot,
+                    ).where(
+                        and_(
+                            idempotency_keys.c.scope == scope,
+                            idempotency_keys.c.idempotency_key == key,
+                        )
+                    )
+                ).mappings().first()
                 if row is None:
                     # Extremely unlikely (row deleted between INSERT-fail and
                     # SELECT). Treat as new so the caller doesn't wedge.
@@ -86,11 +108,16 @@ class IdempotencyOperations:
 
     def attach_execution(self, scope: str, key: str, execution_id: str) -> None:
         """Record the execution_id for an in-flight claim (best-effort)."""
-        with get_db_connection() as conn:
+        with get_engine().begin() as conn:
             conn.execute(
-                "UPDATE idempotency_keys SET execution_id = ?, updated_at = ? "
-                "WHERE scope = ? AND idempotency_key = ?",
-                (execution_id, utc_now_iso(), scope, key),
+                update(idempotency_keys)
+                .where(
+                    and_(
+                        idempotency_keys.c.scope == scope,
+                        idempotency_keys.c.idempotency_key == key,
+                    )
+                )
+                .values(execution_id=execution_id, updated_at=utc_now_iso())
             )
 
     def complete(
@@ -107,20 +134,23 @@ class IdempotencyOperations:
                 snapshot_json = json.dumps(snapshot, default=str)
             except (TypeError, ValueError):
                 snapshot_json = None
-        with get_db_connection() as conn:
+        with get_engine().begin() as conn:
             conn.execute(
-                "UPDATE idempotency_keys "
-                "SET status = ?, execution_id = COALESCE(?, execution_id), "
-                "    response_snapshot = ?, updated_at = ? "
-                "WHERE scope = ? AND idempotency_key = ?",
-                (
-                    STATE_COMPLETED,
-                    execution_id,
-                    snapshot_json,
-                    utc_now_iso(),
-                    scope,
-                    key,
-                ),
+                update(idempotency_keys)
+                .where(
+                    and_(
+                        idempotency_keys.c.scope == scope,
+                        idempotency_keys.c.idempotency_key == key,
+                    )
+                )
+                .values(
+                    status=STATE_COMPLETED,
+                    execution_id=func.coalesce(
+                        execution_id, idempotency_keys.c.execution_id
+                    ),
+                    response_snapshot=snapshot_json,
+                    updated_at=utc_now_iso(),
+                )
             )
 
     def release(self, scope: str, key: str) -> None:
@@ -129,19 +159,24 @@ class IdempotencyOperations:
         Only deletes rows still in_flight — never removes a completed row
         (which must stay to keep replaying the original result).
         """
-        with get_db_connection() as conn:
+        with get_engine().begin() as conn:
             conn.execute(
-                "DELETE FROM idempotency_keys "
-                "WHERE scope = ? AND idempotency_key = ? AND status = ?",
-                (scope, key, STATE_IN_FLIGHT),
+                delete(idempotency_keys).where(
+                    and_(
+                        idempotency_keys.c.scope == scope,
+                        idempotency_keys.c.idempotency_key == key,
+                        idempotency_keys.c.status == STATE_IN_FLIGHT,
+                    )
+                )
             )
 
     def purge_expired(self, ttl_hours: int = 24) -> int:
         """Delete rows older than ttl_hours. Returns rows removed."""
         cutoff = iso_cutoff(hours=ttl_hours)
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM idempotency_keys WHERE created_at < ?", (cutoff,)
+        with get_engine().begin() as conn:
+            result = conn.execute(
+                delete(idempotency_keys).where(
+                    idempotency_keys.c.created_at < cutoff
+                )
             )
-            return cursor.rowcount or 0
+            return result.rowcount or 0

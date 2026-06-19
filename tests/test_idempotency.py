@@ -91,6 +91,15 @@ def idem_ops(monkeypatch, tmp_path):
     fake_conn_module.DB_PATH = db_path
     monkeypatch.setitem(sys.modules, "db.connection", fake_conn_module)
 
+    # Route the SQLAlchemy engine seam (#300) at the SAME temp file. The
+    # idempotency ops are fully converted to get_engine() (which reads
+    # DATABASE_URL); its engine cache is keyed by URL, so dispose after setting
+    # DATABASE_URL so the temp file's engine is the one created — and again at
+    # teardown to drop the cached engine.
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    import db.engine as engine_mod
+    engine_mod.dispose_engines()
+
     # Force reimport so the stub db.connection is picked up.
     monkeypatch.delitem(sys.modules, "db.idempotency", raising=False)
     from db.idempotency import IdempotencyOperations
@@ -100,7 +109,8 @@ def idem_ops(monkeypatch, tmp_path):
     # re-importing db.connection (which the autouse #762 baseline-restore may
     # reset to the real module mid-test).
     ops._test_db_path = db_path
-    return ops
+    yield ops
+    engine_mod.dispose_engines()
 
 
 @pytest.fixture

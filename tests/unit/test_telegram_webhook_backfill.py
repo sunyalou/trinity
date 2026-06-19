@@ -89,7 +89,15 @@ def _load_settings_module():
         max_parallel_tasks: int | None = None
         execution_timeout_seconds: int | None = None
 
-    _stub("models", User=_User, AgentDefaultResourcesUpdate=_AgentDefaultResourcesUpdate)
+    class _AgentDefaultAccessPolicyUpdate(BaseModel):
+        require_email: bool | None = None
+
+    _stub(
+        "models",
+        User=_User,
+        AgentDefaultResourcesUpdate=_AgentDefaultResourcesUpdate,
+        AgentDefaultAccessPolicyUpdate=_AgentDefaultAccessPolicyUpdate,
+    )
 
     db_stub = MagicMock()
     db_stub.set_setting = MagicMock(return_value=_SystemSetting(key="public_chat_url"))
@@ -124,6 +132,9 @@ def _load_settings_module():
         AGENT_DEFAULT_MEMORY_KEY="agent_default_memory",
         AGENT_DEFAULT_CPU="1.0",
         AGENT_DEFAULT_MEMORY="1g",
+        AGENT_DEFAULT_REQUIRE_EMAIL_KEY="agent_default_require_email",  # #1129
+        AGENT_DEFAULT_REQUIRE_EMAIL=True,
+        get_agent_default_require_email=MagicMock(return_value=True),
     )
     _stub("services", __path__=[])
 

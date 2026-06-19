@@ -4,21 +4,19 @@ Sync State DB Operations Tests (Issue #389 — S1).
 Unit tests for the agent_sync_state table and SyncStateOperations class
 that backs the sync-health observability feature.
 
-Run in-process against an ephemeral SQLite database (no backend, no Docker).
+Backend-agnostic via ``db_harness`` (#300): runs on SQLite and, when
+``TEST_POSTGRES_URL`` is set, PostgreSQL too. Schema introspection uses
+SQLAlchemy ``inspect()`` (dialect-agnostic) instead of SQLite ``PRAGMA`` /
+``sqlite_master`` so the column checks hold on both backends.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sqlite3
 import sys
 from pathlib import Path
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Bootstrap: make src/backend importable (same shim as test_backlog.py).
-# ---------------------------------------------------------------------------
 _THIS = Path(__file__).resolve()
 _BACKEND = _THIS.parent.parent.parent / "src" / "backend"
 _BACKEND_STR = str(_BACKEND)
@@ -28,83 +26,60 @@ while _BACKEND_STR in sys.path:
     sys.path.remove(_BACKEND_STR)
 sys.path.insert(0, _BACKEND_STR)
 
-
-def _load_module(rel_path: str, name: str):
-    path = _BACKEND / rel_path
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_schema_mod = _load_module("db/schema.py", "_schema_sync")
-_migrations_mod = _load_module("db/migrations.py", "_migrations_sync")
-init_schema = _schema_mod.init_schema
-run_all_migrations = _migrations_mod.run_all_migrations
+from db_harness import db_backend, run as _hrun  # noqa: E402
 
 
 pytestmark = pytest.mark.unit
 
 
+def _inspector():
+    from sqlalchemy import inspect
+    from db.engine import get_engine
+
+    return inspect(get_engine())
+
+
 @pytest.fixture
-def tmp_db(tmp_path, monkeypatch):
-    """Full schema + migrations in a throwaway SQLite file."""
-    db_path = tmp_path / "trinity.db"
-    monkeypatch.setenv("TRINITY_DB_PATH", str(db_path))
-
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    init_schema(cursor, conn)
-    run_all_migrations(cursor, conn)
-    conn.commit()
-    conn.close()
-
-    # Drop cached modules so production code picks up the new path.
+def tmp_db(db_backend):
+    """Active backend with a fresh full schema (db_harness, #300). Returns the
+    backend marker. Pops cached db modules so production code re-resolves."""
     for modname in list(sys.modules):
         if modname == "database" or modname.startswith("db."):
+            # keep the harness-loaded engine/tables modules importable
+            if modname in ("db.engine", "db.tables", "db.schema"):
+                continue
             sys.modules.pop(modname, None)
-
-    yield db_path
+    return db_backend
 
 
 @pytest.fixture
 def seed_agent(tmp_db):
     """Helper: insert an agent_ownership row so FK constraints pass."""
     def _seed(name: str):
-        conn = sqlite3.connect(str(tmp_db))
-        conn.execute(
+        _hrun(
             "INSERT INTO agent_ownership (agent_name, owner_id, created_at) "
-            "VALUES (?, 1, datetime('now'))",
-            (name,),
+            "VALUES (:n, 1, '2026-01-01T00:00:00Z')",
+            n=name,
         )
-        conn.commit()
-        conn.close()
     return _seed
 
 
 @pytest.fixture
 def sync_ops(tmp_db):
-    """Fresh SyncStateOperations bound to tmp_db."""
+    """Fresh SyncStateOperations bound to the active backend."""
     from db.sync_state import SyncStateOperations  # noqa: WPS433
     return SyncStateOperations()
 
 
 class TestSyncStateTable:
-    """Migration creates the agent_sync_state table with the expected columns."""
+    """Schema build creates the agent_sync_state table with expected columns."""
 
     def test_table_exists(self, tmp_db):
-        conn = sqlite3.connect(str(tmp_db))
-        row = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_sync_state'"
-        ).fetchone()
-        conn.close()
-        assert row is not None, "agent_sync_state table should exist"
+        assert _inspector().has_table("agent_sync_state"), \
+            "agent_sync_state table should exist"
 
     def test_expected_columns(self, tmp_db):
-        conn = sqlite3.connect(str(tmp_db))
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_sync_state)")}
-        conn.close()
+        cols = {c["name"] for c in _inspector().get_columns("agent_sync_state")}
         expected = {
             "agent_name",
             "last_sync_at",
@@ -124,10 +99,8 @@ class TestSyncStateTable:
         assert not missing, f"Missing columns: {missing}"
 
     def test_agent_git_config_auto_sync_columns_added(self, tmp_db):
-        """Migration adds auto_sync_enabled and freeze_schedules_if_sync_failing."""
-        conn = sqlite3.connect(str(tmp_db))
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_git_config)")}
-        conn.close()
+        """Schema includes auto_sync_enabled and freeze_schedules_if_sync_failing."""
+        cols = {c["name"] for c in _inspector().get_columns("agent_git_config")}
         assert "auto_sync_enabled" in cols
         assert "freeze_schedules_if_sync_failing" in cols
 

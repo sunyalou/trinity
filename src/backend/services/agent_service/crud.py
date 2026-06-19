@@ -30,11 +30,12 @@ from services.template_service import (
     generate_credential_files,
 )
 from services import git_service
-from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities, get_agent_quota_for_role, get_agent_default_resources
+from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities, get_agent_quota_for_role, get_agent_default_resources, get_agent_default_require_email
 from services.github_service import GitHubService, GitHubError
 from utils.helpers import sanitize_agent_name, utc_now_iso
-from .helpers import validate_base_image
+from .helpers import validate_base_image, is_claude_runtime, validate_runtime
 from .lifecycle import RESTRICTED_CAPABILITIES, FULL_CAPABILITIES
+from .capabilities import AGENT_TMPFS_MOUNT, AGENT_DEFAULT_TMPDIR, normalize_cpu, normalize_memory
 
 logger = logging.getLogger(__name__)
 
@@ -375,6 +376,22 @@ async def create_agent_internal(
                 except Exception as e:
                     logger.warning(f"Error loading template config: {e}")
 
+    # #1187: runtime is final here (request value, possibly overridden by the
+    # template). Reject an unknown one now (clear 400) instead of letting the
+    # agent container crash-loop on boot when get_runtime() can't resolve it.
+    validate_runtime(config.runtime)
+
+    # #1187: normalize the stored runtime to lowercase so the AGENT_RUNTIME env
+    # var and the `trinity.agent-runtime` label agree with the exact-case checks
+    # downstream — startup.sh's `[ "${AGENT_RUNTIME}" = "codex" ]` Codex setup
+    # block and the Gemini key-injection branch below (`config.runtime ==
+    # 'gemini-cli'`). validate_runtime() accepts mixed case (it lowercases only
+    # for the membership test) but does not normalize the stored value, so a
+    # template `runtime: Codex` would pass validation yet silently skip Codex's
+    # startup setup (AGENTS.md mirror / CODEX_HOME) or Gemini's credential inject.
+    if config.runtime:
+        config.runtime = config.runtime.lower()
+
     if config.port is None:
         config.port = get_next_available_port()
 
@@ -452,6 +469,25 @@ async def create_agent_internal(
         if generated_files:
             cred_files_volume = {str(cred_files_dir): {'bind': '/generated-creds', 'mode': 'ro'}}
 
+    # #1197: validate/normalize template resource fields against the allowed
+    # set BEFORE any side effects (MCP key, subscription, container). A
+    # Kubernetes-style `cpu: "0.5"` / `memory: "512Mi"` from a source repo's
+    # template.yaml used to reach the raw `int(cpu)` at container-create and
+    # abort with an opaque ValueError — leaving an orphaned mcp_api_keys row.
+    # Fail fast here with an actionable 400 instead, and write the canonical
+    # values back so the container labels + limits use them.
+    if config.resources is None:
+        config.resources = {}
+    try:
+        config.resources['cpu'] = normalize_cpu(
+            config.resources.get('cpu'), _get_default_resource('cpu')
+        )
+        config.resources['memory'] = normalize_memory(
+            config.resources.get('memory'), _get_default_resource('memory')
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     # Phase: Agent-to-Agent Collaboration
     # Generate agent-scoped MCP API key for Trinity MCP access
     agent_mcp_key = None
@@ -478,7 +514,11 @@ async def create_agent_internal(
         'TEMPLATE_NAME': config.template if config.template else '',
         # Multi-runtime support
         'AGENT_RUNTIME': config.runtime or 'claude-code',
-        'AGENT_RUNTIME_MODEL': config.runtime_model or ''
+        'AGENT_RUNTIME_MODEL': config.runtime_model or '',
+        # #1098: redirect scratch (pip/npm/build, ML wheels) off the 100 MB
+        # noexec /tmp tmpfs onto the disk-backed, exec-capable home volume.
+        # The dir is created at container start by startup.sh.
+        'TMPDIR': AGENT_DEFAULT_TMPDIR,
     }
 
     # GUARD-001: per-agent guardrails overrides (empty by default; baseline
@@ -488,21 +528,33 @@ async def create_agent_internal(
         import json as _json
         env_vars['AGENT_GUARDRAILS'] = _json.dumps(_guardrails)
 
-    # Auto-assign subscription (round-robin) — #74
+    # Auto-assign subscription (round-robin) — #74.
+    # Subscriptions are Claude-OAuth tokens (CLAUDE_CODE_OAUTH_TOKEN) and apply
+    # ONLY to the Claude Code runtime. Non-Claude runtimes (Gemini, Codex) bring
+    # their own credentials via .env (CRED-002), so skip the assign entirely —
+    # otherwise a Codex agent would get a persisted subscription_id
+    # (has_subscription=True) and a spurious Claude token injected on every
+    # create/recreate (#1187 decision 7).
     auto_assigned_subscription_id = None
-    try:
-        least_used = db.get_least_used_subscription()
-        if least_used:
-            token = db.get_subscription_token(least_used.id)
-            if token:
-                env_vars['CLAUDE_CODE_OAUTH_TOKEN'] = token
-                env_vars.pop('ANTHROPIC_API_KEY', None)
-                auto_assigned_subscription_id = least_used.id
-                logger.info(f"Auto-assigned subscription '{least_used.name}' to agent {config.name}")
-            else:
-                logger.warning(f"Failed to decrypt subscription '{least_used.name}' token, using platform API key")
-    except Exception as e:
-        logger.warning(f"Subscription auto-assign failed for {config.name}: {e}")
+    if is_claude_runtime(config.runtime):
+        try:
+            least_used = db.get_least_used_subscription()
+            if least_used:
+                token = db.get_subscription_token(least_used.id)
+                if token:
+                    env_vars['CLAUDE_CODE_OAUTH_TOKEN'] = token
+                    env_vars.pop('ANTHROPIC_API_KEY', None)
+                    auto_assigned_subscription_id = least_used.id
+                    logger.info(f"Auto-assigned subscription '{least_used.name}' to agent {config.name}")
+                else:
+                    logger.warning(f"Failed to decrypt subscription '{least_used.name}' token, using platform API key")
+        except Exception as e:
+            logger.warning(f"Subscription auto-assign failed for {config.name}: {e}")
+    else:
+        logger.info(
+            f"Skipping subscription auto-assign for agent {config.name} "
+            f"(runtime={(config.runtime or 'claude-code')!r} is non-Claude — uses its own .env credentials)"
+        )
 
     # Add Google API key if using Gemini runtime
     # Gemini CLI expects GEMINI_API_KEY environment variable
@@ -725,11 +777,17 @@ async def create_agent_internal(
                 # Add back only the capabilities needed for the mode
                 cap_add=FULL_CAPABILITIES if full_capabilities else RESTRICTED_CAPABILITIES,
                 read_only=False,
-                # Always apply noexec,nosuid to /tmp for security
-                tmpfs={'/tmp': 'noexec,nosuid,size=100m'},
+                # Always apply noexec,nosuid to /tmp for security (#1098: scratch
+                # is redirected off this tiny tmpfs via the TMPDIR env var).
+                tmpfs=AGENT_TMPFS_MOUNT,
                 network='trinity-agent-network',
-                mem_limit=config.resources.get('memory') or _get_default_resource('memory'),
-                cpu_count=int(config.resources.get('cpu') or _get_default_resource('cpu'))
+                # #1197: cpu/memory normalized + validated above (raises 400 on
+                # a bad template value), so these are guaranteed Docker-valid.
+                mem_limit=config.resources['memory'],
+                # #1126: nano_cpus (Linux CFS quota), NOT cpu_count — the latter
+                # is Windows-only in docker-py and left NanoCpus=0, so newly
+                # created agents never got a CPU limit on Linux.
+                nano_cpus=int(config.resources['cpu']) * 1_000_000_000,
             )
 
             agent_status = get_agent_status_from_container(container)
@@ -748,7 +806,13 @@ async def create_agent_internal(
                     }
                 }))
 
-            db.register_agent_owner(config.name, current_user.username)
+            # #1129: seed require_email from the fleet-wide default
+            # (secure-by-default ON) at creation; owners can override per agent.
+            db.register_agent_owner(
+                config.name,
+                current_user.username,
+                require_email=get_agent_default_require_email(),
+            )
 
             # Persist auto-assigned subscription (#74)
             if auto_assigned_subscription_id:
@@ -823,6 +887,19 @@ async def create_agent_internal(
                     logger.warning(
                         "Failed to roll back agent_git_config for %s after "
                         "creation failure: %s",
+                        config.name,
+                        cleanup_exc,
+                    )
+            # #1197: the agent-scoped MCP key is minted before container
+            # creation, so a failure here would otherwise leave an orphaned
+            # mcp_api_keys row (one per failed attempt). Roll it back too.
+            if agent_mcp_key:
+                try:
+                    db.delete_agent_mcp_api_key(config.name)
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "Failed to roll back MCP key for %s after creation "
+                        "failure: %s",
                         config.name,
                         cleanup_exc,
                     )

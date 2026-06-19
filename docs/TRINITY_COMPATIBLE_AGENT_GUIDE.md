@@ -156,6 +156,7 @@ credentials.json
 .npm/
 .ssh/
 .trinity/
+.tmp/
 
 # Large generated content - DO NOT COMMIT
 content/
@@ -478,6 +479,52 @@ If `runtime:` is not specified, agents default to `claude-code` for backward com
 | `gemini-cli` | `GOOGLE_API_KEY` |
 
 See [Gemini Support Guide](GEMINI_SUPPORT.md) for detailed setup instructions and cost comparisons.
+
+---
+
+## Long-Running & Background Processes (the orphan sweeper)
+
+Each agent container runs a periodic **orphan sweeper** (`agent_server`,
+issue #817). On a fixed interval it reads the container cgroup and
+**SIGKILLs every process not on an allowlist** — this is how Trinity
+recovers CPU/event-loop starvation from processes a finished execution
+leaked behind. A process is **spared** when it is any of:
+
+- the agent-server and its parent chain, and PID 1 (container init);
+- an **in-flight platform execution** (chat / task / schedule / loop) and
+  every subprocess it spawned — these carry a registered PID;
+- an **operator session** — an SSH session **or** a live `docker exec`
+  session (PPID 0) and its children (#1153);
+- a base-image essential (the keep-alive, sshd wrapper, guardrail writer);
+- a process whose argv matches a pattern in
+  **`~/.trinity/persistent-processes.allow`**.
+
+**What this means for templates:**
+
+- **Run maintenance work as a platform execution, not a detached background
+  job.** A FAISS index build, a data refresh, a migration — launch it as a
+  scheduled task, a `run_agent_loop`, or an MCP `chat`/`task`. It then has a
+  registered PID (and, under the pull model, a lease) and is never swept.
+  A bare `nohup … &` or a process double-forked away from the execution has
+  no registered PID and **will be reaped** mid-run.
+- **Long-lived daemons started from a `SessionStart` hook** (e.g. a local
+  MCP HTTP server) must be declared in
+  `~/.trinity/persistent-processes.allow` — one `fnmatch` glob per line,
+  `#` for comments:
+
+  ```
+  # local MCP server started by SessionStart hook
+  *my-mcp-server*
+  ```
+
+- **Operator debugging is safe.** A long `docker exec agent-<name> …` or
+  `trinity ssh` session survives sweeps (#1153). When the session exits,
+  any children it left behind reparent to PID 1 and are reaped on the next
+  sweep — as intended.
+
+Each kill is logged at **WARNING** with the victim's `pid` and a
+length-capped `cmd=` — `docker logs agent-<name> 2>&1 | grep OrphanSweep`
+shows exactly what was reaped if a job disappears unexpectedly.
 
 ---
 

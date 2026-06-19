@@ -5,13 +5,23 @@ Handles:
 - Public chat session management (email and anonymous)
 - Message persistence
 - Context building for multi-turn conversations
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL. Queries are built from the
+``public_chat_sessions`` / ``public_chat_messages`` tables in ``db/tables.py``
+(dialect-agnostic expressions, no ``?`` placeholders), and the engine is
+resolved from ``DATABASE_URL`` via ``db/engine.py``. The public API of
+``PublicChatOperations`` is unchanged.
 """
 
 import secrets
 from datetime import datetime
 from typing import Optional, List
 
-from .connection import get_db_connection
+from sqlalchemy import select, insert, update, delete, and_
+
+from .engine import get_engine
+from .tables import public_chat_sessions, public_chat_messages
 from db_models import PublicChatSession, PublicChatMessage
 from utils.helpers import utc_now_iso
 
@@ -68,16 +78,16 @@ class PublicChatOperations:
         # Normalize email identifiers
         normalized_identifier = session_identifier.lower() if identifier_type == 'email' else session_identifier
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Try to find existing session
-            cursor.execute("""
-                SELECT * FROM public_chat_sessions
-                WHERE link_id = ? AND session_identifier = ?
-            """, (link_id, normalized_identifier))
-
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(public_chat_sessions).where(
+                    and_(
+                        public_chat_sessions.c.link_id == link_id,
+                        public_chat_sessions.c.session_identifier == normalized_identifier,
+                    )
+                )
+            ).mappings().first()
             if row:
                 return self._row_to_session(row)
 
@@ -85,19 +95,23 @@ class PublicChatOperations:
             session_id = secrets.token_urlsafe(16)
             now = utc_now_iso()
 
-            cursor.execute("""
-                INSERT INTO public_chat_sessions (
-                    id, link_id, session_identifier, identifier_type,
-                    created_at, last_message_at, message_count, total_cost
+            conn.execute(
+                insert(public_chat_sessions).values(
+                    id=session_id,
+                    link_id=link_id,
+                    session_identifier=normalized_identifier,
+                    identifier_type=identifier_type,
+                    created_at=now,
+                    last_message_at=now,
+                    message_count=0,
+                    total_cost=0.0,
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 0, 0.0)
-            """, (session_id, link_id, normalized_identifier, identifier_type, now, now))
-
-            conn.commit()
+            )
 
             # Return the new session
-            cursor.execute("SELECT * FROM public_chat_sessions WHERE id = ?", (session_id,))
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(public_chat_sessions).where(public_chat_sessions.c.id == session_id)
+            ).mappings().first()
             return self._row_to_session(row)
 
     def get_session_by_identifier(
@@ -106,22 +120,23 @@ class PublicChatOperations:
         session_identifier: str
     ) -> Optional[PublicChatSession]:
         """Look up a session by link ID and identifier."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM public_chat_sessions
-                WHERE link_id = ? AND session_identifier = ?
-            """, (link_id, session_identifier.lower()))
-
-            row = cursor.fetchone()
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                select(public_chat_sessions).where(
+                    and_(
+                        public_chat_sessions.c.link_id == link_id,
+                        public_chat_sessions.c.session_identifier == session_identifier.lower(),
+                    )
+                )
+            ).mappings().first()
             return self._row_to_session(row) if row else None
 
     def get_session(self, session_id: str) -> Optional[PublicChatSession]:
         """Get a session by ID."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM public_chat_sessions WHERE id = ?", (session_id,))
-            row = cursor.fetchone()
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                select(public_chat_sessions).where(public_chat_sessions.c.id == session_id)
+            ).mappings().first()
             return self._row_to_session(row) if row else None
 
     def add_message(
@@ -143,34 +158,37 @@ class PublicChatOperations:
         Returns:
             PublicChatMessage model
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Create message
             message_id = secrets.token_urlsafe(16)
             now = utc_now_iso()
 
-            cursor.execute("""
-                INSERT INTO public_chat_messages (
-                    id, session_id, role, content, timestamp, cost
+            conn.execute(
+                insert(public_chat_messages).values(
+                    id=message_id,
+                    session_id=session_id,
+                    role=role,
+                    content=content,
+                    timestamp=now,
+                    cost=cost,
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (message_id, session_id, role, content, now, cost))
+            )
 
             # Update session stats
-            cursor.execute("""
-                UPDATE public_chat_sessions
-                SET last_message_at = ?,
-                    message_count = message_count + 1,
-                    total_cost = total_cost + COALESCE(?, 0)
-                WHERE id = ?
-            """, (now, cost or 0, session_id))
-
-            conn.commit()
+            conn.execute(
+                update(public_chat_sessions)
+                .where(public_chat_sessions.c.id == session_id)
+                .values(
+                    last_message_at=now,
+                    message_count=public_chat_sessions.c.message_count + 1,
+                    total_cost=public_chat_sessions.c.total_cost + (cost or 0),
+                )
+            )
 
             # Return the created message
-            cursor.execute("SELECT * FROM public_chat_messages WHERE id = ?", (message_id,))
-            row = cursor.fetchone()
+            row = conn.execute(
+                select(public_chat_messages).where(public_chat_messages.c.id == message_id)
+            ).mappings().first()
             return self._row_to_message(row)
 
     def get_session_messages(
@@ -188,16 +206,14 @@ class PublicChatOperations:
         Returns:
             List of messages, oldest first
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM public_chat_messages
-                WHERE session_id = ?
-                ORDER BY timestamp ASC
-                LIMIT ?
-            """, (session_id, limit))
-
-            return [self._row_to_message(row) for row in cursor.fetchall()]
+        with get_engine().connect() as conn:
+            rows = conn.execute(
+                select(public_chat_messages)
+                .where(public_chat_messages.c.session_id == session_id)
+                .order_by(public_chat_messages.c.timestamp.asc())
+                .limit(limit)
+            ).mappings().all()
+            return [self._row_to_message(row) for row in rows]
 
     def get_recent_messages(
         self,
@@ -208,19 +224,19 @@ class PublicChatOperations:
         Get the most recent N messages, ordered for display (oldest first).
         Uses subquery to get the most recent, then orders ascending.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        with get_engine().connect() as conn:
             # Get the most recent N messages, then reverse for chronological order
-            cursor.execute("""
-                SELECT * FROM (
-                    SELECT * FROM public_chat_messages
-                    WHERE session_id = ?
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                ) ORDER BY timestamp ASC
-            """, (session_id, limit))
-
-            return [self._row_to_message(row) for row in cursor.fetchall()]
+            recent = (
+                select(public_chat_messages)
+                .where(public_chat_messages.c.session_id == session_id)
+                .order_by(public_chat_messages.c.timestamp.desc())
+                .limit(limit)
+                .subquery()
+            )
+            rows = conn.execute(
+                select(recent).order_by(recent.c.timestamp.asc())
+            ).mappings().all()
+            return [self._row_to_message(row) for row in rows]
 
     def clear_session(self, session_id: str) -> bool:
         """
@@ -229,17 +245,21 @@ class PublicChatOperations:
         Returns:
             True if session was deleted, False if not found
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Delete messages first (FK constraint)
-            cursor.execute("DELETE FROM public_chat_messages WHERE session_id = ?", (session_id,))
+            conn.execute(
+                delete(public_chat_messages).where(
+                    public_chat_messages.c.session_id == session_id
+                )
+            )
 
             # Delete session
-            cursor.execute("DELETE FROM public_chat_sessions WHERE id = ?", (session_id,))
-            deleted = cursor.rowcount > 0
-
-            conn.commit()
+            result = conn.execute(
+                delete(public_chat_sessions).where(
+                    public_chat_sessions.c.id == session_id
+                )
+            )
+            deleted = result.rowcount > 0
 
         return deleted
 
@@ -287,21 +307,31 @@ class PublicChatOperations:
         Returns:
             Number of sessions deleted
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Get session IDs first
-            cursor.execute("SELECT id FROM public_chat_sessions WHERE link_id = ?", (link_id,))
-            session_ids = [row[0] for row in cursor.fetchall()]
+            session_ids = [
+                row[0]
+                for row in conn.execute(
+                    select(public_chat_sessions.c.id).where(
+                        public_chat_sessions.c.link_id == link_id
+                    )
+                ).all()
+            ]
 
             # Delete messages for all sessions
             for session_id in session_ids:
-                cursor.execute("DELETE FROM public_chat_messages WHERE session_id = ?", (session_id,))
+                conn.execute(
+                    delete(public_chat_messages).where(
+                        public_chat_messages.c.session_id == session_id
+                    )
+                )
 
             # Delete sessions
-            cursor.execute("DELETE FROM public_chat_sessions WHERE link_id = ?", (link_id,))
-            deleted = cursor.rowcount
-
-            conn.commit()
+            result = conn.execute(
+                delete(public_chat_sessions).where(
+                    public_chat_sessions.c.link_id == link_id
+                )
+            )
+            deleted = result.rowcount
 
         return deleted

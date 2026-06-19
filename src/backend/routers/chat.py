@@ -610,6 +610,15 @@ async def _run_chat_and_finalize(
         if request.model:
             payload["model"] = request.model
         # Inject platform instructions + execution context (#171) into every chat request.
+        # Resolve the agent runtime (best-effort, never raises) so the MCP-tool
+        # naming in the platform prompt matches the harness (#1187 F-MCP). Lazy +
+        # guarded import so a re-import under a stubbed services.docker_service
+        # (unit tests) can't break dispatch; Claude default on any failure.
+        try:
+            from services.docker_service import get_agent_runtime
+            agent_runtime = get_agent_runtime(name)
+        except Exception:
+            agent_runtime = "claude-code"
         try:
             exec_ctx = ExecutionContext(
                 agent_name=name,
@@ -623,10 +632,11 @@ async def _run_chat_and_finalize(
             payload["system_prompt"] = compose_system_prompt(
                 execution_context=exec_ctx,
                 include_execution_context=is_execution_context_enabled(),
+                runtime=agent_runtime,
             )
         except Exception as e:
             logger.warning(f"[Chat] execution context build failed, falling back: {e}")
-            payload["system_prompt"] = get_platform_system_prompt()
+            payload["system_prompt"] = get_platform_system_prompt(runtime=agent_runtime)
         # Pass execution ID so agent registers process under the same ID (enables termination)
         if task_execution_id:
             payload["execution_id"] = task_execution_id

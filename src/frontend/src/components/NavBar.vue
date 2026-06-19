@@ -96,7 +96,7 @@
             class="text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 font-mono"
             :title="`Click for build info — commit ${buildInfo.info.value.git_commit_short}`"
           >
-            v{{ buildInfo.info.value.version }}<span
+            v{{ buildInfo.displayVersion.value }}<span
               v-if="buildInfo.info.value.git_commit_short && buildInfo.info.value.git_commit_short !== 'unknown'"
               class="ml-1 opacity-70"
             >· {{ buildInfo.info.value.git_commit_short }}</span>
@@ -240,7 +240,7 @@
         <dl class="space-y-2 text-sm">
           <div class="flex justify-between">
             <dt class="text-gray-500 dark:text-gray-400">Version</dt>
-            <dd class="font-mono text-gray-900 dark:text-white">{{ buildInfo.info.value.version }}</dd>
+            <dd class="font-mono text-gray-900 dark:text-white">{{ buildInfo.displayVersion.value }}</dd>
           </div>
           <div class="flex justify-between">
             <dt class="text-gray-500 dark:text-gray-400">Branch</dt>

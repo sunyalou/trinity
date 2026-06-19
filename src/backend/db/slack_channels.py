@@ -5,14 +5,19 @@ Handles:
 - Workspace connections (one bot token per workspace, encrypted)
 - Channel-agent bindings (which agent responds in which channel)
 - Active thread tracking (reply-without-mention)
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL.
 """
 
 import logging
 import secrets
-from datetime import datetime
 from typing import Optional, List
 
-from db.connection import get_db_connection
+from sqlalchemy import select, delete, update, and_
+
+from .engine import get_engine, make_insert
+from .tables import slack_workspaces, slack_channel_agents, slack_active_threads
 from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -65,30 +70,45 @@ class SlackChannelOperations:
         now = utc_now_iso()
         encrypted_token = self._encrypt_token(bot_token)
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO slack_workspaces (id, team_id, team_name, bot_token, connected_by, connected_at, enabled)
-                VALUES (?, ?, ?, ?, ?, ?, 1)
-                ON CONFLICT(team_id) DO UPDATE SET
-                    bot_token = excluded.bot_token,
-                    team_name = excluded.team_name,
-                    connected_at = excluded.connected_at
-            """, (workspace_id, team_id, team_name, encrypted_token, connected_by, now))
-            conn.commit()
+        stmt = make_insert(slack_workspaces).values(
+            id=workspace_id,
+            team_id=team_id,
+            team_name=team_name,
+            bot_token=encrypted_token,
+            connected_by=connected_by,
+            connected_at=now,
+            enabled=1,
+        ).on_conflict_do_update(
+            index_elements=["team_id"],
+            set_={
+                "bot_token": encrypted_token,
+                "team_name": team_name,
+                "connected_at": now,
+            },
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
         return self.get_workspace_by_team(team_id)
 
     def get_workspace_by_team(self, team_id: str) -> Optional[dict]:
         """Get workspace connection by Slack team ID. Bot token is decrypted."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, team_id, team_name, bot_token, connected_by, connected_at, enabled
-                FROM slack_workspaces
-                WHERE team_id = ? AND enabled = 1
-            """, (team_id,))
-            row = cursor.fetchone()
+        stmt = select(
+            slack_workspaces.c.id,
+            slack_workspaces.c.team_id,
+            slack_workspaces.c.team_name,
+            slack_workspaces.c.bot_token,
+            slack_workspaces.c.connected_by,
+            slack_workspaces.c.connected_at,
+            slack_workspaces.c.enabled,
+        ).where(
+            and_(
+                slack_workspaces.c.team_id == team_id,
+                slack_workspaces.c.enabled == 1,
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
 
         if not row:
             return None
@@ -105,14 +125,17 @@ class SlackChannelOperations:
 
     def get_all_workspaces(self) -> List[dict]:
         """Get all enabled workspaces with decrypted bot tokens."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, team_id, team_name, bot_token, connected_by, connected_at, enabled
-                FROM slack_workspaces
-                WHERE enabled = 1
-            """)
-            rows = cursor.fetchall()
+        stmt = select(
+            slack_workspaces.c.id,
+            slack_workspaces.c.team_id,
+            slack_workspaces.c.team_name,
+            slack_workspaces.c.bot_token,
+            slack_workspaces.c.connected_by,
+            slack_workspaces.c.connected_at,
+            slack_workspaces.c.enabled,
+        ).where(slack_workspaces.c.enabled == 1)
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).all()
 
         results = []
         for row in rows:
@@ -123,12 +146,18 @@ class SlackChannelOperations:
 
     def delete_workspace(self, team_id: str) -> bool:
         """Delete a workspace and all its channel bindings."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM slack_channel_agents WHERE team_id = ?", (team_id,))
-            cursor.execute("DELETE FROM slack_workspaces WHERE team_id = ?", (team_id,))
-            deleted = cursor.rowcount > 0
-            conn.commit()
+        with get_engine().begin() as conn:
+            conn.execute(
+                delete(slack_channel_agents).where(
+                    slack_channel_agents.c.team_id == team_id
+                )
+            )
+            result = conn.execute(
+                delete(slack_workspaces).where(
+                    slack_workspaces.c.team_id == team_id
+                )
+            )
+            deleted = result.rowcount > 0
         return deleted
 
     # =========================================================================
@@ -147,34 +176,49 @@ class SlackChannelOperations:
         """Bind a Slack channel to an agent."""
         binding_id = secrets.token_urlsafe(16)
         now = utc_now_iso()
+        dm_default_int = 1 if is_dm_default else 0
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO slack_channel_agents
-                (id, team_id, slack_channel_id, slack_channel_name, agent_name, is_dm_default, created_by, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(team_id, slack_channel_id) DO UPDATE SET
-                    agent_name = excluded.agent_name,
-                    slack_channel_name = excluded.slack_channel_name,
-                    is_dm_default = excluded.is_dm_default
-            """, (binding_id, team_id, slack_channel_id, slack_channel_name, agent_name,
-                  1 if is_dm_default else 0, created_by, now))
-            conn.commit()
+        stmt = make_insert(slack_channel_agents).values(
+            id=binding_id,
+            team_id=team_id,
+            slack_channel_id=slack_channel_id,
+            slack_channel_name=slack_channel_name,
+            agent_name=agent_name,
+            is_dm_default=dm_default_int,
+            created_by=created_by,
+            created_at=now,
+        ).on_conflict_do_update(
+            index_elements=["team_id", "slack_channel_id"],
+            set_={
+                "agent_name": agent_name,
+                "slack_channel_name": slack_channel_name,
+                "is_dm_default": dm_default_int,
+            },
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
         return self.get_channel_agent(team_id, slack_channel_id)
 
     def get_channel_agent(self, team_id: str, slack_channel_id: str) -> Optional[dict]:
         """Get which agent is bound to a channel."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, team_id, slack_channel_id, slack_channel_name, agent_name,
-                       is_dm_default, created_by, created_at
-                FROM slack_channel_agents
-                WHERE team_id = ? AND slack_channel_id = ?
-            """, (team_id, slack_channel_id))
-            row = cursor.fetchone()
+        stmt = select(
+            slack_channel_agents.c.id,
+            slack_channel_agents.c.team_id,
+            slack_channel_agents.c.slack_channel_id,
+            slack_channel_agents.c.slack_channel_name,
+            slack_channel_agents.c.agent_name,
+            slack_channel_agents.c.is_dm_default,
+            slack_channel_agents.c.created_by,
+            slack_channel_agents.c.created_at,
+        ).where(
+            and_(
+                slack_channel_agents.c.team_id == team_id,
+                slack_channel_agents.c.slack_channel_id == slack_channel_id,
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
 
         if not row:
             return None
@@ -187,14 +231,18 @@ class SlackChannelOperations:
 
     def get_dm_default_agent(self, team_id: str) -> Optional[str]:
         """Get the default agent for DMs in a workspace."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT agent_name FROM slack_channel_agents
-                WHERE team_id = ? AND is_dm_default = 1
-                LIMIT 1
-            """, (team_id,))
-            row = cursor.fetchone()
+        stmt = (
+            select(slack_channel_agents.c.agent_name)
+            .where(
+                and_(
+                    slack_channel_agents.c.team_id == team_id,
+                    slack_channel_agents.c.is_dm_default == 1,
+                )
+            )
+            .limit(1)
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
         return row[0] if row else None
 
     def set_dm_default(self, team_id: str, agent_name: str) -> bool:
@@ -208,52 +256,65 @@ class SlackChannelOperations:
         Returns True if the target row was updated, False if the agent is
         not bound in this workspace (caller should 404).
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("BEGIN")
-            try:
-                cursor.execute(
-                    "UPDATE slack_channel_agents SET is_dm_default = 0 WHERE team_id = ?",
-                    (team_id,),
+        with get_engine().begin() as conn:
+            conn.execute(
+                update(slack_channel_agents)
+                .where(slack_channel_agents.c.team_id == team_id)
+                .values(is_dm_default=0)
+            )
+            result = conn.execute(
+                update(slack_channel_agents)
+                .where(
+                    and_(
+                        slack_channel_agents.c.team_id == team_id,
+                        slack_channel_agents.c.agent_name == agent_name,
+                    )
                 )
-                cursor.execute(
-                    """UPDATE slack_channel_agents SET is_dm_default = 1
-                         WHERE team_id = ? AND agent_name = ?""",
-                    (team_id, agent_name),
-                )
-                changed = cursor.rowcount > 0
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
+                .values(is_dm_default=1)
+            )
+            changed = result.rowcount > 0
         return changed
 
     def get_agents_for_workspace(self, team_id: str) -> List[dict]:
         """Get all agent-channel bindings for a workspace."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, team_id, slack_channel_id, slack_channel_name, agent_name,
-                       is_dm_default, created_by, created_at
-                FROM slack_channel_agents
-                WHERE team_id = ?
-                ORDER BY created_at ASC
-            """, (team_id,))
-            rows = cursor.fetchall()
+        stmt = (
+            select(
+                slack_channel_agents.c.id,
+                slack_channel_agents.c.team_id,
+                slack_channel_agents.c.slack_channel_id,
+                slack_channel_agents.c.slack_channel_name,
+                slack_channel_agents.c.agent_name,
+                slack_channel_agents.c.is_dm_default,
+                slack_channel_agents.c.created_by,
+                slack_channel_agents.c.created_at,
+            )
+            .where(slack_channel_agents.c.team_id == team_id)
+            .order_by(slack_channel_agents.c.created_at.asc())
+        )
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).all()
 
         return [self._row_to_channel_agent(row) for row in rows]
 
     def get_channel_for_agent(self, team_id: str, agent_name: str) -> Optional[dict]:
         """Get channel binding for a specific agent in a workspace."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, team_id, slack_channel_id, slack_channel_name, agent_name,
-                       is_dm_default, created_by, created_at
-                FROM slack_channel_agents
-                WHERE team_id = ? AND agent_name = ?
-            """, (team_id, agent_name))
-            row = cursor.fetchone()
+        stmt = select(
+            slack_channel_agents.c.id,
+            slack_channel_agents.c.team_id,
+            slack_channel_agents.c.slack_channel_id,
+            slack_channel_agents.c.slack_channel_name,
+            slack_channel_agents.c.agent_name,
+            slack_channel_agents.c.is_dm_default,
+            slack_channel_agents.c.created_by,
+            slack_channel_agents.c.created_at,
+        ).where(
+            and_(
+                slack_channel_agents.c.team_id == team_id,
+                slack_channel_agents.c.agent_name == agent_name,
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
 
         if not row:
             return None
@@ -268,26 +329,28 @@ class SlackChannelOperations:
         is the only agent in the workspace, the binding is removed cleanly
         and the workspace ends up with no Slack agents at all.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM slack_channel_agents
-                WHERE team_id = ? AND agent_name = ?
-            """, (team_id, agent_name))
-            deleted = cursor.rowcount > 0
-            conn.commit()
+        stmt = delete(slack_channel_agents).where(
+            and_(
+                slack_channel_agents.c.team_id == team_id,
+                slack_channel_agents.c.agent_name == agent_name,
+            )
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            deleted = result.rowcount > 0
         return deleted
 
     def unbind_channel(self, team_id: str, slack_channel_id: str) -> bool:
         """Remove a channel's agent binding."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM slack_channel_agents
-                WHERE team_id = ? AND slack_channel_id = ?
-            """, (team_id, slack_channel_id))
-            deleted = cursor.rowcount > 0
-            conn.commit()
+        stmt = delete(slack_channel_agents).where(
+            and_(
+                slack_channel_agents.c.team_id == team_id,
+                slack_channel_agents.c.slack_channel_id == slack_channel_id,
+            )
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            deleted = result.rowcount > 0
         return deleted
 
     # =========================================================================
@@ -318,24 +381,29 @@ class SlackChannelOperations:
     ) -> None:
         """Record that the bot responded in a thread (enables reply-without-mention)."""
         now = utc_now_iso()
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT OR IGNORE INTO slack_active_threads
-                (team_id, channel_id, thread_ts, agent_name, created_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (team_id, channel_id, thread_ts, agent_name, now))
-            conn.commit()
+        stmt = make_insert(slack_active_threads).values(
+            team_id=team_id,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            agent_name=agent_name,
+            created_at=now,
+        ).on_conflict_do_nothing(
+            index_elements=["team_id", "channel_id", "thread_ts"],
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
 
     def is_active_thread(self, team_id: str, channel_id: str, thread_ts: str) -> Optional[str]:
         """Check if a thread is active (bot participated). Returns agent_name or None."""
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT agent_name FROM slack_active_threads
-                WHERE team_id = ? AND channel_id = ? AND thread_ts = ?
-            """, (team_id, channel_id, thread_ts))
-            row = cursor.fetchone()
+        stmt = select(slack_active_threads.c.agent_name).where(
+            and_(
+                slack_active_threads.c.team_id == team_id,
+                slack_active_threads.c.channel_id == channel_id,
+                slack_active_threads.c.thread_ts == thread_ts,
+            )
+        )
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).first()
         return row[0] if row else None
 
     # =========================================================================

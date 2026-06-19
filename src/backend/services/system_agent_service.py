@@ -22,7 +22,8 @@ from services.docker_service import (
 )
 from services.docker_utils import container_reload, container_start, containers_run
 from services.settings_service import get_anthropic_api_key
-from services.agent_service.lifecycle import FULL_CAPABILITIES
+from services.agent_service.lifecycle import FULL_CAPABILITIES, AGENT_TMPFS_MOUNT, AGENT_DEFAULT_TMPDIR
+from services.agent_service.capabilities import normalize_cpu, normalize_memory
 from utils.helpers import utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -182,7 +183,10 @@ class SystemAgentService:
             'ENABLE_SSH': 'true',
             'ENABLE_AGENT_UI': 'true',
             'AGENT_SERVER_PORT': '8000',
-            'TEMPLATE_NAME': SYSTEM_AGENT_TEMPLATE
+            'TEMPLATE_NAME': SYSTEM_AGENT_TEMPLATE,
+            # #1098: redirect scratch off the 100 MB noexec /tmp tmpfs onto the
+            # disk-backed home volume (dir created at start by startup.sh).
+            'TMPDIR': AGENT_DEFAULT_TMPDIR,
         }
 
         # OpenTelemetry Configuration (enabled by default)
@@ -240,8 +244,10 @@ class SystemAgentService:
             volumes=volumes,
             environment=env_vars,
             labels=labels,
-            mem_limit=resources.get("memory", "8g"),
-            cpu_count=int(resources.get("cpu", "4")),
+            # #1197: normalize/validate before Docker (int(cpu) NanoCpus / mem_limit).
+            mem_limit=normalize_memory(resources.get("memory"), "8g"),
+            # #1126: nano_cpus (Linux CFS quota), NOT cpu_count (Windows-only → NanoCpus=0).
+            nano_cpus=int(normalize_cpu(resources.get("cpu"), "4")) * 1_000_000_000,
             restart_policy={"Name": "unless-stopped"},  # Auto-restart on failure
             # Always apply AppArmor for additional sandboxing
             security_opt=['apparmor:docker-default'],
@@ -249,8 +255,9 @@ class SystemAgentService:
             cap_drop=['ALL'],
             # System agent gets full capabilities for operational tasks
             cap_add=FULL_CAPABILITIES,
-            # Always apply noexec,nosuid to /tmp for security
-            tmpfs={'/tmp': 'noexec,nosuid,size=100m'},
+            # Always apply noexec,nosuid to /tmp for security (#1098: scratch
+            # redirected off this tiny tmpfs via the TMPDIR env var).
+            tmpfs=AGENT_TMPFS_MOUNT,
         )
 
         # Register ownership with is_system=True
@@ -267,15 +274,16 @@ class SystemAgentService:
 
     def _set_system_scope(self, key_id: str):
         """Update MCP key to have system scope (bypasses permissions)."""
-        from db.connection import get_db_connection
+        from sqlalchemy import update
+        from db.engine import get_engine
+        from db.tables import mcp_api_keys
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE mcp_api_keys SET scope = ? WHERE id = ?",
-                ("system", key_id)
+        with get_engine().begin() as conn:
+            conn.execute(
+                update(mcp_api_keys)
+                .where(mcp_api_keys.c.id == key_id)
+                .values(scope="system")
             )
-            conn.commit()
 
 
 # Global service instance

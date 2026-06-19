@@ -12,8 +12,6 @@ Run in-process against an ephemeral SQLite database (no backend, no Docker).
 
 from __future__ import annotations
 
-import importlib.util
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -29,44 +27,23 @@ while _BACKEND_STR in sys.path:
     sys.path.remove(_BACKEND_STR)
 sys.path.insert(0, _BACKEND_STR)
 
-
-def _load_module(rel_path: str, name: str):
-    path = _BACKEND / rel_path
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_schema_mod = _load_module("db/schema.py", "_schema_slack")
-_migrations_mod = _load_module("db/migrations.py", "_migrations_slack")
-init_schema = _schema_mod.init_schema
-run_all_migrations = _migrations_mod.run_all_migrations
+from db_harness import db_backend  # noqa: E402
 
 
 pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def tmp_db(tmp_path, monkeypatch):
-    """Throwaway DB with full schema + migrations applied."""
-    db_path = tmp_path / "trinity.db"
-    monkeypatch.setenv("TRINITY_DB_PATH", str(db_path))
-
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    init_schema(cursor, conn)
-    run_all_migrations(cursor, conn)
-    conn.commit()
-    conn.close()
-
-    # Drop cached modules so production code picks up the new path.
+def tmp_db(db_backend):
+    """Active backend with a fresh full schema (db_harness, #300). Runs on
+    SQLite and, when TEST_POSTGRES_URL is set, PostgreSQL. Pops cached db
+    modules so production code re-resolves against the active engine."""
     for modname in list(sys.modules):
         if modname == "database" or modname.startswith("db."):
+            if modname in ("db.engine", "db.tables", "db.schema"):
+                continue
             sys.modules.pop(modname, None)
-
-    yield db_path
+    return db_backend
 
 
 @pytest.fixture

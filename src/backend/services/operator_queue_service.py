@@ -183,11 +183,19 @@ class OperatorQueueSyncService:
                 except Exception:
                     pass
 
-        # 4. Write responses back to the agent's file
+        # 4. Write responses back to the agent's file. Cancelled/expired
+        # items are propagated too (#1017) so the agent stops waiting on
+        # them — but only as in-place status flips on entries still in the
+        # file.
         responded_items = db.get_operator_queue_responded_for_agent(agent_name)
-        if responded_items:
+        terminal_items = (
+            db.get_operator_queue_terminal_for_agent(agent_name)
+            if file_exists else []
+        )
+        if responded_items or terminal_items:
             await self._write_responses_to_agent(
-                agent_name, client, queue_data, responded_items, file_exists
+                agent_name, client, queue_data, responded_items,
+                terminal_items, file_exists
             )
 
     async def _write_responses_to_agent(
@@ -196,14 +204,21 @@ class OperatorQueueSyncService:
         client: AgentClient,
         queue_data: dict,
         responded_items: list,
+        terminal_items: Optional[list] = None,
         file_exists: bool = True,
     ):
         """Write operator responses back to the agent's queue file."""
         requests = queue_data.get("requests", [])
         updated = False
+        terminal_flips = 0
 
         # Build a lookup of responded items by ID
         response_map = {item["id"]: item for item in responded_items}
+        # Cancelled/expired items (#1017): flip still-'pending' file entries
+        # to their terminal status so the agent stops waiting (and so a
+        # stale 'pending' file entry can't resurrect a purged row). Never
+        # appended if missing from the file.
+        terminal_map = {item["id"]: item for item in (terminal_items or [])}
 
         # Update items already in the agent's requests array
         seen_ids = set()
@@ -217,6 +232,10 @@ class OperatorQueueSyncService:
                 req["responded_by"] = resp.get("responded_by_email")
                 req["responded_at"] = resp.get("responded_at")
                 updated = True
+            elif req_id in terminal_map and req.get("status") == "pending":
+                req["status"] = terminal_map[req_id]["status"]
+                updated = True
+                terminal_flips += 1
             if req_id:
                 seen_ids.add(req_id)
 
@@ -255,7 +274,10 @@ class OperatorQueueSyncService:
                 platform=True,  # Allow writes to .trinity directory
             )
             if result.get("success"):
-                logger.info(f"Wrote {len(response_map)} responses back to {agent_name}")
+                logger.info(
+                    f"Wrote {len(response_map)} responses and {terminal_flips} "
+                    f"terminal-status flips back to {agent_name}"
+                )
             else:
                 logger.warning(
                     f"Failed to write responses to {agent_name}: {result.get('error')}"

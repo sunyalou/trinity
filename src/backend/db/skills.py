@@ -4,13 +4,20 @@ Agent skills database operations.
 Manages skill assignments to agents. Skills themselves are stored in
 a GitHub repository; this module only tracks which skills are assigned
 to which agents.
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged
+on both SQLite and PostgreSQL. Queries are built from the ``agent_skills``
+table handle in ``db/tables.py``; the engine is resolved via ``db/engine.py``.
 """
 
-import sqlite3
 from datetime import datetime
 from typing import List, Optional
 
-from .connection import get_db_connection
+from sqlalchemy import select, insert, delete
+from sqlalchemy.exc import IntegrityError
+
+from .engine import get_engine
+from .tables import agent_skills
 from db_models import AgentSkill
 from utils.helpers import utc_now_iso
 
@@ -43,15 +50,19 @@ class SkillsOperations:
         Returns:
             List of AgentSkill objects
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, agent_name, skill_name, assigned_by, assigned_at
-                FROM agent_skills
-                WHERE agent_name = ?
-                ORDER BY skill_name
-            """, (agent_name,))
-            return [self._row_to_skill(row) for row in cursor.fetchall()]
+        stmt = (
+            select(
+                agent_skills.c.id,
+                agent_skills.c.agent_name,
+                agent_skills.c.skill_name,
+                agent_skills.c.assigned_by,
+                agent_skills.c.assigned_at,
+            )
+            .where(agent_skills.c.agent_name == agent_name)
+            .order_by(agent_skills.c.skill_name)
+        )
+        with get_engine().connect() as conn:
+            return [self._row_to_skill(row) for row in conn.execute(stmt).mappings()]
 
     def get_agent_skill_names(self, agent_name: str) -> List[str]:
         """
@@ -63,15 +74,13 @@ class SkillsOperations:
         Returns:
             List of skill names
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT skill_name
-                FROM agent_skills
-                WHERE agent_name = ?
-                ORDER BY skill_name
-            """, (agent_name,))
-            return [row["skill_name"] for row in cursor.fetchall()]
+        stmt = (
+            select(agent_skills.c.skill_name)
+            .where(agent_skills.c.agent_name == agent_name)
+            .order_by(agent_skills.c.skill_name)
+        )
+        with get_engine().connect() as conn:
+            return [row["skill_name"] for row in conn.execute(stmt).mappings()]
 
     def assign_skill(
         self,
@@ -92,25 +101,27 @@ class SkillsOperations:
         """
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    INSERT INTO agent_skills (agent_name, skill_name, assigned_by, assigned_at)
-                    VALUES (?, ?, ?, ?)
-                """, (agent_name, skill_name, assigned_by, now))
-                conn.commit()
+        stmt = insert(agent_skills).values(
+            agent_name=agent_name,
+            skill_name=skill_name,
+            assigned_by=assigned_by,
+            assigned_at=now,
+        )
+        try:
+            with get_engine().begin() as conn:
+                result = conn.execute(stmt)
+                new_id = result.inserted_primary_key[0]
 
-                return AgentSkill(
-                    id=cursor.lastrowid,
-                    agent_name=agent_name,
-                    skill_name=skill_name,
-                    assigned_by=assigned_by,
-                    assigned_at=datetime.fromisoformat(now)
-                )
-            except sqlite3.IntegrityError:
-                # Skill already assigned
-                return None
+            return AgentSkill(
+                id=new_id,
+                agent_name=agent_name,
+                skill_name=skill_name,
+                assigned_by=assigned_by,
+                assigned_at=datetime.fromisoformat(now)
+            )
+        except IntegrityError:
+            # Skill already assigned
+            return None
 
     def unassign_skill(self, agent_name: str, skill_name: str) -> bool:
         """
@@ -123,14 +134,13 @@ class SkillsOperations:
         Returns:
             True if a skill was removed
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM agent_skills
-                WHERE agent_name = ? AND skill_name = ?
-            """, (agent_name, skill_name))
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = delete(agent_skills).where(
+            agent_skills.c.agent_name == agent_name,
+            agent_skills.c.skill_name == skill_name,
+        )
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     def set_agent_skills(
         self,
@@ -153,25 +163,27 @@ class SkillsOperations:
         """
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
+        with get_engine().begin() as conn:
             # Remove all existing skills for this agent
-            cursor.execute("""
-                DELETE FROM agent_skills WHERE agent_name = ?
-            """, (agent_name,))
+            conn.execute(
+                delete(agent_skills).where(agent_skills.c.agent_name == agent_name)
+            )
 
             # Add new skills
             for skill_name in skill_names:
                 try:
-                    cursor.execute("""
-                        INSERT INTO agent_skills (agent_name, skill_name, assigned_by, assigned_at)
-                        VALUES (?, ?, ?, ?)
-                    """, (agent_name, skill_name, assigned_by, now))
-                except sqlite3.IntegrityError:
+                    with conn.begin_nested():
+                        conn.execute(
+                            insert(agent_skills).values(
+                                agent_name=agent_name,
+                                skill_name=skill_name,
+                                assigned_by=assigned_by,
+                                assigned_at=now,
+                            )
+                        )
+                except IntegrityError:
                     pass  # Skip duplicates
 
-            conn.commit()
             return len(skill_names)
 
     def delete_agent_skills(self, agent_name: str) -> int:
@@ -184,13 +196,10 @@ class SkillsOperations:
         Returns:
             Number of skills deleted
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM agent_skills WHERE agent_name = ?
-            """, (agent_name,))
-            conn.commit()
-            return cursor.rowcount
+        stmt = delete(agent_skills).where(agent_skills.c.agent_name == agent_name)
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount
 
     def is_skill_assigned(self, agent_name: str, skill_name: str) -> bool:
         """
@@ -203,13 +212,12 @@ class SkillsOperations:
         Returns:
             True if the skill is assigned
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT 1 FROM agent_skills
-                WHERE agent_name = ? AND skill_name = ?
-            """, (agent_name, skill_name))
-            return cursor.fetchone() is not None
+        stmt = select(agent_skills.c.id).where(
+            agent_skills.c.agent_name == agent_name,
+            agent_skills.c.skill_name == skill_name,
+        )
+        with get_engine().connect() as conn:
+            return conn.execute(stmt).first() is not None
 
     def get_agents_with_skill(self, skill_name: str) -> List[str]:
         """
@@ -221,12 +229,10 @@ class SkillsOperations:
         Returns:
             List of agent names
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT agent_name
-                FROM agent_skills
-                WHERE skill_name = ?
-                ORDER BY agent_name
-            """, (skill_name,))
-            return [row["agent_name"] for row in cursor.fetchall()]
+        stmt = (
+            select(agent_skills.c.agent_name)
+            .where(agent_skills.c.skill_name == skill_name)
+            .order_by(agent_skills.c.agent_name)
+        )
+        with get_engine().connect() as conn:
+            return [row["agent_name"] for row in conn.execute(stmt).mappings()]

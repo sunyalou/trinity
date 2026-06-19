@@ -22,6 +22,7 @@ from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
+import sqlalchemy.exc
 
 # Add backend to path for direct imports.
 _backend_path = os.path.abspath(
@@ -100,6 +101,8 @@ def audit_db(monkeypatch):
     conn.close()
 
     # Build a fake db.connection module that hands out connections to our temp DB.
+    # Kept for any not-yet-converted module that still imports the legacy seam;
+    # harmless for the converted db.audit, which routes via get_engine().
     class _ConnContext:
         def __enter__(self):
             self._conn = sqlite3.connect(db_path)
@@ -113,8 +116,17 @@ def audit_db(monkeypatch):
     fake_module.get_db_connection = lambda: _ConnContext()
     monkeypatch.setitem(sys.modules, "db.connection", fake_module)
 
+    # Route the SQLAlchemy engine seam (#300) at the same temp file. db.audit
+    # is converted and reads DATABASE_URL via get_engine(); the engine cache is
+    # keyed by URL, so dispose after setenv so the temp file's engine is the one
+    # created (and dispose again at teardown to drop it).
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    import db.engine as engine_mod
+    engine_mod.dispose_engines()
+
     yield db_path
 
+    engine_mod.dispose_engines()
     os.unlink(db_path)
 
 
@@ -192,8 +204,14 @@ def test_insert_with_json_details(audit_ops):
 
 def test_unique_event_id_enforced(audit_ops):
     audit_ops.create_audit_entry(_entry(event_id="dup"))
-    with pytest.raises(sqlite3.IntegrityError):
+    # The write path now goes through SQLAlchemy Core (#300), which wraps the
+    # underlying sqlite3.IntegrityError (UNIQUE constraint) in
+    # sqlalchemy.exc.IntegrityError. Assert the wrapper and that the chained
+    # cause is still the sqlite UNIQUE violation — no weakening.
+    with pytest.raises(sqlalchemy.exc.IntegrityError) as exc_info:
         audit_ops.create_audit_entry(_entry(event_id="dup"))
+    assert isinstance(exc_info.value.orig, sqlite3.IntegrityError)
+    assert "UNIQUE constraint failed" in str(exc_info.value.orig)
 
 
 def test_update_blocked_by_trigger(audit_ops, audit_db):

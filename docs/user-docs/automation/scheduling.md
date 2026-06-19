@@ -56,6 +56,31 @@ Cron-based automation for agents using APScheduler. Schedule recurring tasks wit
 | `/api/agents/{name}/schedules/{id}/disable` | POST | Disable schedule |
 | `/api/agents/{name}/schedules/{id}/trigger` | POST | Manual trigger |
 | `/api/agents/{name}/schedules/{id}/executions` | GET | Execution history |
+| `/api/agents/{name}/schedules/{id}/analytics` | GET | Per-schedule analytics (see below) |
+
+## Per-Schedule Analytics
+
+Each schedule has an analytics view summarizing how it has been performing over a selectable time window.
+
+### In the UI
+
+1. Open the agent's Schedules tab.
+2. Click **Show execution history** on a schedule.
+3. An **Analytics** card appears below the history with a window toggle (**24h / 7d / 30d**).
+
+The card shows run counts, success rate, duration percentiles (p50 / p95 / p99), total cost, the top tools the schedule called, and a daily timeline of successes, failures, and cost.
+
+### Via the API
+
+```
+GET /api/agents/{name}/schedules/{id}/analytics?window_hours=168
+```
+
+- `window_hours` must be one of `24`, `168` (7 days), or `720` (30 days). Default: `168`.
+- Returns execution counts by status, success rate, duration p50/p95/p99, cost totals, the top 5 tool calls, and a gap-filled daily timeline (UTC day buckets).
+- Read-only — works even when the agent is stopped. Full response schema at [Backend API Docs](http://localhost:8000/docs).
+
+On high-traffic schedules the duration percentiles are computed over the newest 5,000 successful runs; the response reports `sampled: true` when this cap applies. Counts and the timeline always cover the full window.
 
 ## Automatic Retry
 
@@ -138,7 +163,7 @@ if new_items:
 
 ## Per-Schedule Timeout
 
-Each schedule has its own `timeout_seconds`. It cannot exceed the agent's `execution_timeout_seconds` cap:
+Each schedule has an optional `timeout_seconds`. When it is unset (`null`), the schedule inherits the agent's `execution_timeout_seconds` cap. When set, it cannot exceed that cap:
 
 - Creating or updating a schedule with `timeout_seconds > agent.execution_timeout_seconds` returns `400 error=schedule_timeout_exceeds_agent_cap`.
 - Lowering the agent cap below an active schedule's timeout returns `400 error=agent_timeout_below_active_schedules`.
@@ -155,5 +180,7 @@ Raise the agent cap first, then raise the schedule timeout.
 
 ## See Also
 
-- [Agent Lifecycle](../agents/lifecycle.md)
-- [Autonomy Mode](../agents/autonomy.md)
+- [Managing Agents](../agents/managing-agents.md) — agent lifecycle, start/stop
+- [Agent Configuration](../agents/agent-configuration.md) — autonomy mode, execution timeout
+- [Agent Loops](agent-loops.md) — bounded sequential task repetition
+- [Approvals](approvals.md) — human-in-the-loop gates for scheduled work

@@ -15,6 +15,10 @@ redis>=5.0.0
 # Timezone handling
 pytz>=2024.1
 
+# PostgreSQL driver (#300) — used only when DATABASE_URL is a postgresql:// URL;
+# the scheduler defaults to the shared SQLite file when unset.
+psycopg2-binary>=2.9.0
+
 # Testing (dev dependencies)
 pytest>=8.0.0
 pytest-asyncio>=0.23.0

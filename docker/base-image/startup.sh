@@ -12,6 +12,16 @@ if [ -f /opt/trinity/hooks/write-runtime-config.py ]; then
         echo "Warning: failed to render guardrails-runtime.json (hooks will fall back to baseline)"
 fi
 
+# === Scratch space: ensure TMPDIR exists on the home volume (#1098) ===
+# /tmp is a 100 MB RAM tmpfs mounted noexec,nosuid — too small and non-exec for
+# pip/npm/build scratch (ML wheels hit "No space left on device"). The backend
+# sets TMPDIR to a disk-backed, exec-capable path on the home volume; create it
+# (idempotent) so tools that honor TMPDIR land there. Runs as `developer`, the
+# UID-1000 owner of /home/developer.
+AGENT_TMPDIR="${TMPDIR:-/home/developer/.tmp}"
+mkdir -p "${AGENT_TMPDIR}" 2>/dev/null && chmod 700 "${AGENT_TMPDIR}" 2>/dev/null || \
+    echo "Warning: could not create TMPDIR ${AGENT_TMPDIR}; scratch will fall back to /tmp"
+
 # Initialize from GitHub repository if specified
 if [ -n "${GITHUB_REPO}" ] && [ -n "${GITHUB_PAT}" ]; then
     echo "Initializing agent from GitHub repository: ${GITHUB_REPO}"
@@ -297,6 +307,31 @@ if [ -d "/generated-creds" ]; then
     echo "Credential files copied"
 fi
 
+# === Codex runtime setup (#1187) ===
+# Codex is the third agent runtime. Two Codex-specific quirks are fixed here:
+#  1. Identity: Codex reads AGENTS.md (NOT CLAUDE.md). Mirror the agent's
+#     instructions so a Codex agent gets the same platform identity Claude does
+#     (the per-turn system prompt is additionally prepended by codex_runtime.py).
+#  2. CODEX_HOME defaults to ~/.codex — inside the git-tracked repo, which would
+#     dirty auto-sync. Relocate it onto the disk-backed scratch dir (#1098).
+# NOTE: startup.sh must NOT write to .gitignore (#953) — the canonical list
+# (`_GITIGNORE_PATTERNS` in src/backend/services/git_service.py, applied on git
+# init/push by `_build_gitignore_merge_command`) carries `.tmp/`, so the
+# relocated CODEX_HOME under $TMPDIR is excluded from git without a shell write.
+if [ "${AGENT_RUNTIME}" = "codex" ]; then
+    echo "Configuring Codex runtime..."
+
+    if [ -f "/home/developer/CLAUDE.md" ] && [ ! -f "/home/developer/AGENTS.md" ]; then
+        cp /home/developer/CLAUDE.md /home/developer/AGENTS.md 2>/dev/null && \
+            echo "  Mirrored CLAUDE.md -> AGENTS.md for Codex" || \
+            echo "  Warning: could not create AGENTS.md"
+    fi
+
+    CODEX_HOME_DIR="${CODEX_HOME:-${AGENT_TMPDIR}/codex}"
+    mkdir -p "${CODEX_HOME_DIR}" 2>/dev/null && chmod 700 "${CODEX_HOME_DIR}" 2>/dev/null || \
+        echo "  Warning: could not create CODEX_HOME ${CODEX_HOME_DIR}"
+fi
+
 # Ensure core agent-server dependencies are installed correctly
 # This prevents template repos from breaking the agent server with incompatible packages
 echo "Verifying agent-server dependencies..."
@@ -331,6 +366,20 @@ if [ -d "/config/mcp-servers" ]; then
             python3 /app/setup_mcp.py "$mcp"
         fi
     done
+fi
+
+# === Rotated subscription token: durable override (#1089) ===
+# A hot-reload (POST /api/credentials/reload-token) persists the rotated
+# CLAUDE_CODE_OAUTH_TOKEN to this writable-layer path so it survives a plain
+# stop+start. The container's baked Config.Env still holds the OLD token and a
+# fleet restart (ops.py) does a raw stop+start that bypasses start_agent_internal
+# — so export the override (when present and non-empty) BEFORE launching the
+# agent server, so the rotated token wins. The file is wiped on recreate (fresh
+# writable layer), so a DB-driven recreate cleanly reverts to the freshly-baked
+# Config.Env token — no marker logic needed.
+if [ -s /var/lib/trinity/oauth-token ]; then
+    export CLAUDE_CODE_OAUTH_TOKEN="$(cat /var/lib/trinity/oauth-token)"
+    echo "Applied rotated subscription token from durable override"
 fi
 
 # Start Agent Web Server (self-contained UI)

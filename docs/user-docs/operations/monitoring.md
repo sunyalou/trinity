@@ -1,6 +1,6 @@
 # Monitoring
 
-Multi-layer health monitoring for the agent fleet with real-time alerts, automatic cleanup of stuck resources, and a fleet-wide health dashboard.
+Multi-layer health monitoring for the agent fleet with real-time alerts, automatic cleanup of stuck resources, and a fleet-wide health view on the Operations page.
 
 ## Concepts
 
@@ -20,16 +20,51 @@ Multi-layer health monitoring for the agent fleet with real-time alerts, automat
 2. **Network layer** -- Agent HTTP reachability with latency tracking.
 3. **Business layer** -- Runtime availability, context usage, error rates.
 
+**Heartbeat Liveness:** In addition to the periodic health-check loop, each running agent pushes a lightweight heartbeat to the backend every 5 seconds. See [Agent Heartbeats](#agent-heartbeats) below.
+
 **Alert Cooldowns:** Repeated alerts for the same condition are throttled to prevent notification spam.
 
 ## How It Works
 
-### Fleet Health Dashboard
+### Health Tab (Operations Page)
 
-The fleet health dashboard is an admin-only view that summarizes the health of all agents in the system. It is accessible from the admin area of the UI.
+Fleet health lives on the **Health** tab of the [Operations page](operating-room.md) (`/operations?tab=health`). The tab is admin-only — non-admin users do not see it, and deep links to `?tab=health` fall back to the default tab. The legacy `/monitoring` route redirects there.
+
+The tab shows summary cards (Total Agents, Healthy, Degraded, Unhealthy, Critical), active alerts, and a per-agent health list with a status filter. Admins can trigger a fleet-wide check with **Check All** or a single-agent check from each row.
 
 - Real-time WebSocket updates push health state changes as they occur.
 - Individual agent health is visible in both the agent header and the Agents listing page.
+
+### Enabling Monitoring
+
+The periodic health-check loop is **disabled by default**. A status badge at the top of the Health tab shows the current state: "Monitoring Active" or "Monitoring Disabled".
+
+Enable or disable it via the API (admin only):
+
+```
+POST /api/monitoring/enable
+POST /api/monitoring/disable
+```
+
+The choice is persisted, so it survives backend restarts — if monitoring was enabled, the loop resumes automatically on boot. The check interval and other options are configured via `GET`/`PUT /api/monitoring/config`, which also persists and applies the `enabled` flag.
+
+### Agent Heartbeats
+
+Independently of the health-check loop, every running agent (on a current image) POSTs a small heartbeat to the backend every ~5 seconds, authenticated with its own agent-scoped MCP key. A backend watch loop acts on missed beats:
+
+- After **3 consecutive missed beats**, a soft, high-priority operator alert fires — exactly once per loss episode.
+- When beats resume after a loss, a recovery notification fires.
+- A missed beat never hard-marks an agent as down by itself — the alert is advisory, because a missed beat can also mean a transient network issue.
+
+Each agent resolves to one of three heartbeat states:
+
+| State | Meaning |
+|-------|---------|
+| `alive` | Beating normally |
+| `stale` | Was beating, then stopped |
+| `unsupported` | Agent runs an older image that never sent a beat — never treated as dead |
+
+Heartbeat fields (`heartbeat_state`, `heartbeat_alive`, `last_heartbeat_age_s`, `heartbeat_memory_mb`, `heartbeat_active_executions`) surface on `GET /api/monitoring/status` for each agent. Heartbeats work even when the periodic monitoring loop is disabled.
 
 ### Cleanup Service
 
@@ -56,7 +91,7 @@ Each sweep is capped at 5,000 rows per cycle, so the first post-deploy backfill 
 
 ## Real-Time Event Reliability
 
-Trinity uses a Redis Streams-backed event bus for all WebSocket delivery (RELIABILITY-003). This is invisible during normal operation but has operator-visible behaviour in a few edge cases.
+Trinity uses a Redis Streams-backed event bus for all WebSocket delivery. This is invisible during normal operation but has operator-visible behaviour in a few edge cases.
 
 ### Reconnect Replay
 
@@ -102,13 +137,21 @@ Agents can query monitoring data through these MCP tools:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/monitoring/status` | GET | Fleet health summary |
+| `/api/monitoring/status` | GET | Fleet health summary (includes `heartbeat_*` fields) |
 | `/api/monitoring/agents/{name}` | GET | Single-agent health detail |
 | `/api/monitoring/agents/{name}/check` | POST | Force immediate health check |
+| `/api/monitoring/enable` | POST | Start the health-check loop; persisted (admin) |
+| `/api/monitoring/disable` | POST | Stop the health-check loop; persisted (admin) |
+| `/api/monitoring/config` | GET/PUT | Monitoring configuration, including the enabled flag (admin) |
+| `/api/monitoring/check-all` | POST | Trigger a fleet-wide health check (admin) |
 | `/api/monitoring/cleanup-status` | GET | Cleanup service status (admin) |
 | `/api/monitoring/cleanup-trigger` | POST | Force a cleanup run (admin) |
+| `/api/agents/{name}/heartbeat` | POST | Agent liveness heartbeat (sent by the agent itself every ~5s) |
+
+Full API reference: http://localhost:8000/docs
 
 ## See Also
 
-- [Dashboard](dashboard.md) -- Admin dashboard overview
-- [Operating Room](operating-room.md) -- Real-time operations view
+- [Dashboard](dashboard.md) -- Main dashboard overview
+- [Operations Page](operating-room.md) -- Operator queue, notifications, and the other Operations tabs
+- [Executions](executions.md) -- Fleet execution list (Executions tab)

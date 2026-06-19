@@ -25,7 +25,7 @@ API endpoints for agent chat, voice, streaming, and public chat access.
 | `/api/agents/{name}/voice/start` | POST | Start voice session |
 | `/api/agents/{name}/voice/stop` | POST | Stop session |
 | `/api/agents/{name}/voice/status` | GET | Session status |
-| `/api/agents/{name}/voice/ws` | WS | Audio WebSocket bridge |
+| `/ws/voice/{session_id}` | WS | Audio WebSocket bridge (URL returned by `voice/start`) |
 
 ### Public Chat (no auth)
 
@@ -48,6 +48,31 @@ API endpoints for agent chat, voice, streaming, and public chat access.
 | `/api/agents/{name}/task` | POST | Submit task |
 | `/api/agents/{name}/executions` | GET | List executions |
 | `/api/agents/{name}/executions/{id}` | GET | Execution details |
+
+#### Deprecated: per-task `timeout_seconds`
+
+The `timeout_seconds` field on the task request body is **deprecated** and will be removed in a future release. The agent's execution timeout (`GET/PUT /api/agents/{name}/timeout`) is authoritative.
+
+Current behavior: the field is still honored, but values above the agent's timeout cap are clamped down to the cap (the server logs a deprecation warning). Omit the field — the task then uses the agent's configured timeout. To run longer tasks, raise the agent's timeout cap instead.
+
+## Idempotency
+
+Endpoints that trigger an execution accept an optional `Idempotency-Key` header so you can retry safely without creating duplicate executions. Pick any unique string per logical request (e.g., a UUID) and resend it on retry:
+
+```bash
+curl -X POST http://localhost:8000/api/agents/my-agent/task \
+  -H "Authorization: Bearer <token>" \
+  -H "Idempotency-Key: 7f3a2c1e-..." \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Summarize the latest reports"}'
+```
+
+- The same key within 24 hours returns the original result with the header `X-Idempotent-Replay: true` — no second execution is created.
+- A duplicate sent while the first request is still running returns **409** with the original `execution_id` to poll.
+- If the first attempt was rejected before dispatch (e.g., at capacity), the key is released so the retry goes through.
+- The header is optional and fail-open: omitting it preserves normal behavior, and a dedup-layer error never blocks a real request.
+
+Wired boundaries: `/api/agents/{name}/chat`, `/api/agents/{name}/task`, `/api/agents/{name}/fan-out`, `/api/agents/{name}/voip/call`, [webhook triggers](webhook-triggers.md) (key auto-derived from token + body when the header is absent), and the MCP `chat_with_agent` / `fan_out` tools (deterministic key derived from the call arguments).
 
 ## See Also
 

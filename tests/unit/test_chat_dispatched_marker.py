@@ -28,7 +28,6 @@ Hybrid test strategy (per #686 autoplan UC6 + CC unit-test conventions):
 from __future__ import annotations
 
 import ast
-import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -42,6 +41,8 @@ import pytest
 # forbids bare `sys.modules` mutations outside conftest.)
 _BACKEND = Path(__file__).resolve().parent.parent.parent / "src" / "backend"
 
+from db_harness import db_backend, run as _hrun  # noqa: E402
+
 
 # ===========================================================================
 # DB-level tests: cleanup query behavior
@@ -49,62 +50,16 @@ _BACKEND = Path(__file__).resolve().parent.parent.parent / "src" / "backend"
 
 
 @pytest.fixture
-def tmp_db(tmp_path, monkeypatch):
-    """Spin up a fresh SQLite database with just `schedule_executions`.
+def tmp_db(db_backend, monkeypatch):
+    """Active backend with a fresh FULL production schema (db_harness, #300).
 
-    Pattern lifted from `tests/unit/test_backlog.py:66-156` — minimal schema,
-    env-var redirected, modules evicted on teardown so the next test isn't
-    poisoned.
-    """
-    db_path = tmp_path / "trinity-686.db"
-    monkeypatch.setenv("TRINITY_DB_PATH", str(db_path))
-
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE schedule_executions (
-            id TEXT PRIMARY KEY,
-            schedule_id TEXT,
-            agent_name TEXT NOT NULL,
-            status TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            completed_at TEXT,
-            duration_ms INTEGER,
-            message TEXT NOT NULL DEFAULT '',
-            response TEXT,
-            error TEXT,
-            triggered_by TEXT NOT NULL DEFAULT 'test',
-            context_used INTEGER,
-            context_max INTEGER,
-            cost REAL,
-            tool_calls TEXT,
-            execution_log TEXT,
-            source_user_id INTEGER,
-            source_user_email TEXT,
-            source_agent_name TEXT,
-            source_mcp_key_id TEXT,
-            source_mcp_key_name TEXT,
-            claude_session_id TEXT,
-            model_used TEXT,
-            fan_out_id TEXT,
-            subscription_id TEXT,
-            queued_at TEXT,
-            backlog_metadata TEXT
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
-
-    # Evict any cached backend DB modules so the schedule_ops fixture's
-    # `from db.schedules import ScheduleOperations` re-imports against the
-    # fresh TRINITY_DB_PATH set above. monkeypatch restores the prior
-    # entries at fixture teardown, isolating the next test.
+    Runs on SQLite and, when TEST_POSTGRES_URL is set, PostgreSQL. Returns the
+    backend marker (leading positional arg the helpers accept). Evicts cached db
+    modules (via monkeypatch so the #762 sys.modules-pollution lint stays green)
+    so production code re-resolves against the active engine."""
     for mod in ("db.connection", "db.schedules", "database"):
         monkeypatch.delitem(sys.modules, mod, raising=False)
-
-    yield db_path
+    return db_backend
 
 
 @pytest.fixture
@@ -114,28 +69,26 @@ def schedule_ops(tmp_db):
     return ScheduleOperations(user_ops=MagicMock(), agent_ops=MagicMock())
 
 
-def _insert_running(tmp_db: Path, *, exec_id: str, claude_session_id, started_at: str):
-    conn = sqlite3.connect(str(tmp_db))
-    conn.execute(
-        """
-        INSERT INTO schedule_executions
-          (id, agent_name, status, started_at, message, triggered_by, claude_session_id)
-        VALUES (?, ?, 'running', ?, ?, 'mcp', ?)
-        """,
-        (exec_id, "test-agent", started_at, "msg", claude_session_id),
+def _insert_running(_db, *, exec_id: str, claude_session_id, started_at: str):
+    # schedule_id is NOT NULL in the real schema (the old hand-rolled table
+    # allowed null) — supply a manual sentinel.
+    _hrun(
+        "INSERT INTO schedule_executions "
+        "(id, schedule_id, agent_name, status, started_at, message, triggered_by, claude_session_id) "
+        "VALUES (:id, '__manual__', 'test-agent', 'running', :sa, 'msg', 'mcp', :csid)",
+        id=exec_id, sa=started_at, csid=claude_session_id,
     )
-    conn.commit()
-    conn.close()
 
 
-def _fetch(tmp_db: Path, exec_id: str):
-    conn = sqlite3.connect(str(tmp_db))
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT * FROM schedule_executions WHERE id = ?", (exec_id,)
-    ).fetchone()
-    conn.close()
-    return row
+def _fetch(_db, exec_id: str):
+    from sqlalchemy import text
+    from db.engine import get_engine
+
+    with get_engine().connect() as conn:
+        return conn.execute(
+            text("SELECT * FROM schedule_executions WHERE id = :id"),
+            {"id": exec_id},
+        ).mappings().first()
 
 
 def _stale_started_at(seconds: int) -> str:

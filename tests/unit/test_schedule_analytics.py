@@ -26,8 +26,6 @@ Locked behaviour (from the /autoplan review on the issue):
 """
 from __future__ import annotations
 
-import json
-import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -45,6 +43,16 @@ while _BACKEND_STR in sys.path:
     sys.path.remove(_BACKEND_STR)
 sys.path.insert(0, _BACKEND_STR)
 
+# Backend-agnostic harness (#300): runs each test on SQLite and, when
+# TEST_POSTGRES_URL is set, PostgreSQL too. `db_backend` is the parametrized
+# fixture; the seed_* helpers write via the active engine.
+from db_harness import (  # noqa: E402
+    db_backend,
+    seed_user,
+    seed_schedule as _hseed_schedule,
+    seed_execution as _hseed_execution,
+)
+
 
 # Mirror the pollution defence from `test_schedule_soft_delete.py` —
 # sibling tests stub `db.*` modules pointing at their own tmp DBs and
@@ -59,7 +67,19 @@ _STUBBED_MODULE_NAMES = [
 
 @pytest.fixture(autouse=True)
 def _restore_sys_modules():
-    saved = {n: sys.modules.get(n) for n in _STUBBED_MODULE_NAMES}
+    names = _STUBBED_MODULE_NAMES + ["db.connection"]
+    saved = {n: sys.modules.get(n) for n in names}
+    # Re-imports inside the fixtures also rebind the parent `db` package
+    # attributes (`import db.X` sets `db.X` on the package). Restore those
+    # too, or later files binding via `import db.X as Y` (package-attr path)
+    # get a different module object than `from db.X import ...` and their
+    # attribute patches land on the wrong module.
+    db_pkg = sys.modules.get("db")
+    saved_attrs = (
+        {n.split(".", 1)[1]: getattr(db_pkg, n.split(".", 1)[1], None) for n in names}
+        if db_pkg is not None
+        else {}
+    )
     for name in _STUBBED_MODULE_NAMES:
         sys.modules.pop(name, None)
     try:
@@ -70,103 +90,26 @@ def _restore_sys_modules():
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = value
+        for attr, value in saved_attrs.items():
+            if value is None:
+                if hasattr(db_pkg, attr):
+                    delattr(db_pkg, attr)
+            else:
+                setattr(db_pkg, attr, value)
 
 
 # ----------------------------------------------------------------------
-# Schema helpers — only what get_schedule_analytics actually reads.
+# Fixtures — backend-agnostic via db_harness (#300). The schema is built
+# from the canonical Core metadata, so no hand-rolled DDL to drift.
 # ----------------------------------------------------------------------
-
-def _make_db_schema(conn: sqlite3.Connection) -> None:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE users (
-            id INTEGER PRIMARY KEY,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT,
-            role TEXT DEFAULT 'user',
-            auth0_sub TEXT,
-            name TEXT,
-            picture TEXT,
-            email TEXT,
-            created_at TEXT,
-            updated_at TEXT,
-            last_login TEXT
-        )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE agent_schedules (
-            id TEXT PRIMARY KEY,
-            agent_name TEXT NOT NULL,
-            name TEXT NOT NULL,
-            cron_expression TEXT NOT NULL,
-            message TEXT NOT NULL,
-            enabled INTEGER DEFAULT 1,
-            timezone TEXT DEFAULT 'UTC',
-            description TEXT,
-            owner_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            last_run_at TEXT,
-            next_run_at TEXT,
-            timeout_seconds INTEGER DEFAULT 900,
-            allowed_tools TEXT,
-            model TEXT,
-            max_retries INTEGER DEFAULT 0,
-            retry_delay_seconds INTEGER DEFAULT 60,
-            validation_enabled INTEGER DEFAULT 0,
-            validation_prompt TEXT,
-            validation_timeout_seconds INTEGER DEFAULT 120,
-            webhook_token TEXT,
-            webhook_enabled INTEGER DEFAULT 0,
-            deleted_at TEXT
-        )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE schedule_executions (
-            id TEXT PRIMARY KEY,
-            schedule_id TEXT NOT NULL,
-            agent_name TEXT NOT NULL,
-            status TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            completed_at TEXT,
-            duration_ms INTEGER,
-            cost REAL,
-            tool_calls TEXT,
-            triggered_by TEXT NOT NULL DEFAULT 'manual',
-            message TEXT NOT NULL DEFAULT ''
-        )
-        """
-    )
-    # The real schema indexes (schedule_id) and (agent_name, started_at).
-    cur.execute(
-        "CREATE INDEX idx_executions_schedule ON schedule_executions(schedule_id)"
-    )
-    cur.execute(
-        "INSERT INTO users(id, username, role) VALUES (1, 'owner', 'user')"
-    )
-    conn.commit()
-
 
 @pytest.fixture
-def tmp_db(tmp_path, monkeypatch):
-    db_path = tmp_path / "trinity.db"
-    conn = sqlite3.connect(str(db_path))
-    _make_db_schema(conn)
-    conn.close()
-
-    monkeypatch.setenv("TRINITY_DB_PATH", str(db_path))
-    monkeypatch.delitem(sys.modules, "db.connection", raising=False)
-    try:
-        import db.connection as connection_mod
-    except ImportError:
-        pytest.skip("backend venv required")
-    monkeypatch.setattr(connection_mod, "DB_PATH", str(db_path))
-    return str(db_path)
+def tmp_db(db_backend):
+    """Active backend with a fresh schema; seeds the baseline owner (id=1)
+    the old hand-rolled schema created. Returns the backend name (kept as a
+    positional arg for the seed-helper call sites below)."""
+    seed_user(1, "owner", "user")
+    return db_backend
 
 
 @pytest.fixture
@@ -187,24 +130,15 @@ def ops(tmp_db):
 # ----------------------------------------------------------------------
 
 def _seed_schedule(
-    db_path: str,
+    _db,
     sid: str,
     agent_name: str = "agent-1",
     deleted_at: str | None = None,
 ) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        """
-        INSERT INTO agent_schedules
-            (id, agent_name, name, cron_expression, message,
-             enabled, owner_id, created_at, updated_at, deleted_at)
-        VALUES (?, ?, 'sched', '0 0 * * *', 'hi',
-                1, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', ?)
-        """,
-        (sid, agent_name, deleted_at),
-    )
-    conn.commit()
-    conn.close()
+    # Thin wrapper over the engine-based harness helper. First positional is
+    # the backend marker from the `tmp_db` fixture (ignored — writes go to the
+    # active engine).
+    _hseed_schedule(sid, agent_name=agent_name, deleted_at=deleted_at)
 
 
 def _iso_ago(minutes: int = 0, hours: int = 0, days: int = 0) -> str:
@@ -231,24 +165,17 @@ def _seed_execution(
 ) -> str:
     if started_at is None:
         started_at = _iso_ago(minutes=5)
-    if exec_id is None:
-        exec_id = f"e-{sid}-{started_at[-10:]}-{status}-{duration_ms}"
-    if isinstance(tool_calls, list):
-        tool_calls = json.dumps(tool_calls)
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        """
-        INSERT INTO schedule_executions
-            (id, schedule_id, agent_name, status, started_at,
-             duration_ms, cost, tool_calls, triggered_by, message)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'schedule', '')
-        """,
-        (exec_id, sid, agent_name, status, started_at,
-         duration_ms, cost, tool_calls),
+    # Engine-based harness write; `db_path` arg is the ignored backend marker.
+    return _hseed_execution(
+        sid,
+        agent_name=agent_name,
+        exec_id=exec_id,
+        started_at=started_at,
+        status=status,
+        duration_ms=duration_ms,
+        cost=cost,
+        tool_calls=tool_calls,
     )
-    conn.commit()
-    conn.close()
-    return exec_id
 
 
 # ----------------------------------------------------------------------

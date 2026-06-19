@@ -40,11 +40,22 @@ SQLite with `PRAGMA foreign_keys=OFF` (G11) the order is irrelevant.
 
 Portability
 -----------
-All SQL is ANSI: `DELETE FROM t WHERE c = ?` / `UPDATE t SET c = ?
-WHERE c = ?`. No SQLite-specific functions (`datetime('now', ...)`,
-`PRAGMA`, `rowid`). The `?` placeholder convention is shared with the
-rest of the backend; future PostgreSQL migration will translate at the
-connection layer.
+Data access is SQLAlchemy Core (#300): the cascade/rename/orphan
+functions receive a SQLAlchemy ``Connection`` and build dialect-agnostic
+``delete()`` / ``update()`` / ``select()`` statements against the shared
+``db/tables.py`` MetaData (tables resolved by name from the registry).
+No ``?`` placeholders, no SQLite-only constructs (`datetime('now', ...)`,
+`PRAGMA`, `rowid`, `sqlite_master`) — the same code runs on SQLite and
+PostgreSQL. The only free-form fragment, ``extra_filter``
+(``scope = 'agent'``), is ANSI SQL wrapped in ``text()`` and AND-ed into
+the Core WHERE clause.
+
+Import discipline
+-----------------
+Module-level imports are stdlib-only so the parity check in
+``tests/unit/test_agent_cleanup_parity.py`` can ``exec_module`` this file
+without the backend venv (SQLAlchemy absent). The SQLAlchemy imports are
+therefore deferred into the data-access functions.
 """
 
 from __future__ import annotations
@@ -190,15 +201,21 @@ LINK_CHAINED_DELETES: List[tuple] = [
 ]
 
 
-def _table_exists(cursor, table: str) -> bool:
-    """Lightweight existence check. SQLite uses sqlite_master; the same
-    pattern works against PostgreSQL via information_schema.tables (a
-    one-line swap in the future migration's connection wrapper)."""
-    cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table,),
-    )
-    return cursor.fetchone() is not None
+def _table(table: str):
+    """Resolve a registry table name to its Core ``Table`` handle from the
+    shared ``db/tables.py`` MetaData."""
+    from .tables import metadata
+
+    return metadata.tables[table]
+
+
+def _table_exists(conn, table: str) -> bool:
+    """Lightweight existence check against the live database. Uses the
+    SQLAlchemy inspector so it works identically on SQLite and PostgreSQL
+    (replacing the former ``sqlite_master`` query)."""
+    from sqlalchemy import inspect as sa_inspect
+
+    return sa_inspect(conn).has_table(table)
 
 
 def cascade_delete(conn, agent_name: str) -> Dict[str, int]:
@@ -206,9 +223,9 @@ def cascade_delete(conn, agent_name: str) -> Dict[str, int]:
     Delete all CASCADE-policy rows referencing this agent.
 
     Caller is responsible for deleting the `agent_ownership` row itself
-    after this returns (parent row last). Connection transaction is
-    managed by the caller (`get_db_connection()` commits on context
-    exit).
+    after this returns (parent row last). `conn` is a SQLAlchemy
+    ``Connection``; the transaction is managed by the caller
+    (`get_engine().begin()` commits on context exit).
 
     Tables absent from the connected database are silently skipped —
     test DBs with a subset of the schema, and partial-install
@@ -220,7 +237,8 @@ def cascade_delete(conn, agent_name: str) -> Dict[str, int]:
     tables) to rows deleted. Useful for logging / audit / backfill
     reporting.
     """
-    cursor = conn.cursor()
+    from sqlalchemy import delete as sa_delete, select as sa_select, text as sa_text
+
     deleted: Dict[str, int] = {}
 
     # Two-hop chained delete FIRST: public_chat_messages → session →
@@ -228,48 +246,49 @@ def cascade_delete(conn, agent_name: str) -> Dict[str, int]:
     # below — that loop deletes public_chat_sessions, and then there's
     # nothing left to join through.
     if (
-        _table_exists(cursor, "public_chat_messages")
-        and _table_exists(cursor, "public_chat_sessions")
-        and _table_exists(cursor, "agent_public_links")
+        _table_exists(conn, "public_chat_messages")
+        and _table_exists(conn, "public_chat_sessions")
+        and _table_exists(conn, "agent_public_links")
     ):
-        cursor.execute(
-            "DELETE FROM public_chat_messages WHERE session_id IN ("
-            "  SELECT id FROM public_chat_sessions WHERE link_id IN ("
-            "    SELECT id FROM agent_public_links WHERE agent_name = ?"
-            "  )"
-            ")",
-            (agent_name,),
+        pcm = _table("public_chat_messages")
+        pcs = _table("public_chat_sessions")
+        apl = _table("agent_public_links")
+        inner_links = sa_select(apl.c.id).where(apl.c.agent_name == agent_name)
+        inner_sessions = sa_select(pcs.c.id).where(pcs.c.link_id.in_(inner_links))
+        result = conn.execute(
+            sa_delete(pcm).where(pcm.c.session_id.in_(inner_sessions))
         )
-        if cursor.rowcount > 0:
-            deleted["public_chat_messages"] = cursor.rowcount
+        if result.rowcount > 0:
+            deleted["public_chat_messages"] = result.rowcount
 
     # Single-hop chained link tables — they reference rows we're about
     # to delete from agent_public_links / telegram_bindings / etc.
     for table, link_col, parent_table, parent_col in LINK_CHAINED_DELETES:
-        if not (_table_exists(cursor, table) and _table_exists(cursor, parent_table)):
+        if not (_table_exists(conn, table) and _table_exists(conn, parent_table)):
             continue
-        cursor.execute(
-            f"DELETE FROM {table} WHERE {link_col} IN ("
-            f"  SELECT id FROM {parent_table} WHERE {parent_col} = ?"
-            f")",
-            (agent_name,),
+        child = _table(table)
+        parent = _table(parent_table)
+        inner = sa_select(parent.c.id).where(parent.c[parent_col] == agent_name)
+        result = conn.execute(
+            sa_delete(child).where(child.c[link_col].in_(inner))
         )
-        if cursor.rowcount > 0:
-            deleted[table] = cursor.rowcount
+        if result.rowcount > 0:
+            deleted[table] = result.rowcount
 
     # Main CASCADE loop
     for ref in AGENT_REFS:
         if ref.policy != Policy.CASCADE:
             continue
-        if not _table_exists(cursor, ref.table):
+        if not _table_exists(conn, ref.table):
             continue
-        sql = f"DELETE FROM {ref.table} WHERE {ref.column} = ?"
+        tbl = _table(ref.table)
+        stmt = sa_delete(tbl).where(tbl.c[ref.column] == agent_name)
         if ref.extra_filter:
-            sql += f" AND {ref.extra_filter}"
-        cursor.execute(sql, (agent_name,))
-        if cursor.rowcount > 0:
+            stmt = stmt.where(sa_text(ref.extra_filter))
+        result = conn.execute(stmt)
+        if result.rowcount > 0:
             key = f"{ref.table}:{ref.column}" if _multi_column(ref.table) else ref.table
-            deleted[key] = deleted.get(key, 0) + cursor.rowcount
+            deleted[key] = deleted.get(key, 0) + result.rowcount
 
     return deleted
 
@@ -285,19 +304,25 @@ def cascade_rename(conn, old_name: str, new_name: str) -> Dict[str, int]:
     Caller is responsible for renaming `agent_ownership` itself and
     handling the uniqueness check on the destination name.
     """
-    cursor = conn.cursor()
+    from sqlalchemy import text as sa_text, update as sa_update
+
     updated: Dict[str, int] = {}
 
     for ref in AGENT_REFS:
-        if not _table_exists(cursor, ref.table):
+        if not _table_exists(conn, ref.table):
             continue
-        sql = f"UPDATE {ref.table} SET {ref.column} = ? WHERE {ref.column} = ?"
+        tbl = _table(ref.table)
+        stmt = (
+            sa_update(tbl)
+            .where(tbl.c[ref.column] == old_name)
+            .values({ref.column: new_name})
+        )
         if ref.extra_filter:
-            sql += f" AND {ref.extra_filter}"
-        cursor.execute(sql, (new_name, old_name))
-        if cursor.rowcount > 0:
+            stmt = stmt.where(sa_text(ref.extra_filter))
+        result = conn.execute(stmt)
+        if result.rowcount > 0:
             key = f"{ref.table}:{ref.column}" if _multi_column(ref.table) else ref.table
-            updated[key] = updated.get(key, 0) + cursor.rowcount
+            updated[key] = updated.get(key, 0) + result.rowcount
 
     return updated
 
@@ -311,35 +336,37 @@ def find_orphan_agent_names(conn) -> Dict[str, int]:
     An "orphan" is an agent_name value present in a registered table
     but absent from `agent_ownership`.
     """
-    cursor = conn.cursor()
-    cursor.execute("SELECT agent_name FROM agent_ownership")
-    known = {row[0] for row in cursor.fetchall()}
+    from sqlalchemy import func, select as sa_select, text as sa_text
+
+    ao = _table("agent_ownership")
+    known = {
+        row[0]
+        for row in conn.execute(sa_select(ao.c.agent_name)).all()
+    }
 
     if not known:
         # No agents exist; every row everywhere is technically orphan.
         # Refuse to operate to avoid wiping a fresh-install DB.
         return {}
 
-    placeholders = ",".join("?" * len(known))
     known_params = list(known)
     counts: Dict[str, int] = {}
 
     for ref in AGENT_REFS:
         if ref.policy != Policy.CASCADE:
             continue
-        if not _table_exists(cursor, ref.table):
+        if not _table_exists(conn, ref.table):
             continue
-        sql = (
-            f"SELECT {ref.column} AS name, COUNT(*) AS n "
-            f"FROM {ref.table} "
-            f"WHERE {ref.column} NOT IN ({placeholders})"
+        tbl = _table(ref.table)
+        name_col = tbl.c[ref.column]
+        stmt = (
+            sa_select(name_col.label("name"), func.count().label("n"))
+            .where(name_col.notin_(known_params))
         )
-        params = list(known_params)
         if ref.extra_filter:
-            sql += f" AND {ref.extra_filter}"
-        sql += f" GROUP BY {ref.column}"
-        cursor.execute(sql, params)
-        for row in cursor.fetchall():
+            stmt = stmt.where(sa_text(ref.extra_filter))
+        stmt = stmt.group_by(name_col)
+        for row in conn.execute(stmt).all():
             name = row[0]
             if name is None:
                 continue

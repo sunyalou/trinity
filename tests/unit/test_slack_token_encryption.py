@@ -37,6 +37,7 @@ import pytest
 _BACKEND = Path(__file__).resolve().parent.parent.parent / "src" / "backend"
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
+from db_harness import db_backend, engine_conn  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -56,44 +57,14 @@ def encryption_key(monkeypatch):
 
 
 @pytest.fixture
-def slack_ops_with_temp_db(tmp_path, monkeypatch):
-    """Build a SlackOperations bound to a temp SQLite DB with the
-    minimum schema needed for the connection tests.
-
-    We don't go through the full `db.connection.get_db_connection` machinery
-    — we create the tables directly and patch `get_db_connection` to yield
-    our temp connection. Keeps the tests self-contained.
-    """
+def slack_ops_with_temp_db(db_backend):
+    """Ops + an engine-backed conn shim on the active backend
+    (db_harness, #300). Runs on SQLite and, when TEST_POSTGRES_URL is
+    set, PostgreSQL. db_backend builds the full schema; the shim mimics
+    a sqlite3 connection for the tests' on-disk envelope reads + legacy
+    plaintext seeding."""
     from db import slack as slack_db
-
-    db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("""
-        CREATE TABLE slack_link_connections (
-            id TEXT PRIMARY KEY,
-            link_id TEXT NOT NULL UNIQUE,
-            slack_team_id TEXT NOT NULL UNIQUE,
-            slack_team_name TEXT,
-            slack_bot_token TEXT NOT NULL,
-            connected_by TEXT NOT NULL,
-            connected_at TEXT NOT NULL,
-            enabled INTEGER DEFAULT 1
-        )
-    """)
-    conn.commit()
-
-    # Each call to get_db_connection() needs its own context manager
-    class _ConnCtx:
-        def __enter__(self):
-            return conn
-        def __exit__(self, *args):
-            return False
-
-    monkeypatch.setattr(slack_db, "get_db_connection", lambda: _ConnCtx())
-
-    ops = slack_db.SlackOperations()
-    yield ops, conn, db_path
-    conn.close()
+    yield slack_db.SlackOperations(), engine_conn(), None
 
 
 # ---------------------------------------------------------------------------

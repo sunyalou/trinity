@@ -25,7 +25,7 @@ from services.docker_utils import (
 from services.agent_service.helpers import validate_base_image
 from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities, get_agent_default_resources
 from services.skill_service import skill_service
-from .helpers import check_shared_folder_mounts_match, check_api_key_env_matches, check_github_pat_env_matches, check_resource_limits_match, check_full_capabilities_match, check_guardrails_env_matches
+from .helpers import check_shared_folder_mounts_match, check_api_key_env_matches, check_github_pat_env_matches, check_resource_limits_match, check_full_capabilities_match, check_guardrails_env_matches, is_claude_runtime
 from .file_sharing import check_public_folder_mount_matches
 from .read_only import inject_read_only_hooks, remove_read_only_hooks
 
@@ -94,6 +94,10 @@ from .capabilities import (  # noqa: F401
     RESTRICTED_CAPABILITIES,
     FULL_CAPABILITIES,
     PROHIBITED_CAPABILITIES,
+    AGENT_TMPFS_MOUNT,
+    AGENT_DEFAULT_TMPDIR,
+    normalize_cpu,
+    normalize_memory,
 )
 
 
@@ -350,15 +354,36 @@ async def recreate_container_with_updated_config(agent_name: str, old_container,
     env_vars = {e.split("=", 1)[0]: e.split("=", 1)[1] for e in old_config.get("Env", []) if "=" in e}
     labels = old_config.get("Labels", {})
 
+    # #1098: redirect scratch (pip/npm/build) off the 100 MB noexec /tmp tmpfs
+    # onto the disk-backed home volume. setdefault so a template/user-set TMPDIR
+    # carried on the existing container wins; old-image containers (no TMPDIR)
+    # pick up the default on this recreate.
+    env_vars.setdefault('TMPDIR', AGENT_DEFAULT_TMPDIR)
+
     # Update auth env vars based on current setting (SUB-002).
     # Claude Code prioritizes ANTHROPIC_API_KEY over CLAUDE_CODE_OAUTH_TOKEN,
     # so when a subscription is assigned we must remove the API key and set
     # the token env var instead.
+    #
+    # This whole juggle is Claude-only: subscriptions are Claude-OAuth tokens.
+    # Non-Claude runtimes (Gemini, Codex) authenticate from their own .env
+    # (CRED-002) and must NEVER receive a Claude subscription token on recreate,
+    # even if a subscription row somehow exists for them (#1187 decision 7).
+    _runtime = (
+        env_vars.get('AGENT_RUNTIME')
+        or labels.get('trinity.agent-runtime')
+        or 'claude-code'
+    )
+    _is_claude_runtime = is_claude_runtime(_runtime)
     subscription_id = db.get_agent_subscription_id(agent_name)
     has_subscription = subscription_id is not None
     use_platform_key = db.get_use_platform_api_key(agent_name)
 
-    if has_subscription:
+    if not _is_claude_runtime:
+        # Non-Claude: leave the agent's own credentials in place; never inject a
+        # Claude token.
+        env_vars.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
+    elif has_subscription:
         # Subscription assigned — inject token, remove API key
         token = db.get_subscription_token(subscription_id)
         if token:
@@ -373,12 +398,18 @@ async def recreate_container_with_updated_config(agent_name: str, old_container,
         env_vars.pop('ANTHROPIC_API_KEY', None)
         env_vars.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
 
-    # Update GITHUB_PAT using per-agent PAT first, then platform PAT
-    if env_vars.get('GITHUB_PAT'):
+    # Update GITHUB_PAT using per-agent PAT first, then platform PAT.
+    _per_agent_pat = bool(db.get_agent_github_pat(agent_name)) and bool(db.get_git_config(agent_name))
+    if env_vars.get('GITHUB_PAT') or _per_agent_pat:
         from routers.git import get_github_pat_for_agent
         current_pat = get_github_pat_for_agent(agent_name)
         if current_pat:
             env_vars['GITHUB_PAT'] = current_pat
+    # NB: gated on db.get_agent_github_pat (NOT the global fallback) so a global-
+    # only PAT is never injected into a previously-tokenless container (#211's
+    # opt-in path); kept in sync with the recreate matcher so the two converge.
+    # Inlined via db rather than importing the helper, so a test stubbing
+    # services.agent_service.helpers can't break this module's import (#1271 CI).
 
     # GUARD-001: re-serialise guardrails overrides into env so startup.sh
     # can render the runtime config with the latest values.
@@ -401,6 +432,13 @@ async def recreate_container_with_updated_config(agent_name: str, old_container,
     else:
         cpu = labels.get("trinity.cpu") or system_defaults["cpu"]
         memory = labels.get("trinity.memory") or system_defaults["memory"]
+
+    # #1197: validate/normalize before they reach Docker (int(cpu) NanoCpus /
+    # mem_limit). A stale label or DB override carrying a non-integer cpu or a
+    # Kubernetes-style memory would otherwise crash recreate with an opaque
+    # ValueError; fail with a clear message instead.
+    cpu = normalize_cpu(cpu, system_defaults["cpu"])
+    memory = normalize_memory(memory, system_defaults["memory"])
 
     # Update labels with new resource limits for future reference
     labels["trinity.cpu"] = cpu
@@ -535,11 +573,15 @@ async def recreate_container_with_updated_config(agent_name: str, old_container,
         # Add back only the capabilities needed for the mode
         cap_add=FULL_CAPABILITIES if full_capabilities else RESTRICTED_CAPABILITIES,
         read_only=False,
-        # Always apply noexec,nosuid to /tmp for security
-        tmpfs={'/tmp': 'noexec,nosuid,size=100m'},
+        # Always apply noexec,nosuid to /tmp for security (#1098: scratch is
+        # redirected off this tiny tmpfs via the TMPDIR env var above).
+        tmpfs=AGENT_TMPFS_MOUNT,
         network='trinity-agent-network',
         mem_limit=memory,
-        cpu_count=int(cpu)
+        # #1126: nano_cpus (Linux CFS quota → HostConfig.NanoCpus), NOT
+        # cpu_count — docker-py's cpu_count maps to the Windows-only CpuCount
+        # and leaves NanoCpus=0 on Linux, so the CPU limit was never enforced.
+        nano_cpus=int(cpu) * 1_000_000_000,
     )
 
     logger.info(f"Recreated container for agent {agent_name} with updated configuration")

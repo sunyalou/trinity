@@ -22,7 +22,7 @@ import subprocess
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -187,6 +187,32 @@ def _attempt_empty_result_recovery(
     return (status_code, body)
 
 
+def _timeout_504_detail(
+    ctx: "HeadlessRunContext",
+    message: str,
+    termination_reason: str,
+    stalled_tool: Optional[str] = None,
+) -> Dict:
+    """Structured 504 body for an agent-side timeout kill (#1094, #1201).
+
+    Carries the telemetry accumulated before the kill (cost / context / tool
+    calls) under ``metadata`` — the same sanitized
+    ``ExecutionMetadata.model_dump()`` shape the #678 empty-result body uses —
+    so the backend's HTTPError salvage (`task_execution_service.py` HTTPError
+    branch) persists cost/context onto the timed-out FAILED row instead of
+    writing it bare. ``termination_reason`` ("max_duration" | "stall_no_output")
+    and the timeout-failure semantics are unchanged.
+    """
+    detail: Dict = {
+        "message": message,
+        "termination_reason": termination_reason,
+        "metadata": sanitize_dict(ctx.metadata.model_dump()),
+    }
+    if stalled_tool is not None:
+        detail["stalled_tool"] = stalled_tool
+    return detail
+
+
 @dataclass
 class HeadlessRunContext:
     """State carrier for the headless execution lifecycle.
@@ -224,6 +250,17 @@ class HeadlessRunContext:
     permission_mode_validated: bool = False
     result_seen: threading.Event = field(default_factory=threading.Event)  # #970: claude emitted {"type":"result"}
     stdout_exc: List[BaseException] = field(default_factory=list)
+    # #1094: which termination path fired, so the terminal 504 carries a
+    # distinct reason instead of always claiming the max-duration timeout.
+    #   "stall_no_output" — a tool produced no result for >_STALL_LIMIT_S
+    #   "max_duration"    — the effective_timeout budget was genuinely exhausted
+    termination_reason: Optional[str] = None
+    stalled_tool: Optional[str] = None
+    # #1025 (salvaged from #980): True when the drain returned anything other
+    # than "completed" (budget_exceeded / errored / leaked) — a reader thread
+    # may still be alive and mutating the shared buffers below, so
+    # _finalize_headless_result snapshots its read fields before reading them.
+    reader_may_be_live: bool = False
 
     # Shared mutable buffers (populated by stream_parser via process_stream_line)
     response_parts: List[str] = field(default_factory=list)
@@ -651,6 +688,14 @@ def _run_headless_subprocess(ctx: HeadlessRunContext) -> None:
                 if stalled_tool or time.monotonic() >= deadline:
                     raise
     except subprocess.TimeoutExpired:
+        # #1094: record which path fired so the terminal 504 (built in the
+        # orchestrator) can carry a distinct reason instead of the generic
+        # max-duration label.
+        if stalled_tool:
+            ctx.termination_reason = "stall_no_output"
+            ctx.stalled_tool = stalled_tool
+        else:
+            ctx.termination_reason = "max_duration"
         reason = (
             f"tool '{stalled_tool}' stalled with no result for >{_STALL_LIMIT_S:.0f}s"
             if stalled_tool
@@ -660,6 +705,10 @@ def _run_headless_subprocess(ctx: HeadlessRunContext) -> None:
             f"[Headless Task] Task {ctx.task_session_id} {reason} — killing process group"
         )
         _terminate_process_group(process, graceful_timeout=5, pgid=ctx.process_pgid, execution_tag=ctx.task_session_id)
+        # Bound the post-kill drain, then re-raise. The orchestrator converts
+        # TimeoutExpired to HTTP 504 WITHOUT calling _finalize_headless_result,
+        # so there is no finalize read to protect here — we intentionally do
+        # not set reader_may_be_live on this path (#1025).
         _drain_bounded(process, stdout_thread, stderr_thread,
                        grace=3, pgid=ctx.process_pgid,
                        execution_tag=ctx.task_session_id)
@@ -668,13 +717,80 @@ def _run_headless_subprocess(ctx: HeadlessRunContext) -> None:
     # Subprocess exited. Drain readers — if a hook grandchild still
     # holds a pipe, the helper will close the pipe FDs so the
     # reader threads can exit.
-    _drain_bounded(process, stdout_thread, stderr_thread,
-                   grace=5, pgid=ctx.process_pgid,
-                   execution_tag=ctx.task_session_id)
+    drain_outcome = _drain_bounded(process, stdout_thread, stderr_thread,
+                                   grace=5, pgid=ctx.process_pgid,
+                                   execution_tag=ctx.task_session_id)
+    # Anything but "completed" means a reader thread may still be alive and
+    # mutating the shared buffers finalize reads (#1025).
+    ctx.reader_may_be_live = drain_outcome != "completed"
 
     # Re-raise permission-mode failure captured by stdout thread
     if ctx.stdout_exc:
         raise ctx.stdout_exc[0]
+
+
+# #1025: number of times _snapshot_for_finalize retries the metadata deep-copy
+# when it loses the race with a still-mutating leaked reader. The mutation
+# window is a single attribute set, so the first retry almost always wins.
+_SNAPSHOT_RETRY_ATTEMPTS = 3
+
+
+def _freeze_event(event: threading.Event) -> threading.Event:
+    """Capture an Event's set/clear state into a fresh, immutable-by-the-reader
+    Event (#1025). The leaked reader holds the ORIGINAL event; the snapshot's
+    copy reflects the verdict as of snapshot time and can't be flipped later."""
+    frozen = threading.Event()
+    if event.is_set():
+        frozen.set()
+    return frozen
+
+
+def _snapshot_for_finalize(ctx: HeadlessRunContext) -> HeadlessRunContext:
+    """Copy the finalize-read fields of ``ctx`` onto a fresh context (#1025/D19).
+
+    Called whenever the drain left a reader thread that may still be alive
+    (``reader_may_be_live``), where that reader can mutate ``ctx`` concurrently.
+    Every field finalize reads is captured: the four buffers (``list(...)`` of a
+    list never raises on a concurrent append), ``metadata`` (deep-copied), and
+    the auth-abort signal (``auth_abort_event`` frozen via :func:`_freeze_event`
+    + ``auth_abort_reason`` list-copied) — the stderr reader is exactly the
+    thread that can leak, and finalize reads ``auth_abort_event.is_set()`` /
+    ``auth_abort_reason[0]``, so leaving them aliased would let a late auth match
+    flip a success to a spurious 503.
+
+    ``metadata.model_copy(deep=True)`` iterates the pydantic model's ``__dict__``
+    / ``__pydantic_fields_set__`` and CAN raise ``RuntimeError("... changed size
+    during iteration")`` if the reader sets a not-yet-set field mid-copy (most
+    relevant on the ``errored`` outcome, where the reader isn't necessarily
+    wedged in ``readline``). The window is a single attribute set, so a bounded
+    retry almost always succeeds on the next attempt; if every attempt loses the
+    race we fall back to the live ``ctx`` (the pre-#1025 behaviour — no worse
+    than not snapshotting).
+    """
+    last_exc: Optional[RuntimeError] = None
+    for _ in range(_SNAPSHOT_RETRY_ATTEMPTS):
+        try:
+            return replace(
+                ctx,
+                raw_messages=list(ctx.raw_messages),
+                response_parts=list(ctx.response_parts),
+                execution_log=list(ctx.execution_log),
+                verbose_output_lines=list(ctx.verbose_output_lines),
+                metadata=ctx.metadata.model_copy(deep=True),
+                auth_abort_event=_freeze_event(ctx.auth_abort_event),
+                auth_abort_reason=list(ctx.auth_abort_reason),
+            )
+        except RuntimeError as exc:
+            # "dictionary/set changed size during iteration" — the leaked
+            # reader mutated metadata mid-deep-copy. Retry.
+            last_exc = exc
+    logger.warning(
+        "[Headless Task] Run-context snapshot lost the race with a leaked "
+        "reader %s times for task %s (%s) — finalizing against the live "
+        "context as a last resort. Issue #1025.",
+        _SNAPSHOT_RETRY_ATTEMPTS, ctx.task_session_id, last_exc,
+    )
+    return ctx
 
 
 def _finalize_headless_result(
@@ -692,6 +808,27 @@ def _finalize_headless_result(
     orchestrator's outer ``except HTTPException: raise`` chain re-surfaces
     them).
     """
+    # #1025 (D19): when the drain left a reader thread that may still be alive
+    # (budget_exceeded / errored / leaked), it can keep mutating the shared
+    # buffers below. Snapshot EVERY field finalize reads onto a fresh context so
+    # iteration can't tear and a late append by the leaked reader can't be
+    # half-read. ``parse_failure_count`` / ``parse_failure_sample`` are an int +
+    # str (atomic reads, no snapshot). The leaked reader keeps mutating the
+    # ORIGINAL ctx (which it captured by closure); rebinding the local ``ctx``
+    # to the snapshot means the rest of finalize — including
+    # _attempt_empty_result_recovery's in-place mutations — operates entirely
+    # on the isolated copy. Clean-drain runs skip this and keep the zero-copy
+    # fast path. The snapshot itself is retry-guarded against the same race
+    # (see _snapshot_for_finalize).
+    if ctx.reader_may_be_live:
+        logger.warning(
+            "[Headless Task] Drain left a possibly-live reader for task %s — "
+            "finalizing against a snapshot of the run context (the reader may "
+            "still be mutating the live buffers). Issue #1025.",
+            ctx.task_session_id,
+        )
+        ctx = _snapshot_for_finalize(ctx)
+
     # Build verbose transcript from stderr (the human-readable execution log)
     # SECURITY: Sanitize stderr output
     sanitized_lines = [sanitize_text(line) for line in ctx.verbose_output_lines]
@@ -1016,16 +1153,49 @@ async def execute_headless_task(
                 # ctx.terminate() does up to 4s of process.wait() (SIGTERM grace + SIGKILL grace);
                 # off-load to the executor so the event loop stays responsive while we tear down.
                 await loop.run_in_executor(None, ctx.terminate)
+                # #1094: same semantic cause as the inner max-duration branch —
+                # keep the structured detail symmetric so consumers filtering on
+                # termination_reason see budget timeouts from either path.
                 raise HTTPException(
                     status_code=504,
-                    detail=f"Task execution timed out after {ctx.effective_timeout} seconds"
+                    detail=_timeout_504_detail(
+                        ctx,
+                        f"Task execution timed out after {ctx.effective_timeout} seconds",
+                        "max_duration",
+                    ),
                 )
             except subprocess.TimeoutExpired:
-                # Inner process.wait() timed out; tree has already been killed.
+                # Inner process.wait() bounded out; tree has already been killed.
+                # #1094: two distinct causes reach here — the per-tool no-output
+                # stall watchdog and genuine max-duration budget exhaustion.
+                # Stamp a reason-specific 504 instead of always claiming the
+                # max-duration timeout (which misled operators into bumping the
+                # execution timeout — the wrong knob for a 300s stall-kill).
+                if ctx.termination_reason == "stall_no_output":
+                    logger.error(
+                        f"[Headless Task] Task {ctx.task_session_id} killed by stall "
+                        f"watchdog (tool '{ctx.stalled_tool}' silent >{_STALL_LIMIT_S:.0f}s)"
+                    )
+                    raise HTTPException(
+                        status_code=504,
+                        detail=_timeout_504_detail(
+                            ctx,
+                            (
+                                f"Killed: tool '{ctx.stalled_tool}' produced no output "
+                                f"for {_STALL_LIMIT_S:.0f}s (stall watchdog)"
+                            ),
+                            "stall_no_output",
+                            stalled_tool=ctx.stalled_tool,
+                        ),
+                    )
                 logger.error(f"[Headless Task] Task {ctx.task_session_id} timed out after {ctx.effective_timeout}s")
                 raise HTTPException(
                     status_code=504,
-                    detail=f"Task execution timed out after {ctx.effective_timeout} seconds"
+                    detail=_timeout_504_detail(
+                        ctx,
+                        f"Task execution timed out after {ctx.effective_timeout} seconds",
+                        "max_duration",
+                    ),
                 )
             except RuntimeError as e:
                 # Permission mode validation failure — fast-fail with actionable error

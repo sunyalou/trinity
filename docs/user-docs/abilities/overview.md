@@ -28,10 +28,10 @@ claude plugin install create-agent@abilityai
 
 | Plugin | Skills | Purpose | Key Skills |
 |--------|--------|---------|------------|
-| [create-agent](create-agent-plugin.md) | 12 | Agent creation wizards | `/create-agent:prospector`, `/create-agent:custom` |
-| [agent-dev](agent-dev-plugin.md) | 9 | Extend existing agents | `/agent-dev:create-playbook`, `/agent-dev:add-memory` |
-| [trinity](trinity-plugin.md) | 3 | Deploy to Trinity | `/trinity:connect`, `/trinity:onboard` |
-| [dev-methodology](dev-methodology-plugin.md) | 15 | Development workflow | `/dev-methodology:implement`, `/dev-methodology:validate-pr` |
+| [create-agent](create-agent-plugin.md) | 13 | Agent creation wizards | `/create-agent:prospector`, `/create-agent:custom` |
+| [agent-dev](agent-dev-plugin.md) | 19 | Extend existing agents | `/agent-dev:create-playbook`, `/agent-dev:add-memory`, `/agent-dev:work-loop` |
+| [trinity](trinity-plugin.md) | 6 | Deploy to and operate on Trinity | `/trinity:connect`, `/trinity:onboard`, `/trinity:loop` |
+| [dev-methodology](dev-methodology-plugin.md) | 24 | Development workflow | `/dev-methodology:implement`, `/dev-methodology:validate-pr` |
 | [utilities](utilities-plugin.md) | 7 | Ops and productivity | `/utilities:safe-deploy`, `/utilities:docker-ops` |
 
 ## The Agent Development Workflow

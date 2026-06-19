@@ -7,8 +7,8 @@ sibling `db.*` stubs are popped from `sys.modules`.
 
 Locked behaviour (from the /autoplan review on the issue):
   * `triggered_by` is grouped into user-facing buckets (Chat/Tasks, MCP,
-    Channels, Public, Scheduled, Agent-to-agent, Voice) with an "Other"
-    catch-all so unmapped triggers stay visible.
+    Channels, Public, Scheduled, Loops, Agent-to-agent, Voice) with an
+    "Other" catch-all so unmapped triggers stay visible.
   * Headline duration `avg` + `context_avg` come from the FULL rowset
     (SQL AVG) — never the capped percentile pool. Only `p95` is sampled.
   * `success_rate` is terminal-based: success / (success + failed),
@@ -44,7 +44,20 @@ _STUBBED_MODULE_NAMES = [
 
 @pytest.fixture(autouse=True)
 def _restore_sys_modules():
-    saved = {n: sys.modules.get(n) for n in _STUBBED_MODULE_NAMES}
+    names = _STUBBED_MODULE_NAMES + ["db.connection"]
+    saved = {n: sys.modules.get(n) for n in names}
+    # Re-imports inside the fixtures also rebind the parent `db` package
+    # attributes (`import db.X` sets `db.X` on the package). Later test files
+    # that bind via `import db.X as Y` resolve through the package attribute,
+    # not sys.modules — if only sys.modules is restored, they get a different
+    # module object than `from db.X import ...` and attribute patches land on
+    # the wrong module (the test_agent_soft_delete DB_PATH mismatch).
+    db_pkg = sys.modules.get("db")
+    saved_attrs = (
+        {n.split(".", 1)[1]: getattr(db_pkg, n.split(".", 1)[1], None) for n in names}
+        if db_pkg is not None
+        else {}
+    )
     for name in _STUBBED_MODULE_NAMES:
         sys.modules.pop(name, None)
     try:
@@ -55,6 +68,12 @@ def _restore_sys_modules():
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = value
+        for attr, value in saved_attrs.items():
+            if value is None:
+                if hasattr(db_pkg, attr):
+                    delattr(db_pkg, attr)
+            else:
+                setattr(db_pkg, attr, value)
 
 
 def _make_db_schema(conn: sqlite3.Connection) -> None:
@@ -181,6 +200,7 @@ class TestBucketing:
             "telegram": 2, "whatsapp": 1,   # -> Channels (3)
             "public": 1, "paid": 1,         # -> Public (2)
             "schedule": 4, "webhook": 1,    # -> Scheduled (5)
+            "loop": 2,                       # -> Loops (2), #1150
             "agent": 2, "fan_out": 1,       # -> Agent-to-agent (3)
             "voip": 1,                       # -> Voice (1)
             "validation": 2,                 # -> Other (2)
@@ -193,12 +213,13 @@ class TestBucketing:
         totals = {b["bucket"]: b["total"] for b in out["by_type"]}
         assert totals == {
             "Chat/Tasks": 5, "MCP": 1, "Channels": 3, "Public": 2,
-            "Scheduled": 5, "Agent-to-agent": 3, "Voice": 1, "Other": 2,
+            "Scheduled": 5, "Loops": 2, "Agent-to-agent": 3, "Voice": 1,
+            "Other": 2,
         }
         # buckets are emitted in canonical stack order
         assert out["buckets"] == [
             "Chat/Tasks", "MCP", "Channels", "Public",
-            "Scheduled", "Agent-to-agent", "Voice", "Other",
+            "Scheduled", "Loops", "Agent-to-agent", "Voice", "Other",
         ]
         assert out["total_executions"] == sum(seeds.values())
 
@@ -206,6 +227,13 @@ class TestBucketing:
         _seed(tmp_db, triggered_by="some_future_channel")
         out = ops.get_agent_analytics("agent-1", 24)
         assert {b["bucket"] for b in out["by_type"]} == {"Other"}
+
+    def test_loop_is_its_own_bucket_not_scheduled_or_other(self, tmp_db, ops):
+        """#1150: loop runs must not fold into Scheduled (the pre-#1150
+        mapping) nor leak into the Other catch-all."""
+        _seed(tmp_db, triggered_by="loop")
+        out = ops.get_agent_analytics("agent-1", 24)
+        assert out["by_type"] == [{"bucket": "Loops", "total": 1}]
 
 
 class TestSuccessRateTerminal:
@@ -317,7 +345,9 @@ class TestTimelineGapFill:
     def test_day_stacks_present_in_by_type(self, tmp_db, ops):
         _seed(tmp_db, started_at=_iso_ago(hours=1), triggered_by="chat")
         _seed(tmp_db, started_at=_iso_ago(hours=1), triggered_by="schedule")
+        _seed(tmp_db, started_at=_iso_ago(hours=1), triggered_by="loop")
         out = ops.get_agent_analytics("agent-1", 24)
         today = out["timeline"][-1]
         assert today["by_type"].get("Chat/Tasks") == 1
         assert today["by_type"].get("Scheduled") == 1
+        assert today["by_type"].get("Loops") == 1  # #1150

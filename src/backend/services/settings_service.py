@@ -447,6 +447,32 @@ def get_agent_default_resources() -> dict:
     return {"cpu": cpu or AGENT_DEFAULT_CPU, "memory": memory or AGENT_DEFAULT_MEMORY}
 
 
+# ============================================================================
+# Agent Default Access Policy (#1129 — secure-by-default require_email)
+# ============================================================================
+
+AGENT_DEFAULT_REQUIRE_EMAIL_KEY = "agent_default_require_email"
+# Secure-by-default: new agents require a verified email on incoming
+# DMs / public chat / shared access unless the owner opts a specific agent
+# out. The default is read only at creation time, never applied
+# retroactively — existing agents keep their per-agent value.
+AGENT_DEFAULT_REQUIRE_EMAIL = True
+
+
+def get_agent_default_require_email() -> bool:
+    """System-wide default for the per-agent ``require_email`` access-policy
+    flag (#311), seeded onto new agents at creation (#1129).
+
+    Stored in ``system_settings`` as ``'1'``/``'0'``; when the key is absent
+    (fresh installs, or instances that never set it) the code default ON
+    applies — so the platform is secure-by-default without a data migration.
+    """
+    raw = db.get_setting_value(AGENT_DEFAULT_REQUIRE_EMAIL_KEY, None)
+    if raw is None:
+        return AGENT_DEFAULT_REQUIRE_EMAIL
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 # GitHub Templates (TMPL-001)
 def get_github_templates() -> Optional[List[dict]]:
     """Get admin-configured GitHub templates, or None for defaults."""

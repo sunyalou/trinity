@@ -8,7 +8,7 @@ Standalone mobile-optimized PWA at `/m` for managing agents on the go.
 2. Install as a PWA via **Add to Home Screen** for a native app experience.
 3. The interface has three tabs:
    - **Agents** -- List agents, tap to chat, toggle autonomy, send tasks.
-   - **Ops** -- View and act on operating room queue items.
+   - **Ops** -- View and act on operator queue items and notifications (the same items as the desktop [Operations page](../operations/operating-room.md)).
    - **System** -- System-level controls and status.
 4. Designed for quick interactions: check agent status, respond to agent questions, toggle autonomy on or off.
 
@@ -21,5 +21,5 @@ Mobile Admin uses the same backend API as the desktop UI. No additional endpoint
 ## See Also
 
 - [Dashboard](../operations/dashboard.md)
-- [Operating Room](../operations/operating-room.md)
+- [Operations Page](../operations/operating-room.md)
 - [Managing Agents](../agents/managing-agents.md)

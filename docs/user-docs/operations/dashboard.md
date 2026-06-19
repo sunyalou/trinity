@@ -23,7 +23,7 @@ The main Dashboard at `/` provides a real-time agent network graph and timeline 
 
 1. Toggle between Graph and Timeline via the mode switch in the top-right.
 2. Timeline shows execution boxes per agent, arranged chronologically.
-3. Color-coded by trigger type: Manual (green), MCP (teal), Scheduled (purple), Agent-Triggered (blue), Paid (yellow), Public (white).
+3. Color-coded by trigger type: Manual (green), MCP (pink), Scheduled (purple), Agent-Triggered (cyan), Paid (yellow), Public (teal).
 4. Each row shows the agent's success rate, total cost, and parallel slot count.
 5. Live streaming: running executions show progress in real-time with a "Live" indicator.
 6. Time range filter: 1h, 6h, 24h, 7d, or custom.
@@ -50,5 +50,6 @@ A real-time WebSocket-driven activity stream showing agent collaborations, task 
 
 ## See Also
 
-- [Agent Detail](../agents/agent-detail.md)
-- [Schedules](./schedules.md)
+- [Managing Agents](../agents/managing-agents.md)
+- [Scheduling](../automation/scheduling.md)
+- [Operations Page](operating-room.md) -- Operator queue, health, and fleet executions

@@ -149,27 +149,84 @@ def init_database():
     3. Creates schema (tables and indexes)
     4. Ensures admin user exists
     """
+    # PostgreSQL path (#300/#1183): schema is owned by Alembic — a fresh DB is
+    # built by `alembic upgrade head` (the baseline revision reuses the same
+    # head DDL that init_schema_postgres emitted), and an existing DB is
+    # migrated in place. The sqlite-only PRAGMA migrations below are skipped;
+    # SQLite keeps the legacy bespoke path (the two coexist during the Postgres
+    # transition).
+    from db.engine import is_sqlite
+    if not is_sqlite():
+        from db.alembic_runner import upgrade_to_head
+        upgrade_to_head()
+        _ensure_admin_user_engine()
+        return
+
     db_path = Path(DB_PATH)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
+    # Hold the cross-process lock across BOTH migration passes AND init_schema
+    # (#1160): init_schema's CREATE TABLE IF NOT EXISTS could otherwise race a
+    # concurrent worker mid-rebuild and recreate an empty table over its data.
+    from db.migration_lock import migration_lock
+    with migration_lock(DB_PATH):
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
 
-        # Run migrations first (upgrade existing DB; skips if tables don't exist yet)
-        run_all_migrations(cursor, conn)
+            # Run migrations first (upgrade existing DB; skips if tables don't exist yet)
+            run_all_migrations(cursor, conn)
 
-        # Create schema (tables and indexes)
-        init_schema(cursor, conn)
+            # Create schema (tables and indexes)
+            init_schema(cursor, conn)
 
-        # Second pass: record any migrations skipped on fresh install. On first
-        # startup the target tables don't exist yet so those migrations are
-        # skipped-but-not-recorded. init_schema has now created them with the
-        # correct current schema, so re-running is a no-op — but it records
-        # them, keeping the health check accurate.
-        run_all_migrations(cursor, conn)
+            # Second pass: record any migrations skipped on fresh install. On first
+            # startup the target tables don't exist yet so those migrations are
+            # skipped-but-not-recorded. init_schema has now created them with the
+            # correct current schema, so re-running is a no-op — but it records
+            # them, keeping the health check accurate.
+            run_all_migrations(cursor, conn)
 
-        # Create default admin user if not exists
-        _ensure_admin_user(cursor, conn)
+            # Create default admin user if not exists
+            _ensure_admin_user(cursor, conn)
+
+
+def _ensure_admin_user_engine():
+    """Ensure the admin user exists — engine-based path for PostgreSQL (#300).
+
+    Reuses the dialect-agnostic ``UserOperations`` (already on SQLAlchemy Core)
+    instead of the raw-cursor sqlite path. Creates the admin on a fresh DB;
+    updates the password when the env password no longer verifies.
+    """
+    admin_password = os.getenv("ADMIN_PASSWORD", "")
+    admin_username = os.getenv("ADMIN_USERNAME", "admin")
+    if not admin_password:
+        print("WARNING: ADMIN_PASSWORD not set - skipping admin user creation")
+        return
+
+    from passlib.context import CryptContext
+    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+    user_ops = UserOperations()
+    existing = user_ops.get_user_by_username(admin_username)
+    if existing is None:
+        user_ops.update_user_password(admin_username, pwd_context.hash(admin_password))
+        print(f"Created admin user '{admin_username}' with hashed password")
+        return
+
+    existing_hash = existing.get("password")
+    needs_update = False
+    if existing_hash and not existing_hash.startswith("$2"):
+        needs_update = existing_hash == admin_password  # plaintext → bcrypt
+    elif existing_hash:
+        try:
+            needs_update = not pwd_context.verify(admin_password, existing_hash)
+        except Exception:
+            needs_update = True
+    else:
+        needs_update = True
+    if needs_update:
+        user_ops.update_user_password(admin_username, pwd_context.hash(admin_password))
+        print(f"Updated admin user '{admin_username}' password")
 
 
 def _ensure_admin_user(cursor, conn):
@@ -341,8 +398,8 @@ class DatabaseManager:
     # Agent Ownership Management (delegated to db/agents.py)
     # =========================================================================
 
-    def register_agent_owner(self, agent_name: str, owner_username: str, is_system: bool = False):
-        return self._agent_ops.register_agent_owner(agent_name, owner_username, is_system)
+    def register_agent_owner(self, agent_name: str, owner_username: str, is_system: bool = False, require_email: bool = False):
+        return self._agent_ops.register_agent_owner(agent_name, owner_username, is_system, require_email)
 
     def get_agent_owner(self, agent_name: str):
         return self._agent_ops.get_agent_owner(agent_name)
@@ -540,6 +597,12 @@ class DatabaseManager:
 
     def set_read_only_mode(self, agent_name: str, enabled: bool, config: dict = None):
         return self._agent_ops.set_read_only_mode(agent_name, enabled, config)
+
+    def get_full_capabilities(self, agent_name: str) -> bool:
+        return self._agent_ops.get_full_capabilities(agent_name)
+
+    def set_full_capabilities(self, agent_name: str, enabled: bool) -> bool:
+        return self._agent_ops.set_full_capabilities(agent_name, enabled)
 
     # =========================================================================
     # Agent Guardrails (GUARD-001)
@@ -841,11 +904,14 @@ class DatabaseManager:
                                                           context_used, context_max, cost, tool_calls, execution_log, claude_session_id,
                                                           compact_metadata, retry_count)
 
-    def mark_execution_dispatched(self, execution_id: str) -> bool:
-        return self._schedule_ops.mark_execution_dispatched(execution_id)
+    def mark_execution_dispatched(self, execution_id: str, async_dispatch: bool = False) -> bool:
+        return self._schedule_ops.mark_execution_dispatched(execution_id, async_dispatch)
 
     def get_schedule_executions(self, schedule_id: str, limit: int = 50):
         return self._schedule_ops.get_schedule_executions(schedule_id, limit)
+
+    def get_latest_execution_per_schedule(self, schedule_ids: list):
+        return self._schedule_ops.get_latest_execution_per_schedule(schedule_ids)
 
     def get_agent_executions(self, agent_name: str, limit: int = 50):
         return self._schedule_ops.get_agent_executions(agent_name, limit)
@@ -1043,11 +1109,17 @@ class DatabaseManager:
     def get_activity(self, activity_id: str):
         return self._activity_ops.get_activity(activity_id)
 
+    def get_open_activity_id_for_execution(self, execution_id: str):
+        return self._activity_ops.get_open_activity_id_for_execution(execution_id)
+
     def get_agent_activities(self, agent_name: str, activity_type: str = None, activity_state: str = None, limit: int = 100):
         return self._activity_ops.get_agent_activities(agent_name, activity_type, activity_state, limit)
 
-    def get_activities_in_range(self, start_time: str = None, end_time: str = None, activity_types: list = None, limit: int = 100):
-        return self._activity_ops.get_activities_in_range(start_time, end_time, activity_types, limit)
+    def get_activities_in_range(self, start_time: str = None, end_time: str = None, activity_types: list = None, limit: int = 100, agent_names: list = None):
+        return self._activity_ops.get_activities_in_range(start_time, end_time, activity_types, limit, agent_names)
+
+    def get_latest_activity_for_agents(self, agent_names: list):
+        return self._activity_ops.get_latest_activity_for_agents(agent_names)
 
     def get_current_activities(self, agent_name: str):
         return self._activity_ops.get_current_activities(agent_name)
@@ -1060,9 +1132,11 @@ class DatabaseManager:
         """Get all schedule executions currently in 'running' status."""
         return self._schedule_ops.get_running_executions()
 
-    def mark_stale_executions_failed(self, timeout_minutes: int = 30):
+    def mark_stale_executions_failed(self, timeout_minutes: int = 30, agent_timeouts=None, buffer_seconds: int = 0):
         """Mark executions stuck in 'running' past threshold as failed."""
-        return self._schedule_ops.mark_stale_executions_failed(timeout_minutes)
+        return self._schedule_ops.mark_stale_executions_failed(
+            timeout_minutes, agent_timeouts=agent_timeouts, buffer_seconds=buffer_seconds
+        )
 
     def mark_no_session_executions_failed(self, timeout_seconds: int = 60):
         """Mark running executions with no claude_session_id as failed (Issue #106)."""
@@ -1432,11 +1506,17 @@ class DatabaseManager:
     def dismiss_notification(self, notification_id: str, dismissed_by: str):
         return self._notification_ops.dismiss_notification(notification_id, dismissed_by)
 
+    def dismiss_all_notifications(self, dismissed_by: str, agent_name=None,
+                                  accessible_agent_names=None):
+        return self._notification_ops.dismiss_all(
+            dismissed_by, agent_name, accessible_agent_names
+        )
+
     def delete_agent_notifications(self, agent_name: str):
         return self._notification_ops.delete_agent_notifications(agent_name)
 
-    def count_pending_notifications(self, agent_name=None):
-        return self._notification_ops.count_pending_notifications(agent_name)
+    def count_pending_notifications(self, agent_name=None, agent_names=None):
+        return self._notification_ops.count_pending_notifications(agent_name, agent_names)
 
     # =========================================================================
     # Subscription Credentials (delegated to db/subscriptions.py) - SUB-002
@@ -1955,6 +2035,20 @@ class DatabaseManager:
 
     def cancel_operator_queue_item(self, item_id):
         return self._operator_queue_ops.cancel_item(item_id)
+
+    def bulk_cancel_operator_queue_items(self, ids, accessible_agent_names=None):
+        return self._operator_queue_ops.bulk_cancel_items(ids, accessible_agent_names)
+
+    def clear_resolved_operator_queue_items(self, agent_name=None,
+                                            accessible_agent_names=None):
+        return self._operator_queue_ops.clear_resolved_items(
+            agent_name, accessible_agent_names
+        )
+
+    def get_operator_queue_terminal_for_agent(self, agent_name, since_hours=168):
+        return self._operator_queue_ops.get_terminal_items_for_agent(
+            agent_name, since_hours
+        )
 
     def mark_operator_queue_acknowledged(self, item_id):
         return self._operator_queue_ops.mark_acknowledged(item_id)

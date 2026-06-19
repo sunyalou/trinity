@@ -45,6 +45,12 @@ function segHeight(d, b) {
   return (n / maxTotal.value) * props.height
 }
 
+// Slate fallback so a bucket missing from the colors map (e.g. a stale
+// cached bundle against a newer backend) renders gray, not invisible.
+function colorFor(b) {
+  return props.colors[b] || '#94a3b8'
+}
+
 function fmtDate(iso) {
   const dt = new Date(iso + 'T00:00:00Z')
   return dt.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' })
@@ -84,7 +90,7 @@ function showLabel(i) {
           class="w-full first:rounded-t-sm"
           :style="{
             height: segHeight(d, b) + 'px',
-            backgroundColor: colors[b],
+            backgroundColor: colorFor(b),
             boxShadow: 'inset 0 -1px 0 rgba(17,24,39,0.28)',
           }"
         ></div>
@@ -97,7 +103,7 @@ function showLabel(i) {
           <div class="font-semibold mb-1 whitespace-nowrap">{{ fmtDate(d.date) }}</div>
           <div v-for="b in bucketsForDay(d)" :key="b" class="flex items-center justify-between gap-3 whitespace-nowrap">
             <span class="flex items-center">
-              <span class="inline-block w-2 h-2 rounded-sm mr-1.5" :style="{ backgroundColor: colors[b] }"></span>{{ b }}
+              <span class="inline-block w-2 h-2 rounded-sm mr-1.5" :style="{ backgroundColor: colorFor(b) }"></span>{{ b }}
             </span>
             <span class="font-mono">{{ d.by_type[b] }}</span>
           </div>
@@ -126,7 +132,7 @@ function showLabel(i) {
         :key="b"
         class="inline-flex items-center text-xs text-gray-600 dark:text-gray-300"
       >
-        <span class="w-2.5 h-2.5 rounded-sm mr-1" :style="{ backgroundColor: colors[b] }"></span>
+        <span class="w-2.5 h-2.5 rounded-sm mr-1" :style="{ backgroundColor: colorFor(b) }"></span>
         {{ b }}
         <span class="ml-1 font-mono text-gray-400 dark:text-gray-500">{{ bucketTotals[b] }}</span>
       </span>

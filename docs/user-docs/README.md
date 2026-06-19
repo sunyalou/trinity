@@ -1,6 +1,6 @@
 # Trinity User Documentation
 
-> Auto-generated from source code. Run `/generate-user-docs` to update. Last sync: 2026-05-27.
+> Auto-generated from source code. Run `/generate-user-docs` to update. Last sync: 2026-06-11.
 
 ## What's New
 
@@ -51,13 +51,14 @@
 - [Skills and Playbooks](automation/skills-and-playbooks.md) — Skills library, assignment, chat autocomplete
 - [Approvals](automation/approvals.md) — Human-in-the-loop approval gates
 - [Fan-Out](automation/fan-out.md) — Parallel task dispatch and result collection
+- [Agent Loops](automation/agent-loops.md) — Bounded sequential task repetition with templates and stop signals
 
 ## Operations
 
 - [Dashboard](operations/dashboard.md) — Network graph, timeline view, tag clouds
-- [Operating Room](operations/operating-room.md) — Operator queue, notifications, cost alerts
-- [Monitoring](operations/monitoring.md) — Health checks, cleanup service, fleet dashboard
-- [Executions](operations/executions.md) — Execution list, detail, live streaming, termination
+- [Operations Page](operations/operating-room.md) — Unified tabbed view: operator queue, notifications, health, executions
+- [Monitoring](operations/monitoring.md) — Fleet health checks, agent heartbeats, cleanup service
+- [Executions](operations/executions.md) — Fleet execution list, stats, detail, live streaming, termination
 - [Audit Trail](operations/audit-trail.md) — Append-only administrative action log
 - [Agent Quotas](operations/agent-quotas.md) — Per-role agent creation limits
 
@@ -76,7 +77,7 @@
 - [Slack Integration](integrations/slack-integration.md) — Multi-agent channels, DMs, thread routing
 - [Telegram Integration](integrations/telegram-integration.md) — Bot setup, group chats, privacy mode, trigger modes
 - [WhatsApp Integration](integrations/whatsapp-integration.md) — Twilio binding, sandbox setup, email verification
-- [MCP Server](integrations/mcp-server.md) — 74 MCP tools, API keys, tool categories
+- [MCP Server](integrations/mcp-server.md) — 80 MCP tools, API keys, tool categories
 - [A2A Agent Card](integrations/a2a-protocol.md) — A2A v1.0 discovery for external orchestrators
 - [Nevermined Payments](integrations/nevermined-payments.md) — x402 payment monetization
 
@@ -87,9 +88,9 @@
 ## Abilities (Agent Development Toolkit)
 
 - [Overview](abilities/overview.md) — Plugin marketplace introduction, quick start
-- [create-agent Plugin](abilities/create-agent-plugin.md) — Agent creation wizards (11 wizards)
-- [agent-dev Plugin](abilities/agent-dev-plugin.md) — Development tools, memory systems, backlog workflow
-- [trinity Plugin](abilities/trinity-plugin.md) — Platform deployment and sync
+- [create-agent Plugin](abilities/create-agent-plugin.md) — Agent creation wizards (13 wizards)
+- [agent-dev Plugin](abilities/agent-dev-plugin.md) — Development tools, memory systems, git sync, backlog cycle, pipelines
+- [trinity Plugin](abilities/trinity-plugin.md) — Platform deployment, sync, remote loops, instance provisioning
 - [dev-methodology Plugin](abilities/dev-methodology-plugin.md) — Documentation-driven development
 - [utilities Plugin](abilities/utilities-plugin.md) — Ops and productivity tools
 
@@ -100,6 +101,7 @@
 ## Advanced
 
 - [Voice Chat](advanced/voice-chat.md) — Real-time voice via Gemini Live API
+- [VoIP Telephony](advanced/voip-telephony.md) — Agents place outbound phone calls via Twilio + Gemini Live
 - [Image Generation](advanced/image-generation.md) — Gemini two-step image pipeline
 - [Agent Avatars](advanced/agent-avatars.md) — AI-generated avatars, emotion variants
 - [Dynamic Dashboards](advanced/dynamic-dashboards.md) — Custom agent dashboards via YAML

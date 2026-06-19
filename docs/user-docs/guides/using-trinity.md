@@ -14,7 +14,7 @@ The dashboard gives you a bird's-eye view of your agent fleet:
 - **Network graph** — Visualizes agent-to-agent relationships and delegation flows.
 - **Timeline** — Shows recent executions and agent activity.
 - **Tag cloud** — Quick filtering by agent tags.
-- **Quick actions** — Create agent, access Operating Room, view monitoring.
+- **Quick actions** — Create agent, open the Operations page.
 
 ## Agent Management
 
@@ -41,21 +41,17 @@ Click **Create Agent** on the Dashboard or Agents page:
 2. **Enter a name** — Lowercase with hyphens (e.g., `my-research-agent`).
 3. **Create** — Trinity clones, builds, and starts the container.
 
-## Operating Room
+## Operations
 
-The Operating Room is your control center for real-time oversight:
+**Operations** in the top nav is your control center for real-time oversight — one page at `/operations` with five tabs:
 
-- **Operator queue** — Actions waiting for human approval.
+- **Needs Response** — Agent questions and approval requests waiting on you.
 - **Notifications** — Agent alerts and status changes.
-- **Cost tracking** — Per-agent API usage and spend alerts.
+- **Health** (admin only) — Fleet health status; the monitoring loop is off by default and must be enabled explicitly, and the setting persists across restarts.
+- **Executions** — All task runs across your fleet, with filters and live stats.
+- **Resolved** — Previously handled items.
 
-## Monitoring
-
-The Monitoring page shows fleet health at a glance:
-
-- **Health status** — Container state, last activity, resource usage.
-- **Execution history** — Recent runs, success/failure rates.
-- **Cleanup service** — Automatic orphan container cleanup.
+The nav entry carries a single badge counting pending queue items and notifications; it pulses when something critical is waiting. Each operator tab has a **Clear All** button for bulk cleanup.
 
 ## Settings (Admin Only)
 
@@ -74,5 +70,6 @@ The Settings page lets the admin configure:
 ## See Also
 
 - [Dashboard](../operations/dashboard.md) — Dashboard reference
-- [Operating Room](../operations/operating-room.md) — Operator queue details
-- [Monitoring](../operations/monitoring.md) — Health check configuration
+- [Operations Page](../operations/operating-room.md) — Operator queue and notifications
+- [Executions](../operations/executions.md) — Fleet execution list
+- [Monitoring](../operations/monitoring.md) — Health tab and heartbeats

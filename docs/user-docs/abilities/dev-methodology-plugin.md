@@ -14,19 +14,28 @@ Documentation-driven development methodology for any codebase. Enforces a struct
 |-------|-------------|
 | `/dev-methodology:init` | Scaffold the methodology into your project |
 | `/dev-methodology:read-docs` | Load project context at session start |
+| `/dev-methodology:autoplan` | Auto-review pipeline — strategy, engineering, and security review producing an implementation plan |
 | `/dev-methodology:implement` | End-to-end feature implementation |
+| `/dev-methodology:review` | Pre-landing code review — SQL safety, race conditions, auth boundaries, scope drift |
 | `/dev-methodology:validate-pr` | Validate a PR against the methodology |
+| `/dev-methodology:sprint` | Full dev-cycle orchestrator — claim through PR, chaining autoplan, implement, review, commit |
 | `/dev-methodology:commit` | Create well-formatted commits |
+| `/dev-methodology:release` | Cut a release — pre-release checklist, version bump, release notes, tagged release PR |
+| `/dev-methodology:groom` | Backlog grooming — label coverage, priority ordering, stale-work detection |
+| `/dev-methodology:roadmap` | Query issues for roadmap priorities |
 | `/dev-methodology:add-testing` | Add tests to existing code |
 | `/dev-methodology:tidy` | Clean up code |
 | `/dev-methodology:refactor-audit` | Review changed code for reuse, quality, and efficiency |
-| `/dev-methodology:roadmap` | Query issues for roadmap priorities |
 | `/dev-methodology:security-check` | Quick security scan |
 | `/dev-methodology:security-analysis` | Deep OWASP-based security analysis |
+| `/dev-methodology:cso` | Security audit in CSO mode — branch-diff or comprehensive full-codebase scan |
 | `/dev-methodology:feature-flow-analysis` | Create or update a feature flow document |
 | `/dev-methodology:sync-feature-flows` | Analyze code changes and update affected feature flows |
 | `/dev-methodology:update-docs` | Update project documentation after making changes |
 | `/dev-methodology:generate-user-docs` | Generate user-facing docs from source code |
+| `/dev-methodology:validate-architecture` | Detect drift between architecture docs and the actual code |
+| `/dev-methodology:validate-config` | Detect env-var drift across compose files, `.env.example`, and code |
+| `/dev-methodology:validate-schema` | Detect drift between schema definitions, migrations, and docs |
 
 ## How It Works
 

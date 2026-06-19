@@ -2,13 +2,19 @@
 System settings database operations.
 
 Stores system-wide configuration like the Trinity prompt that applies to all agents.
+
+Converted from raw sqlite3 to SQLAlchemy Core (#300) so it runs unchanged on
+both SQLite and PostgreSQL. Queries are built from the ``system_settings`` table
+in ``db/tables.py``; the engine is resolved via ``db/engine.py``.
 """
 
-import sqlite3
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from .connection import get_db_connection
+from sqlalchemy import select, delete
+
+from .engine import get_engine, make_insert
+from .tables import system_settings
 from db_models import SystemSetting
 from utils.helpers import utc_now_iso
 
@@ -35,14 +41,13 @@ class SettingsOperations:
 
         Returns None if the setting doesn't exist.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT key, value, updated_at
-                FROM system_settings
-                WHERE key = ?
-            """, (key,))
-            row = cursor.fetchone()
+        stmt = select(
+            system_settings.c.key,
+            system_settings.c.value,
+            system_settings.c.updated_at,
+        ).where(system_settings.c.key == key)
+        with get_engine().connect() as conn:
+            row = conn.execute(stmt).mappings().first()
             if row:
                 return self._row_to_setting(row)
             return None
@@ -67,21 +72,22 @@ class SettingsOperations:
         """
         now = utc_now_iso()
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
-            # Use INSERT OR REPLACE for upsert
-            cursor.execute("""
-                INSERT OR REPLACE INTO system_settings (key, value, updated_at)
-                VALUES (?, ?, ?)
-            """, (key, value, now))
-            conn.commit()
-
-            return SystemSetting(
-                key=key,
-                value=value,
-                updated_at=datetime.fromisoformat(now)
+        stmt = (
+            make_insert(system_settings)
+            .values(key=key, value=value, updated_at=now)
+            .on_conflict_do_update(
+                index_elements=[system_settings.c.key],
+                set_={"value": value, "updated_at": now},
             )
+        )
+        with get_engine().begin() as conn:
+            conn.execute(stmt)
+
+        return SystemSetting(
+            key=key,
+            value=value,
+            updated_at=datetime.fromisoformat(now)
+        )
 
     def delete_setting(self, key: str) -> bool:
         """
@@ -89,14 +95,10 @@ class SettingsOperations:
 
         Returns True if the setting was deleted.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM system_settings
-                WHERE key = ?
-            """, (key,))
-            conn.commit()
-            return cursor.rowcount > 0
+        stmt = delete(system_settings).where(system_settings.c.key == key)
+        with get_engine().begin() as conn:
+            result = conn.execute(stmt)
+            return result.rowcount > 0
 
     def get_all_settings(self) -> List[SystemSetting]:
         """
@@ -104,14 +106,13 @@ class SettingsOperations:
 
         Returns a list of all settings.
         """
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT key, value, updated_at
-                FROM system_settings
-                ORDER BY key
-            """)
-            rows = cursor.fetchall()
+        stmt = select(
+            system_settings.c.key,
+            system_settings.c.value,
+            system_settings.c.updated_at,
+        ).order_by(system_settings.c.key)
+        with get_engine().connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
             return [self._row_to_setting(row) for row in rows]
 
     def get_settings_dict(self) -> Dict[str, str]:

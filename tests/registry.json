@@ -629,7 +629,55 @@
         "analytics",
         "overview"
       ],
-      "description": "Agent-scoped execution analytics (#1107): triggered_by bucketing into user-facing buckets + Other fallback, terminal-based success rate, full-set avg vs sampled p95 correctness, NULL-skipping context avg, gap-filled timeline."
+      "description": "Agent-scoped execution analytics (#1107): triggered_by bucketing into user-facing buckets (incl. Loops, #1150) + Other fallback, terminal-based success rate, full-set avg vs sampled p95 correctness, NULL-skipping context avg, gap-filled timeline."
+    },
+    {
+      "file": "test_ops_clear_all.py",
+      "feature": "#1017",
+      "added": "2026-06-11",
+      "categories": [
+        "backend",
+        "api",
+        "operator-queue",
+        "notifications"
+      ],
+      "description": "Bulk Clear All endpoints for the Operations page (#1017): bulk-cancel (ids-scoped), clear-resolved (terminal-row delete, responded kept), notifications dismiss-all; respond-race conflict marker; tri-state accessible-set scoping."
+    },
+    {
+      "file": "unit/test_fleet_executions.py",
+      "feature": "#18",
+      "added": "2026-06-11",
+      "categories": [
+        "backend",
+        "unit",
+        "executions"
+      ],
+      "description": "Fleet executions list/stats (EXEC-022): _narrow_to_agent access gate, status/trigger/search/hours SQL filters, windowed stats; plus the #1150 trigger-filter allowlist drift guard (ExecutionsPanel dropdown subset of _VALID_TRIGGERS)."
+    },
+    {
+      "file": "unit/test_858_dockerfile_unbuffered.py",
+      "feature": "#858",
+      "added": "2026-06-11",
+      "categories": [
+        "backend",
+        "unit",
+        "docker",
+        "setup"
+      ],
+      "description": "First-time setup token delivery (#858), both layers: Dockerfile parity guard (backend declares ENV PYTHONUNBUFFERED=1 matching scheduler, parsed as a real ENV instruction) + AST checks on main.py lifespan (token emitted via logger.warning after setup_logging() and before event_bus.start(); no print() calls anywhere in the lifespan)."
+    },
+    {
+      "file": "unit/test_1160_migration_atomicity.py",
+      "feature": "#1160",
+      "added": "2026-06-18",
+      "categories": [
+        "backend",
+        "unit",
+        "database",
+        "migrations",
+        "reliability"
+      ],
+      "description": "Migration runner atomicity + cross-process lock (#1160). _atomic_rebuild rename-swap inside an explicit transaction closes the DROP-rebuild data-loss window (crash mid-rebuild rolls back with no data loss; verified for agent_sharing + agent_skills incl. lowercase/NULL-email behavior preservation and index recreation); replay-after-partial-apply completes cleanly; a failed migration is named on its traceback via add_note (original exception type preserved). Cross-process flock (db/migration_lock.py) serialises concurrent boots — multiprocessing tests prove mutual exclusion and a safe concurrent rebuild."
     }
   ]
 }

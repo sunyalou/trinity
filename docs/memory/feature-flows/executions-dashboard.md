@@ -101,7 +101,7 @@ Key behaviours:
 - Success rate card uses threshold ladder: ≥90% success, ≥75% warning, ≥50% urgent, <50% danger
 - Running strip appears when `store.runningCount > 0`
 - Status filter includes all 7 values: running, queued, success, failed, error, cancelled, skipped
-- Trigger filter includes all 9 values: schedule, manual, chat, session, agent, mcp, public, webhook, fan_out
+- Trigger filter includes all 10 values: schedule, manual, chat, session, agent, mcp, public, webhook, fan_out, loop (#1150 — must stay a subset of `_VALID_TRIGGERS`; drift-guarded by `tests/unit/test_fleet_executions.py`)
 - Search debounced 300ms
 - Stop button calls `/api/agents/{name}/schedules/stop-execution/{id}`, falls back to detail navigation
 

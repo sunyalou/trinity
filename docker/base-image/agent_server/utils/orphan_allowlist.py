@@ -27,6 +27,9 @@ The allowlist composes three sources:
        agent-server master process)
      - Every PID whose comm name is ``sshd`` (operator SSH sessions
        must survive a cleanup sweep)
+     - Every live ``docker exec`` session (PPID 0) + its descendants —
+       operator/platform exec sessions, the same actor class as SSH
+       (#1153). PID 1 (also PPID 0) is excluded as it's already covered.
 
 2. **In-flight execution descendants** — for each active claude PID
    passed in ``extra_pids``, the full descendant tree by ppid walk.
@@ -237,6 +240,46 @@ def _ssh_session_pids() -> Set[int]:
     return result
 
 
+def _docker_exec_session_pids() -> Set[int]:
+    """Return PIDs of live ``docker exec`` sessions plus their descendants (#1153).
+
+    Inside the container's PID namespace, a ``docker exec`` entry process
+    has **PPID 0** — its real parent (the containerd exec shim) lives
+    outside the namespace, so the kernel reports the parent as 0. Genuinely
+    leaked orphans, by contrast, are reparented to **PID 1**, never to PID
+    0. PPID 0 is therefore an unspoofable signal that the process is an
+    operator/platform exec session — the same class of actor that
+    :func:`_ssh_session_pids` already protects (an operator debugging or
+    maintaining the agent). It also covers the platform's own exec paths
+    (pre-check hooks, git recovery, session-JSONL reaping, the agent
+    terminal) that run via ``docker exec`` / ``execute_command_in_container``.
+
+    PID 1 also has PPID 0 but is already hard-protected; it is excluded
+    here so this does NOT degrade into "protect every child of PID 1"
+    (which would shield real orphans reparented to 1 — the thing the sweep
+    exists to kill).
+
+    Each exec entry's descendant tree is included so the operator's actual
+    command and its children survive. When the session exits, any leftover
+    children reparent to PID 1 (PPID 1, not 0) and fall out of this set —
+    so they are reaped on the next sweep, preserving the #817 guarantee.
+    """
+    result: Set[int] = set()
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return result
+    for name in entries:
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        if pid == 1:
+            continue  # container init also has PPID 0; already hard-protected
+        if _read_ppid(pid) == 0:
+            result.update(descendants_of(pid))
+    return result
+
+
 # Cmdline patterns that are ALWAYS protected, regardless of user
 # allowlist config. These are processes the base image starts that
 # the container's continued operation depends on. They live as direct
@@ -311,6 +354,7 @@ def resolve_allowlist(
     allowlist: Set[int] = set()
     allowlist.update(_hard_protected_pids(sweep_pid))
     allowlist.update(_ssh_session_pids())
+    allowlist.update(_docker_exec_session_pids())  # #1153
     allowlist.update(_platform_essential_pids())
 
     for pid in extra_pids:
