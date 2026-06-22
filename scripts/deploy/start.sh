@@ -188,7 +188,7 @@ fi
 export BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 echo "Starting services..."
-docker compose up -d
+docker compose up -d --build
 
 echo ""
 echo "Waiting for services to be ready..."
@@ -225,4 +225,3 @@ echo "the UI shows 'Disconnected', the platform images may be stale —"
 echo "rebuild with:  docker compose build && docker compose up -d"
 echo "(See docs/DEPLOYMENT.md → Troubleshooting → Stale platform images.)"
 echo ""
-
