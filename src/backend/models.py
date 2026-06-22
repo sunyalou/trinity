@@ -383,6 +383,21 @@ class DeployLocalRequest(BaseModel):
     archive: str  # Base64-encoded tar.gz
     name: Optional[str] = None  # Override name from template.yaml
     credentials: Optional[Dict[str, str]] = None  # Optional credentials to inject {KEY: value}
+    runtime: Optional[str] = None
+    runtime_model: Optional[str] = None
+    runtime_provider_id: Optional[str] = None
+    runtime_model_id: Optional[str] = None
+    runtime_permission: Optional[str] = None
+
+    @field_validator("runtime")
+    @classmethod
+    def validate_runtime(cls, value: Optional[str]) -> Optional[str]:
+        return validate_agent_runtime(value)
+
+    @field_validator("runtime_permission")
+    @classmethod
+    def validate_runtime_permission(cls, value: Optional[str]) -> Optional[str]:
+        return validate_agent_runtime_permission(value)
 
 
 # Maximum credentials allowed per deploy-local request

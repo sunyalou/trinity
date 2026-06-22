@@ -20,6 +20,9 @@ import time
 import tempfile
 import os
 
+from pydantic import ValidationError
+
+from models import DeployLocalRequest
 from utils.api_client import TrinityApiClient
 from utils.assertions import (
     assert_status,
@@ -28,6 +31,57 @@ from utils.assertions import (
     assert_has_fields,
 )
 from utils.cleanup import cleanup_test_agent
+
+
+@pytest.fixture(autouse=True)
+def cleanup_after_test(resource_tracker, request):
+    """Skip API-backed cleanup for pure DeployLocalRequest model tests."""
+    yield
+    if request.node.name in {
+        "test_deploy_local_request_accepts_runtime_fields",
+        "test_deploy_local_request_rejects_unsupported_runtime",
+        "test_deploy_local_request_rejects_unsupported_runtime_permission",
+    }:
+        return
+    if not request.config.getoption("--skip-cleanup"):
+        api_client = request.getfixturevalue("api_client")
+        resource_tracker.cleanup(api_client)
+
+
+def test_deploy_local_request_accepts_runtime_fields():
+    req = DeployLocalRequest(
+        archive="dGVzdA==",
+        name="runtime-agent",
+        runtime="opencode",
+        runtime_model="deepseek-openai/deepseek-v4-flash",
+        runtime_provider_id="deepseek-openai",
+        runtime_model_id="deepseek-v4-flash",
+        runtime_permission="standard",
+    )
+
+    assert req.runtime == "opencode"
+    assert req.runtime_model == "deepseek-openai/deepseek-v4-flash"
+    assert req.runtime_provider_id == "deepseek-openai"
+    assert req.runtime_model_id == "deepseek-v4-flash"
+    assert req.runtime_permission == "standard"
+
+
+def test_deploy_local_request_rejects_unsupported_runtime():
+    try:
+        DeployLocalRequest(archive="dGVzdA==", runtime="bad-runtime")
+    except ValidationError as exc:
+        assert "Unsupported runtime" in str(exc)
+    else:
+        raise AssertionError("DeployLocalRequest accepted unsupported runtime")
+
+
+def test_deploy_local_request_rejects_unsupported_runtime_permission():
+    try:
+        DeployLocalRequest(archive="dGVzdA==", runtime_permission="root")
+    except ValidationError as exc:
+        assert "Unsupported runtime_permission" in str(exc)
+    else:
+        raise AssertionError("DeployLocalRequest accepted unsupported runtime_permission")
 
 
 def create_test_archive(
