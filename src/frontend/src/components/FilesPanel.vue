@@ -310,6 +310,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useAgentsStore } from '../stores/agents'
+import { readTextFromPreviewData } from '../utils/filePreviewData'
 import FileTreeNode from './file-manager/FileTreeNode.vue'
 import FilePreview from './file-manager/FilePreview.vue'
 
@@ -505,12 +506,11 @@ const downloadFile = async () => {
   downloading.value = true
   try {
     let blob
-    if (previewData.value?.url) {
-      const response = await fetch(previewData.value.url)
-      blob = await response.blob()
+    if (previewData.value?.blob) {
+      blob = previewData.value.blob
     } else {
       const data = await agentsStore.getFilePreviewBlob(props.agentName, selectedFile.value.path)
-      blob = await fetch(data.url).then(r => r.blob())
+      blob = data.blob
       URL.revokeObjectURL(data.url)
     }
 
@@ -588,9 +588,7 @@ const startEdit = async () => {
   if (!previewData.value?.url) return
 
   try {
-    const response = await fetch(previewData.value.url)
-    const text = await response.text()
-    editContent.value = text
+    editContent.value = await readTextFromPreviewData(previewData.value)
     isEditing.value = true
     hasUnsavedChanges.value = false
   } catch (e) {

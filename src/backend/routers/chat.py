@@ -31,6 +31,7 @@ from services.task_execution_service import (
     dispatch_breaker_active,
     get_task_execution_service,
     agent_post_with_retry,
+    _resolve_execution_model,
 )
 from database import db
 from utils.credential_sanitizer import sanitize_dict, sanitize_execution_log, sanitize_response
@@ -607,8 +608,9 @@ async def _run_chat_and_finalize(
         # chat_timeout already fetched above for slot acquisition (Issue #98)
 
         payload = {"message": request.message, "stream": False}
-        if request.model:
-            payload["model"] = request.model
+        request_model = _resolve_execution_model(name, request.model) if request.model else None
+        if request_model:
+            payload["model"] = request_model
         # Inject platform instructions + execution context (#171) into every chat request.
         try:
             exec_ctx = ExecutionContext(
@@ -618,7 +620,7 @@ async def _run_chat_and_finalize(
                 source_user_email=current_user.email or current_user.username,
                 source_agent_name=x_source_agent,
                 source_mcp_key_name=x_mcp_key_name,
-                model=request.model,
+                model=request_model,
             )
             payload["system_prompt"] = compose_system_prompt(
                 execution_context=exec_ctx,
@@ -1434,6 +1436,8 @@ async def execute_parallel_task(
     # Issue #95 (E3): pass subscription_id so the pre-created execution record
     # snapshots the subscription at creation time (service only snapshots when
     # it creates the record itself).
+    resolved_model = _resolve_execution_model(name, request.model)
+    request.model = resolved_model
     execution = db.create_task_execution(
         agent_name=name,
         message=request.message,
@@ -1443,7 +1447,7 @@ async def execute_parallel_task(
         source_agent_name=x_source_agent,
         source_mcp_key_id=x_mcp_key_id,
         source_mcp_key_name=x_mcp_key_name,
-        model_used=request.model,
+        model_used=resolved_model,
         subscription_id=_task_subscription_id,
     )
     execution_id = execution.id if execution else None
@@ -2133,10 +2137,11 @@ async def set_agent_model(
         )
 
     try:
+        resolved_model = _resolve_execution_model(name, request.model)
         async with httpx.AsyncClient() as client:
             response = await client.put(
                 f"http://agent-{name}:8000/api/model",
-                json={"model": request.model},
+                json={"model": resolved_model},
                 timeout=10.0
             )
             response.raise_for_status()

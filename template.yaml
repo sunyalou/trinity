@@ -22,5 +22,8 @@ persistent_state:
   - workspace/**
   - .trinity/**
   - .mcp.json
+  - opencode.json
+  - .opencode/
+  - .config/opencode/opencode.json
   - .claude.json
   - .claude/.credentials.json

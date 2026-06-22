@@ -162,6 +162,9 @@ session-files/
 # Local-only working artifacts (never push)
 saved-conversations/
 tests/manual/
+# Superpowers/OpenCode local planning notes
+.slim/deepwork/
+docs/superpowers/
 # gstack tooling state (skill-local artifacts; project-tracked CSO reports
 # live under docs/security-reports/ instead)
 .gstack/

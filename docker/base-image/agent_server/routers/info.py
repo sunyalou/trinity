@@ -103,7 +103,7 @@ async def health_check():
     running executions, history size) so a curl against /health is enough to
     spot accumulator leaks without strace or pprof. #333.
     """
-    return {
+    payload = {
         "status": "healthy",
         "agent_name": agent_state.agent_name,
         "runtime": agent_state.agent_runtime,
@@ -121,6 +121,9 @@ async def health_check():
         "consecutive_failures": agent_state.consecutive_failures,
         "diagnostics": _diagnostics(),
     }
+    if agent_state.agent_runtime == "opencode":
+        payload["opencode_available"] = agent_state.runtime_available
+    return payload
 
 
 @router.get("/api/template/info")

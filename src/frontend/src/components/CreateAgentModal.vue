@@ -185,6 +185,88 @@
                   </div>
                 </div>
               </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Runtime</label>
+                <div class="mt-1 space-y-2">
+                  <div
+                    v-for="option in runtimeOptions"
+                    :key="option.value"
+                    @click="form.runtime = option.value"
+                    :class="[
+                      'relative flex items-center p-3 border rounded-lg cursor-pointer transition-all',
+                      form.runtime === option.value ? 'border-action-primary-500 bg-action-primary-50 dark:bg-action-primary-900/30 ring-2 ring-action-primary-500' : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
+                    ]"
+                  >
+                    <div class="ml-1 flex-1">
+                      <p class="text-sm font-medium text-gray-900 dark:text-white">{{ option.label }}</p>
+                      <p class="text-xs text-gray-500 dark:text-gray-400">{{ option.description }}</p>
+                    </div>
+                    <div v-if="form.runtime === option.value" class="flex-shrink-0 text-action-primary-500 dark:text-action-primary-400">
+                      <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+                      </svg>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="runtimeProviderModelOptions.length > 0" class="space-y-2">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Provider & Model</label>
+                <select
+                  v-model="selectedRuntimeProviderModel"
+                  @change="selectRuntimeProviderModel(selectedRuntimeProviderModel)"
+                  class="block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm px-3 py-2 focus:ring-action-primary-500 focus:border-action-primary-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                >
+                  <option value="">Use runtime default</option>
+                  <option v-for="option in runtimeProviderModelOptions" :key="option.value" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                </select>
+                <p class="text-xs text-gray-500 dark:text-gray-400">Only providers that work with {{ selectedRuntimeLabel }} are shown.</p>
+              </div>
+
+              <div v-if="form.runtime === 'opencode'" class="space-y-2">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">OpenCode Provider & Model</label>
+                <select
+                  v-if="runtimeProviderModelOptions.length === 0"
+                  v-model="opencodeProvider"
+                  class="block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm px-3 py-2 focus:ring-action-primary-500 focus:border-action-primary-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                >
+                  <option v-for="provider in opencodeProviderOptions" :key="provider.value" :value="provider.value">
+                    {{ provider.label }}
+                  </option>
+                </select>
+                <input
+                  v-if="runtimeProviderModelOptions.length === 0 && opencodeProvider === customProviderValue"
+                  v-model="opencodeCustomProvider"
+                  type="text"
+                  required
+                  class="block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm px-3 py-2 focus:ring-action-primary-500 focus:border-action-primary-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
+                  placeholder="provider"
+                />
+                <input
+                  v-if="runtimeProviderModelOptions.length === 0"
+                  v-model="opencodeModel"
+                  type="text"
+                  required
+                  class="block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm px-3 py-2 focus:ring-action-primary-500 focus:border-action-primary-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
+                  placeholder="claude-sonnet-4-5"
+                />
+                <p v-if="runtimeProviderModelOptions.length === 0" class="text-xs text-gray-500 dark:text-gray-400">Saved custom providers are available without exposing API keys.</p>
+              </div>
+
+              <div v-if="form.runtime === 'opencode'">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Permission Profile</label>
+                <select
+                  v-model="form.runtime_permission"
+                  class="mt-1 block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm px-3 py-2 focus:ring-action-primary-500 focus:border-action-primary-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                >
+                  <option v-for="profile in permissionProfiles" :key="profile" :value="profile">
+                    {{ profile }}
+                  </option>
+                </select>
+              </div>
             </div>
 
             <div v-if="error" class="mt-4 text-status-danger-600 dark:text-status-danger-400 text-sm">
@@ -221,6 +303,8 @@
 <script setup>
 import { ref, reactive, onMounted, computed, watch, nextTick } from 'vue'
 import { useAgentsStore } from '../stores/agents'
+import { useSettingsStore } from '../stores/settings'
+import { CUSTOM_PROVIDER_VALUE, buildRuntimeProviderModelOptions } from '../utils/runtimeModelPresets'
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 
@@ -234,14 +318,27 @@ const props = defineProps({
 const emit = defineEmits(['close', 'created'])
 const agentsStore = useAgentsStore()
 const authStore = useAuthStore()
+const settingsStore = useSettingsStore()
 
 const form = reactive({
   name: '',
-  template: props.initialTemplate || ''
+  template: props.initialTemplate || '',
+  runtime: 'claude-code',
+  runtime_model: 'anthropic/claude-sonnet-4-5',
+  runtime_provider_id: '',
+  runtime_model_id: '',
+  runtime_permission: 'restricted'
 })
 
 const githubRepoUrl = ref('')
 const githubRepoInput = ref(null)
+const customProviderValue = CUSTOM_PROVIDER_VALUE
+const opencodeProvider = ref('anthropic')
+const opencodeCustomProvider = ref('')
+const opencodeModel = ref('claude-sonnet-4-5')
+const customProviderConfigs = ref({})
+const providerConfigs = ref({})
+const selectedRuntimeProviderModel = ref('')
 
 // Watch for initialTemplate changes (in case modal is reused)
 watch(() => props.initialTemplate, (newVal) => {
@@ -262,6 +359,132 @@ const loading = ref(false)
 const error = ref('')
 const templatesLoading = ref(true)
 const templatesError = ref('')
+
+const runtimeOptions = [
+  { value: 'claude-code', label: 'Claude Code', description: 'Run this agent with Claude Code' },
+  { value: 'gemini-cli', label: 'Gemini CLI', description: 'Run this agent with Gemini CLI' },
+  { value: 'opencode', label: 'OpenCode', description: 'Run this agent with OpenCode CLI' }
+]
+
+const selectedRuntimeLabel = computed(() => {
+  return runtimeOptions.find(option => option.value === form.runtime)?.label || 'this runtime'
+})
+
+const permissionProfiles = ['restricted', 'standard', 'dangerous']
+
+const builtinOpencodeProviders = [
+  { value: 'anthropic', label: 'Anthropic' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'google', label: 'Google' }
+]
+
+const opencodeProviderOptions = computed(() => {
+  const options = [...builtinOpencodeProviders]
+  const builtinValues = new Set(options.map(option => option.value))
+  for (const provider of Object.keys(customProviderConfigs.value || {}).sort()) {
+    if (!provider || builtinValues.has(provider)) continue
+    options.push({ value: provider, label: provider })
+  }
+  options.push({ value: CUSTOM_PROVIDER_VALUE, label: 'Custom' })
+  return options
+})
+
+const runtimeProviderModelOptions = computed(() => {
+  return buildRuntimeProviderModelOptions(form.runtime, providerConfigs.value)
+})
+
+const selectedRuntimeProviderModelIds = computed(() => {
+  const selectedValue = String(selectedRuntimeProviderModel.value || '').trim()
+  if (!selectedValue) return { providerId: '', modelId: '' }
+  if (!runtimeProviderModelOptions.value.some(option => option.value === selectedValue)) {
+    return { providerId: '', modelId: '' }
+  }
+  return parseRuntimeProviderModelValue(selectedValue)
+})
+
+const legacyOpencodeRuntimeModel = () => {
+  const provider = opencodeProvider.value === CUSTOM_PROVIDER_VALUE
+    ? opencodeCustomProvider.value.trim()
+    : opencodeProvider.value.trim()
+  const model = opencodeModel.value.trim()
+  return provider && model ? `${provider}/${model}` : ''
+}
+
+const syncLegacyOpencodeRuntimeModel = () => {
+  form.runtime_model = legacyOpencodeRuntimeModel()
+}
+
+const parseRuntimeProviderModelValue = (selectedValue) => {
+  const value = String(selectedValue || '').trim()
+  if (!value) return { providerId: '', modelId: '' }
+
+  const [providerId, ...modelParts] = value.split('/')
+  return {
+    providerId: providerId || '',
+    modelId: modelParts.join('/'),
+  }
+}
+
+const clearRuntimeProviderModelSelection = () => {
+  selectedRuntimeProviderModel.value = ''
+  form.runtime_provider_id = ''
+  form.runtime_model_id = ''
+
+  if (form.runtime === 'opencode') {
+    syncLegacyOpencodeRuntimeModel()
+  } else {
+    form.runtime_model = ''
+  }
+}
+
+const selectRuntimeProviderModel = (selectedValue) => {
+  const value = String(selectedValue || '').trim()
+  selectedRuntimeProviderModel.value = value
+
+  if (!value) {
+    clearRuntimeProviderModelSelection()
+    return
+  }
+
+  const { providerId, modelId } = parseRuntimeProviderModelValue(value)
+  form.runtime_provider_id = providerId
+  form.runtime_model_id = modelId
+
+  if (form.runtime === 'opencode') {
+    form.runtime_model = form.runtime_provider_id && form.runtime_model_id
+      ? `${form.runtime_provider_id}/${form.runtime_model_id}`
+      : ''
+  } else {
+    form.runtime_model = ''
+  }
+}
+
+watch([() => form.runtime, runtimeProviderModelOptions], () => {
+  const options = runtimeProviderModelOptions.value
+  const currentValue = form.runtime_provider_id && form.runtime_model_id
+    ? `${form.runtime_provider_id}/${form.runtime_model_id}`
+    : ''
+  const currentIsCompatible = currentValue && options.some(option => option.value === currentValue)
+
+  if (currentIsCompatible) {
+    selectedRuntimeProviderModel.value = currentValue
+    return
+  }
+
+  if (currentValue) {
+    clearRuntimeProviderModelSelection()
+    return
+  }
+
+  selectedRuntimeProviderModel.value = ''
+  if (form.runtime !== 'opencode') form.runtime_model = ''
+}, { immediate: true })
+
+watch([opencodeProvider, opencodeCustomProvider, opencodeModel], () => {
+  if (form.runtime !== 'opencode') return
+  if (form.runtime === 'opencode' && form.runtime_provider_id && form.runtime_model_id) return
+  syncLegacyOpencodeRuntimeModel()
+}, { immediate: true })
 
 // Computed properties to separate GitHub and local templates
 const githubTemplates = computed(() => {
@@ -324,14 +547,53 @@ const fetchTemplates = async () => {
   }
 }
 
+const fetchCustomProviderConfigs = async () => {
+  try {
+    const response = await settingsStore.discoverCustomProviders()
+    const configs = {}
+    for (const entry of response.custom_providers || []) {
+      const provider = String(entry.provider || '').trim()
+      if (!provider || !entry.api_key_configured) continue
+      configs[provider] = {
+        protocol: entry.protocol,
+        api_key_configured: true
+      }
+    }
+    customProviderConfigs.value = configs
+  } catch (err) {
+    console.error('Failed to discover custom providers:', err)
+  }
+}
+
+const fetchProviderConfigs = async () => {
+  if (authStore.role !== 'admin') return
+
+  try {
+    providerConfigs.value = await settingsStore.fetchProviderConfigs()
+  } catch (err) {
+    console.error('Failed to fetch provider configs:', err)
+  }
+}
+
 const createAgent = async () => {
   loading.value = true
   error.value = ''
 
   try {
     // Only send name and template - backend handles everything else
+    const { providerId, modelId } = selectedRuntimeProviderModelIds.value
+    const hasRuntimeProviderModel = Boolean(providerId && modelId)
+    const runtimeModel = form.runtime === 'opencode'
+      ? (hasRuntimeProviderModel ? `${providerId}/${modelId}` : legacyOpencodeRuntimeModel())
+      : null
+
     const payload = {
-      name: form.name
+      name: form.name,
+      runtime: form.runtime,
+      runtime_provider_id: hasRuntimeProviderModel ? providerId : null,
+      runtime_model_id: hasRuntimeProviderModel ? modelId : null,
+      runtime_model: runtimeModel,
+      runtime_permission: form.runtime_permission
     }
 
     if (form.template === 'github-custom') {
@@ -365,5 +627,7 @@ const createAgent = async () => {
 
 onMounted(() => {
   fetchTemplates()
+  fetchProviderConfigs()
+  fetchCustomProviderConfigs()
 })
 </script>

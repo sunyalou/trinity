@@ -110,43 +110,167 @@
                   </p>
                 </div>
 
-                <!-- Platform Default Model (#831) -->
+                <!-- Runtime Default Models -->
                 <div v-if="isAdmin">
-                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                    Default Model
-                  </label>
-                  <div class="mt-1 flex gap-2 items-center">
-                    <select
-                      v-model="platformDefaultModelValue"
-                      :disabled="savingPlatformDefaultModel"
-                      class="block flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
-                    >
-                      <option value="claude-sonnet-4-6">Claude Sonnet 4.6 — Fast + smart (recommended)</option>
-                      <option value="claude-opus-4-8">Claude Opus 4.8 — Most capable</option>
-                      <option value="claude-opus-4-7">Claude Opus 4.7</option>
-                      <option value="claude-opus-4-6">Claude Opus 4.6</option>
-                    </select>
+                  <div class="flex items-start justify-between gap-4">
+                    <div>
+                      <h3 class="text-sm font-medium text-gray-700 dark:text-gray-300">Default Models</h3>
+                      <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                        Model defaults for schedules and chats where no model is explicitly selected.
+                      </p>
+                    </div>
                     <button
-                      @click="savePlatformDefaultModel"
-                      :disabled="savingPlatformDefaultModel"
+                      @click="saveRuntimeDefaultModels"
+                      :disabled="savingRuntimeDefaultModels"
                       class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-action-primary-600 hover:bg-action-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      <svg v-if="savingPlatformDefaultModel" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
+                      <svg v-if="savingRuntimeDefaultModels" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                       </svg>
                       Save
                     </button>
                   </div>
-                  <div v-if="platformDefaultModelSaveSuccess" class="mt-1 flex items-center text-sm text-status-success-600 dark:text-status-success-400">
+
+                  <div class="mt-4 space-y-3">
+                    <div
+                      v-for="row in RUNTIME_MODEL_ROWS"
+                      :key="row.runtime"
+                      class="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800/50 p-4"
+                    >
+                      <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div class="lg:w-56">
+                          <div class="text-sm font-medium text-gray-900 dark:text-white">{{ row.label }}</div>
+                          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ row.description }}</p>
+                          <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                            Resolved:
+                            <code class="ml-1 px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-xs text-gray-700 dark:text-gray-200">
+                              {{ resolveRuntimeModel(runtimeDefaultModels[row.runtime]) }}
+                            </code>
+                          </div>
+                        </div>
+
+                        <div class="grid flex-1 gap-3 sm:grid-cols-2">
+                          <div>
+                            <label class="block text-xs font-medium text-gray-600 dark:text-gray-400">Provider</label>
+                            <select
+                              v-model="runtimeDefaultModels[row.runtime].providerMode"
+                              :disabled="savingRuntimeDefaultModels"
+                              @change="handleRuntimeProviderModeChange(row.runtime)"
+                              class="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
+                            >
+                              <option v-for="provider in PROVIDER_OPTIONS" :key="provider.value" :value="provider.value">
+                                {{ provider.label }}
+                              </option>
+                            </select>
+                            <input
+                              v-if="runtimeDefaultModels[row.runtime].providerMode === CUSTOM_PROVIDER_VALUE"
+                              v-model="runtimeDefaultModels[row.runtime].provider"
+                              :disabled="savingRuntimeDefaultModels"
+                              @input="handleCustomProviderNameInput(row.runtime)"
+                              type="text"
+                              placeholder="openrouter"
+                              class="mt-2 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
+                            />
+                          </div>
+
+                          <div>
+                            <label class="block text-xs font-medium text-gray-600 dark:text-gray-400">Model</label>
+                            <input
+                              v-model="runtimeDefaultModels[row.runtime].model"
+                              :disabled="savingRuntimeDefaultModels"
+                              :list="runtimeDefaultModels[row.runtime].providerMode === CUSTOM_PROVIDER_VALUE ? null : `runtime-models-${row.runtime}`"
+                              @input="resetRuntimeConnectionStatus(row.runtime)"
+                              type="text"
+                              placeholder="model"
+                              class="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
+                            />
+                            <datalist :id="`runtime-models-${row.runtime}`">
+                              <option
+                                v-for="model in providerModelOptions(runtimeDefaultModels[row.runtime].provider)"
+                                :key="model"
+                                :value="model"
+                              />
+                            </datalist>
+                          </div>
+
+                          <div
+                            v-if="runtimeDefaultModels[row.runtime].providerMode === CUSTOM_PROVIDER_VALUE"
+                            class="sm:col-span-2 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30 p-3"
+                          >
+                            <div class="grid gap-3 md:grid-cols-3">
+                              <div>
+                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400">Protocol</label>
+                                <select
+                                  v-model="customProviderConfigForRuntime(row.runtime).protocol"
+                                  :disabled="savingRuntimeDefaultModels"
+                                  @change="resetCustomProviderConfigStatuses(row.runtime)"
+                                  class="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
+                                >
+                                  <option value="openai-compatible">OpenAI-compatible</option>
+                                </select>
+                              </div>
+                              <div class="md:col-span-2">
+                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400">Base URL</label>
+                                <input
+                                  v-model="customProviderConfigForRuntime(row.runtime).base_url"
+                                  :disabled="savingRuntimeDefaultModels"
+                                  @input="resetCustomProviderConfigStatuses(row.runtime)"
+                                  type="url"
+                                  placeholder="https://api.example.com/v1"
+                                  class="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
+                                />
+                              </div>
+                              <div class="md:col-span-3">
+                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400">API Key</label>
+                                <input
+                                  v-model="customProviderConfigForRuntime(row.runtime).api_key"
+                                  :disabled="savingRuntimeDefaultModels"
+                                  @input="resetCustomProviderConfigStatuses(row.runtime)"
+                                  type="password"
+                                  :placeholder="customProviderConfigForRuntime(row.runtime).api_key_masked || 'sk-...'"
+                                  autocomplete="new-password"
+                                  class="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white text-sm"
+                                />
+                                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                  Leave blank to keep the saved key. The key is never shown after saving.
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div class="flex flex-col items-start gap-2 lg:w-48">
+                          <span :class="runtimeConnectionStatusClass(row.runtime)" class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium">
+                            {{ runtimeConnectionLabel(row.runtime) }}
+                          </span>
+                          <p v-if="runtimeConnectionStatuses[row.runtime]?.message" class="text-xs text-gray-500 dark:text-gray-400">
+                            {{ runtimeConnectionStatuses[row.runtime].message }}
+                          </p>
+                          <button
+                            @click="testRuntimeProviderConnection(row.runtime)"
+                            :disabled="!canTestRuntimeProviderConnection(row.runtime)"
+                            class="inline-flex items-center px-3 py-2 border border-gray-300 dark:border-gray-600 shadow-sm text-sm font-medium rounded-md text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <svg v-if="runtimeConnectionStatuses[row.runtime]?.status === 'testing'" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
+                              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Test connection
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div v-if="runtimeDefaultModelsSaveSuccess" class="mt-2 flex items-center text-sm text-status-success-600 dark:text-status-success-400">
                     <svg class="h-4 w-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
                     </svg>
                     Saved
                   </div>
                   <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
-                    Model used for schedules and chats where no model is explicitly selected.
-                    Changes take effect on the next execution — no restart required.
+                    Connection tests use the current form values and do not save settings. Changes take effect on the next execution.
                   </p>
                 </div>
 
@@ -1908,6 +2032,19 @@ import { useEnterpriseStore } from '../stores/enterprise'
 import NavBar from '../components/NavBar.vue'
 import McpKeysTab from '../components/settings/McpKeysTab.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import {
+  CONNECTION_STATUS_LABELS,
+  CUSTOM_PROVIDER_VALUE,
+  PROVIDER_OPTIONS,
+  RUNTIME_MODEL_ROWS,
+  blankCustomProviderConfig,
+  cloneCustomProviderConfigs,
+  cloneRuntimeDefaults,
+  payloadCustomProviderConfigs,
+  payloadRuntimeDefaults,
+  providerModelOptions,
+  resolveRuntimeModel,
+} from '../utils/runtimeModelPresets'
 
 const router = useRouter()
 const route = useRoute()
@@ -2094,10 +2231,14 @@ const originalPrompt = ref('')
 const publicUrl = ref('')
 const publicUrlCurrent = ref('')
 
-// Platform default model (#831)
-const platformDefaultModelValue = ref('claude-sonnet-4-6')
-const savingPlatformDefaultModel = ref(false)
-const platformDefaultModelSaveSuccess = ref(false)
+// Runtime default models
+const runtimeDefaultModels = ref(cloneRuntimeDefaults())
+const customProviderConfigs = ref({})
+const savingRuntimeDefaultModels = ref(false)
+const runtimeDefaultModelsSaveSuccess = ref(false)
+const runtimeConnectionStatuses = ref(
+  Object.fromEntries(RUNTIME_MODEL_ROWS.map(row => [row.runtime, { status: 'not_tested', message: '' }]))
+)
 
 // #1129: fleet-wide default access policy (require verified email for new agents)
 const defaultRequireEmail = ref(true)
@@ -2263,7 +2404,7 @@ async function loadSettings() {
     // Load independent settings in parallel
     await Promise.all([
       loadPublicUrl(),
-      loadPlatformDefaultModel(),
+      loadRuntimeModelSettings(),
       loadDefaultAccessPolicy(),
       loadApiKeyStatus(),
       loadSlackSettings(),
@@ -2467,27 +2608,241 @@ function removeGithubPat() {
   confirmDialog.visible = true
 }
 
-// Platform default model methods (#831)
-async function loadPlatformDefaultModel() {
-  try {
-    const value = await settingsStore.getSetting('platform_default_model')
-    if (value) platformDefaultModelValue.value = value
-  } catch {
-    // non-critical; UI shows the code-default
+// Runtime default model methods
+function resetRuntimeConnectionStatus(runtime) {
+  runtimeConnectionStatuses.value = {
+    ...runtimeConnectionStatuses.value,
+    [runtime]: { status: 'not_tested', message: '' },
   }
 }
 
-async function savePlatformDefaultModel() {
-  savingPlatformDefaultModel.value = true
-  platformDefaultModelSaveSuccess.value = false
+function ensureCustomProviderConfigsForRows() {
+  const nextConfigs = { ...customProviderConfigs.value }
+
+  for (const row of RUNTIME_MODEL_ROWS) {
+    const entry = runtimeDefaultModels.value[row.runtime]
+    if (entry?.providerMode !== CUSTOM_PROVIDER_VALUE) continue
+
+    const provider = String(entry.provider || '').trim()
+    if (!provider) continue
+
+    if (!nextConfigs[provider]) {
+      nextConfigs[provider] = blankCustomProviderConfig()
+    }
+  }
+
+  customProviderConfigs.value = nextConfigs
+}
+
+function customProviderConfigForRuntime(runtime) {
+  const entry = runtimeDefaultModels.value[runtime]
+  const provider = String(entry?.provider || '').trim()
+  if (!provider) return blankCustomProviderConfig()
+
+  if (!customProviderConfigs.value[provider]) {
+    customProviderConfigs.value = {
+      ...customProviderConfigs.value,
+      [provider]: blankCustomProviderConfig(),
+    }
+  }
+
+  return customProviderConfigs.value[provider]
+}
+
+function resetRuntimeStatusesForProvider(provider) {
+  const providerName = String(provider || '').trim()
+  if (!providerName) return
+
+  const nextStatuses = { ...runtimeConnectionStatuses.value }
+  for (const row of RUNTIME_MODEL_ROWS) {
+    const entry = runtimeDefaultModels.value[row.runtime]
+    if (entry?.providerMode !== CUSTOM_PROVIDER_VALUE) continue
+    if (String(entry.provider || '').trim() !== providerName) continue
+    nextStatuses[row.runtime] = { status: 'not_tested', message: '' }
+  }
+  runtimeConnectionStatuses.value = nextStatuses
+}
+
+function resetCustomProviderConfigStatuses(runtime) {
+  const provider = String(runtimeDefaultModels.value[runtime]?.provider || '').trim()
+  resetRuntimeStatusesForProvider(provider)
+}
+
+function handleCustomProviderNameInput(runtime) {
+  const provider = String(runtimeDefaultModels.value[runtime]?.provider || '').trim()
+  if (provider) {
+    ensureCustomProviderConfigsForRows()
+    resetRuntimeStatusesForProvider(provider)
+    return
+  }
+
+  resetRuntimeConnectionStatus(runtime)
+}
+
+function customProviderConfigSnapshot(runtime) {
+  const config = customProviderConfigForRuntime(runtime)
+  return {
+    protocol: String(config.protocol || '').trim(),
+    base_url: String(config.base_url || '').trim(),
+    api_key: String(config.api_key || ''),
+    api_key_configured: Boolean(config.api_key_configured),
+  }
+}
+
+function sameCustomProviderConfigSnapshot(left, right) {
+  return left.protocol === right.protocol &&
+    left.base_url === right.base_url &&
+    left.api_key === right.api_key &&
+    left.api_key_configured === right.api_key_configured
+}
+
+function canTestRuntimeProviderConnection(runtime) {
+  const status = runtimeConnectionStatuses.value[runtime]?.status
+  if (status === 'testing') return false
+
+  const entry = runtimeDefaultModels.value[runtime]
+  const provider = String(entry?.provider || '').trim()
+  const model = String(entry?.model || '').trim()
+  if (!provider || !model) return false
+
+  if (entry?.providerMode !== CUSTOM_PROVIDER_VALUE) return true
+
+  const config = customProviderConfigForRuntime(runtime)
+  const baseUrl = String(config.base_url || '').trim()
+  const hasKey = Boolean(String(config.api_key || '').trim() || config.api_key_configured)
+  return Boolean(baseUrl && hasKey)
+}
+
+function handleRuntimeProviderModeChange(runtime) {
+  const entry = runtimeDefaultModels.value[runtime]
+  if (!entry) return
+
+  if (entry.providerMode !== CUSTOM_PROVIDER_VALUE) {
+    entry.provider = entry.providerMode
+    const presets = providerModelOptions(entry.provider)
+    if (presets.length && !presets.includes(entry.model)) {
+      entry.model = presets[0]
+    }
+  } else {
+    entry.provider = ''
+  }
+
+  resetRuntimeConnectionStatus(runtime)
+}
+
+function runtimeConnectionLabel(runtime) {
+  const status = runtimeConnectionStatuses.value[runtime]?.status || 'not_tested'
+  return CONNECTION_STATUS_LABELS[status] || CONNECTION_STATUS_LABELS.unknown_error
+}
+
+function runtimeConnectionStatusClass(runtime) {
+  const status = runtimeConnectionStatuses.value[runtime]?.status || 'not_tested'
+  if (status === 'connected') return 'bg-status-success-100 text-status-success-700 dark:bg-status-success-900/40 dark:text-status-success-300'
+  if (status === 'testing') return 'bg-action-primary-100 text-action-primary-700 dark:bg-action-primary-900/40 dark:text-action-primary-300'
+  if (status === 'not_tested') return 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
+  return 'bg-status-danger-100 text-status-danger-700 dark:bg-status-danger-900/40 dark:text-status-danger-300'
+}
+
+async function loadRuntimeModelSettings() {
   try {
-    await settingsStore.updateSetting('platform_default_model', platformDefaultModelValue.value)
-    platformDefaultModelSaveSuccess.value = true
-    setTimeout(() => { platformDefaultModelSaveSuccess.value = false }, 3000)
+    const [runtimeResponse, customResponse] = await Promise.all([
+      settingsStore.fetchRuntimeDefaultModels(),
+      settingsStore.fetchCustomProviderConfigs(),
+    ])
+    runtimeDefaultModels.value = cloneRuntimeDefaults(runtimeResponse.runtime_default_models)
+    customProviderConfigs.value = cloneCustomProviderConfigs(customResponse.custom_provider_configs)
+    ensureCustomProviderConfigsForRows()
+    runtimeConnectionStatuses.value = Object.fromEntries(
+      RUNTIME_MODEL_ROWS.map(row => [row.runtime, { status: 'not_tested', message: '' }])
+    )
+  } catch {
+    // non-critical; UI shows the code-defaults
+  }
+}
+
+async function loadRuntimeDefaultModels() {
+  return loadRuntimeModelSettings()
+}
+
+async function saveRuntimeDefaultModels() {
+  savingRuntimeDefaultModels.value = true
+  runtimeDefaultModelsSaveSuccess.value = false
+  error.value = null
+
+  try {
+    const response = await settingsStore.updateRuntimeDefaultModels(payloadRuntimeDefaults(runtimeDefaultModels.value))
+    runtimeDefaultModels.value = cloneRuntimeDefaults(response.runtime_default_models)
+    const customPayload = payloadCustomProviderConfigs(runtimeDefaultModels.value, customProviderConfigs.value)
+    if (Object.keys(customPayload).length) {
+      const customResponse = await settingsStore.updateCustomProviderConfigs(customPayload)
+      customProviderConfigs.value = cloneCustomProviderConfigs(customResponse.custom_provider_configs)
+      ensureCustomProviderConfigsForRows()
+    }
+    runtimeDefaultModelsSaveSuccess.value = true
+    setTimeout(() => { runtimeDefaultModelsSaveSuccess.value = false }, 3000)
   } catch (e) {
-    error.value = e.response?.data?.detail || 'Failed to save default model'
+    error.value = e.response?.data?.detail || 'Failed to save default models'
   } finally {
-    savingPlatformDefaultModel.value = false
+    savingRuntimeDefaultModels.value = false
+  }
+}
+
+async function testRuntimeProviderConnection(runtime) {
+  const entry = runtimeDefaultModels.value[runtime]
+  const requestedProviderMode = entry?.providerMode || ''
+  const requestedProvider = String(entry?.provider || '').trim()
+  const requestedModel = String(entry?.model || '').trim()
+  if (!requestedProvider || !requestedModel) return
+  const isCustomProvider = requestedProviderMode === CUSTOM_PROVIDER_VALUE
+  const requestedCustomConfig = isCustomProvider ? customProviderConfigSnapshot(runtime) : null
+  if (isCustomProvider && (!requestedCustomConfig.base_url || !(requestedCustomConfig.api_key || requestedCustomConfig.api_key_configured))) return
+
+  const requestStillCurrent = () => {
+    const currentEntry = runtimeDefaultModels.value[runtime]
+    const baseMatches = currentEntry?.providerMode === requestedProviderMode &&
+      String(currentEntry?.provider || '').trim() === requestedProvider &&
+      String(currentEntry?.model || '').trim() === requestedModel
+    if (!baseMatches) return false
+    if (!isCustomProvider) return true
+    return sameCustomProviderConfigSnapshot(customProviderConfigSnapshot(runtime), requestedCustomConfig)
+  }
+
+  runtimeConnectionStatuses.value = {
+    ...runtimeConnectionStatuses.value,
+    [runtime]: { status: 'testing', message: '' },
+  }
+
+  try {
+    const payload = {
+      runtime,
+      provider: requestedProvider,
+      model: requestedModel,
+    }
+    if (isCustomProvider) {
+      payload.custom_provider = {
+        protocol: requestedCustomConfig.protocol || 'openai-compatible',
+        base_url: requestedCustomConfig.base_url,
+        api_key: requestedCustomConfig.api_key,
+      }
+    }
+    const response = await settingsStore.testProviderConnection(payload)
+    if (!requestStillCurrent()) return
+    runtimeConnectionStatuses.value = {
+      ...runtimeConnectionStatuses.value,
+      [runtime]: {
+        status: response.status || (response.ok ? 'connected' : 'unknown_error'),
+        message: response.message || '',
+      },
+    }
+  } catch (e) {
+    if (!requestStillCurrent()) return
+    runtimeConnectionStatuses.value = {
+      ...runtimeConnectionStatuses.value,
+      [runtime]: {
+        status: 'unknown_error',
+        message: e.response?.data?.detail || 'Failed to test connection',
+      },
+    }
   }
 }
 

@@ -15,28 +15,18 @@
         <!-- Mode Toggle -->
         <div class="flex bg-gray-700 rounded-lg p-0.5">
           <button
-            @click="selectedMode = 'cli'"
+            v-for="mode in terminalModeOptions"
+            :key="mode.value"
+            @click="selectedMode = mode.value"
             :class="[
               'px-3 py-1 text-xs font-medium rounded-md transition-colors',
-              selectedMode === 'cli'
+              selectedMode === mode.value
                 ? 'bg-blue-600 text-white'
                 : 'text-gray-400 hover:text-gray-200'
             ]"
             :disabled="connectionStatus === 'connected'"
           >
-            {{ cliModeLabel }}
-          </button>
-          <button
-            @click="selectedMode = 'bash'"
-            :class="[
-              'px-3 py-1 text-xs font-medium rounded-md transition-colors',
-              selectedMode === 'bash'
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-400 hover:text-gray-200'
-            ]"
-            :disabled="connectionStatus === 'connected'"
-          >
-            Bash
+            {{ mode.label }}
           </button>
         </div>
         <!-- Fullscreen Toggle -->
@@ -118,7 +108,7 @@ const props = defineProps({
   },
   runtime: {
     type: String,
-    default: 'claude-code' // 'claude-code' or 'gemini-cli'
+    default: 'claude-code' // 'claude-code', 'gemini-cli', or 'opencode'
   },
   model: {
     type: String,
@@ -130,13 +120,21 @@ const emit = defineEmits(['connected', 'disconnected', 'error', 'toggle-fullscre
 
 // Refs
 const terminalContainer = ref(null)
-const selectedMode = ref('cli') // 'cli' (claude/gemini) or 'bash'
 const connectionStatus = ref('disconnected')
 const errorMessage = ref('')
 
 // Computed - Runtime-aware labels
 const isGemini = computed(() => props.runtime === 'gemini-cli' || props.runtime === 'gemini')
+const isOpenCode = computed(() => props.runtime === 'opencode')
 const cliModeLabel = computed(() => isGemini.value ? 'Gemini CLI' : 'Claude Code')
+const defaultTerminalMode = computed(() => isOpenCode.value ? 'opencode' : 'cli')
+const selectedMode = ref(defaultTerminalMode.value) // 'cli' (claude/gemini), 'opencode', or 'bash'
+const terminalModeOptions = computed(() => [
+  isOpenCode.value
+    ? { value: 'opencode', label: 'OpenCode' }
+    : { value: 'cli', label: cliModeLabel.value },
+  { value: 'bash', label: 'Bash' }
+])
 
 // Terminal and WebSocket instances
 let terminal = null
@@ -325,8 +323,10 @@ function connect() {
 
   // Build WebSocket URL - use agent-specific terminal endpoint
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  // Map 'cli' mode to the appropriate runtime command (claude or gemini)
-  const terminalMode = selectedMode.value === 'cli' ? (isGemini.value ? 'gemini' : 'claude') : 'bash'
+  // Map runtime mode to the appropriate terminal command
+  const terminalMode = selectedMode.value === 'cli'
+    ? (isGemini.value ? 'gemini' : 'claude')
+    : selectedMode.value
   // Include model parameter if specified (for gemini --model or claude --model flags)
   const modelParam = props.model ? `&model=${encodeURIComponent(props.model)}` : ''
   const wsUrl = `${protocol}//${location.host}/api/agents/${encodeURIComponent(props.agentName)}/terminal?mode=${terminalMode}${modelParam}`
@@ -417,6 +417,13 @@ watch(selectedMode, () => {
   // Only allow mode change when disconnected
   if (connectionStatus.value === 'connected') {
     return
+  }
+})
+
+// Keep the default terminal command aligned if the agent runtime changes while disconnected
+watch(defaultTerminalMode, (mode) => {
+  if (connectionStatus.value !== 'connected') {
+    selectedMode.value = mode
   }
 })
 

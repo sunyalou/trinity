@@ -59,6 +59,8 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useSettingsStore } from '../stores/settings'
+import { buildModelSelectorPresets, filterModelSelectorPresetsForRuntime, normalizeRuntime } from '../utils/runtimeModelPresets'
 
 const props = defineProps({
   modelValue: {
@@ -80,10 +82,15 @@ const props = defineProps({
   platformDefault: {
     type: String,
     default: null
+  },
+  runtime: {
+    type: String,
+    default: null
   }
 })
 
 const emit = defineEmits(['update:modelValue'])
+const settingsStore = useSettingsStore()
 
 // Canonical model list — synced from https://platform.claude.com/docs/en/about-claude/models/overview
 // Last updated: 2026-06-06 (#1080)
@@ -108,12 +115,26 @@ const highlightedIndex = ref(-1)
 const containerRef = ref(null)
 const inputRef = ref(null)
 const isTyping = ref(false)
+const dynamicModelPresets = ref([])
+
+async function loadDynamicModelPresets() {
+  try {
+    const response = await settingsStore.discoverCustomProviders()
+    dynamicModelPresets.value = buildModelSelectorPresets({
+      customProviders: response.custom_providers || [],
+    })
+  } catch (error) {
+    dynamicModelPresets.value = buildModelSelectorPresets()
+  }
+}
 
 const resolvedPlaceholder = computed(() => {
   if (props.placeholder !== null) return props.placeholder
   if (props.platformDefault) return `platform default (${props.platformDefault})`
   return 'Select or type a model...'
 })
+
+const normalizedRuntime = computed(() => props.runtime ? normalizeRuntime(props.runtime) : null)
 
 const inputClass = computed(() => {
   const base = 'w-full border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-action-primary-500 pr-8'
@@ -123,12 +144,19 @@ const inputClass = computed(() => {
 })
 
 const filteredModels = computed(() => {
-  if (!isTyping.value || !props.modelValue) return PRESET_MODELS
+  const seen = new Set()
+  const runtimeModels = filterModelSelectorPresetsForRuntime([...dynamicModelPresets.value, ...PRESET_MODELS], normalizedRuntime.value)
+  const allModels = runtimeModels.filter((model) => {
+    if (!model?.value || seen.has(model.value)) return false
+    seen.add(model.value)
+    return true
+  })
+  if (!isTyping.value || !props.modelValue) return allModels
   const query = props.modelValue.toLowerCase()
-  const filtered = PRESET_MODELS.filter(m =>
+  const filtered = allModels.filter(m =>
     m.value.toLowerCase().includes(query) || m.label.toLowerCase().includes(query)
   )
-  return filtered.length > 0 ? filtered : PRESET_MODELS
+  return filtered.length > 0 ? filtered : allModels
 })
 
 function onInput(event) {
@@ -180,6 +208,7 @@ function handleClickOutside(event) {
 }
 
 onMounted(() => {
+  loadDynamicModelPresets()
   document.addEventListener('click', handleClickOutside)
 })
 

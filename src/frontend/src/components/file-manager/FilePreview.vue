@@ -142,6 +142,7 @@
 
 <script setup>
 import { ref, computed, watch, onUnmounted } from 'vue'
+import { readTextFromPreviewData } from '../../utils/filePreviewData'
 
 const props = defineProps({
   file: { type: Object, required: true },
@@ -219,8 +220,7 @@ const isText = computed(() => {
 watch(() => props.previewData, async (data) => {
   if (data && isText.value) {
     try {
-      const response = await fetch(data.url)
-      textContent.value = await response.text()
+      textContent.value = await readTextFromPreviewData(data)
     } catch (e) {
       textContent.value = 'Failed to load text content'
     }

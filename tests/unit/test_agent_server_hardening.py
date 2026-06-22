@@ -206,3 +206,16 @@ class TestHealthDiagnostics:
         diag = payload["diagnostics"]
         assert "thread_count" in diag
         assert "conversation_history_limit" in diag
+
+    @pytest.mark.asyncio
+    async def test_health_omits_opencode_availability_for_non_opencode(self, monkeypatch):
+        from agent_server.routers import info as info_mod  # noqa: WPS433
+
+        monkeypatch.setattr(info_mod.agent_state, "agent_runtime", "claude-code")
+        monkeypatch.setattr(info_mod.agent_state, "runtime_available", True)
+
+        payload = await info_mod.health_check()
+
+        assert "claude_available" in payload
+        assert "runtime_available" in payload
+        assert "opencode_available" not in payload

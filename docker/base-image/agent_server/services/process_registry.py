@@ -13,7 +13,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime
-from typing import Dict, Optional, List, AsyncIterator
+from typing import Dict, Optional, List
 from threading import Lock
 
 from ..utils.subprocess_pgroup import (
@@ -54,11 +54,70 @@ class ProcessRegistry:
         self._log_buffers: Dict[str, List[dict]] = {}
         # Maximum buffer size per execution (prevents memory bloat)
         self._max_buffer_size = 1000
+        # Maximum number of completed execution log buffers retained globally.
+        self._completed_buffer_limit = 100
+        # Last asyncio event loop seen from register/subscribe paths, used to
+        # safely publish from worker threads into asyncio subscriber queues.
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         # Issue #921: execution_id -> unix timestamp when unregister() ran.
         # Entries past RECENTLY_COMPLETED_TTL_SECONDS are evicted lazily on
         # read. Capped indirectly by traffic — at agent's ~10 concurrent
         # max with 5 min retention this is a few dozen entries at peak.
         self._recently_completed: Dict[str, float] = {}
+
+    def _remember_running_loop(self):
+        """Remember the current running event loop, when called from one."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if loop.is_running():
+            self._loop = loop
+
+    def _cleanup_completed_buffers_locked(self):
+        """Evict expired/capped completed log buffers while holding _lock."""
+        now = time.time()
+        cutoff = now - RECENTLY_COMPLETED_TTL_SECONDS
+
+        for execution_id, completed_at in list(self._recently_completed.items()):
+            if completed_at < cutoff and execution_id in self._log_buffers:
+                self._log_buffers.pop(execution_id, None)
+
+        completed_with_buffers = [
+            (execution_id, completed_at)
+            for execution_id, completed_at in self._recently_completed.items()
+            if execution_id in self._log_buffers
+            and execution_id not in self._processes
+            and execution_id not in self._log_subscribers
+        ]
+        overflow = len(completed_with_buffers) - self._completed_buffer_limit
+        if overflow <= 0:
+            return
+
+        completed_with_buffers.sort(key=lambda item: item[1])
+        for execution_id, _ in completed_with_buffers[:overflow]:
+            self._log_buffers.pop(execution_id, None)
+
+    @staticmethod
+    def _is_stream_end(entry: dict) -> bool:
+        return isinstance(entry, dict) and entry.get("type") == "stream_end"
+
+    @staticmethod
+    def _put_stream_end_nowait(queue: asyncio.Queue, entry: dict):
+        """Enqueue terminal stream_end, dropping older queued items if full.
+
+        Normal log entries are best-effort and may be dropped for slow
+        subscribers; the terminal marker is required so SSE consumers can stop.
+        """
+        while True:
+            try:
+                queue.put_nowait(entry)
+                return
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
 
     def register(self, execution_id: str, process: subprocess.Popen, metadata: dict = None):
         """
@@ -69,6 +128,7 @@ class ProcessRegistry:
             process: The subprocess.Popen handle
             metadata: Optional metadata (type, message preview, etc.)
         """
+        self._remember_running_loop()
         with self._lock:
             self._processes[execution_id] = {
                 "process": process,
@@ -82,6 +142,7 @@ class ProcessRegistry:
 
     def unregister(self, execution_id: str):
         """Unregister a completed process and signal stream end to subscribers."""
+        stream_end = {"type": "stream_end"}
         with self._lock:
             if execution_id in self._processes:
                 del self._processes[execution_id]
@@ -90,21 +151,35 @@ class ProcessRegistry:
             # Signal end of stream to all subscribers
             if execution_id in self._log_subscribers:
                 for queue in self._log_subscribers[execution_id]:
-                    try:
-                        queue.put_nowait({"type": "stream_end"})
-                    except asyncio.QueueFull:
-                        pass
+                    self._put_stream_end_nowait(queue, stream_end)
                 del self._log_subscribers[execution_id]
 
-            # Clean up buffer (keep for a bit for late requests, but this is fine)
             if execution_id in self._log_buffers:
-                del self._log_buffers[execution_id]
+                buffer = self._log_buffers[execution_id]
+                if not any(self._is_stream_end(entry) for entry in buffer):
+                    buffer.append(stream_end)
+                if len(buffer) > self._max_buffer_size:
+                    self._log_buffers[execution_id] = buffer[-self._max_buffer_size:]
 
             # Issue #921: mark for the recently-completed window so the
             # backend watchdog doesn't see this as missing during the race
             # between this `finally: unregister()` and the backend writing
             # `success` to the schedule_executions row.
             self._recently_completed[execution_id] = time.time()
+            self._cleanup_completed_buffers_locked()
+
+    def unregister_threadsafe(self, execution_id: str):
+        """Finalize an execution safely from worker threads.
+
+        When log entries are scheduled with publish_log_entry_threadsafe(), this
+        schedules unregister() onto the same event loop so callback ordering is
+        preserved: all earlier log callbacks run before stream_end finalization.
+        """
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(self.unregister, execution_id)
+            return
+        self.unregister(execution_id)
 
     def terminate(self, execution_id: str, graceful_timeout: int = 5) -> dict:
         """
@@ -337,6 +412,8 @@ class ProcessRegistry:
             # Add to buffer for late joiners
             if execution_id in self._log_buffers:
                 buffer = self._log_buffers[execution_id]
+                if any(self._is_stream_end(buffered_entry) for buffered_entry in buffer):
+                    return
                 buffer.append(entry)
                 # Trim buffer if too large
                 if len(buffer) > self._max_buffer_size:
@@ -350,6 +427,19 @@ class ProcessRegistry:
                     except asyncio.QueueFull:
                         # Drop entry for this slow subscriber
                         logger.warning(f"[ProcessRegistry] Log queue full for execution {execution_id}, dropping entry")
+
+    def publish_log_entry_threadsafe(self, execution_id: str, entry: dict):
+        """Publish a log entry safely from worker threads.
+
+        If an asyncio loop has been observed in register/subscribe paths, use
+        call_soon_threadsafe so asyncio subscribers are notified on that loop.
+        Otherwise, fall back to the normal synchronous publish path.
+        """
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(self.publish_log_entry, execution_id, entry)
+            return
+        self.publish_log_entry(execution_id, entry)
 
     def subscribe_logs(self, execution_id: str) -> asyncio.Queue:
         """
@@ -365,9 +455,11 @@ class ProcessRegistry:
         Returns:
             asyncio.Queue to receive log entries, or None if not found
         """
+        self._remember_running_loop()
         queue = asyncio.Queue(maxsize=500)
 
         with self._lock:
+            self._cleanup_completed_buffers_locked()
             # Check if execution exists (or recently existed with buffer)
             if execution_id not in self._log_subscribers and execution_id not in self._log_buffers:
                 return None
@@ -375,20 +467,17 @@ class ProcessRegistry:
             # Send buffered entries first
             if execution_id in self._log_buffers:
                 for entry in self._log_buffers[execution_id]:
-                    try:
-                        queue.put_nowait(entry)
-                    except asyncio.QueueFull:
-                        break
+                    if self._is_stream_end(entry):
+                        self._put_stream_end_nowait(queue, entry)
+                    else:
+                        try:
+                            queue.put_nowait(entry)
+                        except asyncio.QueueFull:
+                            continue
 
             # Register as subscriber if execution is still running
             if execution_id in self._log_subscribers:
                 self._log_subscribers[execution_id].append(queue)
-            else:
-                # Execution finished, just send stream_end
-                try:
-                    queue.put_nowait({"type": "stream_end"})
-                except asyncio.QueueFull:
-                    pass
 
         return queue
 
@@ -420,6 +509,7 @@ class ProcessRegistry:
             List of log entries, or None if execution not found
         """
         with self._lock:
+            self._cleanup_completed_buffers_locked()
             if execution_id in self._log_buffers:
                 return list(self._log_buffers[execution_id])
             return None

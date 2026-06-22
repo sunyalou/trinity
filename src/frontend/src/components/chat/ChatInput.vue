@@ -144,6 +144,8 @@
           class="relative z-10 w-full resize-none border-0 p-0 bg-transparent text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-0 focus:outline-none text-sm leading-6"
           :disabled="disabled"
           @keydown="handleKeydown"
+          @compositionstart="handleCompositionStart"
+          @compositionend="handleCompositionEnd"
           @input="handleInput"
           @blur="handleBlur"
           @click="handleClick"
@@ -272,6 +274,8 @@ const inputWrapperRef = ref(null)
 const fileInputRef = ref(null)
 const pendingFiles = ref([])   // [{name, mimetype, size, data_base64}]
 const dragOver = ref(false)
+const isComposing = ref(false)
+const suppressNextEnterAfterComposition = ref(false)
 
 // Hide the default placeholder text while the dropdown/ghost hint is active
 const showPlaceholder = computed(() => !ac.showDropdown.value && !ac.activeArgHint.value)
@@ -326,7 +330,32 @@ function handleBlur() {
 }
 
 // ── Keyboard navigation ───────────────────────────────────────────────────────
+function handleCompositionStart() {
+  isComposing.value = true
+}
+
+function handleCompositionEnd() {
+  // Some browsers emit the Enter keydown that confirms an IME candidate in the
+  // same event turn as compositionend; others emit it immediately afterward.
+  // Suppress that one confirmation Enter so it never submits the message.
+  isComposing.value = false
+  suppressNextEnterAfterComposition.value = true
+  setTimeout(() => {
+    suppressNextEnterAfterComposition.value = false
+  }, 30)
+}
+
 function handleKeydown(event) {
+  if (event.key === 'Enter' && suppressNextEnterAfterComposition.value) {
+    event.preventDefault()
+    suppressNextEnterAfterComposition.value = false
+    return
+  }
+
+  if (event.isComposing || isComposing.value || event.keyCode === 229) {
+    return
+  }
+
   if (ac.showDropdown.value && ac.filteredPlaybooks.value.length > 0) {
     if (event.key === 'Tab' || event.key === 'ArrowRight') {
       if (ac.ghostCompletion.value || ac.showDropdown.value) {
@@ -441,6 +470,14 @@ function removeFile(idx) {
   pendingFiles.value.splice(idx, 1)
 }
 
+function clearDraft() {
+  localMessage.value = ''
+  pendingFiles.value = []
+  if (textareaRef.value) {
+    textareaRef.value.style.height = 'auto'
+  }
+}
+
 // ── Submit ────────────────────────────────────────────────────────────────────
 function handleSubmit() {
   const hasMessage = localMessage.value.trim()
@@ -448,11 +485,7 @@ function handleSubmit() {
   if ((hasMessage || hasFiles) && !props.disabled) {
     ac.hide()
     emit('submit', localMessage.value.trim(), [...pendingFiles.value])
-    localMessage.value = ''
-    pendingFiles.value = []
-    if (textareaRef.value) {
-      textareaRef.value.style.height = 'auto'
-    }
+    clearDraft()
   }
 }
 
@@ -463,7 +496,8 @@ function nextTick_(fn) {
 
 // ── Expose focus ──────────────────────────────────────────────────────────────
 defineExpose({
-  focus: () => textareaRef.value?.focus()
+  focus: () => textareaRef.value?.focus(),
+  clear: () => clearDraft()
 })
 </script>
 

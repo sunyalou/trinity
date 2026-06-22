@@ -94,6 +94,7 @@
               <ChatPanel
                 :agent-name="agent.name"
                 :agent-status="agent.status"
+                :agent-runtime="agent.runtime"
                 :resume-session-id="resumeSessionId"
                 :resume-execution-id="resumeExecutionId"
               />
@@ -544,6 +545,9 @@ const defaultModel = computed(() => {
   const runtime = agent.value?.runtime || 'claude-code'
   if (runtime === 'gemini-cli' || runtime === 'gemini') {
     return 'gemini-2.5-flash'
+  }
+  if (runtime === 'opencode') {
+    return 'anthropic/claude-sonnet-4-5'
   }
   return 'sonnet' // Claude default
 })

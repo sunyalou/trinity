@@ -83,6 +83,11 @@ services:
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
       # SSH access host override
       - SSH_HOST=${SSH_HOST:-}
+      # Auto-created trinity-system runtime/provider target
+      - SYSTEM_AGENT_RUNTIME=${SYSTEM_AGENT_RUNTIME:-}
+      - SYSTEM_AGENT_RUNTIME_PROVIDER_ID=${SYSTEM_AGENT_RUNTIME_PROVIDER_ID:-}
+      - SYSTEM_AGENT_RUNTIME_MODEL_ID=${SYSTEM_AGENT_RUNTIME_MODEL_ID:-}
+      - SYSTEM_AGENT_AUTO_RECREATE_ON_RUNTIME_DRIFT=${SYSTEM_AGENT_AUTO_RECREATE_ON_RUNTIME_DRIFT:-false}
       # Canary invariant harness (CANARY-001 / Issue #411).
       # When 1, services/canary_service.py runs the 5-min watcher loop on
       # staging/dev. Default 0 — production users see no canary activity.
@@ -418,4 +423,3 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/16
-

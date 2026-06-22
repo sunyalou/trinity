@@ -47,8 +47,11 @@ RUN curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /
 
 RUN npm install -g @anthropic-ai/claude-code@latest
 
-# Install Gemini CLI for multi-runtime support
-RUN npm install -g @google/gemini-cli
+# Install Gemini CLI and OpenCode for multi-runtime support
+RUN npm install -g @google/gemini-cli opencode-ai@latest
+
+ENV OPENCODE_DISABLE_AUTOUPDATE=1
+ENV OPENCODE_DISABLE_MODELS_FETCH=1
 
 RUN useradd -m -s /bin/bash -u 1000 developer && \
     echo "developer:developer" | chpasswd && \
@@ -133,4 +136,3 @@ RUN mkdir -p /tmp/secure && \
 USER developer
 
 CMD ["/app/startup.sh"]
-

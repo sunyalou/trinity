@@ -53,7 +53,7 @@ class AgentState:
         self.session_context_tokens: int = 0  # Latest context size
         self.session_context_window: int = self._get_default_context_window()
         # Model selection (persists across session)
-        self.current_model: Optional[str] = os.getenv("AGENT_RUNTIME_MODEL", None) or os.getenv("CLAUDE_MODEL", None)
+        self.current_model: Optional[str] = self._get_initial_model()
         # Session activity tracking (for real-time monitoring)
         self.session_activity = self._create_empty_activity()
         # Store full tool outputs for drill-down (separate from timeline summaries)
@@ -91,15 +91,43 @@ class AgentState:
 
     def _get_default_context_window(self) -> int:
         """Get default context window based on runtime"""
+        if self.agent_runtime == "opencode":
+            return 200000
         if self.agent_runtime == "gemini-cli" or self.agent_runtime == "gemini":
             return 1000000  # 1M tokens for Gemini
         return 200000  # 200K for Claude Code
 
+    def _get_initial_model(self) -> Optional[str]:
+        """Get initial model without changing existing Claude/Gemini behavior."""
+        if self.agent_runtime == "opencode":
+            return (
+                os.getenv("AGENT_RUNTIME_MODEL", None)
+                or os.getenv("OPENCODE_DEFAULT_MODEL", None)
+                or "anthropic/claude-sonnet-4-5"
+            )
+        return os.getenv("AGENT_RUNTIME_MODEL", None) or os.getenv("CLAUDE_MODEL", None)
+
     def _check_runtime_available(self) -> bool:
         """Check if the configured runtime CLI is available"""
+        if self.agent_runtime == "opencode":
+            return self._check_opencode()
         if self.agent_runtime == "gemini-cli" or self.agent_runtime == "gemini":
             return self._check_gemini_cli()
         return self._check_claude_code()
+
+    def _check_opencode(self) -> bool:
+        """Check if OpenCode CLI is available"""
+        try:
+            result = subprocess.run(
+                ["opencode", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            return result.returncode == 0
+        except Exception as e:
+            logger.error(f"OpenCode check failed: {e}")
+            return False
 
     def _check_gemini_cli(self) -> bool:
         """Check if Gemini CLI is available"""

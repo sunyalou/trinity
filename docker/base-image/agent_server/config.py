@@ -26,8 +26,10 @@ CLAUDE_COMMANDS_DIR = WORKSPACE_DIR / ".claude" / "commands" / "trinity"
 MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024  # 100MB
 
 # Runtime configuration
-AGENT_RUNTIME = os.getenv("AGENT_RUNTIME", "claude-code")  # "claude-code" or "gemini-cli"
+# Runtime selection: "claude-code", "gemini-cli", or "opencode"
+AGENT_RUNTIME = os.getenv("AGENT_RUNTIME", "claude-code")
 AGENT_RUNTIME_MODEL = os.getenv("AGENT_RUNTIME_MODEL", None)  # Optional model override
+OPENCODE_DEFAULT_MODEL = os.getenv("OPENCODE_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5")
 
 # Claude Code defaults
 DEFAULT_CONTEXT_WINDOW = 200000
@@ -37,4 +39,3 @@ GEMINI_CONTEXT_WINDOW = 1000000  # 1M tokens
 
 # Git configuration
 GIT_TIMEOUT_SECONDS = 60
-

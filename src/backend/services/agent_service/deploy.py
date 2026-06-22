@@ -504,9 +504,11 @@ async def deploy_local_agent_logic(
         runtime_config = template_data.get("runtime", {})
         runtime_type = None
         runtime_model = None
+        runtime_permission = "restricted"
         if isinstance(runtime_config, dict):
             runtime_type = runtime_config.get("type")
             runtime_model = runtime_config.get("model")
+            runtime_permission = runtime_config.get("permission", "restricted")
         elif isinstance(runtime_config, str):
             runtime_type = runtime_config
 
@@ -516,7 +518,8 @@ async def deploy_local_agent_logic(
             type=template_data.get("type", "business-assistant"),
             resources=template_data.get("resources", {"cpu": "2", "memory": "4g"}),
             runtime=runtime_type,
-            runtime_model=runtime_model
+            runtime_model=runtime_model,
+            runtime_permission=runtime_permission
         )
 
         # 9b. Process credentials before agent creation

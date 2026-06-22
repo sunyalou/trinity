@@ -14,7 +14,7 @@ from pathlib import Path
 import yaml
 from fastapi import HTTPException, Request
 
-from models import AgentConfig, AgentStatus, User
+from models import AgentConfig, AgentStatus, User, validate_agent_runtime, validate_agent_runtime_permission
 from database import db
 from services.docker_service import (
     docker_client,
@@ -29,8 +29,9 @@ from services.template_service import (
     get_github_template,
     generate_credential_files,
 )
+from services.runtime_provider_templates import build_runtime_template
 from services import git_service
-from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities, get_agent_quota_for_role, get_agent_default_resources, get_agent_default_require_email
+from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities, get_agent_quota_for_role, get_agent_default_resources, get_agent_default_require_email, settings_service
 from services.github_service import GitHubService, GitHubError
 from utils.helpers import sanitize_agent_name, utc_now_iso
 from .helpers import validate_base_image
@@ -50,6 +51,135 @@ _LOCAL_TEMPLATE_ROOTS = (
     Path("/agent-configs/templates").resolve(),
     Path("/data/deployed-templates").resolve(),
 )
+
+_OPENCODE_PROVIDER_ENV_KEYS = (
+    'GOOGLE_API_KEY',
+    'GEMINI_API_KEY',
+    'OPENAI_API_KEY',
+)
+
+
+def _inject_opencode_provider_envs(env_vars: dict) -> None:
+    """Expose provider credentials OpenCode can consume directly.
+
+    Claude subscription assignment is intentionally handled separately and only
+    for Claude runtimes; this helper never removes ANTHROPIC_API_KEY.
+    """
+    for key in _OPENCODE_PROVIDER_ENV_KEYS:
+        value = os.getenv(key, '')
+        if value:
+            env_vars[key] = value
+
+
+def _inject_opencode_custom_provider_config(
+    env_vars: dict,
+    runtime_model: str | None,
+    custom_provider_configs: dict | None,
+) -> bool:
+    """Inject OpenCode config for saved OpenAI-compatible custom providers.
+
+    OpenCode reads custom provider definitions from OPENCODE_CONFIG_CONTENT.
+    The raw API key is exposed only via a generated environment variable and is
+    referenced from config with OpenCode's {env:...} indirection.
+    """
+    if not runtime_model or "/" not in runtime_model:
+        return False
+
+    provider, model = runtime_model.split("/", 1)
+    provider = provider.strip()
+    model = model.strip()
+    if not provider or not model:
+        return False
+
+    configs = custom_provider_configs if isinstance(custom_provider_configs, dict) else {}
+    provider_config = configs.get(provider)
+    if not isinstance(provider_config, dict):
+        return False
+    if provider_config.get("protocol") != "openai-compatible":
+        return False
+
+    sanitized_provider = re.sub(r"[^A-Za-z0-9]", "_", provider).upper().strip("_")
+    if not sanitized_provider:
+        return False
+
+    base_url = str(provider_config.get("base_url") or "").strip()
+    api_key = str(provider_config.get("api_key") or "")
+    if not base_url or not api_key:
+        return False
+
+    api_key_env_name = f"TRINITY_CUSTOM_PROVIDER_{sanitized_provider}_API_KEY"
+    env_vars[api_key_env_name] = api_key
+    env_vars["OPENCODE_CONFIG_CONTENT"] = json.dumps({
+        "$schema": "https://opencode.ai/config.json",
+        "provider": {
+            provider: {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": provider,
+                "options": {
+                    "baseURL": base_url,
+                    "apiKey": f"{{env:{api_key_env_name}}}",
+                },
+                "models": {
+                    model: {"name": model},
+                },
+            },
+        },
+        "model": runtime_model,
+    })
+    return True
+
+
+def _apply_provider_runtime_template(
+    env_vars: dict,
+    runtime: str,
+    provider_id: str | None,
+    model_id: str | None,
+) -> bool:
+    """Inject runtime provider template env without exposing raw secrets in config."""
+    if bool(provider_id) != bool(model_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Both runtime_provider_id and runtime_model_id are required when selecting a runtime provider model",
+        )
+    if not provider_id or not model_id:
+        return False
+
+    providers = settings_service.get_provider_configs()
+    provider = providers.get(provider_id) if isinstance(providers, dict) else None
+    if not provider:
+        raise HTTPException(status_code=400, detail=f"Provider '{provider_id}' not found")
+
+    try:
+        template = build_runtime_template(runtime, provider, model_id)
+        secrets = {
+            f"provider:{provider_id}:api_key": provider.get("auth", {}).get("api_key", "")
+        }
+        env_vars.update(template.materialize_env(secrets))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    env_vars["AGENT_RUNTIME_MODEL"] = template.model_arg
+    env_vars["TRINITY_RUNTIME_PROVIDER_ID"] = provider_id
+    env_vars["TRINITY_RUNTIME_MODEL_ID"] = model_id
+    return True
+
+
+def _apply_runtime_template_config(config: AgentConfig, runtime_config) -> None:
+    """Apply template runtime overrides with explicit validation.
+
+    AgentConfig assignment validation is not enabled, so direct mutation must
+    call the same validators used during model construction.
+    """
+    if isinstance(runtime_config, dict):
+        runtime_type = runtime_config.get("type", config.runtime)
+        runtime_permission = runtime_config.get("permission", config.runtime_permission)
+        validate_agent_runtime(runtime_type)
+        validate_agent_runtime_permission(runtime_permission)
+        config.runtime = runtime_type
+        config.runtime_model = runtime_config.get("model", config.runtime_model)
+        config.runtime_permission = runtime_permission
+    elif isinstance(runtime_config, str):
+        validate_agent_runtime(runtime_config)
+        config.runtime = runtime_config
 
 
 def _safe_local_template_path(template_name: str, root: Path) -> Path:
@@ -361,11 +491,10 @@ async def create_agent_internal(
                             config.mcp_servers = mcp_servers
                         # Multi-runtime support - extract runtime config from template
                         runtime_config = template_data.get("runtime", {})
-                        if isinstance(runtime_config, dict):
-                            config.runtime = runtime_config.get("type", config.runtime)
-                            config.runtime_model = runtime_config.get("model", config.runtime_model)
-                        elif isinstance(runtime_config, str):
-                            config.runtime = runtime_config
+                        try:
+                            _apply_runtime_template_config(config, runtime_config)
+                        except ValueError as e:
+                            raise HTTPException(status_code=400, detail=str(e)) from e
                         # Phase 9.11: Extract shared folder config from template
                         shared_folders_config = template_data.get("shared_folders", {})
                         if shared_folders_config:
@@ -373,11 +502,15 @@ async def create_agent_internal(
                                 "expose": shared_folders_config.get("expose", False),
                                 "consume": shared_folders_config.get("consume", False)
                             }
+                except HTTPException:
+                    raise
                 except Exception as e:
                     logger.warning(f"Error loading template config: {e}")
 
     if config.port is None:
         config.port = get_next_available_port()
+
+    runtime = (config.runtime or 'claude-code').lower()
 
     # CRED-002: Credentials are now injected directly into agents after creation
     # via the inject_credentials endpoint, not auto-injected during creation.
@@ -478,13 +611,39 @@ async def create_agent_internal(
         'AGENT_SERVER_PORT': '8000',
         'TEMPLATE_NAME': config.template if config.template else '',
         # Multi-runtime support
-        'AGENT_RUNTIME': config.runtime or 'claude-code',
+        'AGENT_RUNTIME': runtime,
         'AGENT_RUNTIME_MODEL': config.runtime_model or '',
         # #1098: redirect scratch (pip/npm/build, ML wheels) off the 100 MB
         # noexec /tmp tmpfs onto the disk-backed, exec-capable home volume.
         # The dir is created at container start by startup.sh.
         'TMPDIR': AGENT_DEFAULT_TMPDIR,
     }
+
+    if config.runtime_model:
+        env_vars['AGENT_RUNTIME_MODEL'] = config.runtime_model
+
+    provider_template_applied = _apply_provider_runtime_template(
+        env_vars,
+        runtime,
+        config.runtime_provider_id,
+        config.runtime_model_id,
+    )
+    if provider_template_applied:
+        config.runtime_model = env_vars.get('AGENT_RUNTIME_MODEL') or config.runtime_model
+
+    if runtime == 'opencode':
+        env_vars['OPENCODE_PERMISSION_PROFILE'] = config.runtime_permission or 'restricted'
+        env_vars['OPENCODE_DISABLE_AUTOUPDATE'] = '1'
+        env_vars['OPENCODE_DISABLE_MODELS_FETCH'] = '1'
+        if not provider_template_applied:
+            _inject_opencode_provider_envs(env_vars)
+            try:
+                custom_provider_configs = settings_service.get_custom_provider_configs()
+                if _inject_opencode_custom_provider_config(env_vars, config.runtime_model, custom_provider_configs):
+                    provider = config.runtime_model.split('/', 1)[0]
+                    logger.info(f"Injected OpenCode custom provider config for provider '{provider}'")
+            except Exception as e:
+                logger.warning(f"Failed to inject OpenCode custom provider config: {e}")
 
     # GUARD-001: per-agent guardrails overrides (empty by default; baseline
     # is always applied inside the container).
@@ -495,23 +654,24 @@ async def create_agent_internal(
 
     # Auto-assign subscription (round-robin) — #74
     auto_assigned_subscription_id = None
-    try:
-        least_used = db.get_least_used_subscription()
-        if least_used:
-            token = db.get_subscription_token(least_used.id)
-            if token:
-                env_vars['CLAUDE_CODE_OAUTH_TOKEN'] = token
-                env_vars.pop('ANTHROPIC_API_KEY', None)
-                auto_assigned_subscription_id = least_used.id
-                logger.info(f"Auto-assigned subscription '{least_used.name}' to agent {config.name}")
-            else:
-                logger.warning(f"Failed to decrypt subscription '{least_used.name}' token, using platform API key")
-    except Exception as e:
-        logger.warning(f"Subscription auto-assign failed for {config.name}: {e}")
+    if runtime in {'claude-code', 'claude'}:
+        try:
+            least_used = db.get_least_used_subscription()
+            if least_used:
+                token = db.get_subscription_token(least_used.id)
+                if token:
+                    env_vars['CLAUDE_CODE_OAUTH_TOKEN'] = token
+                    env_vars.pop('ANTHROPIC_API_KEY', None)
+                    auto_assigned_subscription_id = least_used.id
+                    logger.info(f"Auto-assigned subscription '{least_used.name}' to agent {config.name}")
+                else:
+                    logger.warning(f"Failed to decrypt subscription '{least_used.name}' token, using platform API key")
+        except Exception as e:
+            logger.warning(f"Subscription auto-assign failed for {config.name}: {e}")
 
     # Add Google API key if using Gemini runtime
     # Gemini CLI expects GEMINI_API_KEY environment variable
-    if config.runtime == 'gemini-cli' or config.runtime == 'gemini':
+    if runtime == 'gemini-cli' or runtime == 'gemini':
         google_api_key = os.getenv('GOOGLE_API_KEY', '')
         if google_api_key:
             env_vars['GEMINI_API_KEY'] = google_api_key  # Gemini CLI expects this name
@@ -719,7 +879,8 @@ async def create_agent_internal(
                     'trinity.memory': config.resources['memory'],
                     'trinity.created': utc_now_iso(),
                     'trinity.template': config.template or '',
-                    'trinity.agent-runtime': config.runtime or 'claude-code',
+                    'trinity.agent-runtime': runtime,
+                    'trinity.runtime': runtime,
                     'trinity.full-capabilities': str(full_capabilities).lower(),
                     'trinity.base-image-version': get_platform_version()
                 },

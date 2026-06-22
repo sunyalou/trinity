@@ -321,7 +321,7 @@
 
           <!-- Log entries -->
           <div v-else class="space-y-3">
-            <template v-for="(entry, idx) in logEntries" :key="idx">
+            <template v-for="(entry, idx) in logEntries" :key="entry.id || idx">
               <!-- Session Init -->
               <div v-if="entry.type === 'init'" class="bg-gray-100 dark:bg-gray-900 rounded-lg p-3 text-xs">
                 <div class="flex items-center space-x-2 text-gray-500 dark:text-gray-400 mb-1">
@@ -337,20 +337,20 @@
               </div>
 
               <!-- Assistant Message (thinking text) -->
-              <div v-else-if="entry.type === 'assistant-text'" class="flex space-x-3">
+              <div v-else-if="entry.type === 'assistant_text'" class="flex space-x-3">
                 <div class="flex-shrink-0 w-8 h-8 bg-action-primary-100 dark:bg-action-primary-900/50 rounded-full flex items-center justify-center">
                   <svg class="w-4 h-4 text-action-primary-600 dark:text-action-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                   </svg>
                 </div>
                 <div class="flex-1 min-w-0 bg-action-primary-50 dark:bg-action-primary-900/20 rounded-lg p-3">
-                  <div class="text-xs font-medium text-action-primary-700 dark:text-action-primary-300 mb-1">Claude</div>
-                  <div class="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">{{ entry.text }}</div>
+                  <div class="text-xs font-medium text-action-primary-700 dark:text-action-primary-300 mb-1">{{ runtimeLabel(entry.runtime) }}</div>
+                  <div class="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">{{ entry.content }}</div>
                 </div>
               </div>
 
               <!-- Tool Call -->
-              <div v-else-if="entry.type === 'tool-call'" class="flex space-x-3">
+              <div v-else-if="entry.type === 'tool_start'" class="flex space-x-3">
                 <div class="flex-shrink-0 w-8 h-8 bg-state-autonomous-100 dark:bg-state-autonomous-900/50 rounded-full flex items-center justify-center">
                   <svg class="w-4 h-4 text-state-autonomous-600 dark:text-state-autonomous-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
@@ -361,12 +361,12 @@
                   <div class="flex items-center space-x-2 mb-1">
                     <span class="text-xs font-medium text-state-autonomous-700 dark:text-state-autonomous-300">{{ entry.tool }}</span>
                   </div>
-                  <pre class="text-xs text-gray-600 dark:text-gray-400 bg-white/50 dark:bg-black/20 rounded p-2 whitespace-pre-wrap break-words max-h-96 overflow-y-auto">{{ entry.input }}</pre>
+                  <pre class="text-xs text-gray-600 dark:text-gray-400 bg-white/50 dark:bg-black/20 rounded p-2 whitespace-pre-wrap break-words max-h-96 overflow-y-auto">{{ formatLogValue(entry.input) }}</pre>
                 </div>
               </div>
 
               <!-- Tool Result -->
-              <div v-else-if="entry.type === 'tool-result'" class="flex space-x-3">
+              <div v-else-if="entry.type === 'tool_result'" class="flex space-x-3">
                 <div class="flex-shrink-0 w-8 h-8 bg-status-success-100 dark:bg-status-success-900/50 rounded-full flex items-center justify-center">
                   <svg class="w-4 h-4 text-status-success-600 dark:text-status-success-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -374,7 +374,7 @@
                 </div>
                 <div class="flex-1 min-w-0 bg-status-success-50 dark:bg-status-success-900/20 rounded-lg p-3">
                   <div class="text-xs font-medium text-status-success-700 dark:text-status-success-300 mb-1">Result</div>
-                  <pre class="text-xs text-gray-600 dark:text-gray-400 bg-white/50 dark:bg-black/20 rounded p-2 whitespace-pre-wrap break-words max-h-96 overflow-y-auto">{{ entry.content }}</pre>
+                  <pre class="text-xs text-gray-600 dark:text-gray-400 bg-white/50 dark:bg-black/20 rounded p-2 whitespace-pre-wrap break-words max-h-96 overflow-y-auto">{{ formatLogValue(entry.output ?? entry.content) }}</pre>
                 </div>
               </div>
 
@@ -391,6 +391,12 @@
                   </div>
                 </div>
               </div>
+
+              <!-- Status / metadata / raw fallback -->
+              <div v-else class="bg-gray-100 dark:bg-gray-900 rounded-lg p-3 text-xs text-gray-600 dark:text-gray-400">
+                <div class="font-semibold text-gray-700 dark:text-gray-300 mb-1">{{ entry.label || entry.type || 'Event' }}</div>
+                <pre class="whitespace-pre-wrap break-words">{{ fallbackEntryDetails(entry) }}</pre>
+              </div>
             </template>
           </div>
         </div>
@@ -400,11 +406,14 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { renderMarkdown } from '../utils/markdown'
 import { useAuthStore } from '../stores/auth'
+import { useExecutionStream } from '../composables/useExecutionStream'
+import { normalizeExecutionEvent } from '../utils/executionEventNormalizer'
+import { parseExecutionLog as parseSharedExecutionLog } from '../utils/executionLogParser'
 
 const route = useRoute()
 const router = useRouter()
@@ -420,15 +429,14 @@ const logData = ref(null)
 
 // Live streaming state
 const isStreaming = ref(false)
-const streamingEntries = ref([])  // Raw entries from stream
-const eventSource = ref(null)
+const streamingEntries = ref([])  // Normalized entries from stream
+const executionStream = ref(null)
+let streamSequence = 0
 const autoScroll = ref(true)
-const logContainer = ref(null)
 const isStopping = ref(false)
 const streamError = ref(null)  // User-visible stream error message
-const pollingInterval = ref(null)  // Fallback polling timer
-const streamRetryCount = ref(0)  // Track retry attempts
-const MAX_STREAM_RETRIES = 12  // Max retries (12 * 5s = 60s)
+let loadToken = 0
+let streamToken = 0
 
 // Computed
 const statusClass = computed(() => {
@@ -471,13 +479,14 @@ const hasOriginInfo = computed(() => {
 })
 
 const logEntries = computed(() => {
-  // If streaming, use streaming entries
   if (isStreaming.value && streamingEntries.value.length > 0) {
-    return parseExecutionLog(streamingEntries.value)
+    return streamingEntries.value.map(mapNormalizedEventToLogEntry)
   }
-  // Otherwise use loaded log data
   if (!logData.value?.log) return []
-  return parseExecutionLog(logData.value.log)
+  return parseSharedExecutionLog(logData.value.log, {
+    executionId: executionId.value,
+    runtime: execution.value?.runtime,
+  })
 })
 
 const renderedResponse = computed(() => {
@@ -486,197 +495,141 @@ const renderedResponse = computed(() => {
 
 // Methods
 async function loadExecution() {
+  const token = ++loadToken
+  const currentAgent = agentName.value
+  const currentExecution = executionId.value
   loading.value = true
   error.value = null
 
   try {
     // Fetch execution details first
     const execResponse = await axios.get(
-      `/api/agents/${agentName.value}/executions/${executionId.value}`,
+      `/api/agents/${currentAgent}/executions/${currentExecution}`,
       { headers: authStore.authHeader }
     )
+    if (!isCurrentContext(token, currentAgent, currentExecution)) return
     execution.value = execResponse.data
 
     // If execution is running, start streaming instead of fetching static log
     if (execution.value.status === 'running') {
-      startStreaming()
+      startStreaming(currentAgent, currentExecution)
       loading.value = false
       return
     }
 
     // For completed executions, fetch the log
     const logResponse = await axios.get(
-      `/api/agents/${agentName.value}/executions/${executionId.value}/log`,
+      `/api/agents/${currentAgent}/executions/${currentExecution}/log`,
       { headers: authStore.authHeader }
     )
+    if (!isCurrentContext(token, currentAgent, currentExecution)) return
     logData.value = logResponse.data
   } catch (err) {
+    if (!isCurrentContext(token, currentAgent, currentExecution)) return
     error.value = err.response?.data?.detail || err.message || 'Failed to load execution'
   } finally {
-    loading.value = false
+    if (isCurrentContext(token, currentAgent, currentExecution)) {
+      loading.value = false
+    }
   }
 }
 
-function startStreaming() {
+function isCurrentContext(token, currentAgent, currentExecution) {
+  return token === loadToken && agentName.value === currentAgent && executionId.value === currentExecution
+}
+
+function startStreaming(currentAgent = agentName.value, currentExecution = executionId.value) {
+  stopStreaming()
+  const token = ++streamToken
   isStreaming.value = true
-  // Only clear streaming entries on first attempt (not retries)
-  if (streamRetryCount.value === 0) {
-    streamingEntries.value = []
-  }
+  streamingEntries.value = []
+  streamSequence = 0
 
-  // Use fetch with ReadableStream for SSE (EventSource doesn't support custom headers)
-  const url = `/api/agents/${agentName.value}/executions/${executionId.value}/stream`
+  const isActiveStream = () => token === streamToken && agentName.value === currentAgent && executionId.value === currentExecution
 
-  fetch(url, {
-    headers: {
-      'Authorization': `Bearer ${authStore.token}`,
-      'Accept': 'text/event-stream'
-    }
-  }).then(response => {
-    if (!response.ok) {
-      throw new Error(`Stream failed: ${response.status}`)
-    }
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    function processStream() {
-      reader.read().then(({ done, value }) => {
-        if (done) {
-          handleStreamEnd()
-          return
-        }
-
-        buffer += decoder.decode(value, { stream: true })
-
-        // Process complete SSE messages
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''  // Keep incomplete line in buffer
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6))
-
-              if (data.type === 'stream_end') {
-                handleStreamEnd()
-                return
-              }
-
-              if (data.type === 'error') {
-                console.error('Stream error:', data.message)
-                // Show retryable errors subtly (polling will handle reconnect)
-                // Show non-retryable errors prominently
-                if (!data.retryable) {
-                  streamError.value = data.message || 'Stream error occurred'
-                }
-                continue
-              }
-
-              // Add entry to streaming entries
-              streamingEntries.value.push(data)
-
-              // Auto-scroll to bottom
-              if (autoScroll.value) {
-                nextTick(() => scrollToBottom())
-              }
-            } catch (e) {
-              // Ignore parse errors for comments/keepalives
-            }
-          }
-        }
-
-        processStream()
-      }).catch(err => {
-        console.error('Stream read error:', err)
-        handleStreamEnd()
+  executionStream.value = useExecutionStream({
+    agentName: currentAgent,
+    executionId: currentExecution,
+    token: authStore.token,
+    onEvent(raw) {
+      if (!isActiveStream()) return
+      streamError.value = null
+      streamSequence += 1
+      const normalized = normalizeExecutionEvent(raw, {
+        sequence: streamSequence,
+        executionId: currentExecution,
       })
-    }
+      for (const event of normalized) {
+        if (event.kind === 'done') continue
+        appendStreamingEvent(event)
+      }
 
-    processStream()
-  }).catch(err => {
-    console.error('Failed to start stream:', err)
-    isStreaming.value = false
-    // Fall back to polling for log
-    loadExecutionLog()
+      if (autoScroll.value) {
+        nextTick(() => scrollToBottom())
+      }
+    },
+    onError(streamEvent) {
+      if (!isActiveStream()) return
+      if (streamEvent?.retryable && isStreaming.value) return
+      streamError.value = streamEvent?.message || 'Stream error occurred'
+    },
+    onEnd() {
+      if (!isActiveStream()) return
+      isStreaming.value = false
+      executionStream.value = null
+      loadExecutionFinal(token, currentAgent, currentExecution)
+    },
   })
+
+  executionStream.value.start()
 }
 
-function handleStreamEnd() {
+function stopStreaming() {
+  streamToken += 1
+  executionStream.value?.cancel()
+  executionStream.value = null
   isStreaming.value = false
-
-  // Check if execution is still running — if so, start polling fallback
-  // This handles the race condition where the stream ends before the agent
-  // has registered the execution (404 from agent)
-  if (execution.value?.status === 'running') {
-    startPollingFallback()
-  } else {
-    loadExecutionFinal()
-  }
 }
 
-function startPollingFallback() {
-  // Don't start if already polling
-  if (pollingInterval.value) return
-
-  // Show a waiting state while polling
-  isStreaming.value = true
-
-  pollingInterval.value = setInterval(async () => {
-    try {
-      // Check execution status
-      const execResponse = await axios.get(
-        `/api/agents/${agentName.value}/executions/${executionId.value}`,
-        { headers: authStore.authHeader }
-      )
-      execution.value = execResponse.data
-
-      if (execution.value.status !== 'running') {
-        // Execution completed while we were polling — load final state
-        stopPolling()
-        isStreaming.value = false
-        loadExecutionFinal()
-        return
-      }
-
-      // Execution is still running — try to reconnect the stream
-      if (streamRetryCount.value < MAX_STREAM_RETRIES) {
-        streamRetryCount.value++
-        stopPolling()
-        streamError.value = null
-        startStreaming()
+function appendStreamingEvent(event) {
+  if (event.kind === 'assistant_text') {
+    const last = streamingEntries.value[streamingEntries.value.length - 1]
+    if (last?.kind === 'assistant_text') {
+      if (event.mode === 'snapshot') {
+        streamingEntries.value[streamingEntries.value.length - 1] = { ...event }
+      } else if (last.mode !== 'snapshot' || event.eventId === last.eventId) {
+        streamingEntries.value[streamingEntries.value.length - 1] = {
+          ...last,
+          text: `${last.text || ''}${event.text || ''}`,
+          timestamp: event.timestamp,
+          mode: event.mode,
+        }
       } else {
-        // Max retries exceeded — stop polling, keep showing what we have
-        stopPolling()
-        isStreaming.value = false
-        streamError.value = 'Unable to connect to live stream. The execution is still running — refresh the page to check for updates.'
+        streamingEntries.value.push(event)
       }
-    } catch (err) {
-      console.error('Polling error:', err)
+    } else {
+      streamingEntries.value.push(event)
     }
-  }, 5000)
-}
-
-function stopPolling() {
-  if (pollingInterval.value) {
-    clearInterval(pollingInterval.value)
-    pollingInterval.value = null
+    return
   }
+
+  streamingEntries.value.push(event)
 }
 
-async function loadExecutionFinal() {
+async function loadExecutionFinal(token = streamToken, currentAgent = agentName.value, currentExecution = executionId.value) {
   try {
     const [execResponse, logResponse] = await Promise.all([
-      axios.get(`/api/agents/${agentName.value}/executions/${executionId.value}`, {
+      axios.get(`/api/agents/${currentAgent}/executions/${currentExecution}`, {
         headers: authStore.authHeader
       }),
-      axios.get(`/api/agents/${agentName.value}/executions/${executionId.value}/log`, {
+      axios.get(`/api/agents/${currentAgent}/executions/${currentExecution}/log`, {
         headers: authStore.authHeader
       })
     ])
+    if (token !== streamToken || agentName.value !== currentAgent || executionId.value !== currentExecution) return
     execution.value = execResponse.data
     logData.value = logResponse.data
+    streamError.value = null
     // Clear streaming entries since we now have the full log
     streamingEntries.value = []
   } catch (err) {
@@ -686,22 +639,20 @@ async function loadExecutionFinal() {
 
 function retryStream() {
   streamError.value = null
-  streamRetryCount.value = 0
-  stopPolling()
-  // Re-check execution status and restart streaming if still running
+  stopStreaming()
   loadExecution()
 }
 
-async function loadExecutionLog() {
-  try {
-    const logResponse = await axios.get(
-      `/api/agents/${agentName.value}/executions/${executionId.value}/log`,
-      { headers: authStore.authHeader }
-    )
-    logData.value = logResponse.data
-  } catch (err) {
-    console.error('Failed to load execution log:', err)
-  }
+function resetRouteState() {
+  stopStreaming()
+  loadToken += 1
+  execution.value = null
+  logData.value = null
+  streamingEntries.value = []
+  streamSequence = 0
+  error.value = null
+  streamError.value = null
+  loading.value = true
 }
 
 function scrollToBottom() {
@@ -721,19 +672,25 @@ function toggleAutoScroll() {
 async function stopExecution() {
   if (isStopping.value) return
   isStopping.value = true
+  const currentAgent = agentName.value
+  const currentExecution = executionId.value
 
   try {
     // Use the execution ID from the execution record
     await axios.post(
-      `/api/agents/${agentName.value}/executions/${executionId.value}/terminate`,
-      { task_execution_id: executionId.value },
+      `/api/agents/${currentAgent}/executions/${currentExecution}/terminate`,
+      { task_execution_id: currentExecution },
       { headers: authStore.authHeader }
     )
-    // Stream will end naturally, which will trigger loadExecutionFinal
+    if (agentName.value !== currentAgent || executionId.value !== currentExecution) return
+    stopStreaming()
+    // Explicit final reload covers slow/missing stream_end after termination.
+    await loadExecutionFinal(streamToken, currentAgent, currentExecution)
   } catch (err) {
     console.error('Failed to stop execution:', err)
     // Force reload anyway
-    handleStreamEnd()
+    isStreaming.value = false
+    loadExecutionFinal()
   } finally {
     isStopping.value = false
   }
@@ -779,93 +736,93 @@ function continueAsChat() {
   })
 }
 
-function parseExecutionLog(log) {
-  if (!log) return []
-
-  // Handle string log (legacy format)
-  if (typeof log === 'string') {
-    try {
-      log = JSON.parse(log)
-    } catch {
-      return [{ type: 'assistant-text', text: log }]
+function mapNormalizedEventToLogEntry(event) {
+  if (event.kind === 'assistant_text') {
+    return {
+      id: event.eventId,
+      type: 'assistant_text',
+      content: event.text,
+      mode: event.mode,
+      tool: undefined,
+      input: undefined,
+      output: undefined,
+      label: undefined,
+      timestamp: event.timestamp,
+      runtime: event.sourceRuntime,
     }
   }
 
-  // Must be an array
-  if (!Array.isArray(log)) {
-    return [{ type: 'assistant-text', text: JSON.stringify(log, null, 2) }]
-  }
-
-  const entries = []
-
-  for (const msg of log) {
-    // Session init message
-    if (msg.type === 'system' && msg.subtype === 'init') {
-      entries.push({
-        type: 'init',
-        model: msg.model || 'unknown',
-        toolCount: msg.tools?.length || 0,
-        mcpServers: msg.mcp_servers?.map(s => s.name) || []
-      })
-      continue
-    }
-
-    // Assistant message (can contain text and/or tool_use)
-    if (msg.type === 'assistant') {
-      const content = msg.message?.content || []
-      for (const block of content) {
-        if (block.type === 'text' && block.text) {
-          entries.push({ type: 'assistant-text', text: block.text })
-        } else if (block.type === 'tool_use') {
-          entries.push({
-            type: 'tool-call',
-            tool: block.name || 'unknown',
-            input: typeof block.input === 'string'
-              ? block.input
-              : JSON.stringify(block.input, null, 2)
-          })
-        }
-      }
-      continue
-    }
-
-    // User message (typically tool results)
-    if (msg.type === 'user') {
-      const content = msg.message?.content || []
-      for (const block of content) {
-        if (block.type === 'tool_result') {
-          let resultContent = block.content
-          if (Array.isArray(resultContent)) {
-            resultContent = resultContent
-              .map(c => c.text || c.content || JSON.stringify(c))
-              .join('\n')
-          }
-          // Truncate very long results (increased limit for full page view)
-          if (resultContent && resultContent.length > 5000) {
-            resultContent = resultContent.substring(0, 5000) + '\n... (truncated)'
-          }
-          entries.push({
-            type: 'tool-result',
-            content: resultContent || '(empty result)'
-          })
-        }
-      }
-      continue
-    }
-
-    // Final result message
-    if (msg.type === 'result') {
-      entries.push({
-        type: 'result',
-        numTurns: msg.num_turns || msg.numTurns || '-',
-        duration: msg.duration_ms ? formatDuration(msg.duration_ms) : (msg.duration || '-'),
-        cost: msg.cost_usd?.toFixed(4) || msg.total_cost_usd?.toFixed(4) || '0.0000'
-      })
-      continue
+  if (event.kind === 'tool_start') {
+    return {
+      id: event.eventId,
+      type: 'tool_start',
+      content: undefined,
+      tool: event.name,
+      input: event.input,
+      output: undefined,
+      label: undefined,
+      timestamp: event.timestamp,
+      runtime: event.sourceRuntime,
     }
   }
 
-  return entries
+  if (event.kind === 'tool_result') {
+    return {
+      id: event.eventId,
+      type: 'tool_result',
+      content: undefined,
+      tool: event.name,
+      input: undefined,
+      output: event.output,
+      label: undefined,
+      timestamp: event.timestamp,
+      runtime: event.sourceRuntime,
+    }
+  }
+
+  return {
+    id: event.eventId,
+    type: event.kind,
+    content: event.message || event.label,
+    tool: event.name,
+    input: event.input,
+    output: event.output,
+    label: event.label,
+    model: event.model,
+    tokens: event.tokens,
+    cost: event.cost,
+    duration: event.duration,
+    rawType: event.rawType,
+    message: event.message,
+    timestamp: event.timestamp,
+    runtime: event.sourceRuntime,
+  }
+}
+
+function formatLogValue(value) {
+  if (value === undefined || value === null) return ''
+  if (typeof value === 'string') return value
+  return JSON.stringify(value, null, 2)
+}
+
+function runtimeLabel(runtime) {
+  return !runtime || runtime === 'unknown' ? 'Assistant' : runtime
+}
+
+function fallbackEntryDetails(entry) {
+  const details = {
+    message: entry.message || entry.content,
+    label: entry.label,
+    model: entry.model,
+    tokens: entry.tokens,
+    cost: entry.cost,
+    duration: entry.duration,
+    rawType: entry.rawType,
+    runtime: entry.runtime && entry.runtime !== 'unknown' ? entry.runtime : undefined,
+  }
+  const cleaned = Object.fromEntries(Object.entries(details).filter(([, value]) => value !== undefined && value !== null && value !== ''))
+  if (Object.keys(cleaned).length === 0) return entry.type || 'Event'
+  return formatLogValue(cleaned)
 }
 
 // Lifecycle
@@ -873,13 +830,16 @@ onMounted(() => {
   loadExecution()
 })
 
-onUnmounted(() => {
-  // Clean up stream if active
-  if (eventSource.value) {
-    eventSource.value.close()
-    eventSource.value = null
+watch(
+  () => [route.params.name, route.params.executionId],
+  () => {
+    resetRouteState()
+    loadExecution()
   }
-  stopPolling()
+)
+
+onUnmounted(() => {
+  stopStreaming()
   isStreaming.value = false
 })
 </script>

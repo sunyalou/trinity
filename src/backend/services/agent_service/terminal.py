@@ -18,6 +18,16 @@ from services.docker_utils import container_reload, api_exec_create, api_exec_st
 logger = logging.getLogger(__name__)
 
 
+def build_terminal_command(mode: str) -> list[str]:
+    if mode == "claude":
+        return ["claude"]
+    if mode == "gemini":
+        return ["gemini"]
+    if mode == "opencode":
+        return ["opencode"]
+    return ["/bin/bash"]
+
+
 class TerminalSessionManager:
     """
     Manages terminal sessions for agents.
@@ -185,17 +195,15 @@ class TerminalSessionManager:
             session_start = datetime.utcnow()
 
             # Step 5: Create exec with TTY
-            # Support multiple terminal modes: claude (Claude Code), gemini (Gemini CLI), bash
+            # Support multiple terminal modes: claude (Claude Code), gemini (Gemini CLI), opencode, bash
+            cmd = build_terminal_command(mode)
             if mode == "claude":
-                cmd = ["claude", "--dangerously-skip-permissions"]
+                cmd.extend(["--dangerously-skip-permissions"])
                 if model:
                     cmd.extend(["--model", model])
             elif mode == "gemini":
-                cmd = ["gemini"]
                 if model:
                     cmd.extend(["--model", model])
-            else:
-                cmd = ["/bin/bash"]
 
             logger.info(f"Starting terminal with command: {cmd}")
 

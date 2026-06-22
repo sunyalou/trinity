@@ -50,6 +50,22 @@
       </defs>
     </svg>
 
+    <!-- OpenCode Logo (CLI mark) -->
+    <svg
+      v-else-if="isOpenCodeRuntime"
+      class="w-3.5 h-3.5"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M5.5 4.5 2 8l3.5 3.5" />
+      <path d="M10.5 4.5 14 8l-3.5 3.5" />
+      <path d="M8.8 3.5 7.2 12.5" />
+    </svg>
+
     <!-- Label -->
     <span v-if="showLabel">{{ label }}</span>
   </span>
@@ -86,15 +102,21 @@ const isGeminiRuntime = computed(() => {
   return props.runtime === 'gemini-cli' || props.runtime === 'gemini'
 })
 
+const isOpenCodeRuntime = computed(() => {
+  return props.runtime === 'opencode'
+})
+
 const label = computed(() => {
   if (isClaudeRuntime.value) return 'Claude'
   if (isGeminiRuntime.value) return 'Gemini'
+  if (isOpenCodeRuntime.value) return 'OpenCode'
   return props.runtime
 })
 
 const tooltipText = computed(() => {
   if (isClaudeRuntime.value) return 'Anthropic Claude Code Runtime'
   if (isGeminiRuntime.value) return 'Google Gemini CLI Runtime'
+  if (isOpenCodeRuntime.value) return 'OpenCode CLI Runtime'
   return `Runtime: ${props.runtime}`
 })
 
@@ -105,7 +127,9 @@ const badgeClasses = computed(() => {
   if (isGeminiRuntime.value) {
     return 'bg-brand-gemini-50 dark:bg-brand-gemini-950/50 text-brand-gemini-700 dark:text-brand-gemini-300 border border-brand-gemini-200 dark:border-brand-gemini-800'
   }
+  if (isOpenCodeRuntime.value) {
+    return 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800'
+  }
   return 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-600'
 })
 </script>
-
