@@ -175,3 +175,70 @@ class TestSkillServiceGitUserAgent:
         assert sha == "abc123def456"
         rev_cmd = _captured_cmd(mock_run.call_args_list, "rev-parse")
         assert "-c" not in rev_cmd or rev_cmd.index("-c") > rev_cmd.index("rev-parse")
+
+
+def _write_skill(root: Path, relative_dir: str, name: str, description: str) -> Path:
+    skill_dir = root / relative_dir / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\nBody for {name}.\n",
+        encoding="utf-8",
+    )
+    return skill_file
+
+
+class TestSkillServiceDiscoveryLayouts:
+
+    def test_list_skills_finds_claude_agents_and_root_skills_layouts(self, tmp_path):
+        svc = skill_service_mod.SkillService()
+        svc.library_path = tmp_path / "skills-library"
+
+        _write_skill(svc.library_path, ".claude/skills", "claude-skill", "Claude layout")
+        _write_skill(svc.library_path, ".agents/skills", "agent-skill", "Agents layout")
+        _write_skill(svc.library_path, "skills", "root-skill", "Root skills layout")
+
+        skills = svc.list_skills()
+
+        assert [skill["name"] for skill in skills] == [
+            "agent-skill",
+            "claude-skill",
+            "root-skill",
+        ]
+        by_name = {skill["name"]: skill for skill in skills}
+        assert by_name["claude-skill"]["path"] == ".claude/skills/claude-skill/SKILL.md"
+        assert by_name["agent-skill"]["path"] == ".agents/skills/agent-skill/SKILL.md"
+        assert by_name["root-skill"]["path"] == "skills/root-skill/SKILL.md"
+        assert by_name["root-skill"]["description"] == "Root skills layout"
+
+    def test_get_skill_reads_content_from_root_skills_layout(self, tmp_path):
+        svc = skill_service_mod.SkillService()
+        svc.library_path = tmp_path / "skills-library"
+
+        _write_skill(svc.library_path, "skills", "algorithmic-art", "Create algorithmic art")
+
+        skill = svc.get_skill("algorithmic-art")
+
+        assert skill is not None
+        assert skill["name"] == "algorithmic-art"
+        assert skill["path"] == "skills/algorithmic-art/SKILL.md"
+        assert skill["description"] == "Create algorithmic art"
+        assert "Body for algorithmic-art." in skill["content"]
+
+    def test_duplicate_skill_names_use_supported_root_priority(self, tmp_path):
+        svc = skill_service_mod.SkillService()
+        svc.library_path = tmp_path / "skills-library"
+
+        _write_skill(svc.library_path, "skills", "duplicate", "Root layout")
+        _write_skill(svc.library_path, ".agents/skills", "duplicate", "Agents layout")
+        _write_skill(svc.library_path, ".claude/skills", "duplicate", "Claude layout")
+
+        skills = svc.list_skills()
+        skill = svc.get_skill("duplicate")
+
+        assert len([item for item in skills if item["name"] == "duplicate"]) == 1
+        assert skills[0]["path"] == ".claude/skills/duplicate/SKILL.md"
+        assert skills[0]["description"] == "Claude layout"
+        assert skill is not None
+        assert skill["path"] == ".claude/skills/duplicate/SKILL.md"
+        assert "description: Claude layout" in skill["content"]

@@ -40,6 +40,12 @@ SKILLS_LIBRARY_PATH = Path("/data/skills-library")
 # yet another version string drifting against VERSION / package.json.
 _GIT_HTTP_UA_ARGS = ["-c", "http.useragent=Trinity-Skills-Sync"]
 
+_SUPPORTED_SKILL_ROOTS = (
+    Path(".claude") / "skills",
+    Path(".agents") / "skills",
+    Path("skills"),
+)
+
 class SkillService:
     """
     Service for managing skills library and skill assignments.
@@ -201,28 +207,63 @@ class SkillService:
     # Skill Discovery Operations
     # =========================================================================
 
+    def _relative_skill_path(self, skill_file: Path) -> str:
+        """Return a POSIX relative path from the library root."""
+        try:
+            return skill_file.relative_to(self.library_path).as_posix()
+        except ValueError:
+            return skill_file.as_posix()
+
+    def _iter_skill_files(self):
+        """
+        Yield (skill_name, skill_file) pairs from supported roots in priority order.
+
+        Duplicate names are ignored after the first hit so legacy
+        .claude/skills entries override newer compatible layouts.
+        """
+        seen = set()
+        for relative_root in _SUPPORTED_SKILL_ROOTS:
+            skills_dir = self.library_path / relative_root
+            if not skills_dir.exists():
+                logger.debug(f"Skills directory not found: {skills_dir}")
+                continue
+
+            for skill_path in skills_dir.iterdir():
+                if not skill_path.is_dir():
+                    continue
+
+                skill_name = skill_path.name
+                if skill_name in seen:
+                    continue
+
+                skill_file = skill_path / "SKILL.md"
+                if not skill_file.exists():
+                    continue
+
+                seen.add(skill_name)
+                yield skill_name, skill_file
+
+    def _find_skill_file(self, skill_name: str) -> Optional[Path]:
+        """Find a skill by name using the supported root priority order."""
+        for found_name, skill_file in self._iter_skill_files():
+            if found_name == skill_name:
+                return skill_file
+        return None
+
     def list_skills(self) -> List[Dict[str, Any]]:
         """
         List all available skills from the library.
 
-        Scans .claude/skills/*/SKILL.md files.
+        Scans supported skill roots for */SKILL.md files.
 
         Returns:
             List of skill info dicts with name, description, path
         """
         skills = []
-        skills_dir = self.library_path / ".claude" / "skills"
 
-        if not skills_dir.exists():
-            logger.debug(f"Skills directory not found: {skills_dir}")
-            return skills
-
-        for skill_path in skills_dir.iterdir():
-            if skill_path.is_dir():
-                skill_file = skill_path / "SKILL.md"
-                if skill_file.exists():
-                    skill_info = self._parse_skill_info(skill_path.name, skill_file)
-                    skills.append(skill_info)
+        for skill_name, skill_file in self._iter_skill_files():
+            skill_info = self._parse_skill_info(skill_name, skill_file)
+            skills.append(skill_info)
 
         return sorted(skills, key=lambda s: s["name"])
 
@@ -235,7 +276,7 @@ class SkillService:
         info = {
             "name": skill_name,
             "description": None,
-            "path": f".claude/skills/{skill_name}/SKILL.md"
+            "path": self._relative_skill_path(skill_file)
         }
 
         try:
@@ -272,9 +313,9 @@ class SkillService:
         Returns:
             Skill info dict with full content, or None if not found
         """
-        skill_file = self.library_path / ".claude" / "skills" / skill_name / "SKILL.md"
+        skill_file = self._find_skill_file(skill_name)
 
-        if not skill_file.exists():
+        if not skill_file:
             return None
 
         try:
