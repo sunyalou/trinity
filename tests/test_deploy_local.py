@@ -19,6 +19,10 @@ import uuid
 import time
 import tempfile
 import os
+import importlib
+import sys
+import types
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -41,6 +45,7 @@ def cleanup_after_test(resource_tracker, request):
         "test_deploy_local_request_accepts_runtime_fields",
         "test_deploy_local_request_rejects_unsupported_runtime",
         "test_deploy_local_request_rejects_unsupported_runtime_permission",
+        "test_deploy_local_request_runtime_overrides_template_runtime",
     }:
         return
     if not request.config.getoption("--skip-cleanup"):
@@ -67,21 +72,96 @@ def test_deploy_local_request_accepts_runtime_fields():
 
 
 def test_deploy_local_request_rejects_unsupported_runtime():
-    try:
+    with pytest.raises(ValidationError, match="Unsupported runtime"):
         DeployLocalRequest(archive="dGVzdA==", runtime="bad-runtime")
-    except ValidationError as exc:
-        assert "Unsupported runtime" in str(exc)
-    else:
-        raise AssertionError("DeployLocalRequest accepted unsupported runtime")
 
 
 def test_deploy_local_request_rejects_unsupported_runtime_permission():
-    try:
+    with pytest.raises(ValidationError, match="Unsupported runtime_permission"):
         DeployLocalRequest(archive="dGVzdA==", runtime_permission="root")
-    except ValidationError as exc:
-        assert "Unsupported runtime_permission" in str(exc)
-    else:
-        raise AssertionError("DeployLocalRequest accepted unsupported runtime_permission")
+
+
+@pytest.mark.asyncio
+async def test_deploy_local_request_runtime_overrides_template_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRINITY_DB_PATH", str(tmp_path / "trinity.db"))
+
+    for name in (
+        "services.agent_service",
+        "services.agent_service.deploy",
+        "services.agent_service.helpers",
+    ):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    agent_service_pkg = types.ModuleType("services.agent_service")
+    agent_service_pkg.__path__ = [str(Path(__file__).resolve().parent.parent / "src" / "backend" / "services" / "agent_service")]
+    monkeypatch.setitem(sys.modules, "services.agent_service", agent_service_pkg)
+
+    deploy_mod = importlib.import_module("services.agent_service.deploy")
+
+    captured = {}
+
+    template_content = """
+name: runtime-override
+display_name: Runtime Override
+resources:
+  cpu: "1"
+  memory: "2g"
+runtime:
+  type: claude-code
+  model: sonnet
+  permission: restricted
+"""
+    archive = create_test_archive(template_content)
+
+    async def fake_create_agent_internal(config, current_user, request, skip_name_sanitization=False):
+        captured["config"] = config
+        from datetime import datetime, timezone
+        from models import AgentStatus
+
+        return AgentStatus(
+            name=config.name,
+            type=config.type,
+            status="running",
+            port=2222,
+            created=datetime.now(timezone.utc),
+            resources=config.resources,
+            template=config.template,
+            runtime=config.runtime,
+        )
+
+    monkeypatch.setattr(deploy_mod, "DEPLOYED_TEMPLATES_DIR_IN_BACKEND", str(tmp_path / "templates"))
+    monkeypatch.setattr(deploy_mod, "get_agents_by_prefix", lambda base_name: [])
+    monkeypatch.setattr(deploy_mod, "get_agent_quota_for_role", lambda role: 0)
+    monkeypatch.setattr(deploy_mod, "get_next_version_name", lambda base_name: base_name)
+    monkeypatch.setattr(deploy_mod, "get_latest_version", lambda base_name: None)
+    monkeypatch.setattr(deploy_mod, "_prepopulate_workspace_from_template", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        deploy_mod,
+        "db",
+        types.SimpleNamespace(get_agents_by_owner=lambda username: []),
+    )
+
+    body = DeployLocalRequest(
+        archive=archive,
+        runtime="opencode",
+        runtime_model="deepseek-openai/deepseek-v4-flash",
+        runtime_provider_id="deepseek-openai",
+        runtime_model_id="deepseek-v4-flash",
+        runtime_permission="standard",
+    )
+
+    result = await deploy_mod.deploy_local_agent_logic(
+        body=body,
+        current_user=type("U", (), {"username": "admin", "role": "admin"})(),
+        request=None,
+        create_agent_fn=fake_create_agent_internal,
+    )
+
+    assert result.status == "success"
+    assert captured["config"].runtime == "opencode"
+    assert captured["config"].runtime_model == "deepseek-openai/deepseek-v4-flash"
+    assert captured["config"].runtime_provider_id == "deepseek-openai"
+    assert captured["config"].runtime_model_id == "deepseek-v4-flash"
+    assert captured["config"].runtime_permission == "standard"
 
 
 def create_test_archive(

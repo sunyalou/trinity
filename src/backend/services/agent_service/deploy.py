@@ -500,17 +500,25 @@ async def deploy_local_agent_logic(
         logger.info(f"Copied agent template to: {dest_path}")
 
         # 10. Create agent
-        # Extract runtime config from template
+        # Extract runtime config from template, then apply request overrides.
         runtime_config = template_data.get("runtime", {})
-        runtime_type = None
-        runtime_model = None
-        runtime_permission = "restricted"
+        template_runtime_type = None
+        template_runtime_model = None
+        template_runtime_permission = "restricted"
         if isinstance(runtime_config, dict):
-            runtime_type = runtime_config.get("type")
-            runtime_model = runtime_config.get("model")
-            runtime_permission = runtime_config.get("permission", "restricted")
+            template_runtime_type = runtime_config.get("type")
+            template_runtime_model = runtime_config.get("model")
+            template_runtime_permission = runtime_config.get("permission", "restricted")
         elif isinstance(runtime_config, str):
-            runtime_type = runtime_config
+            template_runtime_type = runtime_config
+
+        runtime_type = body.runtime if body.runtime is not None else template_runtime_type
+        runtime_model = body.runtime_model if body.runtime_model is not None else template_runtime_model
+        runtime_permission = (
+            body.runtime_permission
+            if body.runtime_permission is not None
+            else template_runtime_permission
+        )
 
         agent_config = AgentConfig(
             name=version_name,
@@ -519,6 +527,8 @@ async def deploy_local_agent_logic(
             resources=template_data.get("resources", {"cpu": "2", "memory": "4g"}),
             runtime=runtime_type,
             runtime_model=runtime_model,
+            runtime_provider_id=body.runtime_provider_id,
+            runtime_model_id=body.runtime_model_id,
             runtime_permission=runtime_permission
         )
 
