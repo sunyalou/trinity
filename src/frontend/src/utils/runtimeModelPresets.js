@@ -156,6 +156,25 @@ export function buildModelSelectorPresets({ runtimeDefaults = {}, customProvider
   return presets
 }
 
+export function normalizeRuntime(runtime) {
+  return runtime === 'gemini' ? 'gemini-cli' : (runtime || 'claude-code')
+}
+
+export function isChatModelCompatibleWithRuntime(model, runtime) {
+  const value = String(model || '').trim()
+  const normalizedRuntime = normalizeRuntime(runtime)
+  if (!value) return true
+  if (normalizedRuntime === 'opencode') return true
+  if (normalizedRuntime === 'claude-code') return !value.includes('/')
+  if (normalizedRuntime === 'gemini-cli') return !value.includes('/') || value.startsWith('google/')
+  return !value.includes('/')
+}
+
+export function filterModelSelectorPresetsForRuntime(presets, runtime) {
+  if (!runtime) return presets || []
+  return (presets || []).filter((preset) => isChatModelCompatibleWithRuntime(preset?.value, runtime))
+}
+
 export function resolveRuntimeModel(entry) {
   const provider = String(entry?.provider || '').trim()
   const model = String(entry?.model || '').trim()

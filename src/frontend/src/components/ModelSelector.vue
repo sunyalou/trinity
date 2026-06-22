@@ -60,7 +60,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useSettingsStore } from '../stores/settings'
-import { buildModelSelectorPresets } from '../utils/runtimeModelPresets'
+import { buildModelSelectorPresets, filterModelSelectorPresetsForRuntime, normalizeRuntime } from '../utils/runtimeModelPresets'
 
 const props = defineProps({
   modelValue: {
@@ -80,6 +80,10 @@ const props = defineProps({
     default: false
   },
   platformDefault: {
+    type: String,
+    default: null
+  },
+  runtime: {
     type: String,
     default: null
   }
@@ -130,6 +134,8 @@ const resolvedPlaceholder = computed(() => {
   return 'Select or type a model...'
 })
 
+const normalizedRuntime = computed(() => props.runtime ? normalizeRuntime(props.runtime) : null)
+
 const inputClass = computed(() => {
   const base = 'w-full border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-action-primary-500 pr-8'
   return props.compact
@@ -139,7 +145,8 @@ const inputClass = computed(() => {
 
 const filteredModels = computed(() => {
   const seen = new Set()
-  const allModels = [...dynamicModelPresets.value, ...PRESET_MODELS].filter((model) => {
+  const runtimeModels = filterModelSelectorPresetsForRuntime([...dynamicModelPresets.value, ...PRESET_MODELS], normalizedRuntime.value)
+  const allModels = runtimeModels.filter((model) => {
     if (!model?.value || seen.has(model.value)) return false
     seen.add(model.value)
     return true

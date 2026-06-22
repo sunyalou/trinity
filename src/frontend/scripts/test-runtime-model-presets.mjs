@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import {
   buildRuntimeProviderModelOptions,
   buildModelSelectorPresets,
+  filterModelSelectorPresetsForRuntime,
+  isChatModelCompatibleWithRuntime,
 } from '../src/utils/runtimeModelPresets.js'
 
 const presets = buildModelSelectorPresets({
@@ -20,6 +22,22 @@ assert(presets.some((preset) => preset.value === 'deepseek/deepseek-chat'))
 assert(presets.some((preset) => preset.value === 'moonshot/'))
 assert(presets.some((preset) => preset.value === 'google/gemini-2.5-pro'))
 assert(!presets.some((preset) => preset.value === 'missing-key/'))
+
+assert.equal(isChatModelCompatibleWithRuntime('deepseek/deepseek-v4-flash', 'claude-code'), false)
+assert.equal(isChatModelCompatibleWithRuntime('claude-sonnet-4-6', 'claude-code'), true)
+assert.equal(isChatModelCompatibleWithRuntime('deepseek/deepseek-v4-flash', 'opencode'), true)
+
+const claudeSelectorPresets = filterModelSelectorPresetsForRuntime(presets, 'claude-code')
+assert(!claudeSelectorPresets.some((preset) => preset.value === 'deepseek/deepseek-chat'))
+assert(!claudeSelectorPresets.some((preset) => preset.value === 'moonshot/'))
+assert(!claudeSelectorPresets.some((preset) => preset.value === 'google/gemini-2.5-pro'))
+
+const unscopedSelectorPresets = filterModelSelectorPresetsForRuntime(presets, null)
+assert.deepEqual(
+  unscopedSelectorPresets.map((preset) => preset.value),
+  presets.map((preset) => preset.value),
+  'ModelSelector without a runtime should preserve generic provider/model presets'
+)
 
 const providerConfigs = {
   'deepseek-anthropic': {

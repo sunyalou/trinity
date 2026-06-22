@@ -94,6 +94,7 @@
               <ChatPanel
                 :agent-name="agent.name"
                 :agent-status="agent.status"
+                :agent-runtime="agent.runtime"
                 :resume-session-id="resumeSessionId"
                 :resume-execution-id="resumeExecutionId"
               />

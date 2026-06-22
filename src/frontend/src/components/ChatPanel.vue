@@ -58,7 +58,7 @@
       <div class="flex items-center space-x-2">
         <!-- Model selector -->
         <div class="w-44">
-          <ModelSelector v-model="selectedModel" compact placeholder="Default model" />
+          <ModelSelector v-model="selectedModel" compact placeholder="Default model" :runtime="normalizedAgentRuntime" />
         </div>
 
         <!-- New Chat button -->
@@ -178,6 +178,7 @@ import { MIN_LABEL_DISPLAY_MS, HEARTBEAT_TIMEOUT_MS } from '../utils/execution-s
 import { useVoiceSession } from '../composables/useVoiceSession'
 import { useExecutionStream } from '@/composables/useExecutionStream'
 import { normalizeExecutionEvent } from '@/utils/executionEventNormalizer'
+import { isChatModelCompatibleWithRuntime, normalizeRuntime } from '@/utils/runtimeModelPresets'
 
 const props = defineProps({
   agentName: {
@@ -187,6 +188,10 @@ const props = defineProps({
   agentStatus: {
     type: String,
     default: 'stopped'
+  },
+  agentRuntime: {
+    type: String,
+    default: 'claude-code'
   },
   // Resume mode props (EXEC-023)
   resumeSessionId: {
@@ -270,7 +275,19 @@ const focusChatInput = () => {
 }
 
 // Model selection
-const selectedModel = ref(localStorage.getItem('trinity_chat_model') || '')
+const normalizedAgentRuntime = computed(() => normalizeRuntime(props.agentRuntime))
+const chatModelStorageKey = computed(() => `trinity_chat_model:${normalizedAgentRuntime.value}`)
+const modelIsCompatibleWithRuntime = (model) => isChatModelCompatibleWithRuntime(model, normalizedAgentRuntime.value)
+
+const loadSavedModel = () => {
+  const scopedModel = localStorage.getItem(chatModelStorageKey.value) || ''
+  if (modelIsCompatibleWithRuntime(scopedModel)) return scopedModel
+  localStorage.removeItem(chatModelStorageKey.value)
+  return ''
+}
+
+const selectedModel = ref(loadSavedModel())
+const executionModel = computed(() => modelIsCompatibleWithRuntime(selectedModel.value) ? selectedModel.value : '')
 
 // Playbooks (for empty-state quick actions)
 const playbooks = ref([])
@@ -615,7 +632,7 @@ const sendMessage = async (userMessage, files = []) => {
       create_new_session: !currentSessionId.value,
       chat_session_id: currentSessionId.value || undefined,
       async_mode: true,
-      model: selectedModel.value || undefined,
+      model: executionModel.value || undefined,
       files: files.length > 0 ? files : undefined,
     }
 
@@ -727,12 +744,16 @@ const handleClickOutside = (event) => {
 
 // Persist model selection
 watch(selectedModel, (val) => {
-  if (val) {
-    localStorage.setItem('trinity_chat_model', val)
+  if (val && modelIsCompatibleWithRuntime(val)) {
+    localStorage.setItem(chatModelStorageKey.value, val)
   } else {
-    localStorage.removeItem('trinity_chat_model')
+    localStorage.removeItem(chatModelStorageKey.value)
   }
 })
+
+watch(normalizedAgentRuntime, () => {
+  selectedModel.value = loadSavedModel()
+}, { immediate: true })
 
 // Watch for agent becoming available
 watch(() => props.agentStatus, (newStatus) => {

@@ -593,6 +593,50 @@ def test_resolve_default_model_keeps_explicit_model(monkeypatch):
     assert _resolve_execution_model("agent-a", "explicit-model") == "explicit-model"
 
 
+def test_resolve_explicit_provider_model_uses_claude_default_for_claude_code(monkeypatch):
+    from services.task_execution_service import _resolve_execution_model
+
+    monkeypatch.setattr("services.task_execution_service._get_agent_runtime_defaults", lambda name: ("claude-code", None))
+    monkeypatch.setattr(
+        "services.task_execution_service.settings_service.resolve_model_for_runtime",
+        lambda runtime: "claude-sonnet-4-6",
+    )
+
+    assert _resolve_execution_model("agent-a", "deepseek/deepseek-v4-flash") == "claude-sonnet-4-6"
+
+
+def test_resolve_explicit_provider_model_uses_claude_legacy_if_default_is_incompatible(monkeypatch):
+    from services.task_execution_service import _resolve_execution_model
+
+    monkeypatch.setattr("services.task_execution_service._get_agent_runtime_defaults", lambda name: ("claude-code", None))
+    monkeypatch.setattr(
+        "services.task_execution_service.settings_service.resolve_model_for_runtime",
+        lambda runtime: "deepseek-v4-flash",
+    )
+    monkeypatch.setattr(
+        "services.task_execution_service.settings_service.get_platform_default_model",
+        lambda: "claude-sonnet-4-6",
+    )
+
+    assert _resolve_execution_model("agent-a", "deepseek/deepseek-v4-flash") == "claude-sonnet-4-6"
+
+
+def test_resolve_explicit_provider_model_uses_sonnet_if_all_claude_defaults_are_incompatible(monkeypatch):
+    from services.task_execution_service import _resolve_execution_model
+
+    monkeypatch.setattr("services.task_execution_service._get_agent_runtime_defaults", lambda name: ("claude-code", None))
+    monkeypatch.setattr(
+        "services.task_execution_service.settings_service.resolve_model_for_runtime",
+        lambda runtime: "deepseek-v4-flash",
+    )
+    monkeypatch.setattr(
+        "services.task_execution_service.settings_service.get_platform_default_model",
+        lambda: "deepseek-v4-flash",
+    )
+
+    assert _resolve_execution_model("agent-a", "deepseek/deepseek-v4-flash") == "sonnet"
+
+
 def test_resolve_explicit_opencode_template_model_normalizes_stale_provider(monkeypatch):
     from services.task_execution_service import _resolve_execution_model
 

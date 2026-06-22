@@ -177,20 +177,54 @@ def _legacy_model_fallback_for_runtime(runtime: str) -> str:
         return "anthropic/claude-sonnet-4-5"
     if runtime in {"gemini-cli", "gemini"}:
         return "gemini-3-flash"
+    if runtime == "claude-code":
+        platform_default = settings_service.get_platform_default_model()
+        return platform_default if platform_default.startswith("claude-") else "sonnet"
     return settings_service.get_platform_default_model()
+
+
+def _is_model_compatible_with_runtime(model: Optional[str], runtime: str) -> bool:
+    if not model:
+        return False
+    if runtime == "opencode":
+        return True
+    if runtime in {"gemini-cli", "gemini"}:
+        return "/" not in model or model.startswith("google/")
+    if runtime == "claude-code":
+        return "/" not in model and (
+            model.startswith("claude-")
+            or model in {"sonnet", "opus", "haiku"}
+            or model.startswith(("sonnet[", "opus[", "haiku["))
+        )
+    return "/" not in model
+
+
+def _resolve_runtime_default_model(agent_runtime: str, agent_runtime_model: Optional[str]) -> str:
+    if _is_model_compatible_with_runtime(agent_runtime_model, agent_runtime):
+        return agent_runtime_model
+    normalized_runtime = "gemini-cli" if agent_runtime == "gemini" else agent_runtime
+    try:
+        configured_model = settings_service.resolve_model_for_runtime(normalized_runtime)
+        if _is_model_compatible_with_runtime(configured_model, agent_runtime):
+            return configured_model
+    except Exception:
+        pass
+    return _legacy_model_fallback_for_runtime(agent_runtime)
 
 
 def _resolve_execution_model(agent_name: str, explicit_model: Optional[str]) -> str:
     if explicit_model is not None:
-        return _normalize_opencode_template_explicit_model(agent_name, explicit_model)
+        normalized_model = _normalize_opencode_template_explicit_model(agent_name, explicit_model)
+        if "/" not in normalized_model:
+            return normalized_model
+
+        agent_runtime, agent_runtime_model = _get_agent_runtime_defaults(agent_name)
+        if agent_runtime == "opencode":
+            return normalized_model
+        return _resolve_runtime_default_model(agent_runtime, agent_runtime_model)
+
     agent_runtime, agent_runtime_model = _get_agent_runtime_defaults(agent_name)
-    if agent_runtime_model:
-        return agent_runtime_model
-    normalized_runtime = "gemini-cli" if agent_runtime == "gemini" else agent_runtime
-    try:
-        return settings_service.resolve_model_for_runtime(normalized_runtime)
-    except Exception:
-        return _legacy_model_fallback_for_runtime(agent_runtime)
+    return _resolve_runtime_default_model(agent_runtime, agent_runtime_model)
 
 
 # ---------------------------------------------------------------------------
