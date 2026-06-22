@@ -11,6 +11,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+OPENCODE_HOME = Path("/home/developer")
+
 
 def inject_trinity_mcp_if_configured() -> bool:
     """
@@ -31,6 +33,8 @@ def inject_trinity_mcp_if_configured() -> bool:
 
     runtime = os.getenv("AGENT_RUNTIME", "claude-code").lower()
 
+    if runtime == "opencode":
+        return _inject_opencode_mcp(trinity_mcp_url, trinity_mcp_api_key)
     if runtime == "gemini-cli":
         return _inject_gemini_mcp(trinity_mcp_url, trinity_mcp_api_key)
     else:
@@ -143,6 +147,8 @@ def configure_mcp_servers(mcp_servers: dict) -> bool:
 
     runtime = os.getenv("AGENT_RUNTIME", "claude-code").lower()
 
+    if runtime == "opencode":
+        return _configure_opencode_mcp_servers(mcp_servers)
     if runtime == "gemini-cli":
         return _configure_gemini_mcp_servers(mcp_servers)
     else:
@@ -211,3 +217,63 @@ def _configure_gemini_mcp_servers(mcp_servers: dict) -> bool:
 
     logger.info(f"Configured {success_count}/{len(mcp_servers)} MCP servers for Gemini CLI")
     return success_count > 0 or len(mcp_servers) == 0
+
+
+def _opencode_config_file() -> Path:
+    config_dir = OPENCODE_HOME / ".config" / "opencode"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir / "opencode.json"
+
+
+def _read_opencode_config() -> dict:
+    config_file = _opencode_config_file()
+    if config_file.exists() and config_file.read_text().strip():
+        return json.loads(config_file.read_text())
+    return {"$schema": "https://opencode.ai/config.json", "mcp": {}}
+
+
+def _write_opencode_config(config: dict) -> None:
+    config.setdefault("$schema", "https://opencode.ai/config.json")
+    config.setdefault("mcp", {})
+    _opencode_config_file().write_text(json.dumps(config, indent=2))
+
+
+def _inject_opencode_mcp(trinity_mcp_url: str, trinity_mcp_api_key: str) -> bool:
+    """Inject Trinity MCP into OpenCode's opencode.json file."""
+    try:
+        config = _read_opencode_config()
+        config.setdefault("mcp", {})["trinity"] = {
+            "type": "remote",
+            "url": trinity_mcp_url,
+            "headers": {"Authorization": "Bearer {env:TRINITY_MCP_API_KEY}"},
+            "enabled": True,
+        }
+        _write_opencode_config(config)
+        logger.info("Injected Trinity MCP server into OpenCode config")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to inject Trinity MCP for OpenCode: {e}")
+        return False
+
+
+def _configure_opencode_mcp_servers(mcp_servers: dict) -> bool:
+    """Configure local MCP servers for OpenCode via opencode.json."""
+    try:
+        config = _read_opencode_config()
+        config.setdefault("mcp", {})
+        for server_name, server in mcp_servers.items():
+            command = server.get("command")
+            args = server.get("args", [])
+            if not command:
+                logger.warning(f"Skipping MCP server '{server_name}': no command specified")
+                continue
+            config["mcp"][server_name] = {
+                "type": "local",
+                "command": [command] + args,
+                "enabled": True,
+            }
+        _write_opencode_config(config)
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to configure MCP servers for OpenCode: {e}")
+        return False

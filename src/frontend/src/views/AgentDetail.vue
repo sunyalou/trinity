@@ -545,6 +545,9 @@ const defaultModel = computed(() => {
   if (runtime === 'gemini-cli' || runtime === 'gemini') {
     return 'gemini-2.5-flash'
   }
+  if (runtime === 'opencode') {
+    return 'anthropic/claude-sonnet-4-5'
+  }
   return 'sonnet' // Claude default
 })
 

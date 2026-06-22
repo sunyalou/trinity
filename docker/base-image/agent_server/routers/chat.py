@@ -20,6 +20,22 @@ from ..services.process_registry import get_process_registry
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+OPENCODE_MODELS = [
+    "anthropic/claude-sonnet-4-5",
+    "openai/gpt-5",
+    "google/gemini-2.5-pro",
+]
+
+
+def _is_valid_opencode_model(model: str) -> bool:
+    """Validate OpenCode provider/model identifiers."""
+    if not model or any(char.isspace() for char in model):
+        return False
+    if model.count("/") != 1:
+        return False
+    provider, model_name = model.split("/", 1)
+    return bool(provider and model_name)
+
 
 @router.post("/api/chat")
 async def chat(request: ChatRequest):
@@ -196,6 +212,13 @@ async def get_model():
             "available_models": ["gemini-3-pro", "gemini-3-flash", "gemini-2.5-pro", "gemini-2.5-flash"],
             "note": "Gemini models. 3-pro is the most capable; 3-flash is the fast default."
         }
+    elif runtime == "opencode":
+        return {
+            "model": agent_state.current_model,
+            "runtime": runtime,
+            "available_models": OPENCODE_MODELS,
+            "note": "OpenCode models use provider/model format, for example anthropic/claude-sonnet-4-5 or openai/gpt-5."
+        }
     else:
         return {
             "model": agent_state.current_model,
@@ -227,6 +250,21 @@ async def set_model(request: ModelRequest):
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid Gemini model: {request.model}. Use: gemini-3-pro, gemini-3-flash, gemini-2.5-pro, gemini-2.5-flash."
+            )
+    elif runtime == "opencode":
+        candidate = request.model.strip()
+        if _is_valid_opencode_model(candidate):
+            agent_state.current_model = candidate
+            logger.info(f"Model changed to: {candidate}")
+            return {
+                "status": "success",
+                "model": agent_state.current_model,
+                "note": "OpenCode model will be used for subsequent messages"
+            }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid OpenCode model. Use provider/model format, for example anthropic/claude-sonnet-4-5."
             )
     else:
         # Claude Code validation

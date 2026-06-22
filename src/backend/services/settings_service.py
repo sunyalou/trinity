@@ -10,11 +10,34 @@ This service breaks the circular dependency where services were importing
 from routers.settings. Now all settings retrieval logic lives here, and
 routers.settings re-exports these functions for backward compatibility.
 """
+import copy
 import json
 import os
 import time
 from typing import List, Optional
 from database import db
+from services.runtime_model_defaults import (
+    RUNTIME_DEFAULT_MODELS_KEY,
+    get_default_runtime_models,
+    normalize_runtime,
+    runtime_compatible_model,
+    serialize_runtime_default_models,
+    validate_runtime_default_models,
+)
+from services.custom_provider_configs import (
+    CUSTOM_PROVIDER_CONFIGS_KEY,
+    mask_custom_provider_configs,
+    parse_custom_provider_configs,
+    serialize_custom_provider_configs,
+    validate_custom_provider_configs,
+)
+from services.provider_configs import (
+    PROVIDER_CONFIGS_KEY,
+    mask_provider_configs,
+    parse_provider_configs,
+    serialize_provider_configs,
+    validate_provider_configs,
+)
 
 # Platform default model (#831)
 PLATFORM_DEFAULT_MODEL_KEY = "platform_default_model"
@@ -22,6 +45,17 @@ PLATFORM_DEFAULT_MODEL_VALUE = "claude-sonnet-4-6"
 _platform_model_cache: Optional[str] = None
 _platform_model_cache_ts: float = 0.0
 _PLATFORM_MODEL_CACHE_TTL = 60.0
+_runtime_models_cache: Optional[dict] = None
+_runtime_models_cache_ts: float = 0.0
+_RUNTIME_MODELS_CACHE_TTL = 60.0
+
+
+def invalidate_runtime_model_caches() -> None:
+    global _runtime_models_cache, _runtime_models_cache_ts, _platform_model_cache, _platform_model_cache_ts
+    _runtime_models_cache = None
+    _runtime_models_cache_ts = 0.0
+    _platform_model_cache = None
+    _platform_model_cache_ts = 0.0
 
 
 # ============================================================================
@@ -113,6 +147,13 @@ class SettingsService:
         if key:
             return key
         return os.getenv('GOOGLE_API_KEY', '')
+
+    def get_openai_api_key(self) -> str:
+        """Get OpenAI API key from settings, fallback to env var."""
+        key = self.get_setting('openai_api_key')
+        if key:
+            return key
+        return os.getenv('OPENAI_API_KEY', '')
 
     # =========================================================================
     # Slack Integration Settings (SLACK-001)
@@ -261,6 +302,72 @@ class SettingsService:
         _platform_model_cache_ts = now
         return _platform_model_cache
 
+    def get_runtime_default_models(self) -> dict:
+        global _runtime_models_cache, _runtime_models_cache_ts
+        now = time.monotonic()
+        if _runtime_models_cache is not None and (now - _runtime_models_cache_ts) < _RUNTIME_MODELS_CACHE_TTL:
+            return copy.deepcopy(_runtime_models_cache)
+        raw = self.get_setting(RUNTIME_DEFAULT_MODELS_KEY)
+        defaults = get_default_runtime_models(raw, self.get_platform_default_model())
+        _runtime_models_cache = copy.deepcopy(defaults)
+        _runtime_models_cache_ts = now
+        return copy.deepcopy(defaults)
+
+    def set_runtime_default_models(self, value: dict) -> dict:
+        global _runtime_models_cache, _runtime_models_cache_ts, _platform_model_cache, _platform_model_cache_ts
+        normalized = validate_runtime_default_models(value)
+        db.set_setting(RUNTIME_DEFAULT_MODELS_KEY, serialize_runtime_default_models(normalized))
+        db.set_setting(PLATFORM_DEFAULT_MODEL_KEY, normalized["claude-code"]["model"])
+        _runtime_models_cache = copy.deepcopy(normalized)
+        _runtime_models_cache_ts = time.monotonic()
+        _platform_model_cache = normalized["claude-code"]["model"]
+        _platform_model_cache_ts = time.monotonic()
+        return copy.deepcopy(normalized)
+
+    def get_custom_provider_configs(self) -> dict:
+        raw = self.get_setting(CUSTOM_PROVIDER_CONFIGS_KEY)
+        return copy.deepcopy(parse_custom_provider_configs(raw))
+
+    def get_masked_custom_provider_configs(self) -> dict:
+        return mask_custom_provider_configs(self.get_custom_provider_configs())
+
+    def set_custom_provider_configs(self, value: dict) -> dict:
+        existing = self.get_custom_provider_configs()
+        normalized_incoming = validate_custom_provider_configs(value, existing=existing)
+        merged = copy.deepcopy(existing)
+        merged.update(normalized_incoming)
+        db.set_setting(CUSTOM_PROVIDER_CONFIGS_KEY, serialize_custom_provider_configs(merged))
+        return copy.deepcopy(merged)
+
+    def get_provider_configs(self) -> dict:
+        raw = self.get_setting(PROVIDER_CONFIGS_KEY, "{}")
+        return copy.deepcopy(parse_provider_configs(raw))
+
+    def get_masked_provider_configs(self) -> dict:
+        return mask_provider_configs(self.get_provider_configs())
+
+    def set_provider_configs(self, value: dict, updated_by: str = "system") -> dict:
+        existing = self.get_provider_configs()
+        normalized = validate_provider_configs(value, existing=existing)
+        serialized = serialize_provider_configs(normalized)
+        if hasattr(db, "set_setting_value"):
+            db.set_setting_value(PROVIDER_CONFIGS_KEY, serialized, updated_by=updated_by)
+        else:
+            db.set_setting(PROVIDER_CONFIGS_KEY, serialized)
+        return copy.deepcopy(normalized)
+
+    def resolve_model_for_runtime(self, runtime: str) -> str:
+        defaults = self.get_runtime_default_models()
+        normalized_runtime = normalize_runtime(runtime)
+        entry = defaults.get(normalized_runtime)
+        if entry:
+            return runtime_compatible_model(normalized_runtime, entry)
+        if normalized_runtime == "opencode":
+            return "anthropic/claude-sonnet-4-5"
+        if normalized_runtime == "gemini-cli":
+            return "gemini-3-flash"
+        return self.get_platform_default_model()
+
     def get_ops_setting(self, key: str, as_type: type = str):
         """
         Get an ops setting with type conversion.
@@ -297,6 +404,11 @@ def get_github_pat() -> str:
 def get_google_api_key() -> str:
     """Get Google API key from settings, fallback to env var."""
     return settings_service.get_google_api_key()
+
+
+def get_openai_api_key() -> str:
+    """Get OpenAI API key from settings, fallback to env var."""
+    return settings_service.get_openai_api_key()
 
 
 # Slack Integration Settings (SLACK-001)
@@ -482,3 +594,18 @@ def get_github_templates() -> Optional[List[dict]]:
 def get_platform_default_model() -> str:
     """Return the platform-wide default Claude model (#831)."""
     return settings_service.get_platform_default_model()
+
+
+def get_provider_configs() -> dict:
+    """Get raw provider config v2 settings."""
+    return settings_service.get_provider_configs()
+
+
+def get_masked_provider_configs() -> dict:
+    """Get provider config v2 settings with secrets masked."""
+    return settings_service.get_masked_provider_configs()
+
+
+def set_provider_configs(value: dict, updated_by: str = "system") -> dict:
+    """Validate and persist provider config v2 settings."""
+    return settings_service.set_provider_configs(value, updated_by=updated_by)

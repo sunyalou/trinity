@@ -261,7 +261,7 @@ The full feature set is below and in the [documentation](#documentation).
 ### Agent Runtime
 
 - **Isolated Docker Containers** — Each agent runs in its own container with dedicated resources
-- **Multi-Runtime Support** — Choose between Claude Code (Anthropic) or Gemini CLI (Google) per agent
+- **Multi-Runtime Support** — Choose between Claude Code, Gemini CLI, or OpenCode per agent
 - **Model Selection** — Choose which Claude model (Opus, Sonnet, Haiku) per task or schedule
 - **Agent Dashboard** — Custom dashboards defined via `dashboard.yaml` with 11 widget types, historical tracking, and sparkline visualization
 - **Playbooks** — Browse and invoke agent skills (`.claude/skills/`) directly from the UI

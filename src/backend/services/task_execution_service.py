@@ -113,6 +113,86 @@ def _compute_context_used(metadata: dict) -> Optional[int]:
     return input_tokens if input_tokens > 0 else None
 
 
+def _get_agent_runtime_defaults(agent_name: str) -> tuple[str, str | None]:
+    """Discover an agent's runtime and model override from Docker metadata."""
+    try:
+        from services.docker_service import get_agent_container, get_container_runtime, get_container_runtime_model
+        container = get_agent_container(agent_name)
+        if not container:
+            return "claude-code", None
+        return get_container_runtime(container), get_container_runtime_model(container)
+    except Exception:
+        return "claude-code", None
+
+
+def _container_env_map(container) -> dict:
+    try:
+        env = container.attrs.get("Config", {}).get("Env", []) or []
+        return dict(item.split("=", 1) for item in env if "=" in item)
+    except Exception:
+        return {}
+
+
+def _normalize_opencode_template_explicit_model(agent_name: str, explicit_model: Optional[str]) -> Optional[str]:
+    """Normalize stale explicit OpenCode model providers for v2 provider templates.
+
+    Frontends can retain old ``provider/model`` selections in localStorage. For
+    OpenCode agents created with a runtime provider template, the safe mapping is
+    only the provider prefix: if the requested model id exists in the current
+    provider's OPENCODE config, rewrite to ``TRINITY_RUNTIME_PROVIDER_ID/model``.
+    Otherwise leave the override unchanged so downstream validation/errors apply.
+    """
+    if not explicit_model or "/" not in explicit_model:
+        return explicit_model
+    old_provider, model_id = explicit_model.split("/", 1)
+    if not old_provider or not model_id:
+        return explicit_model
+
+    try:
+        from services.docker_service import get_agent_container, get_container_runtime
+        container = get_agent_container(agent_name)
+        if not container or get_container_runtime(container) != "opencode":
+            return explicit_model
+
+        env = _container_env_map(container)
+        current_provider = env.get("TRINITY_RUNTIME_PROVIDER_ID")
+        if not current_provider or current_provider == old_provider:
+            return explicit_model
+
+        config_raw = env.get("OPENCODE_CONFIG_CONTENT")
+        if not config_raw:
+            return explicit_model
+        config = json.loads(config_raw)
+        provider_config = (config.get("provider") or {}).get(current_provider) or {}
+        models = provider_config.get("models") or {}
+        if isinstance(models, dict) and model_id in models:
+            return f"{current_provider}/{model_id}"
+    except Exception:
+        return explicit_model
+    return explicit_model
+
+
+def _legacy_model_fallback_for_runtime(runtime: str) -> str:
+    if runtime == "opencode":
+        return "anthropic/claude-sonnet-4-5"
+    if runtime in {"gemini-cli", "gemini"}:
+        return "gemini-3-flash"
+    return settings_service.get_platform_default_model()
+
+
+def _resolve_execution_model(agent_name: str, explicit_model: Optional[str]) -> str:
+    if explicit_model is not None:
+        return _normalize_opencode_template_explicit_model(agent_name, explicit_model)
+    agent_runtime, agent_runtime_model = _get_agent_runtime_defaults(agent_name)
+    if agent_runtime_model:
+        return agent_runtime_model
+    normalized_runtime = "gemini-cli" if agent_runtime == "gemini" else agent_runtime
+    try:
+        return settings_service.resolve_model_for_runtime(normalized_runtime)
+    except Exception:
+        return _legacy_model_fallback_for_runtime(agent_runtime)
+
+
 # ---------------------------------------------------------------------------
 # Reader-race signature (Issue #678 auto-retry)
 # ---------------------------------------------------------------------------
@@ -508,10 +588,10 @@ class TaskExecutionService:
         if timeout_seconds is None:
             timeout_seconds = db.get_execution_timeout(agent_name)
 
-        # #831: Resolve null model → platform default so the agent always receives
-        # a concrete model string. Avoids the stale "sonnet" hardcode in base-image.
-        if model is None:
-            model = settings_service.get_platform_default_model()
+        # Resolve to a concrete model string before writing execution rows or
+        # dispatching payloads. Priority: explicit model > AGENT_RUNTIME_MODEL
+        # > runtime defaults > legacy fallback.
+        model = _resolve_execution_model(agent_name, model)
 
         # Dispatch circuit breaker (#526): combined global master-switch AND
         # per-agent opt-in. Drives the acquire() gate (this path), the

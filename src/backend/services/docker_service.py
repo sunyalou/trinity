@@ -28,6 +28,30 @@ def get_agent_container(name: str):
         return None
 
 
+def _container_env_map(container) -> dict:
+    try:
+        env = container.attrs.get("Config", {}).get("Env", []) or []
+        return dict(item.split("=", 1) for item in env if "=" in item)
+    except Exception:
+        return {}
+
+
+def get_container_runtime(container) -> str:
+    """Resolve runtime with labels preferred over legacy AGENT_RUNTIME env."""
+    labels = container.labels or {}
+    return (
+        labels.get("trinity.agent-runtime")
+        or labels.get("trinity.runtime")
+        or _container_env_map(container).get("AGENT_RUNTIME")
+        or "claude-code"
+    )
+
+
+def get_container_runtime_model(container) -> Optional[str]:
+    """Return AGENT_RUNTIME_MODEL from container env, if present."""
+    return _container_env_map(container).get("AGENT_RUNTIME_MODEL") or None
+
+
 def get_agent_status_from_container(container) -> AgentStatus:
     """Convert a Docker container to AgentStatus using container labels."""
     labels = container.labels
@@ -45,17 +69,7 @@ def get_agent_status_from_container(container) -> AgentStatus:
     else:
         normalized_status = docker_status  # paused, restarting, etc.
 
-    # Extract runtime from container environment variables
-    runtime = "claude-code"  # Default
-    try:
-        # Get environment variables from container attrs
-        env_list = container.attrs.get("Config", {}).get("Env", [])
-        for env in env_list:
-            if env.startswith("AGENT_RUNTIME="):
-                runtime = env.split("=", 1)[1]
-                break
-    except Exception:
-        pass  # Use default if we can't read env vars
+    runtime = get_container_runtime(container)
 
     # Extract base image version from container labels or image labels
     base_image_version = labels.get("trinity.base-image-version")
@@ -151,7 +165,7 @@ def list_all_agents_fast() -> List[AgentStatus]:
                 },
                 container_id=container.id,
                 template=labels.get("trinity.template", None) or None,
-                runtime=labels.get("trinity.runtime", "claude-code"),  # From label instead of env vars
+                runtime=get_container_runtime(container),
                 base_image_version=labels.get("trinity.base-image-version"),  # Label only, no image lookup
             )
             agents.append(agent)

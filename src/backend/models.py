@@ -1,13 +1,32 @@
 """
 Pydantic models for the Trinity backend API.
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Dict, List, Optional
 from datetime import datetime
 from enum import Enum
 
 from utils.helpers import to_utc_iso
 from db_models import WebFileUpload  # noqa: F401 — re-exported for router imports
+
+ALLOWED_AGENT_RUNTIMES = {"claude-code", "claude", "gemini-cli", "gemini", "opencode"}
+ALLOWED_RUNTIME_PERMISSIONS = {"restricted", "standard", "dangerous"}
+
+
+def validate_agent_runtime(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return value
+    if value not in ALLOWED_AGENT_RUNTIMES:
+        raise ValueError(f"Unsupported runtime: {value}")
+    return value
+
+
+def validate_agent_runtime_permission(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return value
+    if value not in ALLOWED_RUNTIME_PERMISSIONS:
+        raise ValueError(f"Unsupported runtime_permission: {value}")
+    return value
 
 
 class AgentConfig(BaseModel):
@@ -28,10 +47,23 @@ class AgentConfig(BaseModel):
     source_branch: Optional[str] = "main"  # Branch to pull updates from
     source_mode: Optional[bool] = True  # True = track source branch (pull only), False = create working branch
     # Multi-runtime support
-    runtime: Optional[str] = "claude-code"  # "claude-code" or "gemini-cli"
-    runtime_model: Optional[str] = None  # Model override (e.g., "sonnet-4.5", "gemini-2.5-pro")
+    runtime: Optional[str] = "claude-code"  # "claude-code", "claude", "gemini-cli", "gemini", or "opencode"
+    runtime_model: Optional[str] = None  # Runtime-specific model override
+    runtime_provider_id: Optional[str] = None  # Runtime provider selection for template-based injection
+    runtime_model_id: Optional[str] = None  # Provider model ID for template-based injection
+    runtime_permission: Optional[str] = "restricted"  # OpenCode: restricted, standard, dangerous
     # Security options
     full_capabilities: Optional[bool] = False  # True = Docker default caps (apt-get works), False = restricted (secure default)
+
+    @field_validator("runtime")
+    @classmethod
+    def validate_runtime(cls, value: Optional[str]) -> Optional[str]:
+        return validate_agent_runtime(value)
+
+    @field_validator("runtime_permission")
+    @classmethod
+    def validate_runtime_permission(cls, value: Optional[str]) -> Optional[str]:
+        return validate_agent_runtime_permission(value)
 
 
 class AgentStatus(BaseModel):
@@ -44,7 +76,7 @@ class AgentStatus(BaseModel):
     resources: dict
     container_id: Optional[str] = None
     template: Optional[str] = None
-    runtime: Optional[str] = "claude-code"  # "claude-code" or "gemini-cli"
+    runtime: Optional[str] = "claude-code"  # "claude-code", "claude", "gemini-cli", "gemini", or "opencode"
     base_image_version: Optional[str] = None  # Version of trinity-agent-base image
 
     class Config:

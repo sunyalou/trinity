@@ -5,9 +5,11 @@ Provides endpoints for managing system-wide configuration like the Trinity promp
 Admin-only access for modification, read access for all authenticated users.
 """
 import logging
+import json
 import os
 import re
 import httpx
+from datetime import datetime, UTC
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -39,6 +41,10 @@ from services.settings_service import (
     AGENT_DEFAULT_REQUIRE_EMAIL,
     get_agent_default_require_email,
 )
+from services.runtime_model_defaults import resolve_provider_model
+from services.provider_connection_test_service import provider_connection_test_service
+from services.custom_provider_configs import CUSTOM_PROVIDER_CONFIGS_KEY
+from services.provider_configs import PROVIDER_CONFIGS_KEY
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -81,10 +87,77 @@ class OpsSettingsUpdate(BaseModel):
     settings: Dict[str, str]
 
 
+class RuntimeDefaultModelsUpdate(BaseModel):
+    runtime_default_models: Dict[str, Dict[str, str]]
+
+
+class CustomProviderConfigsUpdate(BaseModel):
+    custom_provider_configs: Dict[str, Dict[str, Any]]
+
+
+class ProviderConfigsUpdate(BaseModel):
+    providers: Dict[str, Dict[str, Any]]
+
+
+class CustomProviderConfig(BaseModel):
+    protocol: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+class ProviderConnectionTestRequest(BaseModel):
+    runtime: str
+    provider: str
+    model: str
+    custom_provider: Optional[CustomProviderConfig] = None
+
+
 def require_admin(current_user: User):
     """Verify user is an admin."""
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
+
+
+def _model_to_dict(model: BaseModel) -> Dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
+
+
+def _masked_custom_provider_setting() -> SystemSetting:
+    return SystemSetting(
+        key=CUSTOM_PROVIDER_CONFIGS_KEY,
+        value=json.dumps(settings_service.get_masked_custom_provider_configs(), sort_keys=True),
+        updated_at=datetime.now(UTC),
+    )
+
+
+def _restricted_settings_keys() -> set[str]:
+    return {PROVIDER_CONFIGS_KEY}
+
+
+def _provider_config_write_keys() -> set[str]:
+    return {CUSTOM_PROVIDER_CONFIGS_KEY, PROVIDER_CONFIGS_KEY}
+
+
+def _is_provider_config_write_key(key: str) -> bool:
+    return key in _provider_config_write_keys()
+
+
+def _provider_config_endpoint_detail(key: str, action: str) -> str:
+    if key == CUSTOM_PROVIDER_CONFIGS_KEY:
+        return f"Use the dedicated custom-provider-configs endpoint to {action} custom provider configs"
+    return f"Use the dedicated provider config endpoint to {action} provider configs"
+
+
+def _mask_custom_provider_setting_if_needed(setting: SystemSetting) -> SystemSetting:
+    if setting.key == CUSTOM_PROVIDER_CONFIGS_KEY:
+        return _masked_custom_provider_setting()
+    return setting
+
+
+def _is_restricted_setting_key(key: str) -> bool:
+    return key in _restricted_settings_keys()
 
 
 @router.get("", response_model=List[SystemSetting])
@@ -100,7 +173,11 @@ async def get_all_settings(
     require_admin(current_user)
 
     try:
-        settings = db.get_all_settings()
+        settings = [
+            _mask_custom_provider_setting_if_needed(setting)
+            for setting in db.get_all_settings()
+            if setting.key != PROVIDER_CONFIGS_KEY
+        ]
 
         return settings
     except Exception as e:
@@ -139,12 +216,162 @@ async def get_public_feature_flags(
         # Also requires a per-agent voip_bindings row to actually function.
         "voip_available": VOIP_ENABLED and bool(GEMINI_API_KEY),
         "platform_default_model": settings_service.get_platform_default_model(),
+        "runtime_default_models": settings_service.get_runtime_default_models(),
         # #847 Phase 0 — enterprise entitlements. Empty list means OSS
         # build (or TRINITY_OSS_ONLY=1). UI uses this to hide
         # enterprise-only tabs cleanly without server-side conditional
         # rendering. Mirrors the deny-list pattern of the other flags.
         "enterprise_features": entitlement_service.list_entitled_features(),
     }
+
+
+@router.get("/runtime-default-models")
+async def get_runtime_default_models(current_user: User = Depends(get_current_user)):
+    require_admin(current_user)
+    models = settings_service.get_runtime_default_models()
+    return {
+        "runtime_default_models": models,
+        "resolved": {runtime: resolve_provider_model(entry) for runtime, entry in models.items()},
+    }
+
+
+@router.put("/runtime-default-models")
+async def update_runtime_default_models(
+    body: RuntimeDefaultModelsUpdate,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+    try:
+        normalized = settings_service.set_runtime_default_models(body.runtime_default_models)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    await platform_audit_service.log(
+        event_type=AuditEventType.CONFIGURATION,
+        event_action="settings_change",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={"setting": "runtime_default_models", "action": "update"},
+    )
+    return {
+        "success": True,
+        "runtime_default_models": normalized,
+        "resolved": {runtime: resolve_provider_model(entry) for runtime, entry in normalized.items()},
+    }
+
+
+@router.get("/custom-provider-configs")
+async def get_custom_provider_configs(current_user: User = Depends(get_current_user)):
+    require_admin(current_user)
+    return {"custom_provider_configs": settings_service.get_masked_custom_provider_configs()}
+
+
+@router.get("/custom-provider-configs/discovery")
+async def discover_custom_providers(current_user: User = Depends(get_current_user)):
+    del current_user
+    masked = settings_service.get_masked_custom_provider_configs()
+    runtime_defaults = settings_service.get_runtime_default_models()
+    models_by_provider: dict[str, set[str]] = {}
+    for entry in runtime_defaults.values():
+        if not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider") or "").strip()
+        model = str(entry.get("model") or "").strip()
+        if provider and model:
+            models_by_provider.setdefault(provider, set()).add(model)
+    return {
+        "custom_providers": [
+            {
+                "provider": provider,
+                "protocol": config.get("protocol"),
+                "api_key_configured": bool(config.get("api_key_configured")),
+                "models": sorted(models_by_provider.get(provider, set())),
+            }
+            for provider, config in sorted(masked.items())
+            if isinstance(config, dict)
+        ]
+    }
+
+
+@router.put("/custom-provider-configs")
+async def update_custom_provider_configs(
+    body: CustomProviderConfigsUpdate,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+    try:
+        payload = _model_to_dict(body)
+        settings_service.set_custom_provider_configs(payload["custom_provider_configs"])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    await platform_audit_service.log(
+        event_type=AuditEventType.CONFIGURATION,
+        event_action="settings_change",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={"setting": CUSTOM_PROVIDER_CONFIGS_KEY, "action": "update"},
+    )
+    return {
+        "success": True,
+        "custom_provider_configs": settings_service.get_masked_custom_provider_configs(),
+    }
+
+
+@router.get("/provider-configs")
+async def get_provider_configs_endpoint(current_user: User = Depends(get_current_user)):
+    require_admin(current_user)
+    return {"providers": settings_service.get_masked_provider_configs()}
+
+
+@router.put("/provider-configs")
+async def update_provider_configs_endpoint(
+    body: ProviderConfigsUpdate,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+    try:
+        payload = _model_to_dict(body)
+        settings_service.set_provider_configs(
+            payload["providers"],
+            updated_by=current_user.username,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    await platform_audit_service.log(
+        event_type=AuditEventType.CONFIGURATION,
+        event_action="settings_change",
+        source="api",
+        actor_user=current_user,
+        actor_ip=request.client.host if request.client else None,
+        endpoint=str(request.url.path),
+        request_id=getattr(request.state, "request_id", None),
+        details={"setting": PROVIDER_CONFIGS_KEY, "action": "update"},
+    )
+    return {"success": True, "providers": settings_service.get_masked_provider_configs()}
+
+
+@router.post("/provider-connection-test")
+async def test_provider_connection(
+    body: ProviderConnectionTestRequest,
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+    try:
+        custom_provider = _model_to_dict(body.custom_provider) if body.custom_provider is not None else None
+        return await provider_connection_test_service.test_connection(body.runtime, body.provider, body.model, custom_provider)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ============================================================================
@@ -1425,13 +1652,19 @@ async def get_setting(
     """
     require_admin(current_user)
 
+    if _is_restricted_setting_key(key):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Setting '{key}' not found",
+        )
+
     try:
         setting = db.get_setting(key)
 
         if not setting:
             raise HTTPException(status_code=404, detail=f"Setting '{key}' not found")
 
-        return setting
+        return _mask_custom_provider_setting_if_needed(setting)
     except HTTPException:
         raise
     except Exception as e:
@@ -1452,6 +1685,12 @@ async def update_setting(
     """
     require_admin(current_user)
 
+    if _is_provider_config_write_key(key):
+        raise HTTPException(
+            status_code=400,
+            detail=_provider_config_endpoint_detail(key, "update"),
+        )
+
     # Validate URL-based settings to prevent SSRF (SEC-179)
     if key == "skills_library_url" and body.value:
         from utils.url_validation import validate_skills_library_url
@@ -1461,13 +1700,24 @@ async def update_setting(
             raise HTTPException(status_code=400, detail=str(e))
 
     try:
-        setting = db.set_setting(key, body.value)
-
-        # #831: Invalidate platform default model TTL cache on write
         if key == "platform_default_model":
             import services.settings_service as _ss
-            _ss._platform_model_cache = None
-            _ss._platform_model_cache_ts = 0.0
+            _ss.invalidate_runtime_model_caches()
+            current = settings_service.get_runtime_default_models()
+            current["claude-code"] = {"provider": "anthropic", "model": body.value}
+            try:
+                normalized = settings_service.set_runtime_default_models(current)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            setting = db.get_setting("platform_default_model")
+            if setting is None:
+                setting = SystemSetting(
+                    key="platform_default_model",
+                    value=normalized["claude-code"]["model"],
+                    updated_at=datetime.now(UTC),
+                )
+        else:
+            setting = db.set_setting(key, body.value)
 
         # SEC-001: audit generic setting change
         await platform_audit_service.log(
@@ -1496,6 +1746,8 @@ async def update_setting(
                 logger.warning(f"WhatsApp webhook URL back-fill skipped: {e}")
 
         return setting
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update setting: {str(e)}")
 
@@ -1536,6 +1788,12 @@ async def delete_setting(
     Admin-only endpoint. Returns success even if setting didn't exist.
     """
     require_admin(current_user)
+
+    if _is_provider_config_write_key(key):
+        raise HTTPException(
+            status_code=400,
+            detail=_provider_config_endpoint_detail(key, "manage"),
+        )
 
     try:
         deleted = db.delete_setting(key)
@@ -1660,5 +1918,3 @@ async def reset_ops_settings(
 
 
 # Note: get_ops_setting is now imported from services.settings_service
-
-
