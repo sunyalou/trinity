@@ -174,8 +174,10 @@ import { useAuthStore } from '../stores/auth'
 import { ChatMessages, ChatInput, ChatEmptyState } from './chat'
 import VoiceOverlay from './chat/VoiceOverlay.vue'
 import ModelSelector from './ModelSelector.vue'
-import { getStatusFromStreamEvent, MIN_LABEL_DISPLAY_MS, HEARTBEAT_TIMEOUT_MS } from '../utils/execution-status'
+import { MIN_LABEL_DISPLAY_MS, HEARTBEAT_TIMEOUT_MS } from '../utils/execution-status'
 import { useVoiceSession } from '../composables/useVoiceSession'
+import { useExecutionStream } from '@/composables/useExecutionStream'
+import { normalizeExecutionEvent } from '@/utils/executionEventNormalizer'
 
 const props = defineProps({
   agentName: {
@@ -488,91 +490,70 @@ const resetHeartbeat = () => {
 }
 
 // THINK-001: Close SSE connection and cleanup timers
-let streamReader = null
+let executionStream = null
 
-const closeSSE = () => {
-  if (streamReader) {
-    streamReader.cancel().catch(() => {})
-    streamReader = null
-  }
+const clearHeartbeat = () => {
   clearTimeout(heartbeatTimer)
   clearTimeout(labelTimer)
   heartbeatTimer = null
   labelTimer = null
 }
 
-// THINK-001: Subscribe to execution SSE stream for status updates
-const subscribeToStream = (executionId) => {
-  closeSSE() // Clean up any existing connection
+const closeSSE = () => {
+  if (executionStream) {
+    executionStream.cancel()
+    executionStream = null
+  }
+  clearHeartbeat()
+}
+
+const scrollMessagesToBottom = () => {
+  nextTick(() => messagesRef.value?.scrollToBottom?.())
+}
+
+// THINK-001: Subscribe to execution SSE stream for status and live response updates
+const subscribeToStream = (executionId, draftMessage) => {
+  closeSSE()
   lastLabelTime = 0
   resetHeartbeat()
+  let sequence = 0
 
-  // Use fetch with ReadableStream (EventSource doesn't support custom headers)
-  const url = `/api/agents/${props.agentName}/executions/${executionId}/stream`
-
-  fetch(url, {
-    headers: {
-      'Authorization': `Bearer ${authStore.token}`,
-      'Accept': 'text/event-stream'
-    }
-  }).then(response => {
-    if (!response.ok) return
-
-    const reader = response.body.getReader()
-    streamReader = reader
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    function processStream() {
-      reader.read().then(({ done, value }) => {
-        if (done) {
-          closeSSE()
-          return
-        }
-
-        buffer += decoder.decode(value, { stream: true })
-
-        // Process complete SSE messages
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6))
-
-              if (data.type === 'stream_end') {
-                closeSSE()
-                return
-              }
-
-              if (data.type === 'error') {
-                console.warn('SSE stream error:', data.message)
-                continue
-              }
-
-              // Map event to status label
-              const status = getStatusFromStreamEvent(data)
-              if (status) {
-                updateLoadingText(status)
-              }
-            } catch (e) {
-              // Ignore parse errors for comments/keepalives
-            }
+  executionStream = useExecutionStream({
+    agentName: props.agentName,
+    executionId,
+    token: authStore.token,
+    onEvent(raw) {
+      sequence += 1
+      const events = normalizeExecutionEvent(raw, { sequence, executionId })
+      for (const event of events) {
+        if (event.kind === 'assistant_text') {
+          if (event.mode === 'snapshot') {
+            draftMessage.content = event.text
+          } else {
+            draftMessage.content += event.text
           }
+          draftMessage.streaming = true
+          scrollMessagesToBottom()
+        } else if (event.kind === 'tool_start') {
+          draftMessage.tools.push({ id: event.id, name: event.name, status: 'running' })
+          updateLoadingText(`Using ${event.name}...`)
+        } else if (event.kind === 'tool_result') {
+          const tool = draftMessage.tools.find((item) => item.id === event.id)
+          if (tool) tool.status = event.success === false ? 'failed' : 'done'
+          updateLoadingText('Processing results...')
+        } else if (event.kind === 'status' && event.label) {
+          updateLoadingText(event.label)
         }
-
-        processStream()
-      }).catch(() => {
-        closeSSE()
-      })
-    }
-
-    processStream()
-  }).catch(() => {
-    // Stream failed - polling will handle completion
-    closeSSE()
+      }
+    },
+    onError(errorEvent) {
+      console.warn('SSE stream error:', errorEvent.message)
+    },
+    onEnd() {
+      clearHeartbeat()
+    },
   })
+  executionStream.start()
 }
 
 // THINK-001: Poll execution status until complete
@@ -607,6 +588,7 @@ const sendMessage = async (userMessage, files = []) => {
   if ((!userMessage && files.length === 0) || loading.value || props.agentStatus !== 'running') return
 
   error.value = null
+  let assistantDraft = null
 
   // Add user message to chat immediately
   messages.value.push({
@@ -656,8 +638,18 @@ const sendMessage = async (userMessage, files = []) => {
       throw new Error('No execution_id returned from async task submission')
     }
 
-    // Subscribe to SSE stream for real-time status updates
-    subscribeToStream(executionId)
+    // Create a live assistant draft before subscribing so streamed text has a place to land.
+    assistantDraft = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date().toISOString(),
+      streaming: true,
+      tools: [],
+    }
+    messages.value.push(assistantDraft)
+
+    // Subscribe to SSE stream for real-time status and assistant text updates
+    subscribeToStream(executionId, assistantDraft)
 
     // Poll for completion (SSE handles status labels, polling handles result)
     const execution = await pollExecution(executionId)
@@ -665,15 +657,23 @@ const sendMessage = async (userMessage, files = []) => {
     closeSSE()
 
     if (execution) {
-      if (execution.status === 'success' && execution.response) {
-        messages.value.push({
-          role: 'assistant',
-          content: execution.response,
-          timestamp: new Date().toISOString()
-        })
+      if (execution.status === 'success') {
+        if (execution.response) {
+          assistantDraft.content = execution.response
+        }
+        assistantDraft.streaming = false
+        assistantDraft.timestamp = new Date().toISOString()
       } else if (execution.status === 'failed') {
+        assistantDraft.streaming = false
+        if (!assistantDraft.content) {
+          messages.value = messages.value.filter((item) => item !== assistantDraft)
+        }
         error.value = execution.error || 'Task execution failed'
       } else if (execution.status === 'cancelled') {
+        assistantDraft.streaming = false
+        if (!assistantDraft.content) {
+          messages.value = messages.value.filter((item) => item !== assistantDraft)
+        }
         error.value = 'Task was cancelled'
       }
 
@@ -690,14 +690,27 @@ const sendMessage = async (userMessage, files = []) => {
         }
       }
     } else {
+      if (assistantDraft) {
+        assistantDraft.streaming = false
+        if (!assistantDraft.content) {
+          messages.value = messages.value.filter((item) => item !== assistantDraft)
+        }
+      }
       error.value = 'Request timed out. Please try again.'
     }
   } catch (err) {
     console.error('Chat error:', err)
     closeSSE()
     error.value = err.response?.data?.detail || 'Failed to send message. Please try again.'
-    // Remove the user message if send failed
-    messages.value.pop()
+    if (assistantDraft) {
+      assistantDraft.streaming = false
+      if (!assistantDraft.content) {
+        messages.value = messages.value.filter((item) => item !== assistantDraft)
+      }
+    } else {
+      // Remove the user message if send failed before an execution was created.
+      messages.value.pop()
+    }
   } finally {
     loading.value = false
     loadingText.value = 'Thinking...'

@@ -336,7 +336,7 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
                             raw_msg = sanitize_dict(raw_msg)
                             raw_messages.append(raw_msg)
                             try:
-                                registry.publish_log_entry(execution_id, raw_msg)
+                                registry.publish_log_entry_threadsafe(execution_id, raw_msg)
                             except Exception as pub_err:  # noqa: BLE001
                                 logger.warning(
                                     f"publish_log_entry failed (continuing): {pub_err}"
@@ -531,7 +531,7 @@ async def execute_claude_code(prompt: str, stream: bool = False, model: Optional
             return response_text, execution_log, metadata, raw_messages
         finally:
             # Always unregister process when done
-            registry.unregister(execution_id)
+            registry.unregister_threadsafe(execution_id)
 
     except HTTPException:
         raise

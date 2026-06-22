@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -81,6 +82,32 @@ def build_prompt(prompt: str, system_prompt: Optional[str] = None) -> str:
     return f"System instructions:\n{system_prompt}\n\nUser request:\n{prompt}"
 
 
+def _extract_response_texts(value) -> List[str]:
+    """Extract assistant text from OpenCode JSON event shapes."""
+    texts: List[str] = []
+    if isinstance(value, str):
+        if value:
+            texts.append(value)
+        return texts
+    if isinstance(value, list):
+        for item in value:
+            texts.extend(_extract_response_texts(item))
+        return texts
+    if not isinstance(value, dict):
+        return texts
+
+    value_type = value.get("type")
+    text = value.get("text")
+    if isinstance(text, str) and text and value_type in {None, "text", "message", "assistant_message"}:
+        texts.append(text)
+
+    for key in ("content", "parts", "part", "message", "result"):
+        nested = value.get(key)
+        if nested is not None and not (key == "message" and isinstance(nested, str)):
+            texts.extend(_extract_response_texts(nested))
+    return texts
+
+
 def parse_opencode_events(
     output: str,
     model: Optional[str] = None,
@@ -111,12 +138,15 @@ def parse_opencode_events(
         if event_type == "session":
             session_id = event.get("sessionID") or event.get("session_id") or event.get("id")
             metadata.session_id = session_id
-        elif event_type in {"message", "assistant_message", "result", "final"}:
+        elif event_type in {"message", "assistant_message", "result", "final", "text", "part"}:
             for key in ("text", "content", "message", "result"):
                 text = event.get(key)
                 if isinstance(text, str) and text:
                     response_parts.append(sanitize_text(text))
                     break
+            else:
+                for text in _extract_response_texts(event):
+                    response_parts.append(sanitize_text(text))
         elif event_type in {"tool_call", "tool_use"}:
             tool_id = str(event.get("id") or event.get("callID") or uuid.uuid4())
             tool_name = str(event.get("name") or event.get("tool") or "unknown")
@@ -290,6 +320,42 @@ class OpenCodeRuntime(AgentRuntime):
         registry = get_process_registry()
 
         def run_subprocess() -> Tuple[str, int]:
+            stdout_lines: List[str] = []
+            stderr_lines: List[str] = []
+            raw_messages: List[Dict] = []
+            stderr_limit = 200
+
+            def read_stdout(process_stdout) -> None:
+                if process_stdout is None:
+                    return
+                try:
+                    for line in iter(process_stdout.readline, ""):
+                        stdout_lines.append(line)
+                        try:
+                            event = json.loads(line.strip())
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(event, dict):
+                            continue
+                        event = sanitize_dict(event)
+                        raw_messages.append(event)
+                        try:
+                            registry.publish_log_entry_threadsafe(execution_id, event)
+                        except Exception:
+                            logger.exception("[OpenCode] stdout event publish raised — continuing")
+                except Exception:
+                    logger.exception("[OpenCode] stdout reader raised — continuing")
+
+            def read_stderr(process_stderr) -> None:
+                if process_stderr is None:
+                    return
+                try:
+                    for line in iter(process_stderr.readline, ""):
+                        if len(stderr_lines) < stderr_limit:
+                            stderr_lines.append(line)
+                except Exception:
+                    logger.exception("[OpenCode] stderr reader raised — continuing")
+
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -304,18 +370,29 @@ class OpenCodeRuntime(AgentRuntime):
                 "message_preview": prompt[:100],
                 "pgid": process_pgid,
             })
+            stdout_thread = threading.Thread(target=read_stdout, args=(process.stdout,), daemon=True)
+            stderr_thread = threading.Thread(target=read_stderr, args=(process.stderr,), daemon=True)
+            stdout_thread.start()
+            stderr_thread.start()
             try:
                 try:
-                    stdout, stderr = process.communicate(timeout=timeout_seconds)
+                    process.wait(timeout=timeout_seconds)
                 except subprocess.TimeoutExpired:
                     _terminate_process_group(process, graceful_timeout=2, pgid=process_pgid, execution_tag=execution_id)
                     try:
-                        stdout, stderr = process.communicate(timeout=5)
+                        process.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         logger.warning(
                             "[OpenCode] process still did not drain after timeout teardown; returning 504"
                         )
+                    stdout_thread.join(timeout=1)
+                    stderr_thread.join(timeout=1)
                     raise HTTPException(status_code=504, detail=f"OpenCode execution timed out after {timeout_seconds} seconds")
+
+                stdout_thread.join(timeout=1)
+                stderr_thread.join(timeout=1)
+                stdout = "".join(stdout_lines)
+                stderr = "".join(stderr_lines)
                 if process.returncode != 0:
                     detail = sanitize_text(stderr or stdout or "OpenCode failed")[:300]
                     raise HTTPException(status_code=500, detail=f"OpenCode execution failed (exit code {process.returncode}): {detail}")
@@ -326,7 +403,7 @@ class OpenCodeRuntime(AgentRuntime):
                     kill_cgroup_orphans(extra_pids=preserve)
                 except Exception:
                     logger.exception("[OpenCode] cgroup sweep raised — continuing")
-                registry.unregister(execution_id)
+                registry.unregister_threadsafe(execution_id)
 
         loop = asyncio.get_event_loop()
         stdout, _return_code = await loop.run_in_executor(None, run_subprocess)

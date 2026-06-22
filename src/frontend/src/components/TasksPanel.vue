@@ -238,6 +238,9 @@
                 <span v-if="task.model_used" class="font-mono bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">{{ task.model_used }}</span>
                 <span v-if="task.duration_ms" class="font-mono">{{ formatDuration(task.duration_ms) }}</span>
                 <span v-if="task.cost" class="font-mono">${{ task.cost.toFixed(4) }}</span>
+                <span v-if="task.status_label">{{ task.status_label }}</span>
+                <span v-if="task.current_tool" class="font-mono bg-state-autonomous-100 dark:bg-state-autonomous-900/30 text-state-autonomous-700 dark:text-state-autonomous-300 px-1.5 py-0.5 rounded">{{ task.current_tool }}</span>
+                <span v-if="task.stream_warning" class="text-status-warning-600 dark:text-status-warning-400">{{ task.stream_warning }}</span>
                 <div v-if="task.context_used && task.context_max" class="flex items-center space-x-1">
                   <div class="w-16 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
                     <div
@@ -261,9 +264,9 @@
                   <span>Loading details...</span>
                 </div>
                 <!-- Error/Response display (from cache or local task) -->
-                <template v-else-if="getTaskDetails(task.id)?.error || getTaskDetails(task.id)?.response || task.error || task.response">
+                <template v-else-if="getTaskDetails(task.id)?.error || getTaskDetails(task.id)?.response || task.error || task.response || task.response_preview">
                   <div v-if="getTaskDetails(task.id)?.error || task.error" class="bg-status-danger-50 dark:bg-status-danger-900/20 border border-status-danger-200 dark:border-status-danger-800 rounded p-3 text-sm text-status-danger-700 dark:text-status-danger-300 whitespace-pre-wrap font-mono max-h-48 overflow-y-auto">{{ getTaskDetails(task.id)?.error || task.error }}</div>
-                  <div v-else-if="getTaskDetails(task.id)?.response || task.response" class="bg-gray-100 dark:bg-gray-700 rounded p-3 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap font-mono max-h-48 overflow-y-auto">{{ getTaskDetails(task.id)?.response || task.response }}</div>
+                  <div v-else-if="getTaskDetails(task.id)?.response || task.response || task.response_preview" class="bg-gray-100 dark:bg-gray-700 rounded p-3 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap font-mono max-h-48 overflow-y-auto">{{ getTaskDetails(task.id)?.response || task.response || task.response_preview }}</div>
                 </template>
                 <!-- No details available -->
                 <div v-else-if="taskDetailsCache[task.id] !== undefined" class="text-sm text-gray-500 dark:text-gray-400 italic">
@@ -525,6 +528,9 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 import ModelSelector from './ModelSelector.vue'
+import { useExecutionStream } from '../composables/useExecutionStream'
+import { normalizeExecutionEvent } from '../utils/executionEventNormalizer'
+import { parseExecutionLog as parseSharedExecutionLog } from '../utils/executionLogParser'
 
 // Template ref for highlighted task element
 const highlightedTaskRef = ref(null)
@@ -592,6 +598,38 @@ const runningExecutions = ref([])
 
 // Polling interval
 let pollInterval = null
+
+// Per-task execution streams for async task rows
+const taskStreams = new Map()
+const taskPollers = new Map()
+
+function stopTaskStream(executionId) {
+  if (!executionId) return
+  const stream = taskStreams.get(executionId)
+  if (stream) {
+    stream.cancel()
+    taskStreams.delete(executionId)
+  }
+}
+
+function stopTaskPolling(executionId) {
+  if (!executionId) return
+  const poller = taskPollers.get(executionId)
+  if (poller) {
+    poller.cancelled = true
+    if (poller.timeoutId) {
+      clearTimeout(poller.timeoutId)
+      poller.resolveWait?.(false)
+    }
+    taskPollers.delete(executionId)
+  }
+}
+
+function stopAllTaskActivity() {
+  taskStreams.forEach((stream) => stream.cancel())
+  taskStreams.clear()
+  taskPollers.forEach((_, executionId) => stopTaskPolling(executionId))
+}
 
 // Check if a task should be highlighted
 function isHighlightedTask(taskId) {
@@ -662,6 +700,13 @@ async function loadAllData() {
     loadQueueStatus()
   ])
   loading.value = false
+}
+
+async function loadTasks() {
+  await Promise.all([
+    loadExecutions(),
+    loadQueueStatus()
+  ])
 }
 
 // Load executions from server
@@ -743,6 +788,151 @@ async function loadRunningExecutions() {
   }
 }
 
+function updateLocalTaskFromEvent(task, event) {
+  task.latest_event_at = event.timestamp || new Date().toISOString()
+
+  if (event.kind === 'assistant_text') {
+    task.stream_warning = null
+    if (event.mode === 'snapshot') {
+      task.response_preview = event.text || ''
+    } else {
+      task.response_preview = `${task.response_preview || ''}${event.text || ''}`
+    }
+    return
+  }
+
+  if (event.kind === 'tool_start') {
+    task.stream_warning = null
+    task.current_tool = event.name
+    task.tool_count = (task.tool_count || 0) + 1
+    task.status_label = `Using ${event.name}...`
+    return
+  }
+
+  if (event.kind === 'tool_result') {
+    task.stream_warning = null
+    task.current_tool = null
+    task.status_label = 'Processing results...'
+    return
+  }
+
+  if (event.kind === 'status' && event.label) {
+    task.stream_warning = null
+    task.status_label = event.label
+  }
+}
+
+function subscribeTaskStream(task) {
+  if (!task.execution_id) return
+  stopTaskStream(task.execution_id)
+
+  let sequence = 0
+  const stream = useExecutionStream({
+    agentName: props.agentName,
+    executionId: task.execution_id,
+    token: authStore.token,
+    onEvent(raw) {
+      sequence += 1
+      const events = normalizeExecutionEvent(raw, { sequence, executionId: task.execution_id })
+      for (const event of events) {
+        updateLocalTaskFromEvent(task, event)
+      }
+    },
+    onError(errorEvent) {
+      task.stream_warning = errorEvent?.message || 'Stream connection interrupted'
+    },
+    onEnd() {
+      stopTaskStream(task.execution_id)
+    }
+  })
+
+  taskStreams.set(task.execution_id, stream)
+  stream.start()
+}
+
+async function pollTaskUntilTerminal(task) {
+  if (!task.execution_id) return
+
+  const executionId = task.execution_id
+  const agentName = props.agentName
+  stopTaskPolling(executionId)
+  const poller = { cancelled: false, timeoutId: null, resolveWait: null }
+  taskPollers.set(executionId, poller)
+
+  const isStale = () => {
+    const currentTask = pendingTasks.value.find(t => t.id === task.id)
+    return poller.cancelled ||
+      props.agentName !== agentName ||
+      !currentTask ||
+      currentTask.execution_id !== executionId ||
+      task.execution_id !== executionId
+  }
+
+  const wait = (ms) => new Promise((resolve) => {
+    if (isStale()) {
+      resolve(false)
+      return
+    }
+    poller.resolveWait = resolve
+    poller.timeoutId = setTimeout(() => {
+      poller.timeoutId = null
+      poller.resolveWait = null
+      resolve(!isStale())
+    }, ms)
+  })
+
+  const maxAttempts = 360
+  try {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (isStale()) return
+      const shouldContinue = await wait(5000)
+      if (!shouldContinue || isStale()) return
+
+      let execution
+      try {
+        const response = await axios.get(`/api/agents/${agentName}/executions/${executionId}`, {
+          headers: authStore.authHeader
+        })
+        if (isStale()) return
+        execution = response.data
+      } catch (error) {
+        if (isStale()) return
+        console.error('Failed to poll task status:', error)
+        continue
+      }
+
+      if (['success', 'failed', 'cancelled'].includes(execution.status)) {
+        if (isStale()) return
+        task.status = execution.status
+        task.status_label = execution.status === 'success' ? 'Completed' : execution.status
+        task.duration_ms = execution.duration_ms || task.duration_ms
+        task.cost = execution.cost || task.cost
+        task.context_used = execution.context_used || task.context_used
+        task.context_max = execution.context_max || task.context_max
+        task.response = execution.response || task.response || task.response_preview
+        task.error = execution.error || task.error
+        task.stream_warning = null
+        task.current_tool = null
+        stopTaskStream(executionId)
+
+        await loadTasks()
+        if (isStale()) return
+        const reconciled = executions.value.some(e => e.id === executionId || e.execution_id === executionId)
+        const idx = pendingTasks.value.findIndex(t => t.id === task.id && t.execution_id === executionId)
+        if (idx !== -1 && reconciled) {
+          stopTaskPolling(executionId)
+          pendingTasks.value.splice(idx, 1)
+        }
+        return
+      }
+    }
+  } finally {
+    if (taskPollers.get(executionId) === poller) {
+      taskPollers.delete(executionId)
+    }
+  }
+}
+
 // Run new task
 async function runNewTask() {
   if (!newTaskMessage.value.trim()) return
@@ -763,7 +953,13 @@ async function runNewTask() {
     context_used: null,
     context_max: null,
     response: null,
-    error: null
+    response_preview: '',
+    error: null,
+    execution_id: null,
+    status_label: 'Submitting...',
+    current_tool: null,
+    tool_count: 0,
+    stream_warning: null
   }
 
   // Add to pending tasks (shows at top of list)
@@ -779,8 +975,8 @@ async function runNewTask() {
   const startMs = Date.now()
 
   try {
-    // Use /task endpoint for parallel execution (doesn't block queue)
-    const payload = { message: taskMessage, timeout_seconds: taskTimeout.value }
+    // Use /task endpoint in async mode for parallel execution with live streaming
+    const payload = { message: taskMessage, timeout_seconds: taskTimeout.value, async_mode: true }
     if (selectedModel.value) {
       payload.model = selectedModel.value
     }
@@ -788,20 +984,26 @@ async function runNewTask() {
       headers: authStore.authHeader
     })
 
-    const durationMs = Date.now() - startMs
-
-    // Update the local task with success
     const idx = pendingTasks.value.findIndex(t => t.id === taskId)
     if (idx !== -1) {
-      pendingTasks.value[idx] = {
-        ...pendingTasks.value[idx],
-        status: 'success',
-        duration_ms: durationMs,
-        cost: response.data.cost || null,
-        context_used: response.data.context_used || null,
-        context_max: response.data.context_max || null,
-        response: response.data.response || JSON.stringify(response.data, null, 2)
+      const task = pendingTasks.value[idx]
+      task.execution_id = response.data.execution_id || response.data.task_execution_id || response.data.id
+      if (!task.execution_id) {
+        task.status = 'failed'
+        task.status_label = 'Failed'
+        task.error = 'Task started but server did not return an execution id.'
+        task.stream_warning = null
+        await loadTasks()
+        return
       }
+      task.status = 'running'
+      task.status_label = 'Starting...'
+      taskLoading.value = false
+      subscribeTaskStream(task)
+      pollTaskUntilTerminal(task).catch((err) => {
+        console.error('Failed to poll task until terminal:', err)
+        task.stream_warning = err?.message || 'Unable to poll task status'
+      })
     }
   } catch (error) {
     const durationMs = Date.now() - startMs
@@ -809,6 +1011,8 @@ async function runNewTask() {
     // Update the local task with failure
     const idx = pendingTasks.value.findIndex(t => t.id === taskId)
     if (idx !== -1) {
+      stopTaskStream(pendingTasks.value[idx].execution_id)
+      stopTaskPolling(pendingTasks.value[idx].execution_id)
       pendingTasks.value[idx] = {
         ...pendingTasks.value[idx],
         status: 'failed',
@@ -818,14 +1022,6 @@ async function runNewTask() {
     }
   } finally {
     taskLoading.value = false
-    // Refresh server data - this will load the persisted execution
-    await loadExecutions()
-    loadQueueStatus()
-    // Remove the local pending task since it's now in server data
-    const idx = pendingTasks.value.findIndex(t => t.id === taskId)
-    if (idx !== -1) {
-      pendingTasks.value.splice(idx, 1)
-    }
   }
 }
 
@@ -917,8 +1113,11 @@ async function terminateTask(task) {
     // Update task status locally while we wait for refresh
     const idx = pendingTasks.value.findIndex(t => t.id === task.id)
     if (idx !== -1) {
+      stopTaskStream(pendingTasks.value[idx].execution_id)
+      stopTaskPolling(pendingTasks.value[idx].execution_id)
       pendingTasks.value[idx].status = 'cancelled'
       pendingTasks.value[idx].error = 'Execution terminated by user'
+      pendingTasks.value[idx].current_tool = null
     }
 
     // Refresh data to get updated status
@@ -972,96 +1171,77 @@ function formatLogData(log) {
 // Parse execution log JSON into structured entries for display
 // Expects raw Claude Code stream-json format: {type: "system/assistant/user/result", ...}
 function parseExecutionLog(log) {
-  if (!log) return []
+  const rawEvents = parseRawExecutionLogEvents(log)
+  const initEntries = rawEvents
+    .filter((msg) => msg?.type === 'system' && msg?.subtype === 'init')
+    .map((msg) => ({
+      type: 'init',
+      model: msg.model || 'unknown',
+      toolCount: msg.tools?.length || 0,
+      mcpServers: msg.mcp_servers?.map(s => s.name) || []
+    }))
+  const resultEntries = rawEvents
+    .filter((msg) => msg?.type === 'result')
+    .map((msg) => ({
+      type: 'result',
+      numTurns: msg.num_turns || msg.numTurns || '-',
+      duration: msg.duration_ms ? formatDuration(msg.duration_ms) : (msg.duration || '-'),
+      cost: msg.cost_usd?.toFixed?.(4) || msg.total_cost_usd?.toFixed?.(4) || '0.0000'
+    }))
 
-  // Handle string log (legacy format)
+  const sharedEntries = parseSharedExecutionLog(log).map((entry) => {
+    if (entry.type === 'assistant_text') {
+      return { type: 'assistant-text', text: entry.content }
+    }
+    if (entry.type === 'tool_start') {
+      return {
+        type: 'tool-call',
+        tool: entry.tool || 'unknown',
+        input: typeof entry.input === 'string' ? entry.input : JSON.stringify(entry.input || {}, null, 2)
+      }
+    }
+    if (entry.type === 'tool_result') {
+      let content = entry.output
+      if (Array.isArray(content)) {
+        content = content.map(c => c.text || c.content || JSON.stringify(c)).join('\n')
+      } else if (content && typeof content !== 'string') {
+        content = JSON.stringify(content, null, 2)
+      }
+      if (content && content.length > 2000) {
+        content = content.substring(0, 2000) + '\n... (truncated)'
+      }
+      return { type: 'tool-result', content: content || '(empty result)' }
+    }
+    if (entry.type === 'metadata') {
+      if (resultEntries.length > 0) return null
+      return {
+        type: 'result',
+        numTurns: '-',
+        duration: entry.duration ? formatDuration(entry.duration) : '-',
+        cost: entry.cost?.toFixed?.(4) || '0.0000'
+      }
+    }
+    if (entry.type === 'raw_text' || entry.type === 'raw_json') {
+      return { type: 'assistant-text', text: entry.content }
+    }
+    return entry
+  }).filter(Boolean)
+
+  return [...initEntries, ...sharedEntries, ...resultEntries]
+}
+
+function parseRawExecutionLogEvents(log) {
+  if (!log) return []
+  if (Array.isArray(log)) return log
   if (typeof log === 'string') {
     try {
-      log = JSON.parse(log)
+      const parsed = JSON.parse(log)
+      return Array.isArray(parsed) ? parsed : []
     } catch {
-      return [{ type: 'assistant-text', text: log }]
+      return []
     }
   }
-
-  // Must be an array
-  if (!Array.isArray(log)) {
-    return [{ type: 'assistant-text', text: JSON.stringify(log, null, 2) }]
-  }
-
-  const entries = []
-
-  for (const msg of log) {
-    // Session init message
-    if (msg.type === 'system' && msg.subtype === 'init') {
-      entries.push({
-        type: 'init',
-        model: msg.model || 'unknown',
-        toolCount: msg.tools?.length || 0,
-        mcpServers: msg.mcp_servers?.map(s => s.name) || []
-      })
-      continue
-    }
-
-    // Assistant message (can contain text and/or tool_use)
-    if (msg.type === 'assistant') {
-      const content = msg.message?.content || []
-      for (const block of content) {
-        if (block.type === 'text' && block.text) {
-          entries.push({
-            type: 'assistant-text',
-            text: block.text
-          })
-        } else if (block.type === 'tool_use') {
-          entries.push({
-            type: 'tool-call',
-            tool: block.name || 'unknown',
-            input: typeof block.input === 'string'
-              ? block.input
-              : JSON.stringify(block.input, null, 2)
-          })
-        }
-      }
-      continue
-    }
-
-    // User message (typically tool results)
-    if (msg.type === 'user') {
-      const content = msg.message?.content || []
-      for (const block of content) {
-        if (block.type === 'tool_result') {
-          // Content can be string or array of content blocks
-          let resultContent = block.content
-          if (Array.isArray(resultContent)) {
-            resultContent = resultContent
-              .map(c => c.text || c.content || JSON.stringify(c))
-              .join('\n')
-          }
-          // Truncate very long results
-          if (resultContent && resultContent.length > 2000) {
-            resultContent = resultContent.substring(0, 2000) + '\n... (truncated)'
-          }
-          entries.push({
-            type: 'tool-result',
-            content: resultContent || '(empty result)'
-          })
-        }
-      }
-      continue
-    }
-
-    // Final result message
-    if (msg.type === 'result') {
-      entries.push({
-        type: 'result',
-        numTurns: msg.num_turns || msg.numTurns || '-',
-        duration: msg.duration_ms ? formatDuration(msg.duration_ms) : (msg.duration || '-'),
-        cost: msg.cost_usd?.toFixed(4) || msg.total_cost_usd?.toFixed(4) || '0.0000'
-      })
-      continue
-    }
-  }
-
-  return entries
+  return []
 }
 
 // Force release queue
@@ -1180,11 +1360,13 @@ watch(() => props.agentStatus, (newStatus) => {
   } else {
     queueStatus.value = null
     stopPolling()
+    stopAllTaskActivity()
   }
 })
 
 // Watch for agent name changes
 watch(() => props.agentName, () => {
+  stopAllTaskActivity()
   pendingTasks.value = [] // Clear local tasks when switching agents
   taskDetailsCache.value = {} // Clear cached details (PERF-001)
   expandedTaskId.value = null // Collapse any expanded task
@@ -1207,5 +1389,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopPolling()
+  stopAllTaskActivity()
 })
 </script>

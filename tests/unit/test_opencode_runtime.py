@@ -2,11 +2,30 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+import types
 
 import pytest
 from fastapi import HTTPException
 
 from agent_server.services import runtime_adapter
+
+
+class _FakePipe:
+    def __init__(self, lines):
+        self._lines = list(lines)
+        self.read_lines = []
+        self.drained = threading.Event()
+
+    def readline(self):
+        if not self._lines:
+            self.drained.set()
+            return ""
+        line = self._lines.pop(0)
+        self.read_lines.append(line)
+        if not self._lines:
+            self.drained.set()
+        return line
 
 
 def test_runtime_factory_returns_opencode(monkeypatch):
@@ -222,6 +241,40 @@ def test_opencode_parser_handles_result_final_events():
     assert text == "done from result"
 
 
+def test_opencode_parser_extracts_nested_text_part_events():
+    from agent_server.services.opencode_runtime import parse_opencode_events
+
+    output = "\n".join([
+        json.dumps({
+            "type": "step_start",
+            "sessionID": "ses_open_1",
+            "part": {"type": "step-start"},
+        }),
+        json.dumps({
+            "type": "text",
+            "sessionID": "ses_open_1",
+            "part": {
+                "type": "text",
+                "text": "Hello. How can I help you?",
+                "time": {"start": 1, "end": 2},
+            },
+        }),
+        json.dumps({
+            "type": "step_finish",
+            "sessionID": "ses_open_1",
+            "part": {"type": "step-finish", "tokens": {"input": 3, "output": 4}},
+        }),
+    ])
+
+    text, _execution_log, _metadata, raw_messages, _session_id = parse_opencode_events(
+        output,
+        "deepseek-openai/deepseek-v4-flash",
+    )
+
+    assert text == "Hello. How can I help you?"
+    assert raw_messages[1]["part"]["text"] == "Hello. How can I help you?"
+
+
 def test_opencode_parser_sanitizes_raw_messages_response_and_tool_data():
     from agent_server.services.opencode_runtime import parse_opencode_events
     from agent_server.utils.credential_sanitizer import REDACTION_PLACEHOLDER
@@ -249,6 +302,171 @@ def test_opencode_parser_sanitizes_raw_messages_response_and_tool_data():
 
 
 @pytest.mark.asyncio
+async def test_execute_headless_publishes_stdout_json_events_live(monkeypatch):
+    from agent_server.services import opencode_runtime
+
+    published = []
+    event_released = threading.Event()
+    wait_called = threading.Event()
+    stdout = _FakePipe([
+        json.dumps({"type": "session", "sessionID": "ses_live"}) + "\n",
+        json.dumps({"type": "message", "text": "hello live"}) + "\n",
+        "not json\n",
+    ])
+    stderr = _FakePipe([])
+
+    class FakeRegistry:
+        def register(self, execution_id, process, metadata=None):
+            pass
+
+        def publish_log_entry_threadsafe(self, execution_id, entry):
+            published.append((execution_id, entry))
+            if len(published) == 2:
+                event_released.set()
+
+        def active_execution_pids(self, exclude_execution_id=None):
+            return []
+
+        def unregister_threadsafe(self, execution_id):
+            pass
+
+    class FakeProcess:
+        pid = 999996
+        returncode = 0
+
+        def __init__(self):
+            self.stdout = stdout
+            self.stderr = stderr
+
+        def wait(self, timeout=None):
+            wait_called.set()
+            assert event_released.wait(timeout=1)
+            stdout.drained.wait(timeout=1)
+            stderr.drained.wait(timeout=1)
+            return self.returncode
+
+    monkeypatch.setattr(opencode_runtime, "get_process_registry", lambda: FakeRegistry())
+    monkeypatch.setattr(opencode_runtime.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(opencode_runtime, "kill_cgroup_orphans", lambda *args, **kwargs: 0)
+
+    text, raw_messages, metadata, session_id = await opencode_runtime.OpenCodeRuntime().execute_headless(
+        prompt="hello",
+        model="openai/gpt-5",
+        timeout_seconds=1,
+        execution_id="exec-live",
+    )
+
+    assert wait_called.is_set()
+    assert text == "hello live"
+    assert session_id == "ses_live"
+    assert metadata.execution_id == "exec-live"
+    assert raw_messages == [
+        {"type": "session", "sessionID": "ses_live"},
+        {"type": "message", "text": "hello live"},
+    ]
+    assert published == [
+        ("exec-live", {"type": "session", "sessionID": "ses_live"}),
+        ("exec-live", {"type": "message", "text": "hello live"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_opencode_publish_failure_does_not_stop_stdout_parsing(monkeypatch):
+    from agent_server.services import opencode_runtime
+
+    published = []
+    stdout = _FakePipe([
+        json.dumps({"type": "message", "text": "first"}) + "\n",
+        json.dumps({"type": "message", "text": "second"}) + "\n",
+    ])
+    stderr = _FakePipe([])
+
+    class FakeRegistry:
+        def register(self, execution_id, process, metadata=None):
+            pass
+
+        def publish_log_entry_threadsafe(self, execution_id, entry):
+            published.append((execution_id, entry))
+            if len(published) == 1:
+                raise RuntimeError("transient publish failure")
+
+        def active_execution_pids(self, exclude_execution_id=None):
+            return []
+
+        def unregister_threadsafe(self, execution_id):
+            pass
+
+    class FakeProcess:
+        pid = 999994
+        returncode = 0
+
+        def __init__(self):
+            self.stdout = stdout
+            self.stderr = stderr
+
+        def wait(self, timeout=None):
+            stdout.drained.wait(timeout=1)
+            stderr.drained.wait(timeout=1)
+            return self.returncode
+
+    monkeypatch.setattr(opencode_runtime, "get_process_registry", lambda: FakeRegistry())
+    monkeypatch.setattr(opencode_runtime.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(opencode_runtime, "kill_cgroup_orphans", lambda *args, **kwargs: 0)
+
+    text, raw_messages, _metadata, _session_id = await opencode_runtime.OpenCodeRuntime().execute_headless(
+        prompt="hello",
+        model="openai/gpt-5",
+        timeout_seconds=1,
+        execution_id="exec-publish-fail",
+    )
+
+    assert text == "first\nsecond"
+    assert raw_messages == [
+        {"type": "message", "text": "first"},
+        {"type": "message", "text": "second"},
+    ]
+    assert published == [
+        ("exec-publish-fail", {"type": "message", "text": "first"}),
+        ("exec-publish-fail", {"type": "message", "text": "second"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_opencode_drains_stderr_concurrently(monkeypatch):
+    from agent_server.services import opencode_runtime
+
+    stdout = _FakePipe([json.dumps({"type": "message", "text": "ok"}) + "\n"])
+    stderr = _FakePipe([f"stderr {index}\n" for index in range(5)])
+
+    class FakeProcess:
+        pid = 999995
+        returncode = 0
+
+        def __init__(self):
+            self.stdout = stdout
+            self.stderr = stderr
+
+        def wait(self, timeout=None):
+            assert stderr.drained.wait(timeout=1)
+            stdout.drained.wait(timeout=1)
+            return self.returncode
+
+    monkeypatch.setattr(opencode_runtime.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(opencode_runtime, "kill_cgroup_orphans", lambda *args, **kwargs: 0)
+
+    text, raw_messages, _metadata, _session_id = await opencode_runtime.OpenCodeRuntime().execute_headless(
+        prompt="hello",
+        model="openai/gpt-5",
+        timeout_seconds=1,
+        execution_id="exec-stderr-live",
+    )
+
+    assert text == "ok"
+    assert raw_messages == [{"type": "message", "text": "ok"}]
+    assert stderr.read_lines == [f"stderr {index}\n" for index in range(5)]
+
+
+@pytest.mark.asyncio
 async def test_opencode_nonzero_stderr_detail_is_sanitized(monkeypatch):
     from agent_server.services import opencode_runtime
 
@@ -257,9 +475,12 @@ async def test_opencode_nonzero_stderr_detail_is_sanitized(monkeypatch):
     class FakeProcess:
         pid = 999999
         returncode = 2
+        stdout = _FakePipe([])
+        stderr = _FakePipe([f"failed with OPENAI_API_KEY={secret}\n"])
 
-        def communicate(self, timeout=None):
-            return "", f"failed with OPENAI_API_KEY={secret}"
+        def wait(self, timeout=None):
+            self.stderr.drained.wait(timeout=1)
+            return self.returncode
 
     monkeypatch.setattr(opencode_runtime.OpenCodeRuntime, "is_available", lambda self: True)
     monkeypatch.setattr(opencode_runtime.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
@@ -293,9 +514,13 @@ async def test_opencode_system_prompt_reaches_command_prompt(monkeypatch):
 
         def __init__(self, cmd, **kwargs):
             captured["cmd"] = cmd
+            self.stdout = _FakePipe([json.dumps({"type": "message", "text": "ok"}) + "\n"])
+            self.stderr = _FakePipe([])
 
-        def communicate(self, timeout=None):
-            return json.dumps({"type": "message", "text": "ok"}), ""
+        def wait(self, timeout=None):
+            self.stdout.drained.wait(timeout=1)
+            self.stderr.drained.wait(timeout=1)
+            return self.returncode
 
     monkeypatch.setattr(opencode_runtime.subprocess, "Popen", lambda cmd, **kwargs: FakeProcess(cmd, **kwargs))
     monkeypatch.setattr(opencode_runtime, "kill_cgroup_orphans", lambda *args, **kwargs: 0)
@@ -319,15 +544,32 @@ async def test_opencode_system_prompt_reaches_command_prompt(monkeypatch):
 async def test_opencode_timeout_returns_504_if_post_termination_communicate_times_out(monkeypatch):
     from agent_server.services import opencode_runtime
 
+    joined_threads = []
+
+    class FakeThread:
+        def __init__(self, target, args=(), daemon=None):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            joined_threads.append((self.target.__name__, timeout))
+
     class FakeProcess:
         pid = 999998
         returncode = None
+        stdout = _FakePipe([])
+        stderr = _FakePipe([])
 
-        def communicate(self, timeout=None):
+        def wait(self, timeout=None):
             raise subprocess.TimeoutExpired(cmd=["opencode"], timeout=timeout)
 
     monkeypatch.setattr(opencode_runtime.OpenCodeRuntime, "is_available", lambda self: True)
     monkeypatch.setattr(opencode_runtime.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(opencode_runtime, "threading", types.SimpleNamespace(Thread=FakeThread))
     monkeypatch.setattr(opencode_runtime, "_terminate_process_group", lambda *args, **kwargs: None)
     monkeypatch.setattr(opencode_runtime, "kill_cgroup_orphans", lambda *args, **kwargs: 0)
 
@@ -343,3 +585,4 @@ async def test_opencode_timeout_returns_504_if_post_termination_communicate_time
         )
 
     assert exc_info.value.status_code == 504
+    assert joined_threads == [("read_stdout", 1), ("read_stderr", 1)]

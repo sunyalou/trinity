@@ -522,7 +522,7 @@ def _run_headless_subprocess(ctx: HeadlessRunContext) -> None:
                         # so subscriber-side breakage cannot back-pressure
                         # the reader.
                         try:
-                            registry.publish_log_entry(ctx.task_session_id, raw_msg)
+                            registry.publish_log_entry_threadsafe(ctx.task_session_id, raw_msg)
                         except Exception as pub_err:  # noqa: BLE001
                             logger.warning(
                                 f"[Headless Task] publish_log_entry failed (continuing): {pub_err}"
@@ -1083,7 +1083,7 @@ async def execute_headless_task(
             return _finalize_headless_result(ctx)
         finally:
             # Always unregister process when done
-            registry.unregister(ctx.task_session_id)
+            registry.unregister_threadsafe(ctx.task_session_id)
 
     except HTTPException:
         raise

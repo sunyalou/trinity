@@ -429,9 +429,14 @@ async def stream_execution_log(execution_id: str):
 
         # Return buffered logs as static stream (for completed executions)
         async def static_generator():
+            saw_stream_end = False
             for entry in buffered:
                 yield f"data: {json.dumps(entry)}\n\n"
-            yield f"data: {json.dumps({'type': 'stream_end'})}\n\n"
+                if isinstance(entry, dict) and entry.get("type") == "stream_end":
+                    saw_stream_end = True
+                    break
+            if not saw_stream_end:
+                yield f"data: {json.dumps({'type': 'stream_end'})}\n\n"
 
         return StreamingResponse(
             static_generator(),
