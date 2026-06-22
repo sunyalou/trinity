@@ -145,6 +145,24 @@ class TestSkillServiceGitUserAgent:
         assert fetch_cmd[c_idx + 1] == "http.useragent=Trinity-Skills-Sync"
         assert fetch_cmd.index("fetch") > c_idx + 1
 
+    def test_pull_updates_origin_url_before_fetching(self, tmp_path):
+        """Existing clones must follow the currently configured library URL."""
+        svc = skill_service_mod.SkillService()
+        svc.library_path = tmp_path / "skills-library"
+        svc.library_path.mkdir(parents=True)
+
+        with patch.object(skill_service_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = svc._git_pull("main", "https://github.com/new-owner/new-repo")
+
+        assert result["success"] is True
+        remote_cmd = _captured_cmd(mock_run.call_args_list, "set-url")
+        assert remote_cmd == [
+            "git", "remote", "set-url", "origin", "https://github.com/new-owner/new-repo"
+        ]
+        fetch_cmd = _captured_cmd(mock_run.call_args_list, "fetch")
+        assert fetch_cmd[-2:] == ["origin", "main"]
+
     def test_pull_reset_does_not_need_user_agent(self, tmp_path):
         """`git reset --hard` is a local-only operation — no HTTP, no UA leak,
         no need to thread the flag through. This is documentation as much as

@@ -117,7 +117,7 @@ class SkillService:
         try:
             if self.library_path.exists():
                 # Pull latest changes
-                result = self._git_pull(branch)
+                result = self._git_pull(branch, auth_url)
             else:
                 # Clone repository
                 result = self._git_clone(auth_url, branch)
@@ -159,9 +159,18 @@ class SkillService:
         except subprocess.TimeoutExpired:
             return {"success": False, "error": "Clone timed out after 120 seconds"}
 
-    def _git_pull(self, branch: str) -> Dict[str, Any]:
+    def _git_pull(self, branch: str, url: Optional[str] = None) -> Dict[str, Any]:
         """Pull latest changes from the skills library."""
         try:
+            if url:
+                subprocess.run(
+                    ["git", "remote", "set-url", "origin", url],
+                    cwd=self.library_path,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
             # Fetch and reset to remote branch
             subprocess.run(
                 ["git", *_GIT_HTTP_UA_ARGS, "fetch", "origin", branch],
