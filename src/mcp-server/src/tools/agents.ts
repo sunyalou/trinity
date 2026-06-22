@@ -27,6 +27,16 @@ export type CreateAgentToolArgs = {
   runtime_permission?: RuntimePermission;
 };
 
+export type DeployLocalAgentToolArgs = {
+  archive: string;
+  name?: string;
+  runtime?: AgentRuntime;
+  runtime_model?: string;
+  runtime_provider_id?: string;
+  runtime_model_id?: string;
+  runtime_permission?: RuntimePermission;
+};
+
 export function buildCreateAgentConfig(args: CreateAgentToolArgs) {
   return {
     name: args.name,
@@ -42,6 +52,18 @@ export function buildCreateAgentConfig(args: CreateAgentToolArgs) {
     mcp_servers: args.mcp_servers,
     custom_instructions: args.custom_instructions,
     source_branch: args.source_branch,
+    ...(args.runtime !== undefined ? { runtime: args.runtime } : {}),
+    ...(args.runtime_model !== undefined ? { runtime_model: args.runtime_model } : {}),
+    ...(args.runtime_provider_id !== undefined ? { runtime_provider_id: args.runtime_provider_id } : {}),
+    ...(args.runtime_model_id !== undefined ? { runtime_model_id: args.runtime_model_id } : {}),
+    ...(args.runtime_permission !== undefined ? { runtime_permission: args.runtime_permission } : {}),
+  };
+}
+
+export function buildDeployLocalAgentPayload(args: DeployLocalAgentToolArgs) {
+  return {
+    archive: args.archive,
+    name: args.name,
     ...(args.runtime !== undefined ? { runtime: args.runtime } : {}),
     ...(args.runtime_model !== undefined ? { runtime_model: args.runtime_model } : {}),
     ...(args.runtime_provider_id !== undefined ? { runtime_provider_id: args.runtime_provider_id } : {}),
@@ -603,9 +625,16 @@ export function createAgentTools(
           .string()
           .optional()
           .describe("Agent name override (defaults to name from template.yaml)"),
+        runtime: z.enum(["claude-code", "gemini-cli", "opencode"]).optional().describe(
+          "Agent runtime. Overrides template.yaml runtime. Default is backend/template default."
+        ),
+        runtime_model: z.string().optional().describe("Runtime-specific model override."),
+        runtime_provider_id: z.string().optional().describe("Runtime provider id, for example 'deepseek-openai'. Must be paired with runtime_model_id."),
+        runtime_model_id: z.string().optional().describe("Runtime provider model id, for example 'deepseek-v4-flash'. Must be paired with runtime_provider_id."),
+        runtime_permission: z.enum(["restricted", "standard", "dangerous"]).optional().describe("Runtime permission profile, mainly for OpenCode."),
       }),
       execute: async (
-        args: { archive: string; name?: string },
+        args: DeployLocalAgentToolArgs,
         context?: { session?: McpAuthContext }
       ) => {
         const authContext = context?.session;
@@ -654,10 +683,7 @@ export function createAgentTools(
         const response = await apiClient.request<DeployLocalResponse>(
           "POST",
           "/api/agents/deploy-local",
-          {
-            archive: args.archive,
-            name: args.name,
-          }
+          buildDeployLocalAgentPayload(args)
         );
 
         return JSON.stringify(response, null, 2);
