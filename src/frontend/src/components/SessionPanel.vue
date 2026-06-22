@@ -437,17 +437,21 @@ async function performReset() {
 async function onSubmit(text, files = []) {
   if ((!text && (!files || files.length === 0)) || loading.value || props.agentStatus !== 'running') return
 
+  const draftText = message.value
+  message.value = ''
+  chatInputRef.value?.clear?.()
+
   // Lazy session creation — first turn from the empty state creates a row.
   if (!currentSessionId.value) {
     try {
       await sessionsStore.createSession(props.agentName)
     } catch (e) {
+      message.value = draftText
       localError.value = e.response?.data?.detail || 'Failed to create session'
       return
     }
   }
 
-  message.value = ''
   loadingText.value = 'Thinking...'
   const sid = currentSessionId.value
 

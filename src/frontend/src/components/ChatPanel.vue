@@ -616,6 +616,7 @@ const sendMessage = async (userMessage, files = []) => {
 
   // Clear input
   message.value = ''
+  chatInputRef.value?.clear?.()
 
   loading.value = true
   loadingText.value = 'Thinking...'

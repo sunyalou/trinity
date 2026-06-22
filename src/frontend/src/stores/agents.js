@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import axios from 'axios'
 import { useAuthStore } from './auth'
 import { useNetworkStore } from './network'
+import { createFilePreviewData } from '../utils/filePreviewData'
 
 export const useAgentsStore = defineStore('agents', {
   state: () => ({
@@ -593,12 +594,8 @@ export const useAgentsStore = defineStore('agents', {
         headers: authStore.authHeader,
         responseType: 'blob'
       })
-      // Return blob URL for media elements
-      return {
-        url: URL.createObjectURL(response.data),
-        type: response.data.type,
-        size: response.data.size
-      }
+      // Keep the original blob so text previews do not need to re-fetch blob URLs.
+      return createFilePreviewData(response.data)
     },
 
     // Custom Metrics Actions (Phase 9.9)
