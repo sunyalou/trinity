@@ -27,6 +27,11 @@ export interface AgentConfig {
   port?: number;  // SSH port - ui_port removed for security
   template?: string;
   source_branch?: string;  // Branch to track (default: main). Can also use github:owner/repo@branch syntax.
+  runtime?: "claude-code" | "gemini-cli" | "opencode";
+  runtime_model?: string;
+  runtime_provider_id?: string;
+  runtime_model_id?: string;
+  runtime_permission?: "restricted" | "standard" | "dangerous";
 }
 
 export interface ChatResponse {

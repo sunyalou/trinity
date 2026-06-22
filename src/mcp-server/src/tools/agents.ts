@@ -8,6 +8,48 @@ import { z } from "zod";
 import { TrinityClient } from "../client.js";
 import type { McpAuthContext } from "../types.js";
 
+export type AgentRuntime = "claude-code" | "gemini-cli" | "opencode";
+export type RuntimePermission = "restricted" | "standard" | "dangerous";
+
+export type CreateAgentToolArgs = {
+  name: string;
+  type?: string;
+  template?: string;
+  resources?: { cpu?: string; memory?: string };
+  tools?: string[];
+  mcp_servers?: string[];
+  custom_instructions?: string;
+  source_branch?: string;
+  runtime?: AgentRuntime;
+  runtime_model?: string;
+  runtime_provider_id?: string;
+  runtime_model_id?: string;
+  runtime_permission?: RuntimePermission;
+};
+
+export function buildCreateAgentConfig(args: CreateAgentToolArgs) {
+  return {
+    name: args.name,
+    type: args.type,
+    template: args.template,
+    resources: args.resources
+      ? {
+          cpu: args.resources.cpu || "2",
+          memory: args.resources.memory || "4g",
+        }
+      : undefined,
+    tools: args.tools,
+    mcp_servers: args.mcp_servers,
+    custom_instructions: args.custom_instructions,
+    source_branch: args.source_branch,
+    ...(args.runtime !== undefined ? { runtime: args.runtime } : {}),
+    ...(args.runtime_model !== undefined ? { runtime_model: args.runtime_model } : {}),
+    ...(args.runtime_provider_id !== undefined ? { runtime_provider_id: args.runtime_provider_id } : {}),
+    ...(args.runtime_model_id !== undefined ? { runtime_model_id: args.runtime_model_id } : {}),
+    ...(args.runtime_permission !== undefined ? { runtime_permission: args.runtime_permission } : {}),
+  };
+}
+
 /**
  * Create agent management tools with the given client
  * @param client - Base Trinity client (provides base URL, no auth when requireApiKey=true)
@@ -205,35 +247,19 @@ export function createAgentTools(
             "Branch to track for this agent. Default: 'main'. " +
             "Can also be specified in template URL as 'github:owner/repo@branch'."
           ),
+        runtime: z.enum(["claude-code", "gemini-cli", "opencode"]).optional().describe(
+          "Agent runtime. Default is backend default 'claude-code'. Use 'opencode' for OpenCode or 'gemini-cli' for Gemini CLI."
+        ),
+        runtime_model: z.string().optional().describe("Runtime-specific model override."),
+        runtime_provider_id: z.string().optional().describe("Runtime provider id, for example 'deepseek-openai'. Must be paired with runtime_model_id."),
+        runtime_model_id: z.string().optional().describe("Runtime provider model id, for example 'deepseek-v4-flash'. Must be paired with runtime_provider_id."),
+        runtime_permission: z.enum(["restricted", "standard", "dangerous"]).optional().describe("Runtime permission profile, mainly for OpenCode."),
       }),
       execute: async (
-        args: {
-          name: string;
-          type?: string;
-          template?: string;
-          resources?: { cpu?: string; memory?: string };
-          tools?: string[];
-          mcp_servers?: string[];
-          custom_instructions?: string;
-          source_branch?: string;
-        },
+        args: CreateAgentToolArgs,
         context: any
       ) => {
-        const config = {
-          name: args.name,
-          type: args.type,
-          template: args.template,
-          resources: args.resources
-            ? {
-                cpu: args.resources.cpu || "2",
-                memory: args.resources.memory || "4g",
-              }
-            : undefined,
-          tools: args.tools,
-          mcp_servers: args.mcp_servers,
-          custom_instructions: args.custom_instructions,
-          source_branch: args.source_branch,
-        };
+        const config = buildCreateAgentConfig(args);
 
         // Get auth context from FastMCP session (set by authenticate callback)
         const authContext = requireApiKey ? context?.session : undefined;
