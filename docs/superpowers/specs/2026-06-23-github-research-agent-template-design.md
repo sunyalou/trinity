@@ -9,6 +9,8 @@ Create a reusable GitHub-hosted Trinity agent template for a general research/re
 
 The first version should be deliberately simple: a small, portable template repository with clear agent instructions, metadata, report output conventions, and no required external credentials.
 
+Trinity's GitHub template loader expects `template.yaml` and instruction files at the GitHub repository root. If `/Users/yalou/src/trinity-agent-templates` is a multi-template repository, this research template should live in a subdirectory during local authoring but must be published/exported so that the research template directory becomes the root of the GitHub repo referenced by Trinity.
+
 ## Non-Goals
 
 - Do not change Trinity platform code.
@@ -32,12 +34,19 @@ trinity-agent-researcher/
   template.yaml
   CLAUDE.md
   AGENTS.md
+  GEMINI.md
   README.md
   .gitignore
   reports/.gitkeep
 ```
 
-`CLAUDE.md` is required for Trinity compatibility. `AGENTS.md` should also be present for OpenCode-compatible agent instruction discovery. To avoid divergent instructions, `AGENTS.md` may either mirror `CLAUDE.md` or point readers to `CLAUDE.md` as the canonical instruction file.
+Instruction files should follow each runtime's official convention:
+
+- Claude Code: `CLAUDE.md`
+- OpenCode: `AGENTS.md`
+- Gemini CLI: `GEMINI.md`
+
+The v1 template defaults to OpenCode, so `AGENTS.md` is the primary runtime instruction file. `CLAUDE.md` is still required because Trinity's current template compatibility checks require a non-empty `CLAUDE.md`, and it also supports Claude Code users. `GEMINI.md` supports users who later switch the template/runtime to Gemini CLI. To avoid divergent behavior, all three files should contain equivalent instructions, adapted only where runtime-specific wording is necessary.
 
 ### `template.yaml`
 
@@ -148,9 +157,15 @@ metrics:
         label: "Error"
 ```
 
-### `CLAUDE.md` and `AGENTS.md`
+### Runtime instruction files
 
-`CLAUDE.md` should be the canonical instruction file for Trinity compatibility. `AGENTS.md` should be included for OpenCode-compatible instruction discovery and should either duplicate the same instructions or direct the runtime to follow `CLAUDE.md`.
+The template should include runtime-specific instruction files instead of assuming one universal canonical file:
+
+- `AGENTS.md` for OpenCode. This is the primary instruction file for the default v1 runtime.
+- `CLAUDE.md` for Claude Code and Trinity template compatibility validation.
+- `GEMINI.md` for Gemini CLI.
+
+Each file should define the same agent behavior. Do not make `AGENTS.md` or `GEMINI.md` merely point to `CLAUDE.md`; each runtime should find usable instructions at its official default path.
 
 The instructions should define:
 
@@ -193,7 +208,7 @@ Keep `reports/.gitkeep` tracked so the reports directory exists in new agents.
 
 ## Agent Behavior
 
-The slash-style commands below are conversational conventions documented in `CLAUDE.md` and `AGENTS.md`. No `.claude/commands/` command files are required in v1.
+The slash-style commands below are conversational conventions documented in `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md`. No `.claude/commands/` command files are required in v1.
 
 The template should establish these default commands:
 
@@ -232,7 +247,7 @@ Summarize current workspace state, recent reports, and pending work.
 
 1. Trinity creates an agent from `github:owner/repo`.
 2. The agent container clones/copies the template into its workspace.
-3. Runtime instructions are read from root instruction files, with `CLAUDE.md` as the canonical Trinity-compatible file and `AGENTS.md` available for OpenCode-compatible discovery when supported.
+3. Runtime instructions are read from the root instruction file for the selected runtime: OpenCode reads `AGENTS.md`, Claude Code reads `CLAUDE.md`, and Gemini CLI reads `GEMINI.md` by default.
 4. User invokes research commands through Trinity chat.
 5. The agent writes durable reports under `reports/`.
 
@@ -240,7 +255,7 @@ No platform database migration, backend change, or frontend change is required.
 
 ## GitHub Template Flow Requirements
 
-- `template.yaml`, `CLAUDE.md`, and `AGENTS.md` must be at the repository root.
+- `template.yaml`, `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` must be at the repository root.
 - Public repositories can be referenced as `github:owner/repo`, subject to GitHub API/network availability.
 - Private repositories require a Trinity-configured GitHub PAT with read access.
 - Branch-specific creation should use `github:owner/repo@branch`.
@@ -266,7 +281,7 @@ Implementation should validate:
 4. The runtime block uses valid Trinity runtime values.
 5. The files contain no obvious secret placeholders with real values.
 6. The template can be referenced as `github:owner/repo` once pushed.
-7. The template includes `CLAUDE.md` and `AGENTS.md` at the repository root.
+7. The template includes `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` at the repository root, with equivalent instructions for each runtime.
 8. After publishing, create a test agent from the repo and confirm `/status` follows the template instructions.
 
 Generated `reports/*.md` files are intended to persist in the agent workspace. They are not ignored by default so operators can choose to sync final reports back to GitHub when desired. Temporary report drafts should use `*.tmp.md` and are ignored.
