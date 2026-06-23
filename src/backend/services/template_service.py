@@ -14,9 +14,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 from pathlib import Path
+from urllib.parse import quote
 import httpx
 import yaml
 from config import DEFAULT_GITHUB_TEMPLATE_REPOS, GITHUB_PAT_CREDENTIAL_ID
+from services.github_template_ref import GitHubTemplateRef, parse_github_template_ref
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +26,7 @@ logger = logging.getLogger(__name__)
 # GitHub Metadata Fetching & Caching
 # ============================================================================
 
-_metadata_cache: Dict[str, tuple] = {}  # repo -> (timestamp, metadata_dict)
+_metadata_cache: Dict[str, tuple] = {}  # canonical ref -> (timestamp, metadata_dict)
 _CACHE_TTL = 600  # 10 minutes
 
 
@@ -56,6 +58,46 @@ def _fetch_template_yaml(repo: str, pat: str) -> dict:
         return {}
 
 
+def _fetch_template_yaml_ref(ref: GitHubTemplateRef, pat: str) -> dict:
+    """Fetch and parse template.yaml from a GitHub template ref via the API.
+
+    Supports template.yaml at repository root or inside a validated template
+    subdirectory. Each path segment is URL-encoded independently so slashes
+    remain route separators while characters like # cannot affect URL parsing.
+    """
+    try:
+        headers = {"Accept": "application/vnd.github+json"}
+        if pat:
+            headers["Authorization"] = f"Bearer {pat}"
+
+        path_segments = []
+        if ref.template_path:
+            path_segments.extend(ref.template_path.split("/"))
+        path_segments.append("template.yaml")
+        content_path = "/".join(quote(segment, safe="") for segment in path_segments)
+
+        kwargs = {"headers": headers}
+        if ref.branch:
+            kwargs["params"] = {"ref": ref.branch}
+
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(
+                f"https://api.github.com/repos/{ref.repo}/contents/{content_path}",
+                **kwargs,
+            )
+
+        if resp.status_code != 200:
+            logger.debug("template.yaml not found for %s (HTTP %s)", ref.canonical, resp.status_code)
+            return {}
+
+        data = resp.json()
+        content = base64.b64decode(data["content"]).decode("utf-8")
+        return yaml.safe_load(content) or {}
+    except Exception as e:
+        logger.warning("Failed to fetch template.yaml for %s: %s", ref.canonical, e)
+        return {}
+
+
 def _get_github_pat() -> str:
     """Get GitHub PAT (avoids circular import)."""
     from services.settings_service import get_github_pat
@@ -64,13 +106,14 @@ def _get_github_pat() -> str:
 
 def _get_cached_metadata(repo: str) -> dict:
     """Return cached metadata for a repo, fetching if stale or missing."""
-    cached = _metadata_cache.get(repo)
+    ref = parse_github_template_ref(repo)
+    cached = _metadata_cache.get(ref.canonical)
     if cached and time.time() - cached[0] < _CACHE_TTL:
         return cached[1]
 
     pat = _get_github_pat()
-    metadata = _fetch_template_yaml(repo, pat)
-    _metadata_cache[repo] = (time.time(), metadata)
+    metadata = _fetch_template_yaml_ref(ref, pat)
+    _metadata_cache[ref.canonical] = (time.time(), metadata)
     return metadata
 
 
@@ -80,27 +123,28 @@ def _fetch_all_metadata(repos: List[str]) -> Dict[str, dict]:
     to_fetch = []
 
     for repo in repos:
-        cached = _metadata_cache.get(repo)
+        ref = parse_github_template_ref(repo)
+        cached = _metadata_cache.get(ref.canonical)
         if cached and time.time() - cached[0] < _CACHE_TTL:
-            results[repo] = cached[1]
+            results[ref.canonical] = cached[1]
         else:
-            to_fetch.append(repo)
+            to_fetch.append(ref)
 
     if to_fetch:
         pat = _get_github_pat()
         with ThreadPoolExecutor(max_workers=5) as pool:
             futures = {
-                pool.submit(_fetch_template_yaml, repo, pat): repo
-                for repo in to_fetch
+                pool.submit(_fetch_template_yaml_ref, ref, pat): ref
+                for ref in to_fetch
             }
             for future in as_completed(futures):
-                repo = futures[future]
+                ref = futures[future]
                 try:
                     metadata = future.result()
                 except Exception:
                     metadata = {}
-                _metadata_cache[repo] = (time.time(), metadata)
-                results[repo] = metadata
+                _metadata_cache[ref.canonical] = (time.time(), metadata)
+                results[ref.canonical] = metadata
 
     return results
 
@@ -109,7 +153,7 @@ def _fetch_all_metadata(repos: List[str]) -> Dict[str, dict]:
 # Template Expansion
 # ============================================================================
 
-def _build_template(repo: str, metadata: dict, admin_override: dict = None) -> dict:
+def _build_template(repo: str | GitHubTemplateRef, metadata: dict, admin_override: dict = None) -> dict:
     """Build a full template dict from repo + fetched metadata + optional admin overrides.
 
     Priority for display_name / description:
@@ -117,13 +161,14 @@ def _build_template(repo: str, metadata: dict, admin_override: dict = None) -> d
       2. template.yaml value (from GitHub) — if available
       3. Repo name fallback
     """
+    ref = repo if isinstance(repo, GitHubTemplateRef) else parse_github_template_ref(repo)
     override = admin_override or {}
 
     display_name = (
         override.get("display_name")
         or metadata.get("display_name")
         or metadata.get("name")
-        or repo.split("/")[-1]
+        or ref.repo.split("/")[-1]
     )
     description = (
         override.get("description")
@@ -135,10 +180,14 @@ def _build_template(repo: str, metadata: dict, admin_override: dict = None) -> d
     from services.git_service import DEFAULT_PERSISTENT_STATE
 
     return {
-        "id": f"github:{repo}",
+        "id": ref.template_id,
         "display_name": display_name,
         "description": description,
-        "github_repo": repo,
+        "github_repo": ref.canonical,
+        "repo": ref.repo,
+        "clone_repo": ref.repo,
+        "template_path": ref.template_path,
+        "source_branch": ref.branch,
         "github_credential_id": GITHUB_PAT_CREDENTIAL_ID,
         "source": "github",
         "resources": metadata.get("resources", {"cpu": "2", "memory": "4g"}),
@@ -264,18 +313,20 @@ def get_all_templates() -> List[dict]:
 
     if db_entries is not None:
         # Admin-configured list
-        repos = [e["github_repo"] for e in db_entries]
+        refs = [parse_github_template_ref(e["github_repo"]) for e in db_entries]
+        repos = [ref.canonical for ref in refs]
         all_metadata = _fetch_all_metadata(repos)
         github = [
-            _build_template(e["github_repo"], all_metadata.get(e["github_repo"], {}), e)
-            for e in db_entries
+            _build_template(ref, all_metadata.get(ref.canonical, {}), entry)
+            for ref, entry in zip(refs, db_entries)
         ]
     else:
         # Defaults
-        all_metadata = _fetch_all_metadata(DEFAULT_GITHUB_TEMPLATE_REPOS)
+        refs = [parse_github_template_ref(repo) for repo in DEFAULT_GITHUB_TEMPLATE_REPOS]
+        all_metadata = _fetch_all_metadata([ref.canonical for ref in refs])
         github = [
-            _build_template(repo, all_metadata.get(repo, {}))
-            for repo in DEFAULT_GITHUB_TEMPLATE_REPOS
+            _build_template(ref, all_metadata.get(ref.canonical, {}))
+            for ref in refs
         ]
 
     return local + github
@@ -289,7 +340,7 @@ def get_github_template(template_id: str) -> Optional[dict]:
     if not template_id.startswith("github:"):
         return None
 
-    repo = template_id[len("github:"):]
+    ref = parse_github_template_ref(template_id)
 
     # Check if it's in the configured list (DB or defaults)
     from services.settings_service import get_github_templates
@@ -297,18 +348,20 @@ def get_github_template(template_id: str) -> Optional[dict]:
 
     if db_entries is not None:
         for entry in db_entries:
-            if entry["github_repo"] == repo:
-                metadata = _get_cached_metadata(repo)
-                return _build_template(repo, metadata, entry)
+            entry_ref = parse_github_template_ref(entry["github_repo"])
+            if entry_ref.canonical == ref.canonical:
+                metadata = _get_cached_metadata(ref.canonical)
+                return _build_template(ref, metadata, entry)
 
     # Check defaults
-    if repo in DEFAULT_GITHUB_TEMPLATE_REPOS:
-        metadata = _get_cached_metadata(repo)
-        return _build_template(repo, metadata)
+    default_refs = [parse_github_template_ref(repo) for repo in DEFAULT_GITHUB_TEMPLATE_REPOS]
+    if any(default_ref.canonical == ref.canonical for default_ref in default_refs):
+        metadata = _get_cached_metadata(ref.canonical)
+        return _build_template(ref, metadata)
 
     # Dynamic: repo not in any configured list but still a valid github: ID
-    metadata = _get_cached_metadata(repo)
-    return _build_template(repo, metadata)
+    metadata = _get_cached_metadata(ref.canonical)
+    return _build_template(ref, metadata)
 
 
 def clone_github_repo(github_repo: str, github_pat: str, dest_path: Path, branch: str = None) -> bool:
