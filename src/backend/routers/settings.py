@@ -7,7 +7,6 @@ Admin-only access for modification, read access for all authenticated users.
 import logging
 import json
 import os
-import re
 import httpx
 from datetime import datetime, UTC
 from typing import List, Dict, Any, Optional
@@ -45,6 +44,7 @@ from services.runtime_model_defaults import resolve_provider_model
 from services.provider_connection_test_service import provider_connection_test_service
 from services.custom_provider_configs import CUSTOM_PROVIDER_CONFIGS_KEY
 from services.provider_configs import PROVIDER_CONFIGS_KEY
+from services.github_template_ref import parse_github_template_ref
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -1184,9 +1184,6 @@ class GitHubTemplatesUpdate(BaseModel):
     templates: List[GitHubTemplateEntry]
 
 
-_REPO_PATTERN = re.compile(r'^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$')
-
-
 @router.get("/github-templates")
 async def get_github_templates(
     request: Request,
@@ -1251,20 +1248,27 @@ async def update_github_templates(
     """
     Set the GitHub templates list.
 
-    Admin-only. Validates owner/repo format for each entry.
+    Admin-only. Validates GitHub template ref format for each entry.
     """
     require_admin(current_user)
 
-    # Validate each entry
+    # Validate each entry and store canonical refs.
+    templates_data = []
     for entry in body.templates:
-        if not _REPO_PATTERN.match(entry.github_repo):
+        try:
+            ref = parse_github_template_ref(entry.github_repo)
+        except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid repository format: '{entry.github_repo}'. Expected 'owner/repo'."
+                detail=(
+                    f"Invalid repository format: '{entry.github_repo}'. Expected 'owner/repo', "
+                    "'owner/repo@branch', 'owner/repo//path', or 'owner/repo//path@branch'."
+                ),
             )
+        entry_data = entry.model_dump()
+        entry_data["github_repo"] = ref.canonical
+        templates_data.append(entry_data)
 
-    # Convert to list of dicts for storage
-    templates_data = [entry.model_dump() for entry in body.templates]
     settings_service.set_github_templates(templates_data)
 
     return {

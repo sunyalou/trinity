@@ -1,7 +1,16 @@
 import base64
 
+import pytest
+from fastapi import HTTPException
+
 from services.github_template_ref import parse_github_template_ref
 from services import template_service
+from routers import settings as settings_router
+
+
+class DummyAdmin:
+    role = "admin"
+    username = "admin"
 
 
 class FakeResponse:
@@ -111,3 +120,61 @@ def test_build_template_preserves_canonical_branch_id():
     assert template["clone_repo"] == "owner/repo"
     assert template["template_path"] == "research-agent"
     assert template["source_branch"] == "dev"
+
+
+@pytest.mark.parametrize(
+    "raw, canonical",
+    [
+        ("owner/repo", "owner/repo"),
+        ("owner/repo@dev", "owner/repo@dev"),
+        ("owner/repo//research-agent", "owner/repo//research-agent"),
+        ("owner/repo//research-agent@main", "owner/repo//research-agent@main"),
+        ("github:owner/repo//research-agent@main", "owner/repo//research-agent@main"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_settings_accepts_and_stores_canonical_github_template_refs(monkeypatch, raw, canonical):
+    stored = []
+    monkeypatch.setattr(settings_router.settings_service, "set_github_templates", stored.extend)
+
+    body = settings_router.GitHubTemplatesUpdate(
+        templates=[settings_router.GitHubTemplateEntry(github_repo=raw)]
+    )
+
+    result = await settings_router.update_github_templates(body, request=None, current_user=DummyAdmin())
+
+    assert result == {"success": True, "count": 1}
+    assert stored[0]["github_repo"] == canonical
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "owner/repo//",
+        "owner/repo//../x",
+        "owner/repo@",
+        "owner/repo@bad branch",
+    ],
+)
+@pytest.mark.asyncio
+async def test_settings_rejects_invalid_github_template_refs(monkeypatch, raw):
+    called = False
+
+    def fake_set_github_templates(templates):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(settings_router.settings_service, "set_github_templates", fake_set_github_templates)
+    body = settings_router.GitHubTemplatesUpdate(
+        templates=[settings_router.GitHubTemplateEntry(github_repo=raw)]
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await settings_router.update_github_templates(body, request=None, current_user=DummyAdmin())
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == (
+        f"Invalid repository format: '{raw}'. Expected 'owner/repo', "
+        "'owner/repo@branch', 'owner/repo//path', or 'owner/repo//path@branch'."
+    )
+    assert called is False
