@@ -283,6 +283,19 @@ def _resolve_github_template_config(config_template: str) -> GitHubTemplateConfi
     )
 
 
+def _build_effective_github_template_ref(
+    github_repo: str,
+    github_template_path: str | None,
+    source_branch: str | None,
+) -> GitHubTemplateRef:
+    raw_ref = github_repo
+    if github_template_path:
+        raw_ref += f"//{github_template_path}"
+    if source_branch:
+        raw_ref += f"@{source_branch}"
+    return parse_github_template_ref(raw_ref)
+
+
 async def _reserve_git_sync_for_template(
     *,
     enable_git_sync_for_template: bool,
@@ -518,6 +531,34 @@ async def create_agent_internal(
                 github_pat_for_agent = github_pat
                 config.resources = gh_template.get("resources", config.resources)
                 config.mcp_servers = gh_template.get("mcp_servers", config.mcp_servers)
+                if github_template_path:
+                    try:
+                        effective_ref = _build_effective_github_template_ref(
+                            github_repo_for_agent,
+                            github_template_path,
+                            config.source_branch,
+                        )
+                        template_data = _fetch_template_yaml_ref(effective_ref, github_pat_for_agent)
+                        runtime_config = template_data.get("runtime", {})
+                        try:
+                            _apply_runtime_template_config(config, runtime_config)
+                        except ValueError as e:
+                            raise HTTPException(status_code=400, detail=str(e)) from e
+                        config.resources = template_data.get("resources", config.resources)
+                        creds = template_data.get("credentials", {})
+                        mcp_servers = list(creds.get("mcp_servers", {}).keys()) if isinstance(creds, dict) else []
+                        if mcp_servers:
+                            config.mcp_servers = mcp_servers
+                        shared_folders_config = template_data.get("shared_folders", {})
+                        if shared_folders_config:
+                            template_shared_folders = {
+                                "expose": shared_folders_config.get("expose", False),
+                                "consume": shared_folders_config.get("consume", False),
+                            }
+                    except HTTPException:
+                        raise
+                    except Exception as e:
+                        logger.warning(f"Error loading GitHub template config: {e}")
             else:
                 # Dynamic GitHub template - use any github:owner/repo[//path][@branch] format
                 # Requires system GitHub PAT to be configured

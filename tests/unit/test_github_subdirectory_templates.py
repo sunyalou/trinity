@@ -523,6 +523,123 @@ async def test_create_agent_subdirectory_ref_applies_template_runtime(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_create_agent_configured_subdirectory_ref_applies_template_runtime(monkeypatch):
+    env_capture = {}
+    reserve_calls = []
+    auto_sync_calls = []
+    _patch_create_agent_dependencies(
+        monkeypatch,
+        env_capture=env_capture,
+        reserve_calls=reserve_calls,
+        auto_sync_calls=auto_sync_calls,
+    )
+    fetched_refs = []
+
+    monkeypatch.setattr(agent_crud, "get_github_template", lambda template_id: {
+        "id": template_id,
+        "repo": "owner/repo",
+        "template_path": "research-agent",
+        "source_branch": "main",
+    })
+
+    def fake_fetch_template_yaml_ref(ref, pat):
+        fetched_refs.append((ref.canonical, pat))
+        return {
+            "runtime": {
+                "type": "opencode",
+                "model": "deepseek-openai/deepseek-v4-flash",
+                "permission": "standard",
+            }
+        }
+
+    monkeypatch.setattr(agent_crud, "_fetch_template_yaml_ref", fake_fetch_template_yaml_ref)
+    monkeypatch.setattr(agent_crud.settings_service, "get_provider_configs", lambda: {
+        "deepseek-openai": {
+            "id": "deepseek-openai",
+            "name": "DeepSeek OpenAI",
+            "protocol": "openai-compatible",
+            "base_url": "https://api.deepseek.com/v1",
+            "auth": {"api_key": "secret-key", "api_key_configured": True},
+            "models": [{"id": "deepseek-v4-flash", "label": "DeepSeek V4 Flash"}],
+        }
+    })
+
+    config = AgentConfig(
+        name="researcher",
+        template="github:owner/repo//research-agent@main",
+        source_mode=False,
+    )
+    user = User(id=1, username="admin", role="admin")
+
+    await agent_crud.create_agent_internal(config, user, request=None)
+
+    assert fetched_refs == [("owner/repo//research-agent@main", "pat")]
+    assert env_capture["AGENT_RUNTIME"] == "opencode"
+    assert env_capture["AGENT_RUNTIME_MODEL"] == "deepseek-openai/deepseek-v4-flash"
+    assert env_capture["TRINITY_RUNTIME_PROVIDER_ID"] == "deepseek-openai"
+    assert env_capture["TRINITY_RUNTIME_MODEL_ID"] == "deepseek-v4-flash"
+    assert env_capture["TRINITY_PROVIDER_DEEPSEEK_OPENAI_API_KEY"] == "secret-key"
+    assert env_capture["OPENCODE_CONFIG_CONTENT"]
+
+
+@pytest.mark.asyncio
+async def test_create_agent_configured_root_ref_fetches_effective_subdirectory_template(monkeypatch):
+    env_capture = {}
+    reserve_calls = []
+    auto_sync_calls = []
+    _patch_create_agent_dependencies(
+        monkeypatch,
+        env_capture=env_capture,
+        reserve_calls=reserve_calls,
+        auto_sync_calls=auto_sync_calls,
+    )
+    fetched_refs = []
+
+    monkeypatch.setattr(agent_crud, "get_github_template", lambda template_id: {
+        "id": template_id,
+        "repo": "owner/repo",
+        "template_path": "research-agent",
+        "source_branch": "main",
+    })
+
+    def fake_fetch_template_yaml_ref(ref, pat):
+        fetched_refs.append((ref.canonical, pat))
+        return {
+            "runtime": {
+                "type": "opencode",
+                "model": "deepseek-openai/deepseek-v4-flash",
+            }
+        }
+
+    monkeypatch.setattr(agent_crud, "_fetch_template_yaml_ref", fake_fetch_template_yaml_ref)
+    monkeypatch.setattr(agent_crud.settings_service, "get_provider_configs", lambda: {
+        "deepseek-openai": {
+            "id": "deepseek-openai",
+            "name": "DeepSeek OpenAI",
+            "protocol": "openai-compatible",
+            "base_url": "https://api.deepseek.com/v1",
+            "auth": {"api_key": "secret-key", "api_key_configured": True},
+            "models": [{"id": "deepseek-v4-flash", "label": "DeepSeek V4 Flash"}],
+        }
+    })
+
+    config = AgentConfig(
+        name="researcher",
+        template="github:owner/repo",
+        source_mode=False,
+    )
+    user = User(id=1, username="admin", role="admin")
+
+    await agent_crud.create_agent_internal(config, user, request=None)
+
+    assert fetched_refs == [("owner/repo//research-agent@main", "pat")]
+    assert env_capture["GITHUB_TEMPLATE_PATH"] == "research-agent"
+    assert env_capture["GIT_SOURCE_BRANCH"] == "main"
+    assert env_capture["AGENT_RUNTIME"] == "opencode"
+    assert env_capture["AGENT_RUNTIME_MODEL"] == "deepseek-openai/deepseek-v4-flash"
+
+
+@pytest.mark.asyncio
 async def test_create_agent_subdirectory_ref_defaults_source_branch_to_main(monkeypatch):
     env_capture = {}
     reserve_calls = []
