@@ -38,6 +38,11 @@ export function parseGithubTemplateRef(input) {
     let suffix = urlMatch[2] || ''
     if (suffix === '.git') suffix = ''
     else if (suffix.startsWith('.git//') || suffix.startsWith('.git@')) suffix = suffix.slice('.git'.length)
+    else if (suffix.startsWith('/tree/')) {
+      const [branch, ...pathParts] = suffix.slice('/tree/'.length).split('/')
+      if (!branch || pathParts.length === 0) throw new Error('Invalid GitHub tree URL')
+      suffix = `//${pathParts.join('/')}@${branch}`
+    }
     value = `${repo}${suffix}`
   }
   if (value.startsWith('github:')) value = value.slice('github:'.length)
