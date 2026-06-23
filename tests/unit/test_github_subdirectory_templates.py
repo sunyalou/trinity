@@ -1,8 +1,11 @@
 import base64
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
+from models import AgentConfig, AgentStatus, User
 from services.github_template_ref import parse_github_template_ref
 from services import template_service
 from services.agent_service import crud as agent_crud
@@ -323,3 +326,181 @@ async def test_root_ref_keeps_git_sync_reservation_and_env(monkeypatch):
     assert env["GIT_SYNC_ENABLED"] == "true"
     assert env["GIT_SYNC_AUTO"] == "true"
     assert env["GIT_WORKING_BRANCH"] == "trinity/researcher"
+
+
+def _patch_create_agent_dependencies(monkeypatch, *, env_capture, reserve_calls, auto_sync_calls):
+    monkeypatch.setattr(agent_crud, "docker_client", object())
+    monkeypatch.setattr(agent_crud, "get_agent_by_name", lambda name: None)
+    monkeypatch.setattr(agent_crud.db, "get_agent_owner", lambda name: None)
+    monkeypatch.setattr(agent_crud.db, "is_agent_name_reserved", lambda name: False)
+    monkeypatch.setattr(agent_crud.db, "get_agents_by_owner", lambda username: [])
+    monkeypatch.setattr(agent_crud, "get_agent_quota_for_role", lambda role: 0)
+    monkeypatch.setattr(agent_crud, "validate_base_image", lambda image: None)
+    monkeypatch.setattr(agent_crud, "get_next_available_port", lambda: 2222)
+    monkeypatch.setattr(agent_crud, "get_github_template", lambda template_id: None)
+    monkeypatch.setattr(agent_crud, "get_github_pat", lambda: "pat")
+    monkeypatch.setattr(agent_crud, "get_anthropic_api_key", lambda: "")
+    monkeypatch.setattr(agent_crud, "get_agent_default_require_email", lambda: False)
+    monkeypatch.setattr(agent_crud, "get_agent_full_capabilities", lambda: False)
+    monkeypatch.setattr(agent_crud.db, "create_agent_mcp_api_key", lambda **kwargs: None)
+    monkeypatch.setattr(agent_crud.db, "get_guardrails_config", lambda name: None)
+    monkeypatch.setattr(agent_crud.db, "get_least_used_subscription", lambda: None)
+    monkeypatch.setattr(agent_crud.db, "get_shared_folder_config", lambda name: None)
+    monkeypatch.setattr(agent_crud.db, "get_file_sharing_enabled", lambda name: False)
+    monkeypatch.setattr(agent_crud.db, "register_agent_owner", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent_crud.db, "grant_default_permissions", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(
+        agent_crud.db,
+        "set_git_auto_sync_enabled",
+        lambda agent_name, enabled: auto_sync_calls.append((agent_name, enabled)),
+    )
+
+    class FakeGitHubService:
+        def __init__(self, pat):
+            self.pat = pat
+
+        async def check_repo_exists(self, owner, repo):
+            return SimpleNamespace(exists=True, private=False, default_branch="main")
+
+    monkeypatch.setattr(agent_crud, "GitHubService", FakeGitHubService)
+
+    async def fake_reserve_and_generate_instance_id(**kwargs):
+        reserve_calls.append(kwargs)
+        return "instance", "trinity/researcher"
+
+    monkeypatch.setattr(
+        agent_crud.git_service,
+        "reserve_and_generate_instance_id",
+        fake_reserve_and_generate_instance_id,
+    )
+
+    async def fake_materialize_persistent_state(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent_crud.git_service, "materialize_persistent_state", fake_materialize_persistent_state)
+
+    async def fake_volume_get(name):
+        return object()
+
+    async def fake_volume_create(**kwargs):
+        return object()
+
+    async def fake_containers_run(*args, **kwargs):
+        env_capture.update(kwargs["environment"])
+        return SimpleNamespace(id="container-id")
+
+    monkeypatch.setattr(agent_crud, "volume_get", fake_volume_get)
+    monkeypatch.setattr(agent_crud, "volume_create", fake_volume_create)
+    monkeypatch.setattr(agent_crud, "containers_run", fake_containers_run)
+    monkeypatch.setattr(
+        agent_crud,
+        "get_agent_status_from_container",
+        lambda container: AgentStatus(
+            name="researcher",
+            type="business-assistant",
+            status="running",
+            port=2222,
+            created=datetime.now(timezone.utc),
+            resources={"cpu": "2", "memory": "4g"},
+            container_id=container.id,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "github:owner",
+        "github:owner/repo//",
+        "github:owner/repo@bad branch",
+    ],
+)
+@pytest.mark.asyncio
+async def test_create_agent_rejects_invalid_github_template_refs(monkeypatch, template):
+    env_capture = {}
+    reserve_calls = []
+    auto_sync_calls = []
+    _patch_create_agent_dependencies(
+        monkeypatch,
+        env_capture=env_capture,
+        reserve_calls=reserve_calls,
+        auto_sync_calls=auto_sync_calls,
+    )
+
+    config = AgentConfig(name="researcher", template=template)
+    user = User(id=1, username="admin", role="admin")
+
+    with pytest.raises(HTTPException) as exc:
+        await agent_crud.create_agent_internal(config, user, request=None)
+
+    assert exc.value.status_code == 400
+    assert reserve_calls == []
+    assert env_capture == {}
+
+
+@pytest.mark.asyncio
+async def test_create_agent_subdirectory_ref_sets_env_and_skips_git_sync(monkeypatch):
+    env_capture = {}
+    reserve_calls = []
+    auto_sync_calls = []
+    _patch_create_agent_dependencies(
+        monkeypatch,
+        env_capture=env_capture,
+        reserve_calls=reserve_calls,
+        auto_sync_calls=auto_sync_calls,
+    )
+
+    config = AgentConfig(
+        name="researcher",
+        template="github:owner/repo//research-agent@main",
+        source_mode=False,
+    )
+    user = User(id=1, username="admin", role="admin")
+
+    await agent_crud.create_agent_internal(config, user, request=None)
+
+    assert env_capture["GITHUB_REPO"] == "owner/repo"
+    assert env_capture["GITHUB_TEMPLATE_PATH"] == "research-agent"
+    assert env_capture["GIT_SOURCE_BRANCH"] == "main"
+    assert reserve_calls == []
+    assert "GIT_SYNC_ENABLED" not in env_capture
+    assert "GIT_SYNC_AUTO" not in env_capture
+    assert "GIT_WORKING_BRANCH" not in env_capture
+    assert auto_sync_calls == []
+
+
+@pytest.mark.asyncio
+async def test_create_agent_root_ref_keeps_git_sync_reservation_and_env(monkeypatch):
+    env_capture = {}
+    reserve_calls = []
+    auto_sync_calls = []
+    _patch_create_agent_dependencies(
+        monkeypatch,
+        env_capture=env_capture,
+        reserve_calls=reserve_calls,
+        auto_sync_calls=auto_sync_calls,
+    )
+
+    config = AgentConfig(
+        name="researcher",
+        template="github:owner/repo",
+        source_mode=False,
+    )
+    user = User(id=1, username="admin", role="admin")
+
+    await agent_crud.create_agent_internal(config, user, request=None)
+
+    assert reserve_calls == [
+        {
+            "agent_name": "researcher",
+            "github_repo": "owner/repo",
+            "source_branch": "main",
+            "source_mode": False,
+        }
+    ]
+    assert env_capture["GITHUB_REPO"] == "owner/repo"
+    assert "GITHUB_TEMPLATE_PATH" not in env_capture
+    assert env_capture["GIT_SYNC_ENABLED"] == "true"
+    assert env_capture["GIT_SYNC_AUTO"] == "true"
+    assert env_capture["GIT_WORKING_BRANCH"] == "trinity/researcher"
+    assert auto_sync_calls == [("researcher", True)]

@@ -458,7 +458,10 @@ async def create_agent_internal(
                 ),
             )
         if config.template.startswith("github:"):
-            resolved_template = _resolve_github_template_config(config.template)
+            try:
+                resolved_template = _resolve_github_template_config(config.template)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
             config.source_branch = resolved_template.ref.branch or config.source_branch
             github_template_path = resolved_template.github_template_path
             enable_git_sync_for_template = resolved_template.enable_git_sync_for_template
