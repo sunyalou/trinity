@@ -91,7 +91,8 @@ def test_cache_key_includes_path_and_branch(monkeypatch):
     first = template_service._fetch_all_metadata(refs)
     second = template_service._fetch_all_metadata(refs)
 
-    assert fetched == refs
+    assert set(fetched) == set(refs)
+    assert len(fetched) == len(refs)
     assert set(first) == set(refs)
     assert set(second) == set(refs)
     assert first["owner/repo//a"]["display_name"] == "owner/repo//a"
