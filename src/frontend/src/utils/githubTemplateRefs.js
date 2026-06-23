@@ -33,7 +33,13 @@ function validatePath(path) {
 export function parseGithubTemplateRef(input) {
   let value = String(input || '').trim()
   const urlMatch = value.match(/github\.com\/([^/\s#?.]+\/[^/\s#?.]+)(.*)?$/)
-  if (urlMatch) value = `${urlMatch[1].replace(/\.git$/, '')}${urlMatch[2] || ''}`
+  if (urlMatch) {
+    const repo = urlMatch[1].replace(/\.git$/, '')
+    let suffix = urlMatch[2] || ''
+    if (suffix === '.git') suffix = ''
+    else if (suffix.startsWith('.git//') || suffix.startsWith('.git@')) suffix = suffix.slice('.git'.length)
+    value = `${repo}${suffix}`
+  }
   if (value.startsWith('github:')) value = value.slice('github:'.length)
 
   let branch = null
