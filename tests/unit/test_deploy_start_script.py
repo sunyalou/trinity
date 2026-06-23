@@ -8,3 +8,13 @@ def test_start_script_rebuilds_backend_with_fresh_provenance():
     assert "export GIT_COMMIT=$(git rev-parse HEAD)" in script
     assert "export BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" in script
     assert "docker compose up -d --build" in script
+
+
+def test_start_script_rebuilds_agent_base_image_on_deploy():
+    """start.sh must refresh trinity-agent-base so agent startup changes deploy."""
+    script = Path("scripts/deploy/start.sh").read_text()
+
+    assert "./scripts/deploy/build-base-image.sh" in script
+    assert "Rebuilding base agent image" in script
+
+    assert "if ! docker images --format" not in script

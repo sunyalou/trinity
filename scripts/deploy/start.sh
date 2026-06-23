@@ -158,14 +158,14 @@ ensure_docker_gid() {
 
 ensure_docker_gid
 
-# Check base image before starting — without it, agent creation will silently fail
-if ! docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "trinity-agent-base:latest"; then
-    echo "⚠️  trinity-agent-base:latest not found."
-    echo "   Building base agent image first (required for agent creation)..."
-    echo ""
-    ./scripts/deploy/build-base-image.sh
-    echo ""
-fi
+# Rebuild the base image before starting. Agents are created from
+# trinity-agent-base:latest, which is outside docker compose's build graph; if
+# this image is stale, new agent containers can run old startup/server code even
+# after the platform services were rebuilt.
+echo "Rebuilding base agent image (required for fresh agent startup code)..."
+echo ""
+./scripts/deploy/build-base-image.sh
+echo ""
 
 # Build-time provenance (#926). Export git commit/branch/build-date so
 # docker-compose's `backend.build.args` block forwards them as Dockerfile
