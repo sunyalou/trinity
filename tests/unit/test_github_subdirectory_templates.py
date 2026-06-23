@@ -5,6 +5,7 @@ from fastapi import HTTPException
 
 from services.github_template_ref import parse_github_template_ref
 from services import template_service
+from services.agent_service import crud as agent_crud
 from routers import settings as settings_router
 
 
@@ -178,3 +179,147 @@ async def test_settings_rejects_invalid_github_template_refs(monkeypatch, raw):
         "'owner/repo@branch', 'owner/repo//path', or 'owner/repo//path@branch'."
     )
     assert called is False
+
+
+class DummyConfig:
+    name = "researcher"
+    source_branch = None
+    source_mode = False
+
+
+def test_subdirectory_ref_sets_clone_repo_template_path_and_branch_env():
+    resolved = agent_crud._resolve_github_template_config(
+        "github:owner/repo//research-agent@main"
+    )
+    config = DummyConfig()
+    config.source_branch = resolved.ref.branch
+    env = {}
+
+    agent_crud._apply_github_template_env(
+        env_vars=env,
+        config=config,
+        github_repo_for_agent=resolved.github_repo_for_agent,
+        github_pat_for_agent="pat",
+        github_template_path=resolved.github_template_path,
+        enable_git_sync_for_template=resolved.enable_git_sync_for_template,
+        git_working_branch=None,
+    )
+
+    assert resolved.github_repo_for_agent == "owner/repo"
+    assert resolved.github_template_path == "research-agent"
+    assert env["GITHUB_REPO"] == "owner/repo"
+    assert env["GITHUB_TEMPLATE_PATH"] == "research-agent"
+    assert env["GIT_SOURCE_BRANCH"] == "main"
+
+
+@pytest.mark.asyncio
+async def test_subdirectory_ref_skips_git_sync_reservation(monkeypatch):
+    called = False
+
+    async def fake_reserve_and_generate_instance_id(**kwargs):
+        nonlocal called
+        called = True
+        return "instance", "branch"
+
+    monkeypatch.setattr(
+        agent_crud.git_service,
+        "reserve_and_generate_instance_id",
+        fake_reserve_and_generate_instance_id,
+    )
+
+    instance_id, working_branch = await agent_crud._reserve_git_sync_for_template(
+        enable_git_sync_for_template=False,
+        agent_name="researcher",
+        github_repo_for_agent="owner/repo",
+        source_branch="main",
+        source_mode=False,
+    )
+
+    assert (instance_id, working_branch) == (None, None)
+    assert called is False
+
+
+def test_subdirectory_ref_omits_git_sync_env_and_auto_sync_side_effect(monkeypatch):
+    config = DummyConfig()
+    config.source_branch = "main"
+    env = {}
+    auto_sync_calls = []
+
+    monkeypatch.setattr(
+        agent_crud.db,
+        "set_git_auto_sync_enabled",
+        lambda agent_name, enabled: auto_sync_calls.append((agent_name, enabled)),
+    )
+
+    agent_crud._apply_github_template_env(
+        env_vars=env,
+        config=config,
+        github_repo_for_agent="owner/repo",
+        github_pat_for_agent="pat",
+        github_template_path="research-agent",
+        enable_git_sync_for_template=False,
+        git_working_branch="should-not-appear",
+    )
+    agent_crud._set_git_auto_sync_if_enabled(
+        agent_name="researcher",
+        github_repo_for_agent="owner/repo",
+        enable_git_sync_for_template=False,
+        source_mode=False,
+    )
+
+    assert env["GITHUB_REPO"] == "owner/repo"
+    assert env["GITHUB_TEMPLATE_PATH"] == "research-agent"
+    assert "GIT_SYNC_ENABLED" not in env
+    assert "GIT_SYNC_AUTO" not in env
+    assert "GIT_WORKING_BRANCH" not in env
+    assert auto_sync_calls == []
+
+
+@pytest.mark.asyncio
+async def test_root_ref_keeps_git_sync_reservation_and_env(monkeypatch):
+    called = []
+
+    async def fake_reserve_and_generate_instance_id(**kwargs):
+        called.append(kwargs)
+        return "instance", "trinity/researcher"
+
+    monkeypatch.setattr(
+        agent_crud.git_service,
+        "reserve_and_generate_instance_id",
+        fake_reserve_and_generate_instance_id,
+    )
+
+    resolved = agent_crud._resolve_github_template_config("github:owner/repo")
+    instance_id, working_branch = await agent_crud._reserve_git_sync_for_template(
+        enable_git_sync_for_template=resolved.enable_git_sync_for_template,
+        agent_name="researcher",
+        github_repo_for_agent=resolved.github_repo_for_agent,
+        source_branch=None,
+        source_mode=False,
+    )
+    config = DummyConfig()
+    env = {}
+    agent_crud._apply_github_template_env(
+        env_vars=env,
+        config=config,
+        github_repo_for_agent=resolved.github_repo_for_agent,
+        github_pat_for_agent="pat",
+        github_template_path=resolved.github_template_path,
+        enable_git_sync_for_template=resolved.enable_git_sync_for_template,
+        git_working_branch=working_branch,
+    )
+
+    assert (instance_id, working_branch) == ("instance", "trinity/researcher")
+    assert called == [
+        {
+            "agent_name": "researcher",
+            "github_repo": "owner/repo",
+            "source_branch": "main",
+            "source_mode": False,
+        }
+    ]
+    assert env["GITHUB_REPO"] == "owner/repo"
+    assert "GITHUB_TEMPLATE_PATH" not in env
+    assert env["GIT_SYNC_ENABLED"] == "true"
+    assert env["GIT_SYNC_AUTO"] == "true"
+    assert env["GIT_WORKING_BRANCH"] == "trinity/researcher"

@@ -8,6 +8,7 @@ import re
 import json
 import docker
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from services.runtime_provider_templates import build_runtime_template
 from services import git_service
 from services.settings_service import get_anthropic_api_key, get_github_pat, get_agent_full_capabilities, get_agent_quota_for_role, get_agent_default_resources, get_agent_default_require_email, settings_service
 from services.github_service import GitHubService, GitHubError
+from services.github_template_ref import GitHubTemplateRef, parse_github_template_ref
 from utils.helpers import sanitize_agent_name, utc_now_iso
 from .helpers import validate_base_image
 from .lifecycle import RESTRICTED_CAPABILITIES, FULL_CAPABILITIES
@@ -232,6 +234,115 @@ def _get_default_resource(key: str) -> str:
     return defaults.get(key, "2" if key == "cpu" else "4g")
 
 
+@dataclass(frozen=True)
+class GitHubTemplateConfig:
+    ref: GitHubTemplateRef
+    github_repo_for_agent: str
+    github_template_path: str | None
+    enable_git_sync_for_template: bool
+
+
+def _resolve_github_template_config(config_template: str) -> GitHubTemplateConfig:
+    """Resolve a github: template string into clone/env and git-sync config."""
+    ref = parse_github_template_ref(config_template)
+    return GitHubTemplateConfig(
+        ref=ref,
+        github_repo_for_agent=ref.repo,
+        github_template_path=ref.template_path,
+        enable_git_sync_for_template=ref.template_path is None,
+    )
+
+
+async def _reserve_git_sync_for_template(
+    *,
+    enable_git_sync_for_template: bool,
+    agent_name: str,
+    github_repo_for_agent: str,
+    source_branch: str | None,
+    source_mode: bool,
+) -> tuple[str | None, str | None]:
+    """Reserve a git-sync working branch only for templates that support sync."""
+    if not enable_git_sync_for_template:
+        return None, None
+    return await git_service.reserve_and_generate_instance_id(
+        agent_name=agent_name,
+        github_repo=github_repo_for_agent,
+        source_branch=source_branch or "main",
+        source_mode=source_mode,
+    )
+
+
+def _apply_github_template_env(
+    *,
+    env_vars: dict,
+    config: AgentConfig,
+    github_repo_for_agent: str,
+    github_pat_for_agent: str,
+    github_template_path: str | None,
+    enable_git_sync_for_template: bool,
+    git_working_branch: str | None,
+) -> None:
+    """Apply GitHub template env vars, gating git-sync vars for subdir templates."""
+    env_vars['GITHUB_REPO'] = github_repo_for_agent
+    env_vars['GITHUB_PAT'] = github_pat_for_agent
+    if github_template_path:
+        env_vars['GITHUB_TEMPLATE_PATH'] = github_template_path
+    if config.source_branch:
+        env_vars['GIT_SOURCE_BRANCH'] = config.source_branch
+
+    if not enable_git_sync_for_template:
+        logger.info(
+            f"GitHub subdirectory template env vars set for {config.name}: "
+            f"repo={github_repo_for_agent}, template_path={github_template_path}, "
+            f"branch={config.source_branch or 'default'}, sync=false"
+        )
+        return
+
+    # Phase 7: Enable git sync for GitHub-native agents
+    env_vars['GIT_SYNC_ENABLED'] = 'true'
+    # Dev/self-host: propagate optional git base-URL override to agent container
+    _git_base = os.getenv('TRINITY_GIT_BASE_URL')
+    if _git_base:
+        env_vars['TRINITY_GIT_BASE_URL'] = _git_base
+
+    # #389 S1a: 15-min auto-sync heartbeat. Only legacy (working-branch)
+    # agents get it — source-mode agents track main read-only, and
+    # auto-pushing to main would clobber protected branches. Operators
+    # can toggle per-agent via PUT /api/agents/{name}/git/auto-sync.
+    if not config.source_mode:
+        env_vars['GIT_SYNC_AUTO'] = 'true'
+
+    # Source mode (default): Track source branch directly for pull-only sync
+    # Legacy mode: Create a unique working branch for bidirectional sync
+    if config.source_mode:
+        env_vars['GIT_SOURCE_MODE'] = 'true'
+        env_vars['GIT_SOURCE_BRANCH'] = config.source_branch or 'main'
+        logger.info(
+            f"GitHub template env vars set for {config.name}: "
+            f"repo={github_repo_for_agent}, branch={config.source_branch or 'main'}, "
+            f"source_mode=true, sync=true"
+        )
+    else:
+        env_vars['GIT_WORKING_BRANCH'] = git_working_branch
+        logger.info(
+            f"GitHub template env vars set for {config.name}: "
+            f"repo={github_repo_for_agent}, working_branch={git_working_branch}, "
+            f"source_mode=false, sync=true"
+        )
+
+
+def _set_git_auto_sync_if_enabled(
+    *,
+    agent_name: str,
+    github_repo_for_agent: str | None,
+    enable_git_sync_for_template: bool,
+    source_mode: bool,
+) -> None:
+    """Enable default auto-sync only when git sync is active for the template."""
+    if github_repo_for_agent and enable_git_sync_for_template and not source_mode:
+        db.set_git_auto_sync_enabled(agent_name, True)
+
+
 def get_platform_version() -> str:
     """Get the current Trinity platform version from VERSION file."""
     version_paths = [
@@ -318,6 +429,7 @@ async def create_agent_internal(
     github_template_path = None
     github_repo_for_agent = None
     github_pat_for_agent = None
+    enable_git_sync_for_template = False
     git_instance_id = None
     git_working_branch = None
     # Phase 9.11: Track shared folder config from template
@@ -346,26 +458,16 @@ async def create_agent_internal(
                 ),
             )
         if config.template.startswith("github:"):
-            # GIT-002: First, check if template URL contains @branch syntax
-            # This applies to both pre-defined and dynamic templates
-            template_str = config.template[7:]  # Remove "github:" prefix
-            url_branch = None
-            if "@" in template_str:
-                template_str, url_branch = template_str.rsplit("@", 1)
-                # Validate branch name (alphanumeric plus - _ /)
-                if url_branch and url_branch.replace("-", "").replace("_", "").replace("/", "").isalnum():
-                    config.source_branch = url_branch
-                    logger.info(f"GIT-002: Parsed branch from URL: {url_branch}")
-                else:
-                    url_branch = None  # Invalid branch, ignore
-
-            # Reconstruct template ID without branch for lookup
-            template_lookup = f"github:{template_str}" if url_branch else config.template
+            resolved_template = _resolve_github_template_config(config.template)
+            config.source_branch = resolved_template.ref.branch or config.source_branch
+            github_template_path = resolved_template.github_template_path
+            enable_git_sync_for_template = resolved_template.enable_git_sync_for_template
+            template_lookup = resolved_template.ref.template_id
             gh_template = get_github_template(template_lookup)
 
             if gh_template:
                 # Pre-defined GitHub template from config.py
-                github_repo = gh_template["github_repo"]
+                github_repo = gh_template.get("repo") or gh_template.get("clone_repo") or resolved_template.github_repo_for_agent
 
                 # Get system GitHub PAT from settings (SQLite) or env var
                 github_pat = get_github_pat()
@@ -376,20 +478,16 @@ async def create_agent_internal(
                     )
 
                 github_repo_for_agent = github_repo
+                github_template_path = gh_template.get("template_path", github_template_path)
+                if gh_template.get("source_branch"):
+                    config.source_branch = gh_template.get("source_branch")
+                enable_git_sync_for_template = github_template_path is None
                 github_pat_for_agent = github_pat
                 config.resources = gh_template.get("resources", config.resources)
                 config.mcp_servers = gh_template.get("mcp_servers", config.mcp_servers)
             else:
-                # Dynamic GitHub template - use any github:owner/repo[@branch] format
+                # Dynamic GitHub template - use any github:owner/repo[//path][@branch] format
                 # Requires system GitHub PAT to be configured
-                # Note: Branch was already parsed above; template_str already has branch removed
-                repo_path = template_str
-
-                if "/" not in repo_path:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Invalid GitHub template format. Use: github:owner/repo or github:owner/repo@branch"
-                    )
 
                 # Get system GitHub PAT from settings (SQLite) or env var
                 github_pat = get_github_pat()
@@ -399,9 +497,11 @@ async def create_agent_internal(
                         detail="GitHub PAT not configured. Set GITHUB_PAT in .env or add via Settings."
                     )
 
-                github_repo_for_agent = repo_path
+                github_repo_for_agent = resolved_template.github_repo_for_agent
+                github_template_path = resolved_template.github_template_path
+                enable_git_sync_for_template = resolved_template.enable_git_sync_for_template
                 github_pat_for_agent = github_pat
-                logger.info(f"Using dynamic GitHub template: {repo_path} (branch: {config.source_branch})")
+                logger.info(f"Using dynamic GitHub template: {resolved_template.ref.canonical} (branch: {config.source_branch})")
 
             # Validate PAT has access to the repository before creating container
             # This prevents silent clone failures in startup.sh (#218)
@@ -453,13 +553,12 @@ async def create_agent_internal(
             # here, before the container is created, so it must be rolled
             # back if anything in the rest of the flow fails (see the
             # `try: ... except: db.delete_git_config(...)` block below).
-            git_instance_id, git_working_branch = (
-                await git_service.reserve_and_generate_instance_id(
-                    agent_name=config.name,
-                    github_repo=github_repo_for_agent,
-                    source_branch=config.source_branch or "main",
-                    source_mode=config.source_mode,
-                )
+            git_instance_id, git_working_branch = await _reserve_git_sync_for_template(
+                enable_git_sync_for_template=enable_git_sync_for_template,
+                agent_name=config.name,
+                github_repo_for_agent=github_repo_for_agent,
+                source_branch=config.source_branch,
+                source_mode=config.source_mode,
             )
         elif config.template.startswith("local:"):
             # Local template - strip "local:" prefix. Look in curated catalog
@@ -699,39 +798,15 @@ async def create_agent_internal(
         env_vars['TRINITY_BACKEND_URL'] = os.getenv('TRINITY_BACKEND_URL', 'http://backend:8000')
 
     if github_repo_for_agent and github_pat_for_agent:
-        env_vars['GITHUB_REPO'] = github_repo_for_agent
-        env_vars['GITHUB_PAT'] = github_pat_for_agent
-        # Phase 7: Enable git sync for GitHub-native agents
-        env_vars['GIT_SYNC_ENABLED'] = 'true'
-        # Dev/self-host: propagate optional git base-URL override to agent container
-        _git_base = os.getenv('TRINITY_GIT_BASE_URL')
-        if _git_base:
-            env_vars['TRINITY_GIT_BASE_URL'] = _git_base
-
-        # #389 S1a: 15-min auto-sync heartbeat. Only legacy (working-branch)
-        # agents get it — source-mode agents track main read-only, and
-        # auto-pushing to main would clobber protected branches. Operators
-        # can toggle per-agent via PUT /api/agents/{name}/git/auto-sync.
-        if not config.source_mode:
-            env_vars['GIT_SYNC_AUTO'] = 'true'
-
-        # Source mode (default): Track source branch directly for pull-only sync
-        # Legacy mode: Create a unique working branch for bidirectional sync
-        if config.source_mode:
-            env_vars['GIT_SOURCE_MODE'] = 'true'
-            env_vars['GIT_SOURCE_BRANCH'] = config.source_branch or 'main'
-            logger.info(
-                f"GitHub template env vars set for {config.name}: "
-                f"repo={github_repo_for_agent}, branch={config.source_branch or 'main'}, "
-                f"source_mode=true, sync=true"
-            )
-        else:
-            env_vars['GIT_WORKING_BRANCH'] = git_working_branch
-            logger.info(
-                f"GitHub template env vars set for {config.name}: "
-                f"repo={github_repo_for_agent}, working_branch={git_working_branch}, "
-                f"source_mode=false, sync=true"
-            )
+        _apply_github_template_env(
+            env_vars=env_vars,
+            config=config,
+            github_repo_for_agent=github_repo_for_agent,
+            github_pat_for_agent=github_pat_for_agent,
+            github_template_path=github_template_path,
+            enable_git_sync_for_template=enable_git_sync_for_template,
+            git_working_branch=git_working_branch,
+        )
 
     # CRED-002: Legacy credential injection loop removed.
     # Credentials are now injected after agent creation via:
@@ -979,9 +1054,14 @@ async def create_agent_internal(
             # #389 S1a: opt non-source-mode GitHub-template agents into the
             # auto-sync heartbeat by default. Source-mode agents stay opt-in
             # (auto-pushing to main would clobber protected branches).
-            if github_repo_for_agent and not config.source_mode:
+            if github_repo_for_agent and enable_git_sync_for_template and not config.source_mode:
                 try:
-                    db.set_git_auto_sync_enabled(config.name, True)
+                    _set_git_auto_sync_if_enabled(
+                        agent_name=config.name,
+                        github_repo_for_agent=github_repo_for_agent,
+                        enable_git_sync_for_template=enable_git_sync_for_template,
+                        source_mode=config.source_mode,
+                    )
                 except Exception as e:
                     logger.warning(
                         f"Failed to enable auto-sync for {config.name}: {e}"
@@ -992,7 +1072,7 @@ async def create_agent_internal(
             # S7 Layer 0 (#382): if anything after the reservation fails,
             # roll back the agent_git_config row so the working branch is
             # released and a retry can claim it fresh.
-            if github_repo_for_agent and git_instance_id:
+            if github_repo_for_agent and enable_git_sync_for_template and git_instance_id:
                 try:
                     db.delete_git_config(config.name)
                 except Exception as cleanup_exc:
