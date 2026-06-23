@@ -97,10 +97,10 @@
                       type="text"
                       ref="githubRepoInput"
                       class="block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm px-3 py-2 focus:ring-action-primary-500 focus:border-action-primary-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
-                      placeholder="owner/repo or https://github.com/owner/repo"
+                      placeholder="owner/repo, owner/repo//path, or https://github.com/owner/repo"
                       @click.stop
                     />
-                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Enter a GitHub repository in <code>owner/repo</code> format</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Enter <code>owner/repo</code>, <code>owner/repo@branch</code>, <code>owner/repo//path</code>, or <code>owner/repo//path@branch</code></p>
                   </div>
 
                   <!-- Local templates section (shown first after Blank Agent) -->
@@ -305,6 +305,7 @@ import { ref, reactive, onMounted, computed, watch, nextTick } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 import { useSettingsStore } from '../stores/settings'
 import { CUSTOM_PROVIDER_VALUE, buildRuntimeProviderModelOptions } from '../utils/runtimeModelPresets'
+import { parseGithubTemplateRef } from '../utils/githubTemplateRefs'
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 
@@ -510,22 +511,6 @@ const truncateDescription = (description) => {
   return firstLine
 }
 
-// Parse GitHub repo from various input formats into owner/repo
-const parseGithubRepo = (input) => {
-  if (!input) return null
-  let repo = input.trim()
-  // Handle full URLs: https://github.com/owner/repo(.git)
-  const urlMatch = repo.match(/github\.com\/([^/]+\/[^/\s#?.]+)/)
-  if (urlMatch) {
-    repo = urlMatch[1].replace(/\.git$/, '')
-  }
-  // Validate owner/repo format
-  if (/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(repo)) {
-    return repo
-  }
-  return null
-}
-
 const onTemplateChange = () => {
   // Template selection changed - no action needed
   // All config comes from backend based on template
@@ -597,13 +582,15 @@ const createAgent = async () => {
     }
 
     if (form.template === 'github-custom') {
-      const repo = parseGithubRepo(githubRepoUrl.value)
-      if (!repo) {
-        error.value = 'Please enter a valid GitHub repository (e.g., owner/repo)'
+      let parsed
+      try {
+        parsed = parseGithubTemplateRef(githubRepoUrl.value)
+      } catch (e) {
+        error.value = 'Please enter a valid GitHub template ref: owner/repo, owner/repo@branch, owner/repo//path, or owner/repo//path@branch'
         loading.value = false
         return
       }
-      payload.template = `github:${repo}`
+      payload.template = `github:${parsed.canonical}`
     } else if (form.template) {
       payload.template = form.template
     }

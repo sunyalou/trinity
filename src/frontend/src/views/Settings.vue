@@ -1590,7 +1590,7 @@ Example:
                   <input
                     v-model="newTemplateRepo"
                     type="text"
-                    placeholder="owner/repo"
+                    placeholder="owner/repo or owner/repo//path"
                     class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-action-primary-500 focus:border-action-primary-500 dark:bg-gray-700 dark:text-white font-mono text-sm"
                     :disabled="savingGithubTemplates"
                     @keyup.enter="addGithubTemplate"
@@ -1613,6 +1613,9 @@ Example:
                 </div>
                 <p v-if="templateValidationError" class="text-sm text-status-danger-600 dark:text-status-danger-400">
                   {{ templateValidationError }}
+                </p>
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  Use <code>owner/repo</code>, <code>owner/repo@branch</code>, <code>owner/repo//path</code>, or <code>owner/repo//path@branch</code>.
                 </p>
 
                 <!-- Templates Table -->
@@ -2045,6 +2048,7 @@ import {
   providerModelOptions,
   resolveRuntimeModel,
 } from '../utils/runtimeModelPresets'
+import { parseGithubTemplateRef } from '../utils/githubTemplateRefs'
 
 const router = useRouter()
 const route = useRoute()
@@ -3197,9 +3201,6 @@ async function resetMcpUrl() {
   )
 }
 
-// GitHub Templates methods (TMPL-001)
-const REPO_PATTERN = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/
-
 async function loadGithubTemplates() {
   loadingGithubTemplates.value = true
   try {
@@ -3218,13 +3219,17 @@ async function loadGithubTemplates() {
 
 function addGithubTemplate() {
   templateValidationError.value = ''
-  const repo = newTemplateRepo.value.trim()
-  if (!repo) return
+  const rawRepo = newTemplateRepo.value.trim()
+  if (!rawRepo) return
 
-  if (!REPO_PATTERN.test(repo)) {
-    templateValidationError.value = "Invalid format. Use 'owner/repo' (e.g., 'octocat/hello-world')."
+  let parsed
+  try {
+    parsed = parseGithubTemplateRef(rawRepo)
+  } catch (e) {
+    templateValidationError.value = "Invalid format. Use 'owner/repo', 'owner/repo@branch', 'owner/repo//path', or 'owner/repo//path@branch'."
     return
   }
+  const repo = parsed.canonical
 
   // Check for duplicates
   if (githubTemplates.value.some(t => t.github_repo === repo)) {
