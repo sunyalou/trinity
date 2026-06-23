@@ -29,6 +29,7 @@ from services.docker_utils import (
 from services.template_service import (
     get_github_template,
     generate_credential_files,
+    _fetch_template_yaml_ref,
 )
 from services.runtime_provider_templates import build_runtime_template
 from services import git_service
@@ -179,9 +180,38 @@ def _apply_runtime_template_config(config: AgentConfig, runtime_config) -> None:
         config.runtime = runtime_type
         config.runtime_model = runtime_config.get("model", config.runtime_model)
         config.runtime_permission = runtime_permission
+        _apply_runtime_provider_ids_from_model(config)
     elif isinstance(runtime_config, str):
         validate_agent_runtime(runtime_config)
         config.runtime = runtime_config
+
+
+def _apply_runtime_provider_ids_from_model(config: AgentConfig) -> None:
+    """Infer saved runtime provider/model ids from a template model string.
+
+    Dynamic GitHub templates can only specify a portable `runtime.model` such as
+    `deepseek-openai/deepseek-v4-flash`. If that provider exists in Settings,
+    reuse the provider-template path so custom OpenCode provider config and API
+    key env vars are injected into the created container.
+    """
+    if config.runtime_provider_id or config.runtime_model_id:
+        return
+    if (config.runtime or "").lower() != "opencode":
+        return
+    runtime_model = config.runtime_model or ""
+    if "/" not in runtime_model:
+        return
+    provider_id, model_id = [part.strip() for part in runtime_model.split("/", 1)]
+    if not provider_id or not model_id:
+        return
+    try:
+        providers = settings_service.get_provider_configs()
+    except Exception as exc:
+        logger.warning(f"Failed to read provider configs for runtime model '{runtime_model}': {exc}")
+        return
+    if isinstance(providers, dict) and provider_id in providers:
+        config.runtime_provider_id = provider_id
+        config.runtime_model_id = model_id
 
 
 def _safe_local_template_path(template_name: str, root: Path) -> Path:
@@ -504,6 +534,29 @@ async def create_agent_internal(
                 github_template_path = resolved_template.github_template_path
                 enable_git_sync_for_template = resolved_template.enable_git_sync_for_template
                 github_pat_for_agent = github_pat
+                if github_template_path:
+                    try:
+                        template_data = _fetch_template_yaml_ref(resolved_template.ref, github_pat_for_agent)
+                        runtime_config = template_data.get("runtime", {})
+                        try:
+                            _apply_runtime_template_config(config, runtime_config)
+                        except ValueError as e:
+                            raise HTTPException(status_code=400, detail=str(e)) from e
+                        config.resources = template_data.get("resources", config.resources)
+                        creds = template_data.get("credentials", {})
+                        mcp_servers = list(creds.get("mcp_servers", {}).keys()) if isinstance(creds, dict) else []
+                        if mcp_servers:
+                            config.mcp_servers = mcp_servers
+                        shared_folders_config = template_data.get("shared_folders", {})
+                        if shared_folders_config:
+                            template_shared_folders = {
+                                "expose": shared_folders_config.get("expose", False),
+                                "consume": shared_folders_config.get("consume", False),
+                            }
+                    except HTTPException:
+                        raise
+                    except Exception as e:
+                        logger.warning(f"Error loading GitHub template config: {e}")
                 logger.info(f"Using dynamic GitHub template: {resolved_template.ref.canonical} (branch: {config.source_branch})")
 
             # Validate PAT has access to the repository before creating container
