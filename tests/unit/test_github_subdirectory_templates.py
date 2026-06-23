@@ -470,6 +470,33 @@ async def test_create_agent_subdirectory_ref_sets_env_and_skips_git_sync(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_create_agent_subdirectory_ref_defaults_source_branch_to_main(monkeypatch):
+    env_capture = {}
+    reserve_calls = []
+    auto_sync_calls = []
+    _patch_create_agent_dependencies(
+        monkeypatch,
+        env_capture=env_capture,
+        reserve_calls=reserve_calls,
+        auto_sync_calls=auto_sync_calls,
+    )
+
+    config = AgentConfig(
+        name="researcher",
+        template="github:owner/repo//research-agent",
+        source_branch=None,
+    )
+    user = User(id=1, username="admin", role="admin")
+
+    await agent_crud.create_agent_internal(config, user, request=None)
+
+    assert env_capture["GITHUB_REPO"] == "owner/repo"
+    assert env_capture["GITHUB_TEMPLATE_PATH"] == "research-agent"
+    assert env_capture["GIT_SOURCE_BRANCH"] == "main"
+    assert reserve_calls == []
+
+
+@pytest.mark.asyncio
 async def test_create_agent_root_ref_keeps_git_sync_reservation_and_env(monkeypatch):
     env_capture = {}
     reserve_calls = []
