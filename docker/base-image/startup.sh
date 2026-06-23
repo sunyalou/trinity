@@ -69,13 +69,10 @@ if [ -n "${GITHUB_REPO}" ] && [ -n "${GITHUB_PAT}" ]; then
             CLONE_BRANCH="${GIT_SOURCE_BRANCH:-main}"
             if [ "${GIT_SOURCE_MODE}" = "true" ] && [ -n "${CLONE_BRANCH}" ]; then
                 echo "Cloning branch: ${CLONE_BRANCH}"
-                CLONE_CMD="git clone -b ${CLONE_BRANCH} ${CLONE_URL} /home/developer"
+                CLONE_OUTPUT=$(git clone -b "${CLONE_BRANCH}" "${CLONE_URL}" /home/developer 2>&1)
             else
-                CLONE_CMD="git clone ${CLONE_URL} /home/developer"
+                CLONE_OUTPUT=$(git clone "${CLONE_URL}" /home/developer 2>&1)
             fi
-
-            # Capture clone output for error reporting (#218)
-            CLONE_OUTPUT=$(eval "${CLONE_CMD}" 2>&1)
             CLONE_EXIT=$?
             if [ $CLONE_EXIT -eq 0 ]; then
             echo "Repository cloned successfully with git history"
@@ -166,35 +163,55 @@ if [ -n "${GITHUB_REPO}" ] && [ -n "${GITHUB_PAT}" ]; then
         CLONE_BRANCH="${GIT_SOURCE_BRANCH:-main}"
         if [ -n "${CLONE_BRANCH}" ] && [ "${CLONE_BRANCH}" != "main" ]; then
             echo "Cloning branch: ${CLONE_BRANCH}"
-            SHALLOW_CLONE_CMD="git clone --depth 1 -b ${CLONE_BRANCH} ${CLONE_URL} /tmp/repo-clone"
+            SHALLOW_OUTPUT=$(git clone --depth 1 -b "${CLONE_BRANCH}" "${CLONE_URL}" /tmp/repo-clone 2>&1)
         else
-            SHALLOW_CLONE_CMD="git clone --depth 1 ${CLONE_URL} /tmp/repo-clone"
+            SHALLOW_OUTPUT=$(git clone --depth 1 "${CLONE_URL}" /tmp/repo-clone 2>&1)
         fi
-
-        SHALLOW_OUTPUT=$(eval "${SHALLOW_CLONE_CMD}" 2>&1)
         SHALLOW_EXIT=$?
         if [ $SHALLOW_EXIT -eq 0 ]; then
             echo "Repository cloned successfully"
 
-            # Copy all files from the cloned repo to the working directory
-            # Using rsync-like behavior with cp
-            cd /tmp/repo-clone
+            TEMPLATE_SOURCE_DIR="/tmp/repo-clone"
+            TEMPLATE_COPY_VALID="true"
+            if [ -n "${GITHUB_TEMPLATE_PATH}" ]; then
+                TEMPLATE_SOURCE_DIR="/tmp/repo-clone/${GITHUB_TEMPLATE_PATH}"
+                if [ ! -d "${TEMPLATE_SOURCE_DIR}" ]; then
+                    echo "ERROR: GitHub template path not found: ${GITHUB_TEMPLATE_PATH}"
+                    echo "{\"status\":\"failed\",\"error\":\"template_path_missing\",\"repo\":\"${GITHUB_REPO}\",\"template_path\":\"${GITHUB_TEMPLATE_PATH}\"}" > /home/developer/.git-clone-status
+                    TEMPLATE_COPY_VALID="false"
+                elif [ ! -f "${TEMPLATE_SOURCE_DIR}/template.yaml" ]; then
+                    echo "ERROR: GitHub template path missing template.yaml: ${GITHUB_TEMPLATE_PATH}"
+                    echo "{\"status\":\"failed\",\"error\":\"template_path_invalid\",\"repo\":\"${GITHUB_REPO}\",\"template_path\":\"${GITHUB_TEMPLATE_PATH}\"}" > /home/developer/.git-clone-status
+                    TEMPLATE_COPY_VALID="false"
+                elif [ ! -f "${TEMPLATE_SOURCE_DIR}/AGENTS.md" ] && [ ! -f "${TEMPLATE_SOURCE_DIR}/CLAUDE.md" ] && [ ! -f "${TEMPLATE_SOURCE_DIR}/GEMINI.md" ]; then
+                    echo "ERROR: GitHub template path missing instruction file: ${GITHUB_TEMPLATE_PATH}"
+                    echo "{\"status\":\"failed\",\"error\":\"template_path_invalid\",\"repo\":\"${GITHUB_REPO}\",\"template_path\":\"${GITHUB_TEMPLATE_PATH}\"}" > /home/developer/.git-clone-status
+                    TEMPLATE_COPY_VALID="false"
+                fi
+            fi
 
-            # Copy everything except .git directory
-            for item in $(ls -A | grep -v "^\.git$"); do
-                echo "Copying ${item}..."
-                cp -r "${item}" /home/developer/ 2>/dev/null || true
-            done
+            if [ "${TEMPLATE_COPY_VALID}" = "true" ]; then
+                # Copy all files from the selected template source to the working directory.
+                # Use dotglob/nullglob so dotfiles and filenames with spaces are handled safely.
+                shopt -s dotglob nullglob
+                for item in "${TEMPLATE_SOURCE_DIR}"/*; do
+                    base="$(basename "$item")"
+                    [ "$base" = ".git" ] && continue
+                    echo "Copying ${base}..."
+                    cp -a "$item" /home/developer/ 2>/dev/null || true
+                done
+                shopt -u dotglob nullglob
+
+                cd /home/developer
+
+                # Create initialization marker to prevent re-cloning on restart
+                touch /home/developer/.trinity-initialized
+
+                echo "GitHub repository initialization complete"
+            fi
 
             # Clean up the clone
             rm -rf /tmp/repo-clone
-
-            cd /home/developer
-
-            # Create initialization marker to prevent re-cloning on restart
-            touch /home/developer/.trinity-initialized
-
-            echo "GitHub repository initialization complete"
         else
             echo "=========================================="
             echo "ERROR: Failed to clone GitHub repository: ${GITHUB_REPO}"
@@ -398,4 +415,3 @@ mkdir -p /home/developer/content/{videos,audio,images,exports}
 
 echo "Agent ready. Keeping container alive..."
 tail -f /dev/null
-
